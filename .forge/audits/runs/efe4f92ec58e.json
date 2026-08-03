@@ -1,0 +1,2636 @@
+{
+  "schema_version": 17,
+  "run_id": "efe4f92ec58e",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc16",
+  "task": {
+    "name": "Missing sandbox capability profile is never surfaced, even when the agent reports the exact toolchain failure it causes",
+    "slug": "issue-2029",
+    "story_path": null,
+    "story_text": "## Observed\n\nObserved in sprint issues-248,245,246,231 against a project whose forge.yaml set no\nsandbox.capability_profile.\n\nOn its first iteration the dev agent for story #246 reported plainly that the\nsimulator service was unreachable and that the build tool could not fetch a cached\npackage because outbound network was restricted. It repeated a comparable report on\nstory #248. Forge's own run state for every story in the sprint recorded a null\ncapability profile with empty write roots and empty mach services. Forge owns a\ncapability preset whose entire purpose is to grant those write roots and that\nsimulator mach service, and whose documentation describes this failure mode\ndirectly.\n\nForge held the symptom, its own resolved configuration, and the remedy at the same\ntime, and joined none of them. It ran the story to iteration exhaustion, allowed the\ndev to make changes to a language it had already demonstrated it could not execute,\nand reported the outcome to the operator as an iteration budget problem with the\nrecommendation to raise the budget. Nothing in the summary, the audit, or the next\nsteps indicated that the project had no capability profile or that the dev could not\nbuild the platform it was editing. The operator found it only by reading the agent's\nprose in the raw iteration logs.\n\n## Expected\n\nWhen an agent reports that a required toolchain or service is unavailable\nand forge's own resolved sandbox state shows no capability grant covering it, forge\nshould report the configuration gap as the actionable cause. More generally, wherever\nforge holds both a reported symptom and the resolved configuration that explains it,\nthe configuration gap belongs in the operator-facing outcome rather than being left\nfor the operator to reconstruct from agent narration. A capability that a project\nmust opt into should announce its absence when that absence is what failed the run,\nnot stay silent and let the failure surface as an unrelated budget or iteration\nverdict.\n\n## Diagnosis\n\n**Baseline:** `f2caf7d3ed7c6066db3e3e32c64039f43f3f8d09` captured at `2026-07-29T14:52:18.924508+00:00`\n\n**Inspected files:**\n\n- `src/theforge/sprint/rca.py` \u2014 `sha256:4bd601c86960abbc0507f38a37fd0226d54b21ac0bb3a7cdc077876e2dbb16c5`\n- `src/theforge/coordinator/dev_phase.py` \u2014 `sha256:1b4f0b3925c5fa18a7725a201c3926b71f066a8882f3a1ce95c3e0f93c5fcc86`\n- `src/theforge/config/sandbox_capabilities.py` \u2014 `sha256:c7b271393c5eeb4a217c58610895dc605f085dd03fdf1ea42e67b8db8a1273f2`\n- `src/theforge/config/load.py` \u2014 `sha256:2adb7c788635c9b726127fed68f9e4b89b8c43fd452a05bcfb888b224006a8e6`\n- `src/theforge/config/types.py` \u2014 `sha256:e860ad47552c2c07f7f0cfb3ff20cbbbf0ec9079f727444b5cc2ddcb5c7a200f`\n- `.forge/audits/runs/6f619a5997a1.json` \u2014 `sha256:a6a1f355a4e5d2eb74e891ad02df651c32d84b07e910d2db08a8355c1afcc49d`\n\n### Observed symptom\n\nWhen a project has no `sandbox.capability_profile` set and a dev agent's toolchain\ngenuinely requires one (e.g. a simulator mach service or a network/write root the\ndefault sandbox denies), forge's sprint-end root-cause classifier (`sprint/rca.py`)\nnever surfaces the missing capability profile as the cause. Instead it falls\nthrough to the generic iteration-exhaustion class and tells the operator to \"raise\nthe iteration budget\" \u2014 even though forge's own audit record for the same run\nalready captured `sandbox_capabilities: {profile: null, write_roots: [], mach_services: []}`\nand the dev agent's own captured output described the exact toolchain/service\nfailure a named capability preset exists to fix.\n\n### Reproduction / evidence\n\nStatic evidence in this repo (theforge's own source), since the triggering sprint\nran in a different project (`hdp`) and its logs are not present in this repo's\n`.forge/logs`/`.forge/audits`:\n\n1. `src/theforge/config/sandbox_capabilities.py:124-152` defines the `xcode` preset\n   \u2014 write roots for `~/Library/Developer`, CoreSimulator caches, etc., and mach\n   services `com.apple.CoreSimulator.CoreSimulatorService` and others \u2014 whose\n   stated purpose (module docstring lines 1-8) is exactly \"the agent cannot build\n   and therefore cannot verify its own work\" when a toolchain needs simulator/mach\n   access the default sandbox denies.\n2. `src/theforge/coordinator/dev_phase.py:677-700` (`_resolve_dev_sandbox_capabilities`)\n   resolves `config.sandbox.capability_profile` into an audit payload every dev\n   iteration and stores it at `state.dev_sandbox_capabilities` (line 728). This\n   repo's own audit trail confirms the shape: `.forge/audits/runs/6f619a5997a1.json`\n   contains `\"workspace\": {\"sandbox_capabilities\": {\"profile\": null, \"write_roots\":\n   [], \"mach_services\": []}}` and the same block per dev-loop iteration.\n3. `src/theforge/sprint/rca.py` is the module that turns per-story audit/summary\n   data into the operator-facing root-cause classification and recommended next\n   step. `grep -c \"capability|sandbox\" src/theforge/sprint/rca.py` returns `0` \u2014\n   the classifier never reads `sandbox_capabilities`, `capability_profile`,\n   `write_roots`, or `mach_services` from the audit, and no `RcaRule` pattern\n   (lines 130-291) contains any toolchain/network/simulator/permission keyword.\n4. `_collect_text_sources` (rca.py:592-671) does scan the dev/review iteration\n   logs under the story's log dir and the run log for pattern matches \u2014 so the\n   dev agent's own prose (\"simulator service unreachable\", \"could not fetch a\n   cached package\") is available to the engine as text \u2014 but with no rule\n   defined for it, nothing fires.\n5. `_signal_rule_hits` (rca.py:714-839) instead classifies purely from\n   `iteration_usage`/outcome: if `dev_hit or review_hit` and outcome is\n   FAILED/ESCALATE(D), it fires `iteration_budget_exhausted` (lines 828-837),\n   and `_recommended_actions` (rca.py:962-963) then emits literally\n   `\"raise the iteration budget for {ref} or narrow its scope, then re-run\"`.\n   This is the \"recommendation to raise the budget\" the issue describes.\n\n### Hypotheses tested\n\n- **[ruled out]** The capability-profile resolution itself silently drops/ignores a configured profile.\n  - Evidence: dev_phase.py:_resolve_dev_sandbox_capabilities correctly resolves and audits the profile (or its absence) every iteration, and logs a WARNING when a requested profile is unsupported on the host (lines 692-700). The issue's own report confirms the project set NO profile at all \u2014 resolution behaved correctly (null in, null/empty audit out); the gap is downstream in classification, not resolution.\n- **[confirmed]** The RCA/summary engine has no rule that cross-references a reported toolchain/service failure against the resolved (null) sandbox_capabilities audit field, so it always falls back to generic iteration-exhaustion classification for this failure class.\n  - Evidence: sprint/rca.py has zero references to capability/sandbox (grep -c returns 0). Its only primary/contributing rules that could fire on this class are iteration-count-derived (dev_iteration_limit_hit / iteration_budget_exhausted at rca.py:809-837), which look only at iteration usage and outcome \u2014 never at workspace.sandbox_capabilities or capability-shaped text patterns. The recommended action for that class is hardcoded to 'raise the iteration budget ... or narrow its scope' (rca.py:962-963), matching the issue's reported operator-facing outcome exactly.\n- **[ruled out]** Dev-phase logging silently omits any signal when a profile is null but the toolchain needs one, so nothing gets to the audit/log at all.\n  - Evidence: The null/empty case IS captured structurally in the audit payload (sandbox_capabilities.py:104-115, audit_payload() always emits profile/write_roots/mach_services keys, explicit null rather than omitted, by design per its own docstring). The data reaches the audit; the gap is that no downstream consumer (rca.py) reads it alongside the agent's reported symptom.\n\n### Confirmed cause\n\n`src/theforge/sprint/rca.py`'s mechanical root-cause classifier holds no rule that\nreads the per-story audit's resolved `sandbox_capabilities` (profile/write_roots/\nmach_services, populated by `coordinator/dev_phase.py:_resolve_dev_sandbox_capabilities`)\nand cross-references it against the dev agent's own reported toolchain/service\nfailure text (which the engine's `_collect_text_sources`/`_text_rule_hits` already\nscan for other failure classes). Consequently, when a story fails because a\nproject has no `sandbox.capability_profile` set and the dev agent's toolchain\nneeds one, the classifier falls through to its iteration-usage-derived\n`iteration_budget_exhausted` / `dev_iteration_limit_hit` signal rules\n(rca.py:809-837) and emits the generic \"raise the iteration budget ... or narrow\nits scope\" recommendation (rca.py:962-963), even though the resolved\ncapability-profile gap \u2014 data forge already holds in the same audit record \u2014 is\nthe actionable, more specific cause.\n\n### Affected code path\n\nsrc/theforge/sprint/rca.py \u2014 RULES table (lines 130-291), `_signal_rule_hits`\n(lines 714-839, specifically the dev/review iteration-limit signal block at\n809-837), and `_recommended_actions`'s `iteration_exhaustion` action string\n(lines 961-963). These are the pieces that need a new rule/signal correlating\n`audit[\"workspace\"][\"sandbox_capabilities\"]` (or per-iteration\n`dev_loop[*].sandbox_capabilities`) being null/empty with toolchain/service-failure\ntext already visible to `_collect_text_sources`, and a corresponding\n`_recommended_actions` entry pointing at `sandbox.capability_profile` instead of\n(or in addition to) the iteration-budget advice.\n\n### Fix-success criterion\n\nGiven a sprint story whose per-story audit records `sandbox_capabilities.profile:\nnull` (or a profile missing the write roots/mach services the failure implies)\nAND whose dev/review iteration text reports a toolchain/service/network failure\nconsistent with a known capability preset (e.g. simulator-unreachable text\nmatching the `xcode` preset's mach services), `sprint-rca.yaml`'s primary failure\nclass for that story is a capability-profile-gap class (not\n`iteration_exhaustion`), and its recommended action names\n`sandbox.capability_profile` and the applicable preset rather than \"raise the\niteration budget.\"\n\n### Related findings (out of scope)\n\n> These are adjacent problems noticed during investigation. They are **not** the cause of this issue's symptom and are **out of scope for this fix** \u2014 triage them separately under the linked issue. Do not implement them as part of this issue.\n\n- The `xcode` capability preset only grants write roots and mach services \u2014 it has no network-egress axis, so the reported 'build tool could not fetch a cached package because outbound network was restricted' half of the symptom may not be fixable by any existing preset at all; may need a new capability axis or a separate issue.\n- sprint/rca.py's residual `unknown_needs_rca` class (UNKNOWN_CLASS) exists precisely for stories no mechanical rule matches and defers to LLM-assisted `forge diagnose`, but nothing in the pipeline appears to auto-invoke `forge diagnose` on iteration-exhaustion outcomes by default \u2014 so this failure class silently gets the (wrong) mechanical classification instead of falling to the residual/LLM path. Worth checking whether iteration_budget_exhausted should be lower-precedence than unknown_needs_rca when sandbox_capabilities is null, rather than a separate fix.\n\n### Notes\n\nThe triggering sprint (`issues-248,245,246,231`, run `d5e69156e8b2`) ran in a\ndifferent project (`hdp`), not this repo, so I could not read that run's actual\naudit/log files \u2014 `.forge/logs` and `.forge/audits` here contain no matching\nsprint directory. This diagnosis is built entirely from theforge's own source at\nHEAD plus a same-shaped audit record already present in this repo's own audit\nhistory (`.forge/audits/runs/6f619a5997a1.json`), which confirms the\n`sandbox_capabilities: {profile: null, write_roots: [], mach_services: []}` shape\nreally is what lands in the audit today. I did not exhaustively verify whether\nthe \"outbound network restricted\" half of the reported symptom maps to any\nexisting preset axis (the `xcode` preset only grants write roots + mach services,\nnot network egress) \u2014 see related_findings.\n\n---\n\n**Provenance:** produced by `forge diagnose --issue 2029 --dry-run` (run\n`f0406af91756`, 2026-07-29 07:52 PT, 162s, $1.423) and landed here by the\noperator, because the dry-run suppressed the landing step and an earlier\nnon-dry-run attempt (run `59bdfe42256b`, $0.725) was discarded by the PARSE\nfailure now filed as #2055. The artifact above is the renderer's output verbatim;\nnothing was edited. Note that run `f0406af91756`'s own audit record therefore\nshows no landing.\n",
+    "github_issue": 2029,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Missing sandbox capability profile is never surfaced, even when the agent reports the exact toolchain failure it causes' completed. Review approved after 2 cycle(s), 3 dev iteration(s). Branch: feat/issue-2029",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "resolved_sha256": "f04ed927e24d2e20ac77b8702e563b6e674a3922adab48186ec55c577cfb5696",
+    "source_sha256_at_finish": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-03T13:05:56.640207+00:00",
+    "finished_at": "2026-08-03T13:17:57.388657+00:00",
+    "duration_seconds": 720.74845
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2029",
+    "branch": "feat/issue-2029",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 3,
+    "gate_decisions": [
+      "FAIL",
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 3,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "FAIL",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": "a50f65ae813053b75cc45bbf8010a9e4b79eb40c6bf8aaf2780f74f3aae8dd0e",
+        "cost_usd": 0.5261835,
+        "duration_s": 84.89,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/rca.py",
+          "tests/test_sprint_rca.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 0,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 0.8219975,
+        "duration_s": 92.17,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/rca.py",
+          "tests/test_sprint_rca.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 1.2091035000000003,
+        "duration_s": 151.58,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/rca.py",
+          "tests/test_sprint_rca.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 1.914469,
+        "duration_s": 111.18
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 3.429439,
+        "duration_s": 151.27
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 7,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 7,
+      "base_review": 5,
+      "profile_history_runs": 179,
+      "profile_avg_iterations": 1.5698,
+      "profile_avg_cost_usd": 4.7197,
+      "profile_raw_dev_max": 2.3547,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.4394,
+      "review_history_sample_size": 21,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 179 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-03T13:05:57.410878+00:00"
+      },
+      {
+        "cycle": 0,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-08-03T13:07:30.773241+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 3,
+        "timestamp": "2026-08-03T13:11:51.316007+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 8.3696265,
+    "dev_usd": 2.5572845000000006,
+    "review_usd": 5.3439075,
+    "dev_invocations": 3,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 0.5261835,
+        "duration_seconds": 84.88642420782708,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.007686
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.5184975000000001
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 0.8219975,
+        "duration_seconds": 92.16744937514886,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.8219975
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 1.2091035000000003,
+        "duration_seconds": 151.58374504209496,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.2091035000000003
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.695212,
+        "duration_seconds": 55.48505400004797,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.695212
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.219257,
+        "duration_seconds": 55.48505400004797,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.219257
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.639644,
+        "duration_seconds": 75.50444454199169,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.639644
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 2.7897945,
+        "duration_seconds": 75.50444454199169,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.7897945
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed by direct inspection: rca.py has zero references to sandbox/capability (grep -c returns 0), audit['workspace']['sandbox_capabilities'] is populated exactly as diagnosed (verified against .forge/audits/runs/6f619a5997a1.json), and per-iteration dev_loop entries already carry sandbox_capabilities via dev_phase.py:578. An established precedent (_configuration_change_evidence, rca.py:~797) shows the exact pattern needed: cross-reference a structured audit field against outcome/text and add a new primary RcaRule + recommended_actions entry.",
+    "complexity": "medium",
+    "complexity_score": 7,
+    "implementation_complexity_score": 6,
+    "validation_complexity_score": 7,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 6",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "8 operator-visible surfaces enumerated in acceptance criteria: --dry-run, --issue, dev_hit or review_hit, forge diagnose, forge diagnose --issue 2029 --dry-run, forge.yaml, forge/audits/runs/6f619a5997a1.json, sprint-rca.yaml",
+        "dimension": "validation"
+      },
+      {
+        "rule_id": "cost_bearing_dogfood",
+        "signal": "acceptance criteria require a real cost-bearing invocation ('invoke' \u2026 'forge diagnose'), not a test fixture",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.4684345,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "f509569522aa",
+    "cache_snapshot": {
+      "worktree_head": "2bfe607c8e4a2415d90ef6353efb561b1d854ac6",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "ad70c525e695ad17ddc61496b16b20c2ac206f14",
+      "story_content_hash": "d2647b41bb808885de157d5482f2a68c3bc5d9df392a70d3eb5633e497e7dfdd"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "2bfe607c8e4a2415d90ef6353efb561b1d854ac6",
+      "current_worktree_head": "2bfe607c8e4a2415d90ef6353efb561b1d854ac6",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "ad70c525e695ad17ddc61496b16b20c2ac206f14",
+      "current_evaluation_base_branch_head": "ad70c525e695ad17ddc61496b16b20c2ac206f14",
+      "cached_story_content_hash": "d2647b41bb808885de157d5482f2a68c3bc5d9df392a70d3eb5633e497e7dfdd",
+      "current_story_content_hash": "d2647b41bb808885de157d5482f2a68c3bc5d9df392a70d3eb5633e497e7dfdd",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.4684345,
+        "duration_s": 54.63,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 7,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 179 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 7,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2029/iter_1.yaml",
+      "handoff": {
+        "summary": "Completed the sandbox capability-profile-gap RCA signal. rca.py now defines a capability_profile_gap failure class whose detection correlates the story audit's resolved sandbox_capabilities payloads (workspace-level and per-dev-loop) against preset-specific denial text collected by _collect_text_sources, restricted to xcode simulator/CoreSimulator/mach-service and developer write-root symptoms; a pure outbound-network denial does not qualify. The class sits ahead of iteration_exhaustion in _PRIMARY_PRIORITY, so a structurally explained sandbox failure becomes primary even when iteration limits were also hit, while exhausted stories with no capability symptom still classify as iteration_exhaustion. The recommended action names sandbox.capability_profile plus the matched preset and the recorded profile state (unset, or the wrong preset value) and deliberately omits the iteration-budget advice. This final commit added the recorded-profile note to the action, replaced the _select_primary special case with straight priority-list resolution over structured and text classes together, and narrowed the preset-lookup except to SandboxCapabilityError. RULESET_VERSION bumped to 9.",
+        "commits": [
+          {
+            "sha": "e2c7b81",
+            "message": "fix(rca): surface a missing sandbox capability profile as the cause"
+          },
+          {
+            "sha": "6bc4b1c",
+            "message": "fix(sprint): address review findings (iter 1)"
+          },
+          {
+            "sha": "2bfe607",
+            "message": "fix(sprint): narrow capability gap detection"
+          },
+          {
+            "sha": "bef7287",
+            "message": "fix(sprint): report the capability-profile gap in the recommendation"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Given a story whose audit records sandbox_capabilities.profile null (or a profile missing the implied write roots/mach services) AND whose dev/review text reports a toolchain/service failure matching a known preset, the primary failure class is a capability-profile-gap class, not iteration_exhaustion",
+            "status": "MET",
+            "notes": "capability_profile_gap rule + _capability_profile_gap_evidence; placed above iteration_exhaustion in _PRIMARY_PRIORITY. Covered by test_missing_capability_profile_outranks_iteration_exhaustion, test_incomplete_capability_profile_outranks_iteration_exhaustion, test_capability_gap_from_structured_audit_text."
+          },
+          {
+            "criterion": "The recommended action names sandbox.capability_profile and the applicable preset rather than 'raise the iteration budget'",
+            "status": "MET",
+            "notes": "_capability_gap_action names the setting, the preset, and the recorded profile state; tests assert 'iteration budget' does not appear for this class."
+          },
+          {
+            "criterion": "Existing iteration-exhaustion behavior is preserved when no capability-profile signal is present",
+            "status": "MET",
+            "notes": "test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion; test_outbound_network_denial_alone_is_not_a_capability_gap."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "Network-egress denial is intentionally not treated as a capability gap on its own \u2014 no existing preset has a network axis (flagged in the issue's related_findings).",
+        "deferred_items": [
+          "Full suite shows 17 failures in tests/test_cut_rc_isolation.py, tests/test_sprint_lock.py, tests/test_sprint_reexec_collision.py \u2014 subprocess/flock tests unrelated to this change (no shared code path with sprint/rca.py)."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2029/iter_2.yaml",
+      "handoff": {
+        "summary": "Diagnosed and fixed the gate failure. The gate stopped at its lint step, not at pytest \u2014 the reported failure was two ruff E501 line-length violations in tests/test_sprint_rca.py (a long CoreSimulator error string literal at line 1319 and a long assert at line 1440). I wrapped both, then ran ruff format, which caught a second latent gate failure my previous commit had introduced: _capability_gap_action's signature had been split across lines when it fits on one under the 99-char limit, so `ruff format --check src/ tests/` (also part of the gate) would have failed next. ruff check and ruff format --check now both pass clean across src/ and tests/. The underlying capability_profile_gap RCA feature is unchanged: rca.py correlates the story audit's resolved sandbox_capabilities payloads against preset-specific denial text, ranks the class above iteration_exhaustion in _PRIMARY_PRIORITY, and recommends sandbox.capability_profile with the matched preset and the recorded profile state instead of raising the iteration budget.",
+        "commits": [
+          {
+            "sha": "e2c7b81",
+            "message": "fix(rca): surface a missing sandbox capability profile as the cause"
+          },
+          {
+            "sha": "6bc4b1c",
+            "message": "fix(sprint): address review findings (iter 1)"
+          },
+          {
+            "sha": "2bfe607",
+            "message": "fix(sprint): narrow capability gap detection"
+          },
+          {
+            "sha": "bef7287",
+            "message": "fix(sprint): report the capability-profile gap in the recommendation"
+          },
+          {
+            "sha": "PENDING",
+            "message": "style(sprint): satisfy ruff line-length and format checks"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Given a story whose audit records sandbox_capabilities.profile null (or a profile missing the implied write roots/mach services) AND whose dev/review text reports a toolchain/service failure matching a known preset, the primary failure class is a capability-profile-gap class, not iteration_exhaustion",
+            "status": "MET",
+            "notes": "capability_profile_gap rule + _capability_profile_gap_evidence; placed above iteration_exhaustion in _PRIMARY_PRIORITY. Covered by test_missing_capability_profile_outranks_iteration_exhaustion, test_incomplete_capability_profile_outranks_iteration_exhaustion, test_capability_gap_from_structured_audit_text."
+          },
+          {
+            "criterion": "The recommended action names sandbox.capability_profile and the applicable preset rather than 'raise the iteration budget'",
+            "status": "MET",
+            "notes": "_capability_gap_action names the setting, the preset, and the recorded profile state; tests assert 'iteration budget' does not appear for this class."
+          },
+          {
+            "criterion": "Existing iteration-exhaustion behavior is preserved when no capability-profile signal is present",
+            "status": "MET",
+            "notes": "test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion; test_outbound_network_denial_alone_is_not_a_capability_gap."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "Network-egress denial is intentionally not treated as a capability gap on its own \u2014 no existing preset has a network axis (flagged in the issue's related_findings).",
+        "deferred_items": [
+          "17 tests fail in my sandbox with PermissionError [Errno 1] from _multiprocessing.SemLock and subprocess git (tests/test_sprint_lock.py, tests/test_sprint_reexec_collision.py, tests/test_cut_rc_isolation.py). Environment-imposed, not code: none of these modules touch sprint/rca.py, and the coordinator's own gate output reported no test failures at all. The coordinator's gate runs outside this sandbox and should not hit them."
+        ]
+      }
+    },
+    {
+      "iteration": 3,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2029/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 fixes the P1 precedence regression. In the prior cycle I had rewritten _select_primary to pool structured and text primary classes together, which let unrelated text evidence (e.g. a worker-timeout log line) displace the run's own recorded terminal outcome such as MERGE_FAILED. This iteration restores the original structured-first selection and narrows the exception to capability_profile_gap only: that one class is promoted from the text pool into the structured pool, because its structured half \u2014 the run's resolved, empty sandbox_capabilities payload \u2014 is always present and only the denial half is carried as a log line. Once promoted it competes on _PRIMARY_PRIORITY like any other class, so it beats iteration_exhaustion (which sits directly below it) but does not jump ahead of merge_failed or any higher class. The underlying #2029 feature is otherwise unchanged: rca.py correlates the audit's sandbox_capabilities payloads against preset-specific denial text, and _capability_gap_action names sandbox.capability_profile, the matched preset, and the recorded profile state instead of recommending a bigger iteration budget.",
+        "commits": [
+          {
+            "sha": "e2c7b81",
+            "message": "fix(rca): surface a missing sandbox capability profile as the cause"
+          },
+          {
+            "sha": "6bc4b1c",
+            "message": "fix(sprint): address review findings (iter 1)"
+          },
+          {
+            "sha": "2bfe607",
+            "message": "fix(sprint): narrow capability gap detection"
+          },
+          {
+            "sha": "bef7287",
+            "message": "fix(sprint): report the capability-profile gap in the recommendation"
+          },
+          {
+            "sha": "53aa3ab",
+            "message": "style(sprint): satisfy ruff line-length and format checks"
+          },
+          {
+            "sha": "144e7d4",
+            "message": "fix(sprint): address review findings (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Given a story whose audit records sandbox_capabilities.profile null (or a profile missing the implied write roots/mach services) AND whose dev/review text reports a toolchain/service failure matching a known preset, the primary failure class is a capability-profile-gap class, not iteration_exhaustion",
+            "status": "MET",
+            "notes": "capability_profile_gap rule + _capability_profile_gap_evidence, placed above iteration_exhaustion in _PRIMARY_PRIORITY and promoted into the structured pool when its denial half is text-sourced. Covered by test_missing_capability_profile_outranks_iteration_exhaustion, test_incomplete_capability_profile_outranks_iteration_exhaustion, test_capability_gap_from_structured_audit_text."
+          },
+          {
+            "criterion": "The recommended action names sandbox.capability_profile and the applicable preset rather than 'raise the iteration budget'",
+            "status": "MET",
+            "notes": "_capability_gap_action names the setting, the preset, and the recorded profile state; tests assert 'iteration budget' does not appear for this class."
+          },
+          {
+            "criterion": "Existing iteration-exhaustion behavior is preserved when no capability-profile signal is present",
+            "status": "MET",
+            "notes": "test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion; test_outbound_network_denial_alone_is_not_a_capability_gap."
+          },
+          {
+            "criterion": "[review P1] Higher-priority text evidence must not override a structured terminal outcome",
+            "status": "MET",
+            "notes": "_select_primary restored to structured-first with a capability-only promotion. New tests test_text_evidence_does_not_override_structured_terminal_outcome (MERGE_FAILED beats worker-timeout text) and test_capability_gap_does_not_outrank_structured_merge_failure (MERGE_FAILED beats the promoted capability class, which is still recorded as evidence)."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "Network-egress denial is intentionally not treated as a capability gap on its own \u2014 no existing preset has a network axis (flagged in the issue's related_findings).",
+        "deferred_items": [
+          "17 tests fail in my sandbox with PermissionError [Errno 1] from _multiprocessing.SemLock and subprocess git (tests/test_sprint_lock.py, tests/test_sprint_reexec_collision.py, tests/test_cut_rc_isolation.py). Environment-imposed, not code: none touch sprint/rca.py, and the count is identical before and after this change."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    },
+    {
+      "iteration": 3,
+      "finding_ids": [
+        "d1ed8e5736f3be1d"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "53aa3abfd785978872552ad3b83f549ff025d04c",
+      "verification": {
+        "state": "gate_stale",
+        "gate_decision": "PASS",
+        "gate_commit": "bef728796d356e51f0f256aa321ea7d47f005c89",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The capability-profile RCA path is covered and works, but the selector change regresses structured terminal-outcome precedence. | [google-gemini-3.5-flash] The implementation successfully surfaces missing sandbox capability profiles as the root cause of toolchain failures, with excellent test coverage and full compliance with all conventions.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 1413,
+          "description": "When a story has a structured terminal outcome such as MERGE_FAILED and any higher-priority text pattern such as a worker timeout appears in its scanned logs, RCA reports the text-derived class as primary instead of the structured terminal class.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: Missing sandbox capability profile is never surfaced, even when the agent reports the exact toolchain failure it causes.",
+          "status": "VERIFIED",
+          "evidence": "The classifier computes capability-gap evidence before signal classification at src/theforge/sprint/rca.py:598, correlates sandbox capability payloads with xcode denial text at src/theforge/sprint/rca.py:1051, emits sandbox_capability_profile_missing evidence at src/theforge/sprint/rca.py:1265, and maps capability_profile_gap to a sandbox.capability_profile recommendation at src/theforge/sprint/rca.py:1591. Tests reproduce the original null-profile plus CoreSimulator Operation not permitted failure at tests/test_sprint_rca.py:1260 and tests/test_sprint_rca.py:1266, verify the primary class is capability_profile_gap at tests/test_sprint_rca.py:1286, verify the recommendation names sandbox.capability_profile and xcode without iteration budget advice at tests/test_sprint_rca.py:1293, cover structured audit text at tests/test_sprint_rca.py:1301, cover incomplete granted payloads at tests/test_sprint_rca.py:1415, and cover the real coordinator audit seam at tests/test_sprint_rca.py:1536. Targeted capability-profile RCA tests passed locally with 10 passed."
+        },
+        {
+          "criterion": "Given a story whose audit records sandbox_capabilities.profile null (or a profile missing the implied write roots/mach services) AND whose dev/review text reports a toolchain/service failure matching a known preset, the primary failure class is a capability-profile-gap class, not iteration_exhaustion",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/sprint/rca.py lines 1051-1076 (_capability_profile_gap_evidence) and lines 1405-1421 (_select_primary). Tested in tests/test_sprint_rca.py via test_missing_capability_profile_outranks_iteration_exhaustion, test_incomplete_capability_profile_outranks_iteration_exhaustion, and test_capability_gap_from_structured_audit_text."
+        },
+        {
+          "criterion": "The recommended action names sandbox.capability_profile and the applicable preset rather than 'raise the iteration budget'",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/sprint/rca.py lines 1515-1529 (_capability_gap_action) and lines 1591-1593 (_recommend_actions). Tested in tests/test_sprint_rca.py via test_missing_capability_profile_outranks_iteration_exhaustion (asserts recommended actions contain sandbox.capability_profile and xcode, and do not contain iteration budget)."
+        },
+        {
+          "criterion": "Existing iteration-exhaustion behavior is preserved when no capability-profile signal is present",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/sprint/rca.py lines 1051-1076 (_capability_profile_gap_evidence). Tested in tests/test_sprint_rca.py via test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion and test_outbound_network_denial_alone_is_not_a_capability_gap."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "144e7d422bf0f9047ab8c8c072bdac376b68ca53",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "144e7d422bf0f9047ab8c8c072bdac376b68ca53",
+        "gate_runs": 3,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The prior P1 precedence regression is fixed, and the capability-profile gap path now classifies and recommends the sandbox setting instead of iteration budget advice. | [google-gemini-3.5-flash] Approved. The capability-profile gap is correctly surfaced and prioritized, and the Cycle 1 precedence regression is fully resolved.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Given a story whose audit records sandbox_capabilities.profile null (or a profile missing the implied write roots/mach services) AND whose dev/review text reports a toolchain/service failure matching a known preset, the primary failure class is a capability-profile-gap class, not iteration_exhaustion",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:598 invokes _capability_profile_gap_evidence during story classification, src/theforge/sprint/rca.py:1051 correlates sandbox capability payloads with preset-specific denial text, src/theforge/sprint/rca.py:1265 emits the sandbox_capability_profile_missing signal, and src/theforge/sprint/rca.py:1421 promotes capability_profile_gap into structured primary selection ahead of iteration_exhaustion; tests/test_sprint_rca.py:1266 covers the original CoreSimulator Operation not permitted symptom with profile null, tests/test_sprint_rca.py:1448 covers an incomplete xcode capability payload, and tests/test_sprint_rca.py:1569 verifies the coordinator-audit-to-RCA seam.; src/theforge/sprint/rca.py:298-308 (RcaRule), src/theforge/sprint/rca.py:945-1054 (_capability_profile_gap_evidence), src/theforge/sprint/rca.py:1252-1271 (_signal_rule_hits), and tests/test_sprint_rca.py:1241-1278 (test_missing_capability_profile_outranks_iteration_exhaustion), tests/test_sprint_rca.py:1381-1418 (test_incomplete_capability_profile_outranks_iteration_exhaustion), tests/test_sprint_rca.py:1281-1313 (test_capability_gap_from_structured_audit_text)."
+        },
+        {
+          "criterion": "The recommended action names sandbox.capability_profile and the applicable preset rather than 'raise the iteration budget'",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:1529 builds the capability-profile recommendation naming sandbox.capability_profile and the preset, src/theforge/sprint/rca.py:1605 wires that action to capability_profile_gap, and src/theforge/sprint/rca.py:1624 suppresses extra iteration-budget advice for that primary class; tests/test_sprint_rca.py:1293 asserts the action includes sandbox.capability_profile and xcode while excluding iteration budget, and tests/test_sprint_rca.py:1329 verifies the same for structured audit text.; src/theforge/sprint/rca.py:1515-1529 (_capability_gap_action), src/theforge/sprint/rca.py:1593-1595 (_recommend_actions), and tests/test_sprint_rca.py:1268-1278 (test_missing_capability_profile_outranks_iteration_exhaustion)."
+        },
+        {
+          "criterion": "Existing iteration-exhaustion behavior is preserved when no capability-profile signal is present",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:1061 returns no capability gap without both capability payloads and matching denial text, and src/theforge/sprint/rca.py:1389 still emits iteration_budget_exhausted for failed stories that hit iteration limits; tests/test_sprint_rca.py:1395 verifies a non-capability failure remains iteration_exhaustion, tests/test_sprint_rca.py:1481 verifies outbound network denial alone does not become a capability gap, and tests/test_sprint_rca.py:1507 verifies a benign sandbox/toolchain mention does not trigger the new class.; src/theforge/sprint/rca.py:1045-1054 (_capability_profile_gap_evidence returns None when no symptom matches), and tests/test_sprint_rca.py:1391-1415 (test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion), tests/test_sprint_rca.py:1418-1440 (test_outbound_network_denial_alone_is_not_a_capability_gap)."
+        },
+        {
+          "criterion": "[review P1] Higher-priority text evidence must not override a structured terminal outcome",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:1405 restores structured-primary selection before fallback text-primary selection and only promotes capability_profile_gap into that structured pool, while _PRIMARY_PRIORITY at src/theforge/sprint/rca.py:381 keeps merge_failed above capability_profile_gap; tests/test_sprint_rca.py:1334 verifies worker-timeout text does not override MERGE_FAILED, and tests/test_sprint_rca.py:1366 verifies capability-gap evidence also does not outrank structured MERGE_FAILED.; src/theforge/sprint/rca.py:1405-1436 (_select_primary restores structured-first precedence and limits promotion to capability_profile_gap), and tests/test_sprint_rca.py:1334-1364 (test_text_evidence_does_not_override_structured_terminal_outcome), tests/test_sprint_rca.py:1366-1389 (test_capability_gap_does_not_outrank_structured_merge_failure)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2158",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2029",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2158",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2158",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-03T13:17:57.388657+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3378 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1417 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1211 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1548 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1096 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2426 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1683 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1507 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1727 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 2026 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1168 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2075 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1152 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1245 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1254 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 657 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2781 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/process_group.py",
+      "detail": "src/theforge/process_group.py has 788 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 753 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1482 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/batch_report.py",
+      "detail": "src/theforge/sprint/batch_report.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1908 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 6001 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 603 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1281 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2790 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1226 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1978 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1822 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "d1ed8e5736f3be1d",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 1413,
+      "severity": "P1",
+      "description": "When a story has a structured terminal outcome such as MERGE_FAILED and any higher-priority text pattern such as a worker timeout appears in its scanned logs, RCA reports the text-derived class as primary instead of the structured terminal class.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 7,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 3,
+            "raw": 0.75,
+            "weighted": 0.75,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 9,
+            "completed": 9,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 7,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.9274,
+              "weighted": 1.0,
+              "runs": 179,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 1.0
+            },
+            "domain": {
+              "domains": [
+                "backend"
+              ],
+              "raw": 0.9167,
+              "weighted": 1.0,
+              "runs": 48,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 1.0,
+              "by_domain": {
+                "backend": {
+                  "runs": 48,
+                  "raw": 0.9167,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend"
+          ],
+          "raw": 0.9167,
+          "weighted": 1.0,
+          "runs": 48,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 1.0,
+          "by_domain": {
+            "backend": {
+              "runs": 48,
+              "raw": 0.9167,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.9274,
+        "weighted_success_rate": 1.0,
+        "sample_size": 179,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 1.0,
+          "threshold": 0.6,
+          "sample_size": 179,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "not_cadence_run",
+        "domains": [
+          "backend"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 179 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 92,
+            "completed": 85,
+            "raw": 0.9239,
+            "weighted": 0.9433,
+            "rate": 0.9433,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 41,
+            "completed": 33,
+            "raw": 0.8049,
+            "weighted": 0.7906,
+            "rate": 0.7906,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 48.8038,
+              "weighted": 48.8038,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "claude-sonnet": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 114,
+            "completed": 113,
+            "raw": 0.9912,
+            "weighted": 0.9838,
+            "rate": 0.9838,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 92,
+            "completed": 85,
+            "raw": 0.9239,
+            "weighted": 0.9433,
+            "rate": 0.9433,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 41,
+            "completed": 33,
+            "raw": 0.8049,
+            "weighted": 0.7906,
+            "rate": 0.7906,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.468434,
+      "duration_s": 54.63,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 2.557285,
+      "duration_s": 328.64,
+      "iterations": 3,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 117.81,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 5.343908,
+      "duration_s": 261.98,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 1.334856,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 4.009051,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 8.369627,
+    "duration_s": 763.06,
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 3,
+    "review_cycles": 2
+  },
+  "sprint_id": "0ae6b80b533e",
+  "sprint_name": "issues-2029"
+}
