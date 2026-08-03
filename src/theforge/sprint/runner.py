@@ -3411,6 +3411,47 @@ def run_sprint(
                 f"  {triage.slug:<20} {triage.action.upper().replace('_', ' ')} ({triage.reason})"
             )
 
+    def _recorded_prior_done(slug: str, canonical_ref: str | None = None) -> bool:
+        """True when this sprint already recorded the story as run-to-DONE.
+
+        Two records can hold that evidence and either one settles it: the
+        canonical story state (seeded above from the accumulated file) and the
+        accumulated entry itself. DONE is the only succeeded outcome that means
+        "a generation of this sprint ran the story"; ALREADY_DONE means the
+        opposite, so it is deliberately not accepted here.
+        """
+        entry = _story_state.get(slug)
+        if entry is not None and entry.outcome is StoryOutcome.DONE:
+            return True
+        ref = canonical_ref or slug_to_context.get(slug, (None, None, None))[2]
+        prior = recovered_prior_entries_by_ref.get(ref) if ref else None
+        return isinstance(prior, dict) and str(prior.get("outcome") or "").upper() == "DONE"
+
+    def _skip_merged_outcome(slug: str, canonical_ref: str) -> tuple[StoryOutcome, str | None]:
+        """Outcome and ``outcome_source`` to record for a ``skip_merged`` triage.
+
+        ``_triage_spec`` answers a question about git alone — "is this branch
+        merged into the base branch right now?" — and has no notion of *which*
+        run produced the merge. Reading that answer as "the work pre-dated this
+        run" is only sound when nothing in this sprint recorded having done it.
+        A mid-sprint re-exec breaks exactly that assumption: the story finished
+        DEV+REVIEW, queued its auto-merge, the process re-exec'd, and the new
+        generation's triage then observes the merge its own predecessor landed
+        moments earlier. Stamping ALREADY_DONE / ``resume_skip_merged`` there
+        tells the operator that a story which ran, spent budget and landed a
+        commit did nothing — while the same row still reports that spend
+        (#2150).
+
+        The recorded execution is the authoritative account of what happened,
+        so a prior DONE wins over the triage label and carries no
+        ``outcome_source``. ALREADY_DONE / ``resume_skip_merged`` remains for
+        the case it actually describes: merged work with no record of this
+        sprint having produced it.
+        """
+        if _recorded_prior_done(slug, canonical_ref):
+            return StoryOutcome.DONE, None
+        return StoryOutcome.ALREADY_DONE, "resume_skip_merged"
+
     # Build satisfied set: closed dep slugs detected at manifest build time,
     # resume-mode skip states, plus any cross-sprint depends_on slugs whose
     # branch is already merged to the base branch.
@@ -3985,9 +4026,10 @@ def run_sprint(
                     dag.mark_complete(slug)
                     _prior_entry = recovered_prior_entries_by_ref.get(canonical_ref)
                     if _prior_entry is not None:
+                        _skip_outcome, _skip_source = _skip_merged_outcome(slug, canonical_ref)
                         _already_done_entry = dict(_prior_entry)
-                        _already_done_entry["outcome"] = "ALREADY_DONE"
-                        _already_done_entry["outcome_source"] = "resume_skip_merged"
+                        _already_done_entry["outcome"] = _skip_outcome.name
+                        _already_done_entry["outcome_source"] = _skip_source
                         current_story_entries_by_ref[canonical_ref] = {
                             k: v for k, v in _already_done_entry.items() if k != "canonical_ref"
                         }
@@ -4093,12 +4135,7 @@ def run_sprint(
         it legitimately describes: a reconciled story with no surviving record of
         having run.
         """
-        entry = _story_state.get(slug)
-        if entry is not None and entry.outcome is StoryOutcome.DONE:
-            return StoryOutcome.DONE
-        ref = slug_to_context.get(slug, (None, None, None))[2]
-        prior = recovered_prior_entries_by_ref.get(ref) if ref else None
-        if isinstance(prior, dict) and str(prior.get("outcome") or "").upper() == "DONE":
+        if _recorded_prior_done(slug):
             return StoryOutcome.DONE
         return StoryOutcome.ALREADY_DONE
 
@@ -4264,6 +4301,10 @@ def run_sprint(
             depends_on: list[str],
         ) -> dict:
             prior_entry = recovered_prior_entries_by_ref.get(canonical_ref, {})
+            # A story this sprint already ran to DONE keeps that outcome even
+            # though its branch now reads as merged (#2150) — see
+            # ``_skip_merged_outcome``.
+            entry_outcome, entry_outcome_source = _skip_merged_outcome(slug, canonical_ref)
             display_key = (
                 f"Issue #{canonical_ref.split(':')[1]}"
                 if canonical_ref.startswith("issue:")
@@ -4273,8 +4314,8 @@ def run_sprint(
                 "canonical_ref": canonical_ref,
                 "path": display_key,
                 "slug": slug,
-                "outcome": "ALREADY_DONE",
-                "outcome_source": "resume_skip_merged",
+                "outcome": entry_outcome.name,
+                "outcome_source": entry_outcome_source,
                 "verdict": prior_entry.get("verdict"),
                 "cost_usd": _optional_cost(prior_entry.get("cost_usd")),
                 "story_run_id": prior_entry.get("story_run_id", run_id),
@@ -4388,11 +4429,15 @@ def run_sprint(
                         **_work.as_state_fields(),
                     }
             elif _triage and _triage.action == "skip_merged":
+                # Preserve *which* terminal this sprint reached: a story this
+                # run already carried to DONE must not be relabelled as
+                # pre-existing work just because its own landing completed
+                # around the re-exec boundary (#2150).
                 _status = "done"
-                _detail = {
-                    "final_outcome": "ALREADY_DONE",
-                    "outcome_source": "resume_skip_merged",
-                }
+                _skip_outcome, _skip_source = _skip_merged_outcome(_slug, _canonical_ref)
+                _detail = {"final_outcome": _skip_outcome.name}
+                if _skip_source:
+                    _detail["outcome_source"] = _skip_source
             elif _triage and _triage.action == "skip":
                 _status = "skipped"
                 _detail = {"final_outcome": "SKIPPED"}
