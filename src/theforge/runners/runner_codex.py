@@ -607,7 +607,7 @@ def _run_codex(
         stdin_prompt = None
 
     start_wall = time.time()
-    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
+    label = profile.name or profile.identity_label
     _codex_env = build_workspace_env(working_dir, extra=secrets)
     outcome, elapsed = _run_with_heartbeat(
         # Group-isolated spawn: subprocess.run's own timeout kill reaches only

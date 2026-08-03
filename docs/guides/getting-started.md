@@ -57,8 +57,8 @@ project: my-project
 
 # v0.8 simple config: list your models, set a budget, done.
 models:
-  - claude/sonnet    # cheap tier  — dev for small stories
-  - claude/opus      # strong tier — dev for large stories, reviewers
+  - anthropic/sonnet/cli   # cheap tier  — dev for small stories
+  - anthropic/opus/cli     # strong tier — dev for large stories, reviewers
 
 budget_usd: 30.0
 
@@ -102,8 +102,8 @@ If you need to override a specific role without leaving simple mode, use the
 
 ```yaml
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 
 budget_usd: 30.0
 

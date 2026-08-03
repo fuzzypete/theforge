@@ -12,7 +12,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from theforge.agent_types import AgentResult
-from theforge.config import ApiFallbackConfig, ModelProfile
+from theforge.config import ModelProfile, TransportFallbackConfig
 from theforge.log_level import LogLevel, set_log_level
 from theforge.runners import log_agent_result, run_agent
 
@@ -232,7 +232,7 @@ class TestRunCodex:
             budget_usd=1.0,
             timeout_seconds=300,
             allowed_tools=("Read", "Bash"),
-            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+            api_fallback=TransportFallbackConfig(provider="openai", model="o4-mini"),
         )
         cli_result = AgentResult(
             success=False,
@@ -281,7 +281,7 @@ class TestRunCodex:
             budget_usd=1.0,
             timeout_seconds=300,
             allowed_tools=(),
-            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+            api_fallback=TransportFallbackConfig(provider="openai", model="o4-mini"),
         )
         cli_result = AgentResult(
             success=False,
@@ -315,7 +315,7 @@ class TestRunCodex:
             budget_usd=1.0,
             timeout_seconds=300,
             allowed_tools=(),
-            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+            api_fallback=TransportFallbackConfig(provider="openai", model="o4-mini"),
         )
         cli_result = AgentResult(
             success=False,
@@ -363,7 +363,7 @@ class TestRunCodex:
             budget_usd=1.0,
             timeout_seconds=300,
             allowed_tools=(),
-            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+            api_fallback=TransportFallbackConfig(provider="openai", model="o4-mini"),
         )
         cli_result = AgentResult(
             success=False,
@@ -416,7 +416,7 @@ class TestRunCodex:
             reasoning_effort="high",
             base_url="https://example.invalid/v1",
             max_iterations=7,
-            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+            api_fallback=TransportFallbackConfig(provider="openai", model="o4-mini"),
         )
         cli_result = AgentResult(
             success=False,

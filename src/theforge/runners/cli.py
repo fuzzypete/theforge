@@ -1,6 +1,6 @@
 """CLI subprocess wrapper for invoking LLM agents.
 
-Dispatches to the appropriate CLI based on ModelProfile.cli.
+Dispatches to the appropriate runner based on ModelProfile.transport.
 Provider-specific runners live in dedicated modules:
   - runner_claude.py  — Claude Code CLI
   - runner_codex.py   — OpenAI Codex CLI
@@ -23,6 +23,7 @@ from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
 
 from ..config import ModelProfile
+from ..config.models import transport_for
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -220,7 +221,12 @@ def _classify_cli_fallback(result: AgentResult) -> str | None:
 
 
 def _build_api_fallback_profile(profile: ModelProfile) -> ModelProfile | None:
-    """Build an API fallback profile for a CLI profile when configured."""
+    """Build the API-transport fallback profile for a CLI profile, when configured.
+
+    The transport is replaced explicitly: ``replace()`` would otherwise carry the
+    CLI TransportSpec across and the "fallback" would dispatch straight back to
+    the CLI that just failed.
+    """
     fallback = profile.api_fallback
     if fallback is None:
         return None
@@ -228,6 +234,7 @@ def _build_api_fallback_profile(profile: ModelProfile) -> ModelProfile | None:
         profile,
         cli=None,
         provider=fallback.provider,
+        transport=fallback.transport(),
         model=fallback.model,
         timeout_seconds=fallback.timeout_seconds or profile.timeout_seconds,
         reasoning_effort=(
@@ -250,29 +257,28 @@ def _build_api_fallback_profile(profile: ModelProfile) -> ModelProfile | None:
     )
 
 
-_CLI_TO_PROVIDER: dict[str, str] = {
-    "claude": "anthropic",
-    "codex": "openai",
-    "gemini": "google",
-}
-
-
 def _build_cli_fallback_api_profile(
     profile: ModelProfile,
     fallback_model: str,
 ) -> ModelProfile | None:
-    """Build an API profile for a fallback_models entry on a CLI profile.
+    """Build an API-transport profile for a ``fallback_models`` entry.
 
-    The provider is inferred from the CLI binary name. Returns None if the
-    provider cannot be determined.
+    The provider is the profile's own provider family — a transport fallback
+    never changes provider. Returns None when the profile has no provider
+    identity or the provider has no API adapter.
     """
-    provider = _CLI_TO_PROVIDER.get(profile.cli or "")
+    provider = profile.provider_family
     if not provider:
+        return None
+    try:
+        transport = transport_for(provider, "api")
+    except ValueError:
         return None
     return replace(
         profile,
         cli=None,
         provider=provider,
+        transport=transport,
         model=fallback_model,
         fallback_models=(),
         api_fallback=None,
@@ -294,7 +300,7 @@ def _maybe_run_api_fallback(
     """Retry a retryable CLI failure via API when fallback is safe.
 
     Tries, in order:
-    1. The legacy api_fallback profile (ApiFallbackConfig), if configured.
+    1. The legacy api_fallback profile (TransportFallbackConfig), if configured.
     2. Each entry in profile.fallback_models that resolves to an API model.
 
     Only quota-exhaustion/capacity and model-not-found errors trigger fallback.
@@ -361,7 +367,7 @@ def _maybe_run_api_fallback(
     last_fb_result: AgentResult | None = None
     last_fb_model: str | None = None
 
-    # --- Legacy api_fallback (ApiFallbackConfig) ---
+    # --- Legacy api_fallback (TransportFallbackConfig) ---
     if api_fallback_profile is not None:
         _log(
             f"  ⚠ {cli_label} CLI failed ({reason}); "
@@ -434,19 +440,18 @@ def _profile_transport_kind(profile: ModelProfile) -> str:
     """Return the TransportSpec.kind for a ModelProfile: 'cli' or 'api'.
 
     TransportSpec is the sole source of truth for runner dispatch. Profile
-    construction auto-populates transport from cli/provider when not set
-    explicitly, so this read is always authoritative.
+    construction normalizes the raw cli/provider spelling into a transport once,
+    so this read is always authoritative and nothing here re-derives dispatch
+    from those fields.
     """
-    if profile.transport is not None:
-        return profile.transport.kind
-    return "api" if profile.provider else "cli"
+    return profile.mode
 
 
 def _profile_cli_runner(profile: ModelProfile) -> str | None:
     """Return the CLI runner key for dispatch (e.g. 'claude', 'codex', 'gemini')."""
     if profile.transport is not None and profile.transport.kind == "cli":
         return profile.transport.runner
-    return profile.cli
+    return None
 
 
 def run_agent(
@@ -593,9 +598,13 @@ def run_agent(
             result = replace(result, model_used=profile.model)
         return result
 
+    # No CLI runner resolved. When the profile has no transport at all its raw
+    # ``cli`` never normalized to one — name that unresolved value so the
+    # operator sees what they wrote, not a bare None.
+    unresolved = cli if cli is not None else profile.cli
     return AgentResult(
         success=False,
-        output=f"Unknown CLI: {cli!r}. Supported: ['claude', 'codex', 'gemini', 'ghaw']",
+        output=f"Unknown CLI: {unresolved!r}. Supported: ['claude', 'codex', 'gemini', 'ghaw']",
         session_id=None,
         cost_usd=None,
         exit_code=-1,
@@ -663,7 +672,7 @@ def run_agent_pool(
         )
         if durations_out is not None:
             durations_out[:] = [time.monotonic() - _single_start]
-        only_label = only.name or f"{only.cli or only.provider}/{only.model}"
+        only_label = only.name or only.identity_label
         # Only a successful result means the reviewer is done. An unsuccessful
         # (e.g. transient transport) result is a finished attempt the coordinator
         # may still retry — marking it done would count/label it wrongly while
@@ -672,7 +681,7 @@ def run_agent_pool(
             _emit_progress({"label": only_label, "done": True})
         return [result]
 
-    names = ", ".join(p.name or f"{p.cli or p.provider}/{p.model}" for p in profiles)
+    names = ", ".join(p.name or p.identity_label for p in profiles)
     _log(f"  Starting review pool: {names} (parallel)")
 
     pool_start = time.monotonic()
@@ -704,7 +713,7 @@ def run_agent_pool(
         for future in as_completed(futures):
             idx = futures[future]
             profile = profiles[idx]
-            label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
+            label = profile.name or profile.identity_label
             duration = agent_durations[idx]
             try:
                 results[idx] = future.result()

@@ -1,10 +1,18 @@
 """Model registry: AgentSpec / TransportSpec / ModelInfo and model-related helpers.
 
 The registry is the single source of truth for what agents the system knows about.
-Each registry entry is expressed as an `AgentSpec` (provider + model + capability
-metadata) paired with an explicit `TransportSpec` (how to invoke it — cli or api).
-`ModelInfo` is retained as a legacy flat view derived from these specs so existing
-callers continue to work while the codebase migrates.
+Each registry entry is expressed as an `AgentSpec` — a canonical identity
+(``provider`` + ``model`` + ``TransportSpec.kind``) paired with a separate
+:class:`RoutingPolicy` holding the routing/selection knobs (tier, capability,
+cost band, dev capability, phase eligibility). `ModelInfo` is retained as a
+legacy flat view derived from these specs so existing callers continue to work
+while the codebase migrates.
+
+Transport is first class: ``cli``/``api`` is never encoded in a provider-like
+prefix (``openai-api/``, ``gemini-cli/``). Those spellings survive only as raw
+input aliases (see :data:`_LEGACY_MODEL_KEY_ALIASES` and
+:func:`normalize_model_key`) and are normalized to canonical identities the
+moment they are read.
 """
 
 from __future__ import annotations
@@ -13,15 +21,17 @@ from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
 from .types import (
-    ApiFallbackConfig,
     AssignmentConfig,
     ExplorationConfig,
     ModelProfile,
     PlanConfig,
     RecencyConfig,
+    TransportFallbackConfig,
 )
 
 _ProfileT = TypeVar("_ProfileT", ModelProfile, PlanConfig)
+
+TRANSPORT_KINDS: frozenset[str] = frozenset({"cli", "api"})
 
 
 @dataclass(frozen=True)
@@ -33,7 +43,10 @@ class TransportSpec:
     runner: the logical runner module key (e.g. "claude", "codex", "gemini",
             "anthropic", "openai", "google", "deepseek"). For CLI transports this
             identifies both the runner and the binary; for API transports this
-            identifies the adapter to dispatch to.
+            identifies the adapter to dispatch to. It is *derived* from
+            ``(provider, kind)`` by :func:`transport_for` wherever that tuple has
+            exactly one valid executor; only genuinely ambiguous tuples require an
+            explicit runner.
     executable: only meaningful for kind="cli" — the binary name on PATH.
     """
 
@@ -42,7 +55,7 @@ class TransportSpec:
     executable: str | None = None
 
     def __post_init__(self) -> None:
-        if self.kind not in ("cli", "api"):
+        if self.kind not in TRANSPORT_KINDS:
             raise ValueError(f"TransportSpec.kind must be 'cli' or 'api', got {self.kind!r}")
         if self.kind == "cli" and not self.executable:
             raise ValueError("TransportSpec(kind='cli') requires an executable name")
@@ -50,90 +63,247 @@ class TransportSpec:
             raise ValueError("TransportSpec(kind='api') must not set an executable")
 
 
+_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+
+
+@dataclass(frozen=True)
+class RoutingPolicy:
+    """Routing/selection policy for a model — deliberately *not* its identity.
+
+    Two registry entries with the same ``(provider, model, transport.kind)`` are
+    the same model no matter how their routing policy differs. Keeping tier,
+    capability, cost band, dev capability and phase eligibility here (rather than
+    inline on :class:`AgentSpec`) is what makes that separation checkable.
+    """
+
+    tier: str  # "cheap" | "fast" | "strong" (semantic speed/latency band)
+    capability: int  # 1-10 relative capability score
+    cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
+    dev_capable: bool = True  # whether this agent is allowed to own the dev role
+    phase_eligibility: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+
+
+# ── Runner derivation from (provider, transport.kind) ────────────────────
+#
+# The (provider, kind) tuple determines the executor wherever it is unambiguous.
+# Only tuples with more than one valid executor need an explicit runner — today
+# that is the gh-aw backend (ADR-0004), which reaches a remote agent through the
+# `gh` binary and therefore collides with the provider's own native CLI.
+_CLI_RUNNER_BY_PROVIDER: dict[str, tuple[str, str]] = {
+    # provider -> (runner, executable)
+    "anthropic": ("claude", "claude"),
+    "openai": ("codex", "codex"),
+    "google": ("gemini", "gemini"),
+}
+_API_RUNNER_BY_PROVIDER: dict[str, str] = {
+    "anthropic": "anthropic",
+    "openai": "openai",
+    "google": "google",
+    "deepseek": "deepseek",
+}
+# Runners that must be named explicitly because (provider, kind) alone does not
+# select them: runner -> executable.
+_EXPLICIT_CLI_RUNNERS: dict[str, str] = {
+    "ghaw": "gh",  # gh-aw (GitHub Agentic Workflows) — dispatched via the `gh` binary
+}
+
+
+def transport_for(provider: str, kind: str, runner: str | None = None) -> TransportSpec:
+    """Build the canonical TransportSpec for a ``(provider, kind)`` identity.
+
+    The runner/executor is derived from ``(provider, kind)`` when that tuple has
+    exactly one valid executor. ``runner`` only needs to be supplied for tuples
+    that admit more than one (currently the gh-aw backend).
+    """
+    if kind not in TRANSPORT_KINDS:
+        raise ValueError(f"transport kind must be 'cli' or 'api', got {kind!r}")
+    if runner is not None and runner in _EXPLICIT_CLI_RUNNERS:
+        if kind != "cli":
+            raise ValueError(f"runner {runner!r} is a CLI runner but kind is {kind!r}")
+        return TransportSpec(kind="cli", runner=runner, executable=_EXPLICIT_CLI_RUNNERS[runner])
+    if kind == "cli":
+        derived = _CLI_RUNNER_BY_PROVIDER.get(provider)
+        if derived is None:
+            raise ValueError(
+                f"No CLI runner for provider {provider!r}. "
+                f"Providers with a CLI: {sorted(_CLI_RUNNER_BY_PROVIDER)}"
+            )
+        cli_runner, executable = derived
+        if runner is not None and runner != cli_runner:
+            raise ValueError(
+                f"runner {runner!r} is not valid for ({provider!r}, 'cli'); "
+                f"expected {cli_runner!r}"
+            )
+        return TransportSpec(kind="cli", runner=cli_runner, executable=executable)
+    api_runner = _API_RUNNER_BY_PROVIDER.get(provider)
+    if api_runner is None:
+        raise ValueError(
+            f"No API adapter for provider {provider!r}. "
+            f"Providers with an API adapter: {sorted(_API_RUNNER_BY_PROVIDER)}"
+        )
+    if runner is not None and runner != api_runner:
+        raise ValueError(
+            f"runner {runner!r} is not valid for ({provider!r}, 'api'); expected {api_runner!r}"
+        )
+    return TransportSpec(kind="api", runner=api_runner)
+
+
+# Canonical transport objects — referenced by AGENT_REGISTRY entries.
+_TRANSPORT_CLAUDE_CLI = transport_for("anthropic", "cli")
+_TRANSPORT_CODEX_CLI = transport_for("openai", "cli")
+_TRANSPORT_GEMINI_CLI = transport_for("google", "cli")
+_TRANSPORT_GHAW_CLI = transport_for("anthropic", "cli", runner="ghaw")
+_TRANSPORT_ANTHROPIC_API = transport_for("anthropic", "api")
+_TRANSPORT_OPENAI_API = transport_for("openai", "api")
+_TRANSPORT_GOOGLE_API = transport_for("google", "api")
+_TRANSPORT_DEEPSEEK_API = transport_for("deepseek", "api")
+
+
 @dataclass(frozen=True)
 class AgentSpec:
-    """First-class description of an agent: provider + model + capability + transport.
+    """First-class description of an agent: canonical identity + routing policy.
 
-    AgentSpec separates *what* the agent is (provider, model, tier, capability,
-    cost, phase eligibility) from *how* to invoke it (TransportSpec). Role
-    derivation reads AgentSpec fields; runner dispatch reads TransportSpec.kind.
+    Identity is exactly ``(provider, model, transport.kind)`` — see
+    :func:`canonical_id_for_spec`. ``base_url`` is endpoint *metadata* on that
+    identity (this is how a local OpenAI-compatible model is expressed: an API
+    transport pointed at a localhost endpoint), and pricing is accounting
+    metadata. Neither participates in identity. Routing knobs live in
+    :attr:`routing`; the flat properties below are read-only conveniences for
+    callers that only need one of them.
     """
 
     provider: str  # "anthropic" | "openai" | "google" | "deepseek"
     model: str  # model identifier (e.g. "sonnet", "gpt-5.4", "deepseek-reasoner")
     transport: TransportSpec
-    tier: str  # "fast" | "strong" (semantic speed/latency band)
-    capability: int  # 1-10 relative capability score
-    cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
-    dev_capable: bool = True  # whether this agent is allowed to own the dev role
-    phase_eligibility: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+    routing: RoutingPolicy
+    base_url: str | None = None  # endpoint metadata (local/OpenAI-compatible servers)
     tool_mode: str = "auto"  # "auto" = follow transport default; reserved for future use
     registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
 
+    @property
+    def tier(self) -> str:
+        return self.routing.tier
 
-# Canonical transport objects — referenced by AGENT_REGISTRY entries.
-_TRANSPORT_CLAUDE_CLI = TransportSpec(kind="cli", runner="claude", executable="claude")
-_TRANSPORT_CODEX_CLI = TransportSpec(kind="cli", runner="codex", executable="codex")
-_TRANSPORT_GEMINI_CLI = TransportSpec(kind="cli", runner="gemini", executable="gemini")
-# gh-aw (GitHub Agentic Workflows): dispatched through the `gh` binary; the
-# agent itself executes remotely on GitHub Actions (ADR-0004 spike backend).
-_TRANSPORT_GHAW_CLI = TransportSpec(kind="cli", runner="ghaw", executable="gh")
-_TRANSPORT_ANTHROPIC_API = TransportSpec(kind="api", runner="anthropic")
-_TRANSPORT_OPENAI_API = TransportSpec(kind="api", runner="openai")
-_TRANSPORT_GOOGLE_API = TransportSpec(kind="api", runner="google")
-_TRANSPORT_DEEPSEEK_API = TransportSpec(kind="api", runner="deepseek")
+    @property
+    def capability(self) -> int:
+        return self.routing.capability
+
+    @property
+    def cost_rank(self) -> int:
+        return self.routing.cost_rank
+
+    @property
+    def dev_capable(self) -> bool:
+        return self.routing.dev_capable
+
+    @property
+    def phase_eligibility(self) -> frozenset[str]:
+        return self.routing.phase_eligibility
 
 
-_CLI_TRANSPORT_MAP: dict[str, TransportSpec] = {
-    "claude": _TRANSPORT_CLAUDE_CLI,
-    "codex": _TRANSPORT_CODEX_CLI,
-    "gemini": _TRANSPORT_GEMINI_CLI,
-    "ghaw": _TRANSPORT_GHAW_CLI,
+# ── Raw-input alias boundary ─────────────────────────────────────────────
+#
+# Everything below this comment exists only to translate *raw* operator input
+# into a canonical identity. Nothing downstream of config loading may consult it.
+
+# Provider-like tokens accepted in raw `models.custom` declarations. These are
+# aliases, not providers: each maps to a real provider family plus a transport
+# kind, and is normalized away immediately.
+_MODEL_OVERLAY_PROVIDER_MAP: dict[str, tuple[str, str]] = {
+    # alias token -> (provider family, transport kind)
+    "anthropic": ("anthropic", "cli"),
+    "claude": ("anthropic", "cli"),
+    "openai": ("openai", "cli"),
+    "openai-api": ("openai", "api"),
+    "deepseek": ("deepseek", "api"),
+    "google": ("google", "api"),
+    "gemini": ("google", "api"),
+    "gemini-cli": ("google", "cli"),
 }
-_PROVIDER_API_TRANSPORT_MAP: dict[str, TransportSpec] = {
-    "anthropic": _TRANSPORT_ANTHROPIC_API,
-    "openai": _TRANSPORT_OPENAI_API,
-    "google": _TRANSPORT_GOOGLE_API,
-    "deepseek": _TRANSPORT_DEEPSEEK_API,
-}
 
-_MODEL_OVERLAY_PROVIDER_MAP: dict[str, tuple[str, TransportSpec]] = {
-    "anthropic": ("anthropic", _TRANSPORT_CLAUDE_CLI),
-    "claude": ("anthropic", _TRANSPORT_CLAUDE_CLI),
-    "openai": ("openai", _TRANSPORT_CODEX_CLI),
-    "openai-api": ("openai", _TRANSPORT_OPENAI_API),
-    "deepseek": ("deepseek", _TRANSPORT_DEEPSEEK_API),
-    "google": ("google", _TRANSPORT_GOOGLE_API),
-    "gemini": ("google", _TRANSPORT_GOOGLE_API),
-    "gemini-cli": ("google", _TRANSPORT_GEMINI_CLI),
+# Legacy CLI binary names accepted in raw profile/plan blocks, mapped to the
+# provider family whose CLI they are. Used only to migrate a raw ``cli:`` key
+# into a canonical transport at parse time.
+_LEGACY_CLI_TO_PROVIDER: dict[str, str] = {
+    "claude": "anthropic",
+    "codex": "openai",
+    "gemini": "google",
+    "ghaw": "anthropic",
 }
 
 
-def infer_transport(
+def provider_for_cli_runner(runner: str | None) -> str | None:
+    """Map a CLI runner name (``claude``/``codex``/``gemini``) to its provider family."""
+    if not runner:
+        return None
+    return _LEGACY_CLI_TO_PROVIDER.get(runner)
+
+
+def provider_for_transport(transport: TransportSpec) -> str | None:
+    """Return the provider family a TransportSpec belongs to.
+
+    The inverse of :func:`transport_for`. Telemetry uses it to recover the
+    identity half (provider) from a CLI transport, where ``ModelProfile.provider``
+    is conventionally left unset.
+    """
+    if transport.kind == "api":
+        return next(
+            (p for p, runner in _API_RUNNER_BY_PROVIDER.items() if runner == transport.runner),
+            None,
+        )
+    for provider, (runner, _executable) in _CLI_RUNNER_BY_PROVIDER.items():
+        if runner == transport.runner:
+            return provider
+    return _LEGACY_CLI_TO_PROVIDER.get(transport.runner)
+
+
+def mirror_fields_for_transport(
+    transport: TransportSpec | None,
+    cli: str | None,
+    provider: str | None,
+) -> tuple[str | None, str | None]:
+    """Return the ``(cli, provider)`` pair that mirrors ``transport``.
+
+    Once a parse-boundary helper has resolved which transport an override lands
+    on, the legacy spelling has to be rewritten to match it — otherwise a stale
+    ``cli`` inherited from the profile being overridden survives into the
+    constructor and :func:`types._normalize_transport` re-derives the *old*
+    transport from it, silently discarding the switch.
+
+    Following the ``ModelProfile`` convention: a CLI transport mirrors as
+    ``(runner, None)`` and an API transport as ``(None, provider_family)``. When
+    the transport is unresolvable the raw pair is returned untouched so the
+    unresolved value still surfaces in error messages.
+    """
+    if transport is None:
+        return cli, provider
+    if transport.kind == "cli":
+        return transport.runner, None
+    return None, provider_for_transport(transport)
+
+
+def transport_from_raw_fields(
     cli: str | None,
     provider: str | None,
 ) -> TransportSpec | None:
-    """Infer the canonical TransportSpec from legacy cli/provider fields.
+    """Normalize a raw ``cli``/``provider`` pair into a canonical TransportSpec.
 
-    Dispatch should ultimately read TransportSpec.kind directly. This helper
-    bridges the gap: when a caller constructs a profile without supplying an
-    explicit TransportSpec, this function produces one so dispatch has a
-    single source of truth.
+    **Migration only.** ``cli`` and ``provider`` are raw-input spellings; runtime
+    dispatch reads :class:`TransportSpec` and never this pair. This helper exists
+    so the parsing boundary can turn old config (and legacy in-process
+    constructions) into a canonical transport once, at the edge.
 
-    ``cli`` wins when both are supplied — a profile that names a CLI binary
-    is dispatched via that binary. The caller can still set ``transport``
-    explicitly to override this inference.
+    ``cli`` wins when both are supplied — a declaration that names a CLI binary
+    is dispatched via that binary.
     """
-    if cli and cli in _CLI_TRANSPORT_MAP:
-        return _CLI_TRANSPORT_MAP[cli]
-    if provider and provider in _PROVIDER_API_TRANSPORT_MAP:
-        return _PROVIDER_API_TRANSPORT_MAP[provider]
+    if cli and cli in _LEGACY_CLI_TO_PROVIDER:
+        runner = cli if cli in _EXPLICIT_CLI_RUNNERS else None
+        return transport_for(_LEGACY_CLI_TO_PROVIDER[cli], "cli", runner=runner)
+    if provider and provider in _API_RUNNER_BY_PROVIDER:
+        return transport_for(provider, "api")
     return None
-
-
-_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
 
 
 @dataclass(frozen=True)
@@ -162,13 +332,14 @@ class ModelInfo:
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
     transport: TransportSpec | None = None  # the canonical TransportSpec this view was built from
+    # Provider family for *both* transports — unlike ``provider`` (which stays
+    # None for CLI entries so legacy consumers keep their meaning), this is the
+    # identity half of the (provider, model, transport.kind) tuple.
+    provider_family: str | None = None
+    base_url: str | None = None  # endpoint metadata carried from the registry entry
 
 
-_CLI_TO_PROVIDER: dict[str, str] = {
-    "claude": "anthropic",
-    "codex": "openai",
-    "gemini": "google",
-}
+_CLI_TO_PROVIDER: dict[str, str] = dict(_LEGACY_CLI_TO_PROVIDER)
 
 
 @dataclass(frozen=True)
@@ -182,8 +353,12 @@ class AgentDef:
     timeout_seconds: int
     tier: str  # "cheap" | "mid" | "strong"
     cli: str | None = None  # "claude", "codex", etc. — set for CLI agents
-    api_fallback: ApiFallbackConfig | None = None
+    api_fallback: TransportFallbackConfig | None = None
     strengths: tuple[str, ...] = ()
+    # Canonical transport carried from the registry so profiles built from this
+    # pool entry never have to re-derive dispatch from the cli/provider pair.
+    transport: TransportSpec | None = None
+    base_url: str | None = None  # endpoint metadata (local OpenAI-compatible servers)
     registry_id: str | None = None
     registry_source: str = "builtin"
     # Per-MTok pricing carried through from the registry so ranking helpers can
@@ -215,6 +390,8 @@ class AgentDef:
             name=self.name,
             cli=self.cli,
             provider=self.provider,
+            transport=self.transport,
+            base_url=self.base_url,
             model=self.model,
             budget_usd=self.budget_usd,
             timeout_seconds=self.timeout_seconds,
@@ -223,216 +400,6 @@ class AgentDef:
             registry_id=self.registry_id,
             registry_source=self.registry_source,
         )
-
-
-# ── Agent registry ────────────────────────────────────────────────────
-#
-# Each entry resolves a `<provider>/<model>` key to an explicit AgentSpec with
-# an explicit TransportSpec. Adding a new API-backed model is a single entry
-# here — no role-derivation, profile, or runner-dispatch edits required.
-AGENT_REGISTRY: dict[str, AgentSpec] = {
-    # ── Anthropic (CLI) ───────────────────────────────────────────────
-    "claude/sonnet": AgentSpec(
-        provider="anthropic",
-        model="sonnet",
-        transport=_TRANSPORT_CLAUDE_CLI,
-        tier="fast",
-        capability=7,
-        cost_rank=1,
-        input_cost_per_mtok=3.00,
-        output_cost_per_mtok=15.00,
-    ),
-    "claude/opus": AgentSpec(
-        provider="anthropic",
-        model="opus",
-        transport=_TRANSPORT_CLAUDE_CLI,
-        tier="strong",
-        capability=10,
-        cost_rank=3,
-        input_cost_per_mtok=15.00,
-        output_cost_per_mtok=75.00,
-    ),
-    # ── OpenAI (CLI via Codex) ────────────────────────────────────────
-    "openai/gpt-5.4": AgentSpec(
-        provider="openai",
-        model="gpt-5.4",
-        transport=_TRANSPORT_CODEX_CLI,
-        tier="strong",
-        capability=9,
-        cost_rank=2,
-        input_cost_per_mtok=1.25,
-        output_cost_per_mtok=10.00,
-    ),
-    "openai/gpt-5.4-mini": AgentSpec(
-        provider="openai",
-        model="gpt-5.4-mini",
-        transport=_TRANSPORT_CODEX_CLI,
-        tier="cheap",
-        capability=7,
-        cost_rank=1,
-        input_cost_per_mtok=0.25,
-        output_cost_per_mtok=2.00,
-    ),
-    "openai/gpt-5.4-pro": AgentSpec(
-        provider="openai",
-        model="gpt-5.4-pro",
-        transport=_TRANSPORT_CODEX_CLI,
-        tier="strong",
-        capability=10,
-        cost_rank=3,
-        input_cost_per_mtok=15.00,
-        output_cost_per_mtok=120.00,
-    ),
-    # ── DeepSeek (API) ────────────────────────────────────────────────
-    "deepseek/deepseek-reasoner": AgentSpec(
-        provider="deepseek",
-        model="deepseek-reasoner",
-        transport=_TRANSPORT_DEEPSEEK_API,
-        tier="strong",
-        capability=9,
-        cost_rank=2,
-        input_cost_per_mtok=0.55,
-        output_cost_per_mtok=2.19,
-    ),
-    "deepseek/deepseek-chat": AgentSpec(
-        provider="deepseek",
-        model="deepseek-chat",
-        transport=_TRANSPORT_DEEPSEEK_API,
-        tier="fast",
-        capability=7,
-        cost_rank=1,
-        input_cost_per_mtok=0.27,
-        output_cost_per_mtok=1.10,
-    ),
-    # ── Google (API) ─────────────────────────────────────────────────
-    "google/gemini-3-flash-preview": AgentSpec(
-        provider="google",
-        model="gemini-3-flash-preview",
-        transport=_TRANSPORT_GOOGLE_API,
-        tier="cheap",
-        capability=7,
-        cost_rank=1,
-    ),
-    "google/gemini-3.1-pro-preview": AgentSpec(
-        provider="google",
-        model="gemini-3.1-pro-preview",
-        transport=_TRANSPORT_GOOGLE_API,
-        tier="strong",
-        capability=9,
-        cost_rank=2,
-        input_cost_per_mtok=2.00,
-        output_cost_per_mtok=12.00,
-    ),
-    "google/gemini-2.5-pro": AgentSpec(
-        provider="google",
-        model="gemini-2.5-pro",
-        transport=_TRANSPORT_GOOGLE_API,
-        tier="strong",
-        capability=8,
-        cost_rank=2,
-        input_cost_per_mtok=1.25,
-        output_cost_per_mtok=10.00,
-    ),
-    # ── Local OpenAI-compatible models (route via Codex CLI with base_url) ──
-    "openai/codestral": AgentSpec(
-        provider="openai",
-        model="codestral",
-        transport=_TRANSPORT_CODEX_CLI,
-        tier="fast",
-        capability=7,
-        cost_rank=1,
-    ),
-    "openai/deepseek-coder": AgentSpec(
-        provider="openai",
-        model="deepseek-coder",
-        transport=_TRANSPORT_CODEX_CLI,
-        tier="fast",
-        capability=7,
-        cost_rank=1,
-    ),
-    "openai/llama3.1": AgentSpec(
-        provider="openai",
-        model="llama3.1",
-        transport=_TRANSPORT_CODEX_CLI,
-        tier="fast",
-        capability=6,
-        cost_rank=1,
-    ),
-    "openai/qwen2.5-coder": AgentSpec(
-        provider="openai",
-        model="qwen2.5-coder",
-        transport=_TRANSPORT_CODEX_CLI,
-        tier="fast",
-        capability=7,
-        cost_rank=1,
-    ),
-    # ── OpenAI (API — disambiguated with 'openai-api/' prefix so operators can
-    # select the OpenAI API path separately from the Codex CLI path) ──────
-    "openai-api/gpt-5.4": AgentSpec(
-        provider="openai",
-        model="gpt-5.4",
-        transport=_TRANSPORT_OPENAI_API,
-        tier="strong",
-        capability=9,
-        cost_rank=2,
-        input_cost_per_mtok=1.25,
-        output_cost_per_mtok=10.00,
-    ),
-    "openai-api/gpt-5.4-mini": AgentSpec(
-        provider="openai",
-        model="gpt-5.4-mini",
-        transport=_TRANSPORT_OPENAI_API,
-        tier="cheap",
-        capability=7,
-        cost_rank=1,
-        input_cost_per_mtok=0.25,
-        output_cost_per_mtok=2.00,
-    ),
-    "openai-api/gpt-5.4-pro": AgentSpec(
-        provider="openai",
-        model="gpt-5.4-pro",
-        transport=_TRANSPORT_OPENAI_API,
-        tier="strong",
-        capability=10,
-        cost_rank=3,
-        input_cost_per_mtok=15.00,
-        output_cost_per_mtok=120.00,
-        # Reasoning-heavy — intentionally excluded from the preflight role.
-        phase_eligibility=frozenset({"dev", "plan", "review"}),
-    ),
-    # ── Gemini CLI (explicit opt-in) ─────────────────────────────────
-    "gemini-cli/gemini-2.5-pro": AgentSpec(
-        provider="google",
-        model="gemini-2.5-pro",
-        transport=_TRANSPORT_GEMINI_CLI,
-        tier="strong",
-        capability=8,
-        cost_rank=2,
-        dev_capable=False,
-        input_cost_per_mtok=1.25,
-        output_cost_per_mtok=10.00,
-    ),
-    "gemini-cli/gemini-3-flash-preview": AgentSpec(
-        provider="google",
-        model="gemini-3-flash-preview",
-        transport=_TRANSPORT_GEMINI_CLI,
-        tier="cheap",
-        capability=7,
-        cost_rank=1,
-        dev_capable=False,
-    ),
-    "gemini-cli/gemini-3.1-pro-preview": AgentSpec(
-        provider="google",
-        model="gemini-3.1-pro-preview",
-        transport=_TRANSPORT_GEMINI_CLI,
-        tier="strong",
-        capability=9,
-        cost_rank=2,
-        dev_capable=False,
-        input_cost_per_mtok=2.00,
-        output_cost_per_mtok=12.00,
-    ),
-}
 
 
 # ── Canonical model identity ─────────────────────────────────────────
@@ -462,19 +429,351 @@ def is_canonical_model_id(value: str | None) -> bool:
     return len(parts) == 3 and bool(parts[0]) and bool(parts[1]) and parts[2] in ("cli", "api")
 
 
+# ── Agent registry ────────────────────────────────────────────────────
+#
+# Keys are canonical model identities: ``<provider>/<model>/<transport.kind>``.
+# CLI-vs-API is carried by the transport half of that key, never by a
+# provider-like prefix. Adding a model is a single entry here — no
+# role-derivation, profile, or runner-dispatch edits required.
+
+# Default endpoint for OpenAI-compatible models served locally (Ollama et al).
+# Locality is endpoint metadata on an ordinary API transport; there is no
+# ``local`` provider and no ``local`` transport kind.
+LOCAL_OPENAI_COMPATIBLE_BASE_URL = "http://localhost:11434/v1"
+
+
+def _entry(
+    provider: str,
+    model: str,
+    kind: str,
+    *,
+    tier: str,
+    capability: int,
+    cost_rank: int,
+    dev_capable: bool = True,
+    phases: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY,
+    runner: str | None = None,
+    base_url: str | None = None,
+    input_cost_per_mtok: float | None = None,
+    output_cost_per_mtok: float | None = None,
+) -> tuple[str, AgentSpec]:
+    """Build a ``(canonical_id, AgentSpec)`` registry pair."""
+    transport = transport_for(provider, kind, runner=runner)
+    spec = AgentSpec(
+        provider=provider,
+        model=model,
+        transport=transport,
+        routing=RoutingPolicy(
+            tier=tier,
+            capability=capability,
+            cost_rank=cost_rank,
+            dev_capable=dev_capable,
+            phase_eligibility=phases,
+        ),
+        base_url=base_url,
+        input_cost_per_mtok=input_cost_per_mtok,
+        output_cost_per_mtok=output_cost_per_mtok,
+    )
+    return canonical_id_for_spec(spec), spec
+
+
+AGENT_REGISTRY: dict[str, AgentSpec] = dict(
+    [
+        # ── Anthropic ────────────────────────────────────────────────
+        _entry(
+            "anthropic",
+            "sonnet",
+            "cli",
+            tier="fast",
+            capability=7,
+            cost_rank=1,
+            input_cost_per_mtok=3.00,
+            output_cost_per_mtok=15.00,
+        ),
+        _entry(
+            "anthropic",
+            "opus",
+            "cli",
+            tier="strong",
+            capability=10,
+            cost_rank=3,
+            input_cost_per_mtok=15.00,
+            output_cost_per_mtok=75.00,
+        ),
+        # ── OpenAI (Codex CLI) ───────────────────────────────────────
+        _entry(
+            "openai",
+            "gpt-5.4",
+            "cli",
+            tier="strong",
+            capability=9,
+            cost_rank=2,
+            input_cost_per_mtok=1.25,
+            output_cost_per_mtok=10.00,
+        ),
+        _entry(
+            "openai",
+            "gpt-5.4-mini",
+            "cli",
+            tier="cheap",
+            capability=7,
+            cost_rank=1,
+            input_cost_per_mtok=0.25,
+            output_cost_per_mtok=2.00,
+        ),
+        _entry(
+            "openai",
+            "gpt-5.4-pro",
+            "cli",
+            tier="strong",
+            capability=10,
+            cost_rank=3,
+            input_cost_per_mtok=15.00,
+            output_cost_per_mtok=120.00,
+        ),
+        # ── OpenAI (API) ─────────────────────────────────────────────
+        _entry(
+            "openai",
+            "gpt-5.4",
+            "api",
+            tier="strong",
+            capability=9,
+            cost_rank=2,
+            input_cost_per_mtok=1.25,
+            output_cost_per_mtok=10.00,
+        ),
+        _entry(
+            "openai",
+            "gpt-5.4-mini",
+            "api",
+            tier="cheap",
+            capability=7,
+            cost_rank=1,
+            input_cost_per_mtok=0.25,
+            output_cost_per_mtok=2.00,
+        ),
+        _entry(
+            "openai",
+            "gpt-5.4-pro",
+            "api",
+            tier="strong",
+            capability=10,
+            cost_rank=3,
+            input_cost_per_mtok=15.00,
+            output_cost_per_mtok=120.00,
+            # Reasoning-heavy — intentionally excluded from the preflight role.
+            phases=frozenset({"dev", "plan", "review"}),
+        ),
+        # ── DeepSeek (API) ───────────────────────────────────────────
+        _entry(
+            "deepseek",
+            "deepseek-reasoner",
+            "api",
+            tier="strong",
+            capability=9,
+            cost_rank=2,
+            input_cost_per_mtok=0.55,
+            output_cost_per_mtok=2.19,
+        ),
+        _entry(
+            "deepseek",
+            "deepseek-chat",
+            "api",
+            tier="fast",
+            capability=7,
+            cost_rank=1,
+            input_cost_per_mtok=0.27,
+            output_cost_per_mtok=1.10,
+        ),
+        # ── Google (API) ─────────────────────────────────────────────
+        _entry(
+            "google",
+            "gemini-3-flash-preview",
+            "api",
+            tier="cheap",
+            capability=7,
+            cost_rank=1,
+        ),
+        _entry(
+            "google",
+            "gemini-3.1-pro-preview",
+            "api",
+            tier="strong",
+            capability=9,
+            cost_rank=2,
+            input_cost_per_mtok=2.00,
+            output_cost_per_mtok=12.00,
+        ),
+        _entry(
+            "google",
+            "gemini-2.5-pro",
+            "api",
+            tier="strong",
+            capability=8,
+            cost_rank=2,
+            input_cost_per_mtok=1.25,
+            output_cost_per_mtok=10.00,
+        ),
+        # ── Google (Gemini CLI — explicit opt-in) ────────────────────
+        _entry(
+            "google",
+            "gemini-2.5-pro",
+            "cli",
+            tier="strong",
+            capability=8,
+            cost_rank=2,
+            dev_capable=False,
+            input_cost_per_mtok=1.25,
+            output_cost_per_mtok=10.00,
+        ),
+        _entry(
+            "google",
+            "gemini-3-flash-preview",
+            "cli",
+            tier="cheap",
+            capability=7,
+            cost_rank=1,
+            dev_capable=False,
+        ),
+        _entry(
+            "google",
+            "gemini-3.1-pro-preview",
+            "cli",
+            tier="strong",
+            capability=9,
+            cost_rank=2,
+            dev_capable=False,
+            input_cost_per_mtok=2.00,
+            output_cost_per_mtok=12.00,
+        ),
+        # ── Local OpenAI-compatible models ───────────────────────────
+        # API transport + a localhost base_url. Not a provider prefix, not a
+        # transport kind — just an endpoint.
+        _entry(
+            "openai",
+            "codestral",
+            "api",
+            tier="fast",
+            capability=7,
+            cost_rank=1,
+            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
+            input_cost_per_mtok=0.0,
+            output_cost_per_mtok=0.0,
+        ),
+        _entry(
+            "openai",
+            "deepseek-coder",
+            "api",
+            tier="fast",
+            capability=7,
+            cost_rank=1,
+            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
+            input_cost_per_mtok=0.0,
+            output_cost_per_mtok=0.0,
+        ),
+        _entry(
+            "openai",
+            "llama3.1",
+            "api",
+            tier="fast",
+            capability=6,
+            cost_rank=1,
+            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
+            input_cost_per_mtok=0.0,
+            output_cost_per_mtok=0.0,
+        ),
+        _entry(
+            "openai",
+            "qwen2.5-coder",
+            "api",
+            tier="fast",
+            capability=7,
+            cost_rank=1,
+            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
+            input_cost_per_mtok=0.0,
+            output_cost_per_mtok=0.0,
+        ),
+    ]
+)
+
+
+# Raw-input aliases for the pre-transport key spellings. These are accepted only
+# at the lookup/parse boundary (:func:`normalize_model_key`) and are translated
+# to canonical identities immediately; nothing downstream ever sees them.
+_LEGACY_MODEL_KEY_ALIASES: dict[str, str] = {
+    "claude/sonnet": "anthropic/sonnet/cli",
+    "claude/opus": "anthropic/opus/cli",
+    "anthropic/sonnet": "anthropic/sonnet/cli",
+    "anthropic/opus": "anthropic/opus/cli",
+    "openai/gpt-5.4": "openai/gpt-5.4/cli",
+    "openai/gpt-5.4-mini": "openai/gpt-5.4-mini/cli",
+    "openai/gpt-5.4-pro": "openai/gpt-5.4-pro/cli",
+    "openai-api/gpt-5.4": "openai/gpt-5.4/api",
+    "openai-api/gpt-5.4-mini": "openai/gpt-5.4-mini/api",
+    "openai-api/gpt-5.4-pro": "openai/gpt-5.4-pro/api",
+    "deepseek/deepseek-reasoner": "deepseek/deepseek-reasoner/api",
+    "deepseek/deepseek-chat": "deepseek/deepseek-chat/api",
+    "google/gemini-3-flash-preview": "google/gemini-3-flash-preview/api",
+    "google/gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview/api",
+    "google/gemini-2.5-pro": "google/gemini-2.5-pro/api",
+    "gemini-cli/gemini-2.5-pro": "google/gemini-2.5-pro/cli",
+    "gemini-cli/gemini-3-flash-preview": "google/gemini-3-flash-preview/cli",
+    "gemini-cli/gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview/cli",
+    "openai/codestral": "openai/codestral/api",
+    "openai/deepseek-coder": "openai/deepseek-coder/api",
+    "openai/llama3.1": "openai/llama3.1/api",
+    "openai/qwen2.5-coder": "openai/qwen2.5-coder/api",
+}
+
+
+def known_raw_model_key_prefixes() -> frozenset[str]:
+    """Provider-like leading segments accepted in *raw* model keys.
+
+    Union of the canonical identities' provider families and the legacy alias
+    spellings (``claude``, ``openai-api``, ``gemini-cli``). Callers that have to
+    interpret an operator- or history-supplied key — never a runtime dispatch
+    path — use this to know which prefixes are worth trying.
+    """
+    return frozenset(
+        {key.split("/", 1)[0] for key in AGENT_REGISTRY}
+        | {key.split("/", 1)[0] for key in _LEGACY_MODEL_KEY_ALIASES}
+    )
+
+
+def normalize_model_key(model_key: str) -> str:
+    """Translate a raw model key into its canonical ``provider/model/kind`` id.
+
+    Raw-input boundary only. Canonical ids pass through unchanged; the legacy
+    provider-prefix spellings (``openai-api/…``, ``gemini-cli/…``,
+    ``claude/…``) are rewritten here and never propagate further.
+    """
+    if is_canonical_model_id(model_key):
+        return model_key
+    return _LEGACY_MODEL_KEY_ALIASES.get(model_key, model_key)
+
+
 def known_model_overlay_providers() -> tuple[str, ...]:
-    """Return accepted provider/adaptor tokens for forge.yaml model overlays."""
+    """Return accepted provider tokens for raw ``models.custom`` declarations."""
     return tuple(sorted(_MODEL_OVERLAY_PROVIDER_MAP))
 
 
-def overlay_transport(provider: str) -> tuple[str, TransportSpec]:
-    """Resolve a forge.yaml provider token to its provider family and transport."""
+def overlay_transport(
+    provider: str, transport_kind: str | None = None
+) -> tuple[str, TransportSpec]:
+    """Normalize a raw ``models.custom`` provider token into (provider, transport).
+
+    Raw-input boundary only. An explicit ``transport_kind`` (the canonical
+    spelling) wins; the provider-like alias tokens (``openai-api``,
+    ``gemini-cli``) are accepted purely for migration and carry an implied kind.
+    """
     if provider not in _MODEL_OVERLAY_PROVIDER_MAP:
         known = ", ".join(sorted(_MODEL_OVERLAY_PROVIDER_MAP))
         raise ValueError(
             f"Unknown provider {provider!r} in models.custom. Known providers/adapters: {known}"
         )
-    return _MODEL_OVERLAY_PROVIDER_MAP[provider]
+    family, implied_kind = _MODEL_OVERLAY_PROVIDER_MAP[provider]
+    kind = transport_kind or implied_kind
+    return family, transport_for(family, kind)
 
 
 def custom_model_capability(tier: str) -> int:
@@ -548,30 +847,17 @@ def _spec_to_model_info(
         model_key = spec.model
 
     assert isinstance(model_key, str)
-    if spec.transport.kind == "cli":
-        return ModelInfo(
-            cli=spec.transport.runner,
-            model=spec.model,
-            tier=spec.tier,
-            capability=spec.capability,
-            cost_rank=spec.cost_rank,
-            dev_capable=spec.dev_capable,
-            provider=None,
-            phase_eligibility=spec.phase_eligibility,
-            registry_id=model_key,
-            registry_source=spec.registry_source,
-            input_cost_per_mtok=spec.input_cost_per_mtok,
-            output_cost_per_mtok=spec.output_cost_per_mtok,
-            transport=spec.transport,
-        )
+    is_cli = spec.transport.kind == "cli"
     return ModelInfo(
-        cli=None,
+        cli=spec.transport.runner if is_cli else None,
         model=spec.model,
         tier=spec.tier,
         capability=spec.capability,
         cost_rank=spec.cost_rank,
         dev_capable=spec.dev_capable,
-        provider=spec.provider,
+        provider=None if is_cli else spec.provider,
+        provider_family=spec.provider,
+        base_url=spec.base_url,
         phase_eligibility=spec.phase_eligibility,
         registry_id=model_key,
         registry_source=spec.registry_source,
@@ -615,11 +901,13 @@ def apply_model_info(profile: PlanConfig, info: ModelInfo) -> PlanConfig: ...
 def apply_model_info(profile: _ProfileT, info: ModelInfo) -> _ProfileT:
     """Return profile with model identity and dispatch transport from ``info``.
 
-    Mid-run model swaps must update all fields that define dispatch together.
-    ``PlanConfig`` predates explicit ``TransportSpec`` storage, so this helper
-    writes ``transport`` only for profiles that carry that field.
+    Mid-run model swaps must update every field that defines dispatch together,
+    ``transport`` first: it is the dispatch source of truth, and leaving a stale
+    TransportSpec behind while the model name changes is exactly the divergence
+    this helper exists to prevent. ``base_url`` travels with the identity so a
+    swap onto a locally served model reaches the right endpoint.
     """
-    profile_fields = {field.name for field in fields(profile)}
+    profile_fields = {f.name for f in fields(profile)}
     updates: dict[str, object] = {
         "cli": info.cli,
         "model": info.model,
@@ -631,6 +919,8 @@ def apply_model_info(profile: _ProfileT, info: ModelInfo) -> _ProfileT:
         updates["registry_source"] = info.registry_source
     if "transport" in profile_fields:
         updates["transport"] = info.transport
+    if "base_url" in profile_fields:
+        updates["base_url"] = info.base_url
     return replace(profile, **updates)
 
 
@@ -638,9 +928,13 @@ def resolve_agent_spec(
     model_key: str,
     registry: dict[str, AgentSpec] | None = None,
 ) -> AgentSpec:
-    """Resolve a `provider/model` key to its AgentSpec.
+    """Resolve a model key to its AgentSpec.
 
-    Raises ValueError for any key not present in AGENT_REGISTRY — there is no
+    This is the raw-lookup boundary: a legacy provider-prefix spelling
+    (``openai-api/gpt-5.4``, ``gemini-cli/gemini-2.5-pro``, ``claude/opus``) is
+    normalized to its canonical ``provider/model/kind`` identity here, and only
+    the canonical form exists past this point. Raises ValueError for any key
+    that is neither canonical nor a known alias — there is no
     provider-prefix-to-CLI guessing. To support a new model, add an explicit
     registry entry.
 
@@ -649,13 +943,14 @@ def resolve_agent_spec(
     raises ValueError rather than silently substituting the built-in registry.
     """
     effective_registry = AGENT_REGISTRY if registry is None else registry
-    if model_key not in effective_registry:
+    lookup = model_key if model_key in effective_registry else normalize_model_key(model_key)
+    if lookup not in effective_registry:
         known = sorted(effective_registry)
         raise ValueError(
             f"Unknown model {model_key!r}: not in AGENT_REGISTRY. "
             f"Add an explicit registry entry. Known models: {known}"
         )
-    return effective_registry[model_key]
+    return effective_registry[lookup]
 
 
 def _resolve_model_info(
@@ -665,10 +960,15 @@ def _resolve_model_info(
     """Resolve a model key to its legacy ModelInfo view.
 
     Delegates to resolve_agent_spec(): unknown keys raise ValueError rather than
-    falling back to a prefix-derived CLI.
+    falling back to a prefix-derived CLI. The resulting ``registry_id`` is always
+    the canonical identity, never the alias the caller happened to pass.
     """
     spec = resolve_agent_spec(model_key, registry=registry)
-    return _spec_to_model_info(model_key, spec)
+    effective_registry = AGENT_REGISTRY if registry is None else registry
+    canonical_key = (
+        model_key if model_key in effective_registry else normalize_model_key(model_key)
+    )
+    return _spec_to_model_info(canonical_key, spec)
 
 
 def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:

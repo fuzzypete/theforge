@@ -11,7 +11,7 @@ project: test
 github:
   enabled: true
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 """,
         encoding="utf-8",
     )
@@ -27,7 +27,7 @@ def test_load_config_defaults_github_disabled_when_absent(tmp_path):
         """
 project: test
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 """,
         encoding="utf-8",
     )
@@ -43,11 +43,11 @@ def test_load_config_parses_review_pool_github_handle(tmp_path):
         """
 project: test
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 overrides:
   review_pool:
-    - name: claude-opus
+    - name: anthropic-opus-cli
       github_handle: reviewer-a-gh
 """,
         encoding="utf-8",

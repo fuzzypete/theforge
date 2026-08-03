@@ -143,8 +143,8 @@ def _p1_review() -> ReviewResult:
 def test_preflight_complexity_adaptation_cli_to_api_dev_profile(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
-        dev_profile=_profile_from("claude/sonnet"),
-        models=["claude/sonnet", "deepseek/deepseek-reasoner"],
+        dev_profile=_profile_from("anthropic/sonnet/cli"),
+        models=["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
     )
 
     updated = _apply_complexity_adaptation(config, "medium")
@@ -155,8 +155,8 @@ def test_preflight_complexity_adaptation_cli_to_api_dev_profile(tmp_path: Path) 
 def test_preflight_complexity_adaptation_api_to_cli_dev_profile(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
-        dev_profile=_profile_from("deepseek/deepseek-chat"),
-        models=["deepseek/deepseek-chat", "claude/opus"],
+        dev_profile=_profile_from("deepseek/deepseek-chat/api"),
+        models=["deepseek/deepseek-chat/api", "anthropic/opus/cli"],
     )
 
     updated = _apply_complexity_adaptation(config, "large")
@@ -169,8 +169,8 @@ def test_preflight_complexity_adaptation_plan_uses_target_transport_fields(
 ) -> None:
     config = _config(
         tmp_path,
-        dev_profile=_profile_from("claude/sonnet"),
-        models=["claude/sonnet", "openai-api/gpt-5.4-pro"],
+        dev_profile=_profile_from("anthropic/sonnet/cli"),
+        models=["anthropic/sonnet/cli", "openai/gpt-5.4-pro/api"],
         plan=PlanConfig(enabled=True, cli="claude", provider=None, model="sonnet"),
     )
 
@@ -186,8 +186,8 @@ def test_review_phase_dev_escalation_cli_to_api_updates_transport(
 ) -> None:
     config = _config(
         tmp_path,
-        dev_profile=_profile_from("claude/sonnet"),
-        models=["claude/sonnet", "deepseek/deepseek-reasoner"],
+        dev_profile=_profile_from("anthropic/sonnet/cli"),
+        models=["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
         retry=RetryPolicy(
             max_dev_iterations=2,
             max_review_cycles=3,
@@ -234,12 +234,12 @@ def test_plan_review_escalation_cli_to_api_updates_regen_profile(
     tmp_path: Path, monkeypatch
 ) -> None:
     captured_profiles: list[ModelProfile] = []
-    plan_reviewer_a = _profile_from("claude/sonnet", name="plan-review-a")
-    plan_reviewer_b = _profile_from("claude/sonnet", name="plan-review-b")
+    plan_reviewer_a = _profile_from("anthropic/sonnet/cli", name="plan-review-a")
+    plan_reviewer_b = _profile_from("anthropic/sonnet/cli", name="plan-review-b")
     config = _config(
         tmp_path,
-        dev_profile=_profile_from("claude/sonnet"),
-        models=["claude/sonnet", "deepseek/deepseek-reasoner"],
+        dev_profile=_profile_from("anthropic/sonnet/cli"),
+        models=["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=3, plan_escalation_threshold=1),
         plan_agent_review=PlanAgentReviewConfig(
             enabled=True,
@@ -289,7 +289,7 @@ def test_plan_review_escalation_cli_to_api_updates_regen_profile(
         task=_make_task(tmp_path),
         story_content="story",
         workspace_path=tmp_path,
-        plan_profile=_profile_from("claude/sonnet", name="plan"),
+        plan_profile=_profile_from("anthropic/sonnet/cli", name="plan"),
         plan_text="steps: []",
         preflight_result=None,
         notify=False,

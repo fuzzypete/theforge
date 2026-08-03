@@ -370,11 +370,11 @@ class TestOpenAIPlanReviewFinalizer:
 
 
 class TestProviderFallbackPreservesPhase:
-    """_apply_provider_fallback must carry phase through to the rebuilt ModelProfile."""
+    """_apply_transport_fallback must carry phase through to the rebuilt ModelProfile."""
 
     def test_dev_phase_preserved_after_fallback(self):
-        from theforge.config.profiles import _apply_provider_fallback
-        from theforge.config.types import ApiFallbackConfig
+        from theforge.config.profiles import _apply_transport_fallback
+        from theforge.config.types import TransportFallbackConfig
 
         dev_profile = _make_profile("sonnet", provider=None, phase="dev")
         dev_profile = ModelProfile(
@@ -388,14 +388,14 @@ class TestProviderFallbackPreservesPhase:
             phase="dev",
         )
         fallbacks = {
-            "anthropic": ApiFallbackConfig(provider="anthropic", model="claude-sonnet-4-6")
+            "anthropic": TransportFallbackConfig(provider="anthropic", model="claude-sonnet-4-6")
         }
-        result = _apply_provider_fallback(dev_profile, fallbacks)
+        result = _apply_transport_fallback(dev_profile, fallbacks)
         assert result.phase == "dev"
 
     def test_preflight_phase_preserved_after_fallback(self):
-        from theforge.config.profiles import _apply_provider_fallback
-        from theforge.config.types import ApiFallbackConfig
+        from theforge.config.profiles import _apply_transport_fallback
+        from theforge.config.types import TransportFallbackConfig
 
         preflight_profile = ModelProfile(
             name="codex-preflight",
@@ -407,8 +407,8 @@ class TestProviderFallbackPreservesPhase:
             allowed_tools=("read_file", "bash"),
             phase="preflight",
         )
-        fallbacks = {"openai": ApiFallbackConfig(provider="openai", model="o4-mini")}
-        result = _apply_provider_fallback(preflight_profile, fallbacks)
+        fallbacks = {"openai": TransportFallbackConfig(provider="openai", model="o4-mini")}
+        result = _apply_transport_fallback(preflight_profile, fallbacks)
         assert result.phase == "preflight"
         # Verify the fallback path would not accidentally enable submit tools
         assert result.phase in {"preflight", "dev"}

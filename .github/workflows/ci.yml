@@ -24,7 +24,12 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
+        # Match the story gate, which provisions worktrees with .[all,dev]
+        # (forge.yaml workspace.setup_command). Installing only .[dev] here left
+        # the provider SDKs absent, so config load raised on any profile naming
+        # an API provider and CI rejected work the story gate had passed — the
+        # extras half of #1945.
+        run: pip install -e ".[all,dev]"
 
       - name: Lint
         run: make lint

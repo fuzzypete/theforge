@@ -68,9 +68,9 @@ def _make_smart_config(
     models: list[str] | None = None,
     max_review_cycles: int = 3,
 ) -> ForgeConfig:
-    """Create a ForgeConfig with models set (claude/sonnet as dev)."""
+    """Create a ForgeConfig with models set (anthropic/sonnet/cli as dev)."""
     if models is None:
-        models = ["claude/sonnet", "claude/opus"]
+        models = ["anthropic/sonnet/cli", "anthropic/opus/cli"]
     dev_profile = ModelProfile(
         name="dev",
         cli="claude",
@@ -274,20 +274,24 @@ class TestHasPersistentP1:
 class TestEscalateDevModel:
     def test_escalation_swaps_to_higher_model(self):
         """sonnet → opus when opus is in available list and has higher capability."""
-        result = _escalate_dev_model("claude/sonnet", ["claude/sonnet", "claude/opus"])
-        assert result == "claude/opus"
+        result = _escalate_dev_model(
+            "anthropic/sonnet/cli", ["anthropic/sonnet/cli", "anthropic/opus/cli"]
+        )
+        assert result == "anthropic/opus/cli"
 
     def test_escalation_skips_non_dev_capable(self):
-        """gemini-cli/gemini-2.5-pro has higher capability but dev_capable=False → skipped."""
+        """google/gemini-2.5-pro/cli has higher capability but dev_capable=False → skipped."""
         result = _escalate_dev_model(
-            "claude/sonnet",
-            ["claude/sonnet", "gemini-cli/gemini-2.5-pro"],
+            "anthropic/sonnet/cli",
+            ["anthropic/sonnet/cli", "google/gemini-2.5-pro/cli"],
         )
         assert result is None
 
     def test_escalation_no_higher_model(self):
         """Already on strongest → returns None."""
-        result = _escalate_dev_model("claude/opus", ["claude/sonnet", "claude/opus"])
+        result = _escalate_dev_model(
+            "anthropic/opus/cli", ["anthropic/sonnet/cli", "anthropic/opus/cli"]
+        )
         assert result is None
 
     def test_escalation_selects_next_step_up(self):
@@ -295,14 +299,16 @@ class TestEscalateDevModel:
         # sonnet(7) < gpt-5.4(9) < opus(10)
         # Should select gpt-5.4 as next step up from sonnet.
         result = _escalate_dev_model(
-            "claude/sonnet",
-            ["claude/sonnet", "openai/gpt-5.4", "claude/opus"],
+            "anthropic/sonnet/cli",
+            ["anthropic/sonnet/cli", "openai/gpt-5.4/cli", "anthropic/opus/cli"],
         )
-        assert result == "openai/gpt-5.4"
+        assert result == "openai/gpt-5.4/cli"
 
     def test_escalation_unknown_current_model(self):
         """Unknown current model → returns None (safe fallback)."""
-        result = _escalate_dev_model("unknown/model", ["claude/sonnet", "claude/opus"])
+        result = _escalate_dev_model(
+            "unknown/model", ["anthropic/sonnet/cli", "anthropic/opus/cli"]
+        )
         assert result is None
 
 
@@ -885,7 +891,7 @@ class TestAutoModelEscalationFlag:
                 max_review_cycles=3,
                 auto_model_escalation=False,  # explicit default
             ),
-            models=["claude/sonnet", "claude/opus"],
+            models=["anthropic/sonnet/cli", "anthropic/opus/cli"],
         )
 
         task = _make_task(tmp_path)
