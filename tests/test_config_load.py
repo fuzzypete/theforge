@@ -797,7 +797,7 @@ class TestDefaultFlags:
         """review_pool_is_default is False when overrides.review_pool is set."""
         config_path = _write_config(
             {
-                "models": ["claude/sonnet", "claude/opus"],
+                "models": ["anthropic/sonnet/cli", "anthropic/opus/cli"],
                 "overrides": {
                     "review_pool": [{"name": "opus", "model": "opus"}],
                 },
@@ -811,7 +811,7 @@ class TestDefaultFlags:
         config_path = _write_config(
             {
                 "models": {
-                    "enabled": ["claude/sonnet", "gpt-5.5"],
+                    "enabled": ["anthropic/sonnet/cli", "gpt-5.5"],
                     "custom": {
                         "gpt-5.5": {
                             "provider": "openai",
@@ -827,10 +827,11 @@ class TestDefaultFlags:
             tmp_path,
         )
         config = load_config(config_path)
-        assert config.models == ["claude/sonnet", "gpt-5.5"]
-        assert config.custom_models == ("gpt-5.5",)
-        assert config.model_registry_sources["gpt-5.5"] == "forge.yaml"
-        assert config.model_registry["gpt-5.5"].model == "gpt-5.5"
+        # The declaration key is raw input; the registry is keyed by identity.
+        assert config.models == ["anthropic/sonnet/cli", "openai/gpt-5.5/cli"]
+        assert config.custom_models == ("openai/gpt-5.5/cli",)
+        assert config.model_registry_sources["openai/gpt-5.5/cli"] == "forge.yaml"
+        assert config.model_registry["openai/gpt-5.5/cli"].model == "gpt-5.5"
         assert config.dev_profile.registry_source in {"builtin", "forge.yaml"}
 
     def test_models_custom_unknown_provider_rejected(self, tmp_path):
@@ -858,7 +859,7 @@ class TestDefaultFlags:
             {
                 "models": {
                     "custom": {
-                        "openai/gpt-5.4": {
+                        "openai/gpt-5.4/cli": {
                             "provider": "openai",
                             "model": "gpt-5.4",
                             "tier": "strong",
@@ -877,9 +878,9 @@ class TestDefaultFlags:
         config_path = _write_config(
             {
                 "models": {
-                    "enabled": ["openai/gpt-5.4"],
+                    "enabled": ["openai/gpt-5.4/cli"],
                     "custom": {
-                        "openai/gpt-5.4": {
+                        "openai/gpt-5.4/cli": {
                             "provider": "openai",
                             "model": "gpt-5.4",
                             "tier": "strong",
@@ -894,8 +895,8 @@ class TestDefaultFlags:
             tmp_path,
         )
         config = load_config(config_path)
-        assert config.model_registry_sources["openai/gpt-5.4"] == "forge.yaml"
-        assert config.custom_models == ("openai/gpt-5.4",)
+        assert config.model_registry_sources["openai/gpt-5.4/cli"] == "forge.yaml"
+        assert config.custom_models == ("openai/gpt-5.4/cli",)
 
 
 class TestConventionsConfig:
@@ -1169,10 +1170,10 @@ class TestCliPoolCrossProviderRotation:
         config_path = _write_config(
             {
                 "models": [
-                    "claude/sonnet",
-                    "claude/opus",
-                    "openai/gpt-5.4-pro",
-                    "gemini-cli/gemini-2.5-pro",
+                    "anthropic/sonnet/cli",
+                    "anthropic/opus/cli",
+                    "openai/gpt-5.4-pro/cli",
+                    "google/gemini-2.5-pro/cli",
                 ],
                 "budget_usd": 30.0,
                 "assignment": {

@@ -33,7 +33,7 @@ def test_v08_simple_mode_produces_forgeconfig(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 """,
     )
     with _auth_ok:
@@ -41,7 +41,7 @@ models:
 
     assert cfg.dev_profile.model == "sonnet"
     assert cfg.dev_profile.cli == "claude"
-    assert cfg.models == ["claude/sonnet"]
+    assert cfg.models == ["anthropic/sonnet/cli"]
 
 
 def test_v08_simple_mode_two_models(tmp_path):
@@ -50,8 +50,8 @@ def test_v08_simple_mode_two_models(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 """,
     )
     with _auth_ok:
@@ -68,9 +68,9 @@ def test_v08_plan_agent_review_enabled_does_not_pin_explicit_model(tmp_path, mon
         tmp_path,
         """
 models:
-  - claude/sonnet
-  - openai/gpt-5.4-pro
-  - google/gemini-3.1-pro-preview
+  - anthropic/sonnet/cli
+  - openai/gpt-5.4-pro/cli
+  - google/gemini-3.1-pro-preview/api
 assignment:
   enabled: true
   max_cost_per_story_usd: 100.0
@@ -108,7 +108,7 @@ def test_v08_plan_agent_review_enabled_defaults_to_claude_without_adaptive_pool(
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 plan:
   enabled: true
   model: opus
@@ -168,7 +168,7 @@ def test_v08_overrides_dev_timeout(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 overrides:
   dev:
     timeout_seconds: 1200
@@ -190,8 +190,8 @@ def test_v08_timeout_only_dev_override_keeps_routing_active(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 overrides:
   dev:
     timeout_medium_seconds: 1800
@@ -213,8 +213,8 @@ def test_v08_model_dev_override_pins_routing(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 overrides:
   dev:
     model: opus
@@ -239,8 +239,8 @@ def test_v08_timeout_only_dev_override_routes_and_preserves_timeout_seam(tmp_pat
         tmp_path,
         """
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 overrides:
   dev:
     timeout_large_seconds: 3600
@@ -268,8 +268,8 @@ def test_v08_model_dev_override_bypasses_routing_seam(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 overrides:
   dev:
     model: sonnet
@@ -289,7 +289,7 @@ def test_v08_overrides_preflight_timeout(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 overrides:
   preflight:
     timeout_seconds: 999
@@ -310,7 +310,7 @@ def test_v08_round_trip_no_extra_models(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 """,
     )
     with _auth_ok:
@@ -319,7 +319,7 @@ models:
     all_models = {cfg.dev_profile.model, cfg.preflight_profile.model} | {
         p.model for p in cfg.review_pool
     }
-    # Only "sonnet" (from claude/sonnet) should appear; no phantom models injected.
+    # Only "sonnet" (from anthropic/sonnet/cli) should appear; no phantom models injected.
     assert all_models == {"sonnet"}
 
 
@@ -329,8 +329,8 @@ def test_v08_round_trip_two_models_review_pool_matches_input(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 """,
     )
     with _auth_ok:
@@ -350,7 +350,7 @@ def test_v08_rejects_legacy_par_scalar_model_field(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 plan_agent_review:
   enabled: true
   model: opus
@@ -365,7 +365,7 @@ def test_v08_rejects_legacy_par_scalar_budget_field(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 plan_agent_review:
   enabled: true
   budget_usd: 0.5
@@ -381,7 +381,7 @@ def test_v08_rejects_legacy_profiles_alongside_models(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 profiles:
   dev:
     model: sonnet
@@ -397,9 +397,9 @@ def test_v08_rejects_smart_config_models_alongside_models(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 smart_config_models:
-  - claude/opus
+  - anthropic/opus/cli
 """,
     )
     with _auth_ok, pytest.raises(ValueError, match="smart_config_models"):
@@ -412,7 +412,7 @@ def test_v08_rejects_top_level_agents_alongside_models(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 agents:
   - name: foo
     model: opus
@@ -431,7 +431,7 @@ def test_v08_empty_overrides_key_does_not_crash(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 overrides:
 """,
     )
@@ -451,7 +451,7 @@ def test_v08_overrides_par_with_explicit_par_section_no_pool(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 overrides:
   plan_agent_review:
     timeout_seconds: 999

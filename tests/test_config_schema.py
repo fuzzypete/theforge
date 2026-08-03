@@ -23,7 +23,7 @@ from theforge.config.schema import (
     ReviewRoleConfig,
     RoleAssignment,
 )
-from theforge.config.types import ApiFallbackConfig, ModelProfile
+from theforge.config.types import ModelProfile, TransportFallbackConfig
 
 # ---------------------------------------------------------------------------
 # ModelRef construction and validation
@@ -78,7 +78,7 @@ class TestModelRef:
         assert ref.api_fallback is None
 
     def test_all_optional_fields(self):
-        fallback = ApiFallbackConfig(provider="anthropic", model="claude-3-5-haiku")
+        fallback = TransportFallbackConfig(provider="anthropic", model="claude-3-5-haiku")
         ref = ModelRef(
             model="sonnet",
             cli="claude",

@@ -41,8 +41,8 @@ from theforge.coordinator.preflight import _apply_complexity_adaptation, _build_
 # The reported pool: cheap tier holds both sonnet and gpt-5.4-mini at
 # cost_rank=1, capability=7. Sonnet is listed FIRST — the exact ordering that
 # used to guarantee it won every cheap-tier tie.
-_POOL_SONNET_FIRST = ["claude/sonnet", "openai/gpt-5.4-mini"]
-_POOL_MINI_FIRST = ["openai/gpt-5.4-mini", "claude/sonnet"]
+_POOL_SONNET_FIRST = ["anthropic/sonnet/cli", "openai/gpt-5.4-mini/cli"]
+_POOL_MINI_FIRST = ["openai/gpt-5.4-mini/cli", "anthropic/sonnet/cli"]
 
 
 @pytest.fixture(autouse=True)
@@ -86,8 +86,8 @@ def test_price_signal_partial_data_treats_missing_as_zero():
 
 
 def test_builtin_registry_populates_cheap_tier_costs():
-    sonnet = MODEL_REGISTRY["claude/sonnet"]
-    mini = MODEL_REGISTRY["openai/gpt-5.4-mini"]
+    sonnet = MODEL_REGISTRY["anthropic/sonnet/cli"]
+    mini = MODEL_REGISTRY["openai/gpt-5.4-mini/cli"]
     assert (sonnet.input_cost_per_mtok, sonnet.output_cost_per_mtok) == (3.00, 15.00)
     assert (mini.input_cost_per_mtok, mini.output_cost_per_mtok) == (0.25, 2.00)
     # The cheaper model has the smaller tie-break signal.
@@ -103,7 +103,7 @@ def test_builtin_registry_populates_cheap_tier_costs():
 def test_agents_by_tier_orders_by_price_not_list_order(pool):
     agents = _agents_from_models(pool, budget_usd=50.0)
     ordered = _agents_by_tier(agents, "cheap")
-    assert [a.name for a in ordered] == ["openai-gpt-5.4-mini", "claude-sonnet"]
+    assert [a.name for a in ordered] == ["openai-gpt-5.4-mini-cli", "anthropic-sonnet-cli"]
 
 
 def test_pick_agent_cheap_tier_picks_cheaper_model(_all_authed):
@@ -193,7 +193,7 @@ def test_auto_assign_dev_picks_cheaper_cheap_tier(pool):
 def test_build_pool_entries_orders_cheap_tier_by_price(pool):
     entries = _build_pool_entries(pool)
     cheap_keys = [key for rank, key, _ in entries if rank == 1]
-    assert cheap_keys[0] == "openai/gpt-5.4-mini"
+    assert cheap_keys[0] == "openai/gpt-5.4-mini/cli"
 
 
 # ── Seam: complexity-adaptation config propagation ─────────────────────

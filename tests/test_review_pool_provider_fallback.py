@@ -17,10 +17,10 @@ from unittest.mock import patch
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.config import (
     DEFAULT_VALIDATION,
-    ApiFallbackConfig,
     ForgeConfig,
     ModelProfile,
     RetryPolicy,
+    TransportFallbackConfig,
     WorkspaceConfig,
 )
 from theforge.config.types import PlanConfig
@@ -32,10 +32,10 @@ _GOLD_POOL = ["claude/sonnet", "openai/gpt-5.4", "claude/opus"]
 def _make_config_with_provider_fallbacks(
     tmp_path: Path,
     *,
-    provider_fallbacks: dict[str, ApiFallbackConfig],
+    transport_fallbacks: dict[str, TransportFallbackConfig],
 ) -> ForgeConfig:
     """Build a ForgeConfig that mirrors the failing-run shape: review_pool with
-    a Codex CLI reviewer and provider_fallbacks.openai configured at load time.
+    a Codex CLI reviewer and transport_fallbacks.openai configured at load time.
     """
     dev = ModelProfile(
         name="dev",
@@ -48,7 +48,7 @@ def _make_config_with_provider_fallbacks(
     # Intentionally do NOT preload api_fallback on these reviewers. The bug under
     # test (#1435) is that a CLI reviewer reaching the runner without api_fallback
     # silently skips the configured API fallback. The fix re-applies
-    # provider_fallbacks inside _apply_complexity_adaptation, so a reviewer that
+    # transport_fallbacks inside _apply_complexity_adaptation, so a reviewer that
     # arrives at preflight without api_fallback must acquire it through that path.
     gpt_reviewer = ModelProfile(
         name="openai-gpt-5.4",
@@ -87,17 +87,17 @@ def _make_config_with_provider_fallbacks(
         plan_model_is_default=True,
         dev_profile_is_default=True,
         review_pool_is_default=True,
-        provider_fallbacks=provider_fallbacks,
+        transport_fallbacks=transport_fallbacks,
     )
 
 
 def test_low_complexity_review_pool_preserves_api_fallback(tmp_path):
     """LOW complexity → single mid/strong reviewer keeps api_fallback set."""
     fallbacks = {
-        "openai": ApiFallbackConfig(provider="openai", model="gpt-5.4-mini"),
-        "anthropic": ApiFallbackConfig(provider="anthropic", model="haiku"),
+        "openai": TransportFallbackConfig(provider="openai", model="gpt-5.4-mini"),
+        "anthropic": TransportFallbackConfig(provider="anthropic", model="haiku"),
     }
-    config = _make_config_with_provider_fallbacks(tmp_path, provider_fallbacks=fallbacks)
+    config = _make_config_with_provider_fallbacks(tmp_path, transport_fallbacks=fallbacks)
 
     adapted = _apply_complexity_adaptation(config, "small")
 
@@ -112,10 +112,10 @@ def test_low_complexity_review_pool_preserves_api_fallback(tmp_path):
 def test_medium_complexity_review_pool_and_synthesis_carry_api_fallback(tmp_path):
     """MEDIUM complexity → every reviewer + auto-derived synthesis carries api_fallback."""
     fallbacks = {
-        "openai": ApiFallbackConfig(provider="openai", model="gpt-5.4-mini"),
-        "anthropic": ApiFallbackConfig(provider="anthropic", model="haiku"),
+        "openai": TransportFallbackConfig(provider="openai", model="gpt-5.4-mini"),
+        "anthropic": TransportFallbackConfig(provider="anthropic", model="haiku"),
     }
-    config = _make_config_with_provider_fallbacks(tmp_path, provider_fallbacks=fallbacks)
+    config = _make_config_with_provider_fallbacks(tmp_path, transport_fallbacks=fallbacks)
 
     adapted = _apply_complexity_adaptation(config, "medium")
 
@@ -136,13 +136,13 @@ def test_dev_reroute_across_providers_re_derives_api_fallback(tmp_path):
     """Cross-provider dev reroute must re-derive api_fallback for the new CLI's provider.
 
     Regression: dev starts on claude/sonnet (api_fallback for anthropic). HIGH complexity
-    routes dev to openai/gpt-5.4-pro (codex CLI). Without re-applying provider_fallbacks,
+    routes dev to openai/gpt-5.4-pro (codex CLI). Without re-applying transport_fallbacks,
     the rerouted dev profile would carry a stale anthropic api_fallback — wrong provider
     for a codex CLI quota failure.
     """
     fallbacks = {
-        "openai": ApiFallbackConfig(provider="openai", model="gpt-5.4-mini"),
-        "anthropic": ApiFallbackConfig(provider="anthropic", model="haiku"),
+        "openai": TransportFallbackConfig(provider="openai", model="gpt-5.4-mini"),
+        "anthropic": TransportFallbackConfig(provider="anthropic", model="haiku"),
     }
     dev = ModelProfile(
         name="dev",
@@ -183,7 +183,7 @@ def test_dev_reroute_across_providers_re_derives_api_fallback(tmp_path):
         plan_model_is_default=True,
         dev_profile_is_default=True,
         review_pool_is_default=True,
-        provider_fallbacks=fallbacks,
+        transport_fallbacks=fallbacks,
     )
 
     adapted = _apply_complexity_adaptation(config, "large")
@@ -199,9 +199,9 @@ def test_dev_reroute_across_providers_re_derives_api_fallback(tmp_path):
 def test_rerouted_codex_reviewer_quota_failure_fires_api_fallback(tmp_path):
     """End-to-end: preflight-adapted review-pool reviewer hits 'usage limit' →
     runner invokes _maybe_run_api_fallback → returns API-attributed success."""
-    fallback_cfg = ApiFallbackConfig(provider="openai", model="gpt-5.4-mini")
+    fallback_cfg = TransportFallbackConfig(provider="openai", model="gpt-5.4-mini")
     config = _make_config_with_provider_fallbacks(
-        tmp_path, provider_fallbacks={"openai": fallback_cfg}
+        tmp_path, transport_fallbacks={"openai": fallback_cfg}
     )
 
     # HIGH complexity routes dev → opus (strong); the self-review guard then keeps

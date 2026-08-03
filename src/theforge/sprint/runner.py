@@ -15,13 +15,13 @@ import threading
 import time
 from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 import yaml
 
 from ..advisory_conventions import AdvisoryArtifactError
-from ..config import ForgeConfig
+from ..config import ForgeConfig, ModelProfile
 from ..config.auth import check_agent_auth
 from ..coordinator import workspace as coordinator_workspace
 from ..coordinator.agent_failure import (
@@ -1373,77 +1373,79 @@ def _skipped_baseline_gate(config: ForgeConfig, evidence: str) -> dict[str, obje
 
 
 def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
-    """Return sprint-start warnings for configured CLI agents with unknown cost."""
+    """Return sprint-start warnings for configured CLI agents with unknown cost.
 
-    agents: list[tuple[str, str | None, str | None, str, object | None]] = [
-        (
-            config.preflight_profile.name,
-            config.preflight_profile.cli,
-            config.preflight_profile.provider,
-            config.preflight_profile.model,
-            config.preflight_profile.api_fallback,
-        ),
-        (
-            config.dev_profile.name,
-            config.dev_profile.cli,
-            config.dev_profile.provider,
-            config.dev_profile.model,
-            config.dev_profile.api_fallback,
-        ),
+    Whether an agent's spend is trackable is a property of its *transport*, not
+    of a cli/provider field pair: a CLI transport that reports no usage is
+    untracked regardless of which provider it belongs to. Identity (provider,
+    model) and transport are carried separately here so the warning names both.
+    """
+
+    @dataclass(frozen=True)
+    class _Agent:
+        name: str
+        transport_kind: str
+        runner: str | None
+        provider: str | None
+        model: str
+        api_fallback: object | None
+
+    def _from_profile(profile: ModelProfile, name: str | None = None) -> _Agent:
+        transport = profile.transport
+        return _Agent(
+            name=name or profile.name,
+            transport_kind=profile.mode,
+            runner=transport.runner if transport is not None else None,
+            provider=profile.provider_family,
+            model=profile.model,
+            api_fallback=profile.api_fallback,
+        )
+
+    agents: list[_Agent] = [
+        _from_profile(config.preflight_profile),
+        _from_profile(config.dev_profile),
     ]
 
     if config.plan.enabled:
         agents.append(
-            (
-                "planner",
-                config.plan.cli,
-                config.plan.provider,
-                config.plan.model,
-                config.plan.api_fallback,
+            _Agent(
+                name="planner",
+                transport_kind=config.plan.mode,
+                runner=config.plan.transport.runner if config.plan.transport else None,
+                provider=config.plan.provider_family,
+                model=config.plan.model,
+                api_fallback=config.plan.api_fallback,
             )
         )
 
     if config.plan_agent_review.enabled:
-        agents.extend(
-            (profile.name, profile.cli, profile.provider, profile.model, profile.api_fallback)
-            for profile in config.plan_agent_review.profiles
-        )
+        agents.extend(_from_profile(p) for p in config.plan_agent_review.profiles)
 
-    agents.extend(
-        (profile.name, profile.cli, profile.provider, profile.model, profile.api_fallback)
-        for profile in config.review_pool
-    )
+    agents.extend(_from_profile(p) for p in config.review_pool)
 
     if config.synthesis_profile is not None:
-        agents.append(
-            (
-                config.synthesis_profile.name,
-                config.synthesis_profile.cli,
-                config.synthesis_profile.provider,
-                config.synthesis_profile.model,
-                config.synthesis_profile.api_fallback,
-            )
-        )
+        agents.append(_from_profile(config.synthesis_profile))
 
     warnings: list[str] = []
     seen: set[tuple[str, str, str, str | None, str | None]] = set()
-    for name, cli, provider, model, api_fallback in agents:
-        if provider is not None or cli not in _UNTRACKED_COST_CLIS:
+    for agent in agents:
+        if agent.transport_kind != "cli" or agent.runner not in _UNTRACKED_COST_CLIS:
             continue
-        fallback_provider = getattr(api_fallback, "provider", None)
-        fallback_model = getattr(api_fallback, "model", None)
-        key = (name, cli, model, fallback_provider, fallback_model)
+        fallback_provider = getattr(agent.api_fallback, "provider", None)
+        fallback_model = getattr(agent.api_fallback, "model", None)
+        key = (agent.name, agent.runner, agent.model, fallback_provider, fallback_model)
         if key in seen:
             continue
         seen.add(key)
-        if api_fallback is not None:
+        if agent.api_fallback is not None:
             warnings.append(
-                f"⚠ CLI cost not tracked for {name} ({cli} CLI, {model}); API fallback to "
-                f"{fallback_provider}/{fallback_model} will be tracked if it triggers."
+                f"⚠ CLI cost not tracked for {agent.name} ({agent.runner} CLI, {agent.model}); "
+                f"API fallback to {fallback_provider}/{fallback_model} will be tracked "
+                "if it triggers."
             )
             continue
         warnings.append(
-            f"⚠ Cost not tracked for {name} ({cli} CLI, {model}). "
+            f"⚠ Cost not tracked for {agent.name} ({agent.runner} CLI, {agent.model}). "
             "Audit totals will exclude this agent's usage."
         )
     return warnings

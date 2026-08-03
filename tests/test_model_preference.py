@@ -15,7 +15,7 @@ from unittest.mock import patch
 import pytest
 
 from theforge.agent_types import AgentResult, ModelUsage
-from theforge.config import ApiFallbackConfig, ModelProfile
+from theforge.config import ModelProfile, TransportFallbackConfig
 from theforge.config.profiles import _parse_model_spec, _parse_profile
 from theforge.runners.api import _classify_api_model_fallback, run_api_agent
 from theforge.runners.cli import _classify_cli_fallback, _classify_cli_fallback_decision
@@ -784,7 +784,7 @@ class TestCliRunnerFallbackModels:
             budget_usd=1.0,
             timeout_seconds=300,
             allowed_tools=(),
-            api_fallback=ApiFallbackConfig(provider="openai", model="o4-mini"),
+            api_fallback=TransportFallbackConfig(provider="openai", model="o4-mini"),
         )
         cli_fail = AgentResult(
             success=False,

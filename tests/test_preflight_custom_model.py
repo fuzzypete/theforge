@@ -28,6 +28,7 @@ from theforge.config import (
     TransportSpec,
     WorkspaceConfig,
 )
+from theforge.config.models import RoutingPolicy
 from theforge.config.types import PlanConfig
 from theforge.coordinator.preflight import (
     _apply_complexity_adaptation,
@@ -36,7 +37,7 @@ from theforge.coordinator.preflight import (
     _find_registry_key_for_profile,
 )
 
-_CUSTOM_KEY = "openai/gpt-5.5"
+_CUSTOM_KEY = "openai/gpt-5.5/api"
 
 
 def _custom_spec() -> AgentSpec:
@@ -44,10 +45,7 @@ def _custom_spec() -> AgentSpec:
         provider="openai",
         model="gpt-5.5",
         transport=TransportSpec(kind="api", runner="openai"),
-        tier="strong",
-        capability=9,
-        cost_rank=3,
-        dev_capable=True,
+        routing=RoutingPolicy(tier="strong", capability=9, cost_rank=3, dev_capable=True),
         registry_source="forge.yaml",
         input_cost_per_mtok=5.0,
         output_cost_per_mtok=30.0,
@@ -100,7 +98,7 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
         review_pool=[custom],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        models=["claude/sonnet", _CUSTOM_KEY],
+        models=["anthropic/sonnet/cli", _CUSTOM_KEY],
         plan=plan,
         plan_model_is_default=True,
         dev_profile_is_default=True,
@@ -117,7 +115,7 @@ def _make_config(tmp_path: Path) -> ForgeConfig:
 def test_build_pool_entries_accepts_custom_model_with_merged_registry():
     """Without registry= the custom model raises; with merged registry it resolves."""
     merged = _merged_registry()
-    entries = _build_pool_entries(["claude/sonnet", _CUSTOM_KEY], registry=merged)
+    entries = _build_pool_entries(["anthropic/sonnet/cli", _CUSTOM_KEY], registry=merged)
     keys = {key for _, key, _ in entries}
     assert _CUSTOM_KEY in keys
 
@@ -125,7 +123,7 @@ def test_build_pool_entries_accepts_custom_model_with_merged_registry():
 def test_build_pool_entries_without_registry_raises_for_custom_key():
     """Sanity: the bug's failure mode persists when no registry is supplied."""
     with pytest.raises(ValueError, match="Unknown model"):
-        _build_pool_entries(["claude/sonnet", _CUSTOM_KEY])
+        _build_pool_entries(["anthropic/sonnet/cli", _CUSTOM_KEY])
 
 
 # ── _apply_complexity_adaptation: full preflight seam, custom in pool ─
@@ -143,7 +141,7 @@ def test_complexity_adaptation_preserves_registry_attribution(tmp_path):
     config = _make_config(tmp_path)
     adapted = _apply_complexity_adaptation(config, "medium", complexity_score=7)
     assert adapted.model_registry_sources[_CUSTOM_KEY] == "forge.yaml"
-    assert adapted.model_registry_sources["claude/sonnet"] == "builtin"
+    assert adapted.model_registry_sources["anthropic/sonnet/cli"] == "builtin"
 
 
 # ── escalation paths use merged registry ──────────────────────────────
@@ -153,7 +151,7 @@ def test_escalate_dev_model_includes_custom_model(tmp_path):
     """A custom 'strong' model is a valid escalation target for a built-in mid model."""
     merged = _merged_registry()
     next_key = _escalate_dev_model(
-        "claude/sonnet", ["claude/sonnet", _CUSTOM_KEY], registry=merged
+        "anthropic/sonnet/cli", ["anthropic/sonnet/cli", _CUSTOM_KEY], registry=merged
     )
     assert next_key == _CUSTOM_KEY
 
