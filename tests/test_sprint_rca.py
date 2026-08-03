@@ -796,7 +796,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 6
+    assert payload["ruleset_version"] == 7
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -1221,6 +1221,254 @@ def test_dev_gate_evidence_seam_coordinator_audit_to_rca(tmp_path: Path) -> None
 
     entry = _build(d)["stories"]["issue-220"]
     assert entry["primary_failure_class"] == "dev_gate_evidence_missing"
+
+
+# ── Sandbox capability-profile gap (#2029) ────────────────────────────────────
+
+
+def _exhausted_usage() -> dict:
+    return {
+        "dev": {"used": 3, "max": 3, "hit_limit": True},
+        "review": {"used": 0, "max": 2, "hit_limit": False},
+    }
+
+
+def _no_capability_audit(extra: dict | None = None) -> dict:
+    """A per-story audit shaped like the one the coordinator writes with no preset."""
+    audit = {
+        "workspace": {
+            "path": "/tmp/wt/issue-246",
+            "branch": "feat/issue-246",
+            "sandbox_capabilities": {
+                "profile": None,
+                "write_roots": [],
+                "mach_services": [],
+            },
+        },
+        "iterations": {"usage_summary": _exhausted_usage()},
+    }
+    if extra:
+        audit.update(extra)
+    return audit
+
+
+_SIMULATOR_DENIAL = (
+    "dev iteration 1: xcodebuild failed — Failed to get the connection to the "
+    "CoreSimulator service: Operation not permitted\n"
+)
+
+
+def test_missing_capability_profile_outranks_iteration_exhaustion(tmp_path: Path) -> None:
+    """The configuration gap forge already recorded beats the budget it presents as."""
+    d = _sprint_dir(tmp_path, name="capability-gap")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-246",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-246" / "audit.yaml", _no_capability_audit())
+    (d / "issue-246" / "dev-iteration-1.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
+
+    entry = _build(d)["stories"]["issue-246"]
+    assert entry["primary_failure_class"] == "capability_profile_gap"
+    hit = next(
+        ev for ev in entry["evidence"] if ev["rule_id"] == "sandbox_capability_profile_missing"
+    )
+    assert "sandbox.capability_profile" in hit["excerpt"]
+    assert "CoreSimulator" in hit["excerpt"]
+
+    actions = entry["recommended_next_actions"]
+    assert any("sandbox.capability_profile" in a and "xcode" in a for a in actions)
+    # The budget was spent on iterations that could not have succeeded; naming it
+    # is the misdirection this class exists to remove.
+    assert not any("iteration budget" in a for a in actions)
+
+
+def test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion(
+    tmp_path: Path,
+) -> None:
+    """No capability-shaped failure text ⇒ the existing classification is untouched."""
+    d = _sprint_dir(tmp_path, name="capability-none")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-247",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-247" / "audit.yaml", _no_capability_audit())
+    (d / "issue-247" / "dev-iteration-1.log").write_text(
+        "dev iteration 1: 3 unit tests still failing after the refactor\n", encoding="utf-8"
+    )
+
+    entry = _build(d)["stories"]["issue-247"]
+    assert entry["primary_failure_class"] == "iteration_exhaustion"
+    assert any("raise the iteration budget" in a for a in entry["recommended_next_actions"])
+
+
+def test_granted_capability_profile_is_not_reported_as_a_gap(tmp_path: Path) -> None:
+    """A toolchain failure *under* a granted preset is a different problem."""
+    d = _sprint_dir(tmp_path, name="capability-granted")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-248",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    audit = _no_capability_audit()
+    audit["workspace"]["sandbox_capabilities"] = {
+        "profile": "xcode",
+        "write_roots": ["/Users/dev/Library/Developer"],
+        "mach_services": ["com.apple.CoreSimulator.CoreSimulatorService"],
+    }
+    _write(d / "issue-248" / "audit.yaml", audit)
+    (d / "issue-248" / "dev-iteration-1.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
+
+    entry = _build(d)["stories"]["issue-248"]
+    assert entry["primary_failure_class"] == "iteration_exhaustion"
+
+
+def test_outbound_network_denial_alone_is_not_a_capability_gap(tmp_path: Path) -> None:
+    """No existing preset grants network egress, so egress text must not claim one."""
+    d = _sprint_dir(tmp_path, name="capability-network")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-249",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-249" / "audit.yaml", _no_capability_audit())
+    (d / "issue-249" / "dev-iteration-1.log").write_text(
+        "dev iteration 1: could not fetch the cached package — outbound network denied\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-249"]
+    assert entry["primary_failure_class"] == "iteration_exhaustion"
+
+
+def test_capability_symptom_in_agent_authored_prose_is_not_a_cause(tmp_path: Path) -> None:
+    """Agent prose describes the project, not the run — it cannot assign this class."""
+    d = _sprint_dir(tmp_path, name="capability-prose")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-250",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-250" / "audit.yaml", _no_capability_audit())
+    (d / "issue-250" / "dev-notes.md").write_text(
+        "The app should surface a clear error when the CoreSimulator connection is "
+        "unavailable or permission is denied.\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-250"]
+    assert entry["primary_failure_class"] == "iteration_exhaustion"
+
+
+def test_capability_preset_symptom_keys_name_real_presets() -> None:
+    """The symptom table may only reference presets forge actually owns."""
+    from theforge.config.sandbox_capabilities import preset_names
+    from theforge.sprint.rca import _CAPABILITY_PRESET_SYMPTOMS
+
+    assert set(_CAPABILITY_PRESET_SYMPTOMS) <= set(preset_names())
+    assert _CAPABILITY_PRESET_SYMPTOMS
+
+
+def test_capability_gap_seam_coordinator_audit_to_rca(tmp_path: Path) -> None:
+    """Seam: real coordinator audit (no preset selected) → RCA capability class.
+
+    Anchors the cause code to the fields ``generate_audit_log`` actually writes
+    (``workspace.sandbox_capabilities`` and the per-iteration payload), not to a
+    shape this test invented.
+    """
+    from coord_test_helpers import _make_config, _make_task
+
+    from theforge.coordinator.audit import generate_audit_log
+    from theforge.coordinator.state import (
+        CoordinatorResult,
+        CoordinatorState,
+        DevIterationTelemetry,
+        Phase,
+    )
+
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=2, review_cycle=0)
+    state.phase = Phase.ESCALATE
+    state.error = "dev exhausted iterations"
+    state.dev_iteration_telemetry = [
+        DevIterationTelemetry(
+            iteration=i,
+            max_iterations=2,
+            cost_usd=1.0,
+            duration_s=5.0,
+            cycle=0,
+            gate_result="FAIL",
+        )
+        for i in (1, 2)
+    ]
+
+    audit = generate_audit_log(
+        config,
+        task,
+        CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message=state.error),
+    )
+    # The coordinator records "default containment" explicitly — that record is
+    # the half of the correlation forge already held.
+    assert audit["workspace"]["sandbox_capabilities"]["profile"] is None
+    assert audit["iterations"]["usage_summary"]["dev"]["hit_limit"] is True
+
+    d = _sprint_dir(tmp_path, name="seam-capability")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-251", "outcome": "FAILED", "error": state.error}]),
+    )
+    _write(d / "issue-251" / "audit.yaml", audit)
+    (d / "issue-251" / "dev-iteration-1.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
+
+    entry = _build(d)["stories"]["issue-251"]
+    assert entry["primary_failure_class"] == "capability_profile_gap"
+    assert any(
+        "sandbox.capability_profile" in a and "xcode" in a
+        for a in entry["recommended_next_actions"]
+    )
 
 
 # ── Rule set discoverability ──────────────────────────────────────────────────

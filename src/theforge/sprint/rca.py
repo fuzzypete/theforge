@@ -41,7 +41,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 6
+RULESET_VERSION = 7
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -294,6 +294,16 @@ RULES: tuple[RcaRule, ...] = (
         description="Story skipped because an unmet dependency blocked launch.",
     ),
     RcaRule(
+        rule_id="sandbox_capability_profile_missing",
+        failure_class="capability_profile_gap",
+        role="primary",
+        description=(
+            "The run resolved no sandbox capability profile while the story "
+            "reported a toolchain/service denial a forge-owned preset grants — "
+            "the project never opted into the capability the failure needed."
+        ),
+    ),
+    RcaRule(
         rule_id="iteration_budget_exhausted",
         failure_class="iteration_exhaustion",
         role="primary",
@@ -377,6 +387,12 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     "sprint_state_stranded",
     "launch_collision",
     "dependency_skip",
+    # A story whose dev agent could not run its toolchain because the project
+    # declared no capability profile outranks the iteration exhaustion it
+    # presents as (#2029): the budget was spent on iterations that could never
+    # succeed, so "raise the budget" funds a repeat of the same failure. The
+    # configuration gap is the cause; the exhausted budget is its symptom.
+    "capability_profile_gap",
     "iteration_exhaustion",
 )
 
@@ -575,9 +591,17 @@ def _classify_story(
 
     # (rule_id, source, excerpt, matched_pattern, source_kind) tuples in
     # deterministic order.
+    # Correlated once here (not inside the signal pass) so the matched preset is
+    # available to both the evidence and the recommended action.
+    capability_gap = _capability_profile_gap_evidence(audit, text_sources)
+
     hits: list[tuple[str, str, str, str | None, str]] = []
     hits.extend(_text_rule_hits(text_sources))
-    hits.extend(_signal_rule_hits(story, audit, summary_path, sprint_log_dir, logs_root))
+    hits.extend(
+        _signal_rule_hits(
+            story, audit, summary_path, sprint_log_dir, logs_root, capability_gap=capability_gap
+        )
+    )
 
     # The story's explicitly-captured terminal error (summary + audit). A concrete
     # captured cause takes precedence over an *ambiguous* pattern hit (e.g. a bare
@@ -660,7 +684,12 @@ def _classify_story(
     )
 
     partial_value = _detect_partial_value(story, audit)
-    actions = _recommend_actions(primary, contributing, story)
+    actions = _recommend_actions(
+        primary,
+        contributing,
+        story,
+        capability_preset=capability_gap.preset if capability_gap else None,
+    )
 
     return {
         "primary_failure_class": primary,
@@ -861,6 +890,143 @@ def _dev_loop_entries(audit: dict) -> list[dict]:
     return [entry for entry in dev_loop if isinstance(entry, dict)]
 
 
+# ── Sandbox capability-profile gap (#2029) ────────────────────────────────────
+#
+# Forge owns the capability presets (``config.sandbox_capabilities``) and records
+# the resolved capability set in every story's audit. When a project selects no
+# preset, that record reads ``profile: null`` with empty grants — and if the dev
+# agent then reports the exact toolchain denial a preset exists to remove, forge
+# is holding the symptom and the configuration that explains it at the same time.
+#
+# The symptom vocabulary lives here rather than in the preset table: a preset
+# declares what it *grants* (paths, mach services), which is not the text a
+# failing toolchain prints. Keys must name real forge-owned presets — asserted by
+# the test suite against ``sandbox_capabilities.preset_names()``.
+_CAPABILITY_PRESET_SYMPTOMS: dict[str, tuple[str, ...]] = {
+    "xcode": (
+        "coresimulator",
+        "core simulator",
+        "simulator service",
+        "simulator runtime",
+        "simctl",
+        "xcodebuild",
+        "xcodegen",
+        "swift build",
+        "swiftpm",
+        "deriveddata",
+        "library/developer",
+        "com.apple.dt.xcode",
+        "org.swift.swiftpm",
+    ),
+}
+
+# A symptom token alone is just the name of a tool the story legitimately uses.
+# It only evidences a *capability* gap when the same line also states that the
+# resource was refused — so both must co-occur on one line. That pairing is also
+# what keeps a pure outbound-network failure (no toolchain subject on the line)
+# from being classified as a toolchain capability gap.
+_CAPABILITY_DENIAL_MARKERS: tuple[str, ...] = (
+    "operation not permitted",
+    "permission denied",
+    "not permitted",
+    "denied",
+    "unreachable",
+    "connection invalid",
+    "connection interrupted",
+    "connection refused",
+    "could not connect",
+    "unavailable",
+    "sandbox",
+)
+
+
+@dataclass(frozen=True)
+class _CapabilityGap:
+    """A resolved-no-profile run whose text reported a preset's failure mode."""
+
+    preset: str
+    source: str
+    excerpt: str
+
+
+def _sandbox_capability_payloads(audit: dict) -> list[dict]:
+    """Every resolved capability record the story's audit carries.
+
+    Both the run-level ``workspace.sandbox_capabilities`` and the per-iteration
+    ``iterations.dev_loop[*].sandbox_capabilities`` payloads written by
+    ``coordinator.audit`` — a story is only treated as ungranted when *every*
+    record agrees, so a run that widened containment for even one iteration is
+    never reported as having had none.
+    """
+    payloads: list[dict] = []
+    workspace = audit.get("workspace") if isinstance(audit, dict) else None
+    if isinstance(workspace, dict) and isinstance(workspace.get("sandbox_capabilities"), dict):
+        payloads.append(workspace["sandbox_capabilities"])
+    for entry in _dev_loop_entries(audit):
+        payload = entry.get("sandbox_capabilities")
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _capability_grant_absent(audit: dict) -> bool:
+    """True when the run's own record says no capability was granted at all.
+
+    Returns False when the audit carries no capability record: the class asserts
+    what forge *resolved*, so a record it never wrote cannot evidence it.
+    """
+    payloads = _sandbox_capability_payloads(audit)
+    if not payloads:
+        return False
+    for payload in payloads:
+        if _nonempty(payload.get("profile")):
+            return False
+        if payload.get("write_roots") or payload.get("mach_services"):
+            return False
+    return True
+
+
+def _capability_symptom_hit(sources: list[_TextSource]) -> tuple[str, str, str] | None:
+    """Find the first line naming a preset's toolchain *and* its refusal.
+
+    Agent-authored prose is out of scope for the same reason as #2031: it
+    describes the project under development, not the run developing it, so it
+    can never assign a runtime cause code.
+    """
+    for preset in sorted(_CAPABILITY_PRESET_SYMPTOMS):
+        symptoms = _CAPABILITY_PRESET_SYMPTOMS[preset]
+        for src in sources:
+            if src.kind == "authored":
+                continue
+            for line in src.text.splitlines():
+                lowered = line.lower()
+                if not any(symptom in lowered for symptom in symptoms):
+                    continue
+                if not any(marker in lowered for marker in _CAPABILITY_DENIAL_MARKERS):
+                    continue
+                return preset, src.source, _truncate(line.strip())
+    return None
+
+
+def _capability_profile_gap_evidence(
+    audit: dict, sources: list[_TextSource]
+) -> _CapabilityGap | None:
+    """Correlate "no profile resolved" with "the toolchain that needs one failed".
+
+    Neither half classifies alone: most runs legitimately resolve no profile, and
+    a toolchain error under a *granted* profile is a different problem with a
+    different fix. Together they are the configuration gap forge already held
+    both halves of and reported as an iteration-budget problem (#2029).
+    """
+    if not _capability_grant_absent(audit):
+        return None
+    hit = _capability_symptom_hit(sources)
+    if hit is None:
+        return None
+    preset, source, excerpt = hit
+    return _CapabilityGap(preset=preset, source=source, excerpt=excerpt)
+
+
 def _provider_quota_evidence(audit: dict, audit_source: str) -> tuple[str, str, str] | None:
     """Return a ``provider_usage_limit`` hit from the run's own quota observation.
 
@@ -996,6 +1162,7 @@ def _signal_rule_hits(
     summary_path: Path,
     sprint_log_dir: Path,
     logs_root: Path,
+    capability_gap: _CapabilityGap | None = None,
 ) -> list[tuple[str, str, str, str | None, str]]:
     """Fire field-derived (signal) rules from summary/audit structured fields.
 
@@ -1039,6 +1206,24 @@ def _signal_rule_hits(
     fallback_hit = _fallback_not_applied_evidence(audit, audit_source)
     if fallback_hit is not None:
         hits.append(fallback_hit)
+
+    # Sandbox capability-profile gap (#2029) — the run's own resolved capability
+    # record (null profile, no grants) correlated with a reported denial of a
+    # resource a forge-owned preset grants. Detected in
+    # ``_capability_profile_gap_evidence`` so the matched preset can also name
+    # itself in the recommended action.
+    if capability_gap is not None:
+        hits.append(
+            (
+                "sandbox_capability_profile_missing",
+                capability_gap.source,
+                _truncate(
+                    f"sandbox.capability_profile unset (no write roots or mach services "
+                    f"granted); reported denial the '{capability_gap.preset}' preset "
+                    f"grants: {capability_gap.excerpt}"
+                ),
+            )
+        )
 
     if outcome == "MERGE_FAILED":
         hits.append(("merge_failed", summary_source, _outcome_excerpt()))
@@ -1261,7 +1446,29 @@ def _launch_collision_action(story: dict, ref: str) -> str:
     )
 
 
-def _recommend_actions(primary: str, contributing: list[str], story: dict) -> list[str]:
+def _capability_gap_action(preset: str | None, ref: str) -> str:
+    """Next step for a capability-profile gap: name the setting and the preset.
+
+    Deliberately does not mention the iteration budget. The budget was spent on
+    iterations that could not have succeeded, so raising it funds a repeat of the
+    same failure (#2029).
+    """
+    named = f"'{preset}'" if preset else "the preset matching the failing toolchain"
+    return (
+        f"set sandbox.capability_profile: {preset or '<preset>'} in the project's forge.yaml "
+        f"and re-sprint {ref} — the run resolved no capability profile while the agent "
+        f"reported exactly the toolchain/service denial the {named} preset removes, so the "
+        "dev agent could not build or verify its own work"
+    )
+
+
+def _recommend_actions(
+    primary: str,
+    contributing: list[str],
+    story: dict,
+    *,
+    capability_preset: str | None = None,
+) -> list[str]:
     """Map primary class + contributing factors to actionable next steps."""
     ref = _story_ref(story)
     actions: list[str] = []
@@ -1313,6 +1520,7 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
             "discard partial work"
         ),
         "dependency_skip": _dependency_action(story, ref),
+        "capability_profile_gap": _capability_gap_action(capability_preset, ref),
         "iteration_exhaustion": (
             f"raise the iteration budget for {ref} or narrow its scope, then re-run"
         ),
@@ -1331,6 +1539,10 @@ def _recommend_actions(primary: str, contributing: list[str], story: dict) -> li
     # names a cause the evidence contradicts (issue #1946).
     iteration_advice_applies = primary not in {
         "iteration_exhaustion",
+        # The iteration limit is how a capability gap *presents*; the budget was
+        # never the constraint, so budget advice here would restate the wrong
+        # cause the class exists to replace (#2029).
+        "capability_profile_gap",
         "merge_failed",
         # Same reasoning as merge_failed: the story produced a landable commit and
         # failed for a reason the iteration budget did not cause (#2056).
