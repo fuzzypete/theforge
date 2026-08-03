@@ -124,6 +124,12 @@ conventions:
 
 assignment:
   enabled: true
+  # Mechanical plan-reviewer value signals (#1443): P1 uniqueness + latency-per-P1,
+  # sample-floor gated, recency-weighted, taint-excluded. Built and tested but
+  # default-off; enabled 2026-08-02 after 703-audit review showed reviewer
+  # selection running on completion rate alone. Code-review selection does not
+  # consume this yet — tracked in #2156.
+  reviewer_value_enabled: true
 
 # Neutralize the stuck-detector's no-file-modifications arm pending the redesign
 # in #1215. Repeat-call and identical-error-loop arms remain at their defaults
