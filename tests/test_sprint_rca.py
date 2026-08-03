@@ -1331,17 +1331,22 @@ def test_capability_gap_from_structured_audit_text(tmp_path: Path) -> None:
     assert any("sandbox.capability_profile unset" in a for a in actions)
 
 
-def test_capability_gap_does_not_override_worker_timeout_text(tmp_path: Path) -> None:
-    """Higher-priority text classes still win over the capability-gap class."""
-    d = _sprint_dir(tmp_path, name="capability-worker-timeout")
+def test_text_evidence_does_not_override_structured_terminal_outcome(tmp_path: Path) -> None:
+    """Unrelated higher-priority *text* must not displace the run's own terminal state.
+
+    The capability-gap class is the only text-carried promotion into the
+    structured pool; a worker-timeout line scraped from a log stays fallback
+    evidence behind a recorded MERGE_FAILED.
+    """
+    d = _sprint_dir(tmp_path, name="capability-structured-precedence")
     _write(
         d / "sprint-summary.yaml",
         _summary(
             [
                 {
                     "slug": "issue-248c",
-                    "outcome": "FAILED",
-                    "error": "dev exhausted iterations",
+                    "outcome": "MERGE_FAILED",
+                    "error": "merge failed",
                     "iteration_usage": _exhausted_usage(),
                 }
             ]
@@ -1353,10 +1358,38 @@ def test_capability_gap_does_not_override_worker_timeout_text(tmp_path: Path) ->
     (story_dir / "dev-iteration-1.log").write_text(
         "Worker thread timed out after 3600s\n", encoding="utf-8"
     )
-    (story_dir / "dev-iteration-2.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
 
     entry = _build(d)["stories"]["issue-248c"]
-    assert entry["primary_failure_class"] == "worker_timeout"
+    assert entry["primary_failure_class"] == "merge_failed"
+
+
+def test_capability_gap_does_not_outrank_structured_merge_failure(tmp_path: Path) -> None:
+    """The promoted capability class still competes on the declared priority list."""
+    d = _sprint_dir(tmp_path, name="capability-vs-merge")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-248d",
+                    "outcome": "MERGE_FAILED",
+                    "error": "merge failed",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-248d" / "audit.yaml", _no_capability_audit())
+    story_dir = d / "issue-248d"
+    story_dir.mkdir(parents=True, exist_ok=True)
+    (story_dir / "dev-iteration-1.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
+
+    entry = _build(d)["stories"]["issue-248d"]
+    # merge_failed sits above capability_profile_gap in _PRIMARY_PRIORITY, so the
+    # promotion must not let the capability class jump the queue.
+    assert entry["primary_failure_class"] == "merge_failed"
+    # The capability evidence is still recorded as a contributing factor.
+    assert any(ev["rule_id"] == "sandbox_capability_profile_missing" for ev in entry["evidence"])
 
 
 def test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion(

@@ -1407,17 +1407,31 @@ def _select_primary(
 ) -> str | None:
     """Choose the winning primary failure class by declared priority.
 
-    Structured fields and text scans are both eligible evidence; the declared
-    priority list decides which class is most actionable overall.
+    Structured fields from the current run outrank broad text scans. Text scans
+    remain valuable fallback evidence, but they must not override the run's own
+    recorded terminal state.
+
+    ``capability_profile_gap`` is the single exception: its structured half (the
+    run's own resolved, empty capability payload) is always present, and only
+    the denial half is carried as a log line, so a text-sourced hit still
+    represents structured run state. It is promoted into the structured pool and
+    then competes on the declared priority list like any other class — it does
+    not jump ahead of a higher-priority class such as ``merge_failed``.
     """
-    present = set(structured_primary_classes) | set(text_primary_classes)
+    present = set(structured_primary_classes)
+    if "capability_profile_gap" in text_primary_classes:
+        present.add("capability_profile_gap")
+    for cls in _PRIMARY_PRIORITY:
+        if cls in present:
+            return cls
+    if structured_primary_classes:
+        return structured_primary_classes[0]
+    present = set(text_primary_classes)
     for cls in _PRIMARY_PRIORITY:
         if cls in present:
             return cls
     # A primary rule fired but its class is not in the priority list — return
     # the first seen so we never lose a real classification.
-    if structured_primary_classes:
-        return structured_primary_classes[0]
     return text_primary_classes[0] if text_primary_classes else None
 
 
