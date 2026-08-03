@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+from theforge.config.sandbox_capabilities import get_preset
 
 SCHEMA_VERSION = 1
 # Version of the classifier RULES themselves. Bump whenever a rule change can
@@ -41,7 +42,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 7
+RULESET_VERSION = 8
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -922,30 +923,28 @@ _CAPABILITY_PRESET_SYMPTOMS: dict[str, tuple[str, ...]] = {
 
 # A symptom token alone is just the name of a tool the story legitimately uses.
 # It only evidences a *capability* gap when the same line also states that the
-# resource was refused — so both must co-occur on one line. That pairing is also
-# what keeps a pure outbound-network failure (no toolchain subject on the line)
-# from being classified as a toolchain capability gap.
+# resource was refused — so both must co-occur on one line.
 _CAPABILITY_DENIAL_MARKERS: tuple[str, ...] = (
     "operation not permitted",
     "permission denied",
     "not permitted",
-    "denied",
     "unreachable",
     "connection invalid",
     "connection interrupted",
     "connection refused",
     "could not connect",
-    "unavailable",
-    "sandbox",
+    "sandbox denied",
 )
 
 
 @dataclass(frozen=True)
 class _CapabilityGap:
-    """A resolved-no-profile run whose text reported a preset's failure mode."""
+    """A run whose capability payloads missed the matched preset's grants."""
 
     preset: str
     source: str
+    source_kind: str
+    profile_note: str
     excerpt: str
 
 
@@ -969,24 +968,63 @@ def _sandbox_capability_payloads(audit: dict) -> list[dict]:
     return payloads
 
 
-def _capability_grant_absent(audit: dict) -> bool:
-    """True when the run's own record says no capability was granted at all.
+def _capability_root_suffix(template: str) -> tuple[str, ...]:
+    """Return the path suffix a preset template must match in an audit payload."""
+    if template.startswith("~/"):
+        template = template[2:]
+    return Path(template).parts
 
-    Returns False when the audit carries no capability record: the class asserts
-    what forge *resolved*, so a record it never wrote cannot evidence it.
-    """
-    payloads = _sandbox_capability_payloads(audit)
-    if not payloads:
+
+def _capability_root_matches(actual: str, template: str) -> bool:
+    """True when a resolved write root satisfies a preset template."""
+    actual_parts = Path(actual).parts
+    template_parts = _capability_root_suffix(template)
+    if len(actual_parts) < len(template_parts):
         return False
-    for payload in payloads:
-        if _nonempty(payload.get("profile")):
+    return actual_parts[-len(template_parts) :] == template_parts
+
+
+def _capability_payload_grants_preset(payload: dict, preset_name: str) -> bool:
+    """True when one recorded capability payload fully grants a preset."""
+    try:
+        preset = get_preset(preset_name)
+    except Exception:
+        return False
+
+    write_roots = payload.get("write_roots")
+    mach_services = payload.get("mach_services")
+    if not isinstance(write_roots, list) or not isinstance(mach_services, list):
+        return False
+
+    actual_roots = [str(root) for root in write_roots if _nonempty(root)]
+    actual_services = {str(service) for service in mach_services if _nonempty(service)}
+
+    for template in preset.write_roots:
+        if not any(_capability_root_matches(actual, template) for actual in actual_roots):
             return False
-        if payload.get("write_roots") or payload.get("mach_services"):
+    for service in preset.mach_services:
+        if service not in actual_services:
             return False
     return True
 
 
-def _capability_symptom_hit(sources: list[_TextSource]) -> tuple[str, str, str] | None:
+def _capability_profile_note(payloads: list[dict]) -> str:
+    """Summarise the recorded profile state for capability-gap evidence."""
+    profiles = [
+        _nonempty(payload.get("profile"))
+        for payload in payloads
+        if isinstance(payload, dict) and _nonempty(payload.get("profile"))
+    ]
+    if not profiles:
+        return "sandbox.capability_profile unset"
+    profile = profiles[0]
+    if len({p for p in profiles}) == 1:
+        return f"sandbox.capability_profile={profile!r}"
+    unique = ", ".join(repr(p) for p in sorted(set(profiles)))
+    return f"sandbox.capability_profile values {unique}"
+
+
+def _capability_symptom_hit(sources: list[_TextSource]) -> tuple[str, str, str, str] | None:
     """Find the first line naming a preset's toolchain *and* its refusal.
 
     Agent-authored prose is out of scope for the same reason as #2031: it
@@ -1004,27 +1042,36 @@ def _capability_symptom_hit(sources: list[_TextSource]) -> tuple[str, str, str] 
                     continue
                 if not any(marker in lowered for marker in _CAPABILITY_DENIAL_MARKERS):
                     continue
-                return preset, src.source, _truncate(line.strip())
+                return preset, src.source, src.kind, _truncate(line.strip())
     return None
 
 
 def _capability_profile_gap_evidence(
     audit: dict, sources: list[_TextSource]
 ) -> _CapabilityGap | None:
-    """Correlate "no profile resolved" with "the toolchain that needs one failed".
+    """Correlate a missing/incomplete capability payload with the matching denial.
 
     Neither half classifies alone: most runs legitimately resolve no profile, and
-    a toolchain error under a *granted* profile is a different problem with a
+    a toolchain error under a fully granted preset is a different problem with a
     different fix. Together they are the configuration gap forge already held
     both halves of and reported as an iteration-budget problem (#2029).
     """
-    if not _capability_grant_absent(audit):
+    payloads = _sandbox_capability_payloads(audit)
+    if not payloads:
         return None
     hit = _capability_symptom_hit(sources)
     if hit is None:
         return None
-    preset, source, excerpt = hit
-    return _CapabilityGap(preset=preset, source=source, excerpt=excerpt)
+    preset, source, source_kind, excerpt = hit
+    if any(_capability_payload_grants_preset(payload, preset) for payload in payloads):
+        return None
+    return _CapabilityGap(
+        preset=preset,
+        source=source,
+        source_kind=source_kind,
+        profile_note=_capability_profile_note(payloads),
+        excerpt=excerpt,
+    )
 
 
 def _provider_quota_evidence(audit: dict, audit_source: str) -> tuple[str, str, str] | None:
@@ -1169,7 +1216,7 @@ def _signal_rule_hits(
     Signal hits carry ``None`` as the matched pattern — they are field-derived,
     not pattern-derived, so the ambiguity-precedence check never applies to them.
     """
-    hits: list[tuple[str, str, str]] = []
+    hits: list[tuple[str, str, str, str]] = []
     summary_source = _rel(summary_path, logs_root)
     audit_source = _rel(sprint_log_dir / str(story.get("slug") or "") / "audit.yaml", logs_root)
     outcome = str(story.get("outcome") or "").upper()
@@ -1187,7 +1234,7 @@ def _signal_rule_hits(
         audit, outcome, error, summary_source, audit_source
     )
     if config_change is not None:
-        hits.append(config_change)
+        hits.append((*config_change, "structured"))
 
     # Shared-infrastructure abort (#2107) — field-derived from the run's own
     # recorded error_type/outcome_code and the structured cause the runner or
@@ -1196,20 +1243,21 @@ def _signal_rule_hits(
     # assign this class.
     infra_hit = _infrastructure_abort_evidence(story, audit, summary_source, audit_source)
     if infra_hit is not None:
-        hits.append(infra_hit)
+        hits.append((*infra_hit, "structured"))
 
     # Provider quota / fallback classification from the run's own transport
     # telemetry rather than scanned for in prose (#2031).
     quota_hit = _provider_quota_evidence(audit, audit_source)
     if quota_hit is not None:
-        hits.append(quota_hit)
+        hits.append((*quota_hit, "structured"))
     fallback_hit = _fallback_not_applied_evidence(audit, audit_source)
     if fallback_hit is not None:
-        hits.append(fallback_hit)
+        hits.append((*fallback_hit, "structured"))
 
     # Sandbox capability-profile gap (#2029) — the run's own resolved capability
-    # record (null profile, no grants) correlated with a reported denial of a
-    # resource a forge-owned preset grants. Detected in
+    # record, whether absent or missing the matched preset's required grants,
+    # correlated with a reported denial of a resource a forge-owned preset
+    # grants. Detected in
     # ``_capability_profile_gap_evidence`` so the matched preset can also name
     # itself in the recommended action.
     if capability_gap is not None:
@@ -1218,19 +1266,21 @@ def _signal_rule_hits(
                 "sandbox_capability_profile_missing",
                 capability_gap.source,
                 _truncate(
-                    f"sandbox.capability_profile unset (no write roots or mach services "
-                    f"granted); reported denial the '{capability_gap.preset}' preset "
+                    f"{capability_gap.profile_note}; recorded capability payloads did not "
+                    f"grant the '{capability_gap.preset}' preset's required write roots or "
+                    f"mach services; reported denial the '{capability_gap.preset}' preset "
                     f"grants: {capability_gap.excerpt}"
                 ),
+                capability_gap.source_kind,
             )
         )
 
     if outcome == "MERGE_FAILED":
-        hits.append(("merge_failed", summary_source, _outcome_excerpt()))
+        hits.append(("merge_failed", summary_source, _outcome_excerpt(), "structured"))
     if outcome == "MERGE_ARMING_FAILED":
-        hits.append(("merge_arming_failed", summary_source, _outcome_excerpt()))
+        hits.append(("merge_arming_failed", summary_source, _outcome_excerpt(), "structured"))
     if outcome == "OPERATOR_ACTION":
-        hits.append(("operator_action_required", summary_source, _outcome_excerpt()))
+        hits.append(("operator_action_required", summary_source, _outcome_excerpt(), "structured"))
     drop_reason = _nonempty(story.get("drop_reason"))
     if drop_reason == _STRANDED_WORKTREE_REASON:
         # A prior-generation worktree left unfinished sprint state — a distinct,
@@ -1240,12 +1290,18 @@ def _signal_rule_hits(
                 "sprint_state_stranded",
                 summary_source,
                 _truncate(f"outcome={outcome}; stranded prior-generation sprint state"),
+                "structured",
             )
         )
     elif outcome in {"DROPPED", "PRESERVED"} or drop_reason:
         drop = drop_reason or error or "launch-guard drop"
         hits.append(
-            ("launch_guard_dropped", summary_source, _truncate(f"outcome={outcome}; {drop}"))
+            (
+                "launch_guard_dropped",
+                summary_source,
+                _truncate(f"outcome={outcome}; {drop}"),
+                "structured",
+            )
         )
     if outcome == "SKIPPED":
         deps = list(story.get("depends_on") or [])
@@ -1255,6 +1311,7 @@ def _signal_rule_hits(
                     "dependency_blocked",
                     summary_source,
                     _truncate(f"skipped; unmet dependencies: {', '.join(str(d) for d in deps)}"),
+                    "structured",
                 )
             )
 
@@ -1287,6 +1344,7 @@ def _signal_rule_hits(
                     "(HANDOFF_NO_GATE_EVIDENCE); latest commit was not reviewed"
                     f"{stale}; outcome={outcome}"
                 ),
+                "structured",
             )
         )
     elif verdict == "REQUEST_CHANGES" and outcome in {"ESCALATE", "ESCALATED", "FAILED"}:
@@ -1295,6 +1353,7 @@ def _signal_rule_hits(
                 "review_changes_requested",
                 audit_source if audit else summary_source,
                 _truncate(f"final review verdict REQUEST_CHANGES; outcome={outcome}"),
+                "structured",
             )
         )
 
@@ -1307,7 +1366,12 @@ def _signal_rule_hits(
     review_hit = _hit_limit(usage, "review")
     if dev_hit:
         hits.append(
-            ("dev_iteration_limit_hit", summary_source, _truncate("dev iteration limit reached"))
+            (
+                "dev_iteration_limit_hit",
+                summary_source,
+                _truncate("dev iteration limit reached"),
+                "structured",
+            )
         )
     if review_hit:
         hits.append(
@@ -1315,6 +1379,7 @@ def _signal_rule_hits(
                 "review_iteration_limit_hit",
                 summary_source,
                 _truncate("review iteration limit reached"),
+                "structured",
             )
         )
     # Elevate iteration exhaustion to a primary cause only when the story failed
@@ -1325,10 +1390,14 @@ def _signal_rule_hits(
                 "iteration_budget_exhausted",
                 summary_source,
                 _truncate("iteration budget exhausted before completion"),
+                "structured",
             )
         )
 
-    return [(rule_id, source, excerpt, None, "structured") for rule_id, source, excerpt in hits]
+    return [
+        (rule_id, source, excerpt, None, source_kind)
+        for rule_id, source, excerpt, source_kind in hits
+    ]
 
 
 def _select_primary(
@@ -1342,6 +1411,11 @@ def _select_primary(
     """
     present = set(structured_primary_classes)
     for cls in _PRIMARY_PRIORITY:
+        # Capability-gap evidence may be carried as text when the denial lives in
+        # a log line, but it still needs to outrank the generic iteration-limit
+        # symptom it usually presents as.
+        if cls == "iteration_exhaustion" and "capability_profile_gap" in text_primary_classes:
+            return "capability_profile_gap"
         if cls in present:
             return cls
     if structured_primary_classes:

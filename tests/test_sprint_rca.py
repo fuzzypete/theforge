@@ -23,6 +23,7 @@ from theforge.sprint.rca import (
     read_sprint_rca,
     write_sprint_rca,
 )
+from theforge.config.sandbox_capabilities import resolve_capabilities
 
 
 def _write(path: Path, data: object) -> None:
@@ -796,7 +797,6 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 7
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -1252,6 +1252,10 @@ def _no_capability_audit(extra: dict | None = None) -> dict:
     return audit
 
 
+def _xcode_capability_payload() -> dict:
+    return resolve_capabilities("xcode", home=Path("/Users/dev")).audit_payload()
+
+
 _SIMULATOR_DENIAL = (
     "dev iteration 1: xcodebuild failed — Failed to get the connection to the "
     "CoreSimulator service: Operation not permitted\n"
@@ -1283,7 +1287,7 @@ def test_missing_capability_profile_outranks_iteration_exhaustion(tmp_path: Path
         ev for ev in entry["evidence"] if ev["rule_id"] == "sandbox_capability_profile_missing"
     )
     assert "sandbox.capability_profile" in hit["excerpt"]
-    assert "CoreSimulator" in hit["excerpt"]
+    assert "xcodebuild" in hit["excerpt"]
 
     actions = entry["recommended_next_actions"]
     assert any("sandbox.capability_profile" in a and "xcode" in a for a in actions)
@@ -1337,16 +1341,46 @@ def test_granted_capability_profile_is_not_reported_as_a_gap(tmp_path: Path) -> 
         ),
     )
     audit = _no_capability_audit()
-    audit["workspace"]["sandbox_capabilities"] = {
-        "profile": "xcode",
-        "write_roots": ["/Users/dev/Library/Developer"],
-        "mach_services": ["com.apple.CoreSimulator.CoreSimulatorService"],
-    }
+    audit["workspace"]["sandbox_capabilities"] = _xcode_capability_payload()
     _write(d / "issue-248" / "audit.yaml", audit)
     (d / "issue-248" / "dev-iteration-1.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
 
     entry = _build(d)["stories"]["issue-248"]
     assert entry["primary_failure_class"] == "iteration_exhaustion"
+
+
+def test_incomplete_capability_profile_outranks_iteration_exhaustion(tmp_path: Path) -> None:
+    """A resolved xcode profile missing required grants stays a capability gap."""
+    d = _sprint_dir(tmp_path, name="capability-incomplete")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-248a",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    audit = _no_capability_audit()
+    xcode = _xcode_capability_payload()
+    audit["workspace"]["sandbox_capabilities"] = {
+        "profile": "xcode",
+        "write_roots": xcode["write_roots"][:-1],
+        "mach_services": xcode["mach_services"][:-1],
+    }
+    _write(d / "issue-248a" / "audit.yaml", audit)
+    (d / "issue-248a" / "dev-iteration-1.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
+
+    entry = _build(d)["stories"]["issue-248a"]
+    assert entry["primary_failure_class"] == "capability_profile_gap"
+    assert any(
+        "sandbox.capability_profile" in a and "xcode" in a
+        for a in entry["recommended_next_actions"]
+    )
 
 
 def test_outbound_network_denial_alone_is_not_a_capability_gap(tmp_path: Path) -> None:
@@ -1372,6 +1406,32 @@ def test_outbound_network_denial_alone_is_not_a_capability_gap(tmp_path: Path) -
     )
 
     entry = _build(d)["stories"]["issue-249"]
+    assert entry["primary_failure_class"] == "iteration_exhaustion"
+
+
+def test_benign_sandbox_reference_does_not_trigger_capability_gap(tmp_path: Path) -> None:
+    """A toolchain mention plus the word sandbox is not enough without a refusal."""
+    d = _sprint_dir(tmp_path, name="capability-sandbox-noise")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-249a",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-249a" / "audit.yaml", _no_capability_audit())
+    (d / "issue-249a" / "dev-iteration-1.log").write_text(
+        "dev iteration 1: xcodebuild is running under the forge sandbox for this test\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-249a"]
     assert entry["primary_failure_class"] == "iteration_exhaustion"
 
 
