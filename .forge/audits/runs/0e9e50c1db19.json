@@ -1,0 +1,1829 @@
+{
+  "schema_version": 17,
+  "run_id": "0e9e50c1db19",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc16",
+  "task": {
+    "name": "Missing sandbox capability profile is never surfaced, even when the agent reports the exact toolchain failure it causes",
+    "slug": "issue-2029",
+    "story_path": null,
+    "story_text": "## Observed\n\nObserved in sprint issues-248,245,246,231 against a project whose forge.yaml set no\nsandbox.capability_profile.\n\nOn its first iteration the dev agent for story #246 reported plainly that the\nsimulator service was unreachable and that the build tool could not fetch a cached\npackage because outbound network was restricted. It repeated a comparable report on\nstory #248. Forge's own run state for every story in the sprint recorded a null\ncapability profile with empty write roots and empty mach services. Forge owns a\ncapability preset whose entire purpose is to grant those write roots and that\nsimulator mach service, and whose documentation describes this failure mode\ndirectly.\n\nForge held the symptom, its own resolved configuration, and the remedy at the same\ntime, and joined none of them. It ran the story to iteration exhaustion, allowed the\ndev to make changes to a language it had already demonstrated it could not execute,\nand reported the outcome to the operator as an iteration budget problem with the\nrecommendation to raise the budget. Nothing in the summary, the audit, or the next\nsteps indicated that the project had no capability profile or that the dev could not\nbuild the platform it was editing. The operator found it only by reading the agent's\nprose in the raw iteration logs.\n\n## Expected\n\nWhen an agent reports that a required toolchain or service is unavailable\nand forge's own resolved sandbox state shows no capability grant covering it, forge\nshould report the configuration gap as the actionable cause. More generally, wherever\nforge holds both a reported symptom and the resolved configuration that explains it,\nthe configuration gap belongs in the operator-facing outcome rather than being left\nfor the operator to reconstruct from agent narration. A capability that a project\nmust opt into should announce its absence when that absence is what failed the run,\nnot stay silent and let the failure surface as an unrelated budget or iteration\nverdict.\n\n## Diagnosis\n\n**Baseline:** `f2caf7d3ed7c6066db3e3e32c64039f43f3f8d09` captured at `2026-07-29T14:52:18.924508+00:00`\n\n**Inspected files:**\n\n- `src/theforge/sprint/rca.py` \u2014 `sha256:4bd601c86960abbc0507f38a37fd0226d54b21ac0bb3a7cdc077876e2dbb16c5`\n- `src/theforge/coordinator/dev_phase.py` \u2014 `sha256:1b4f0b3925c5fa18a7725a201c3926b71f066a8882f3a1ce95c3e0f93c5fcc86`\n- `src/theforge/config/sandbox_capabilities.py` \u2014 `sha256:c7b271393c5eeb4a217c58610895dc605f085dd03fdf1ea42e67b8db8a1273f2`\n- `src/theforge/config/load.py` \u2014 `sha256:2adb7c788635c9b726127fed68f9e4b89b8c43fd452a05bcfb888b224006a8e6`\n- `src/theforge/config/types.py` \u2014 `sha256:e860ad47552c2c07f7f0cfb3ff20cbbbf0ec9079f727444b5cc2ddcb5c7a200f`\n- `.forge/audits/runs/6f619a5997a1.json` \u2014 `sha256:a6a1f355a4e5d2eb74e891ad02df651c32d84b07e910d2db08a8355c1afcc49d`\n\n### Observed symptom\n\nWhen a project has no `sandbox.capability_profile` set and a dev agent's toolchain\ngenuinely requires one (e.g. a simulator mach service or a network/write root the\ndefault sandbox denies), forge's sprint-end root-cause classifier (`sprint/rca.py`)\nnever surfaces the missing capability profile as the cause. Instead it falls\nthrough to the generic iteration-exhaustion class and tells the operator to \"raise\nthe iteration budget\" \u2014 even though forge's own audit record for the same run\nalready captured `sandbox_capabilities: {profile: null, write_roots: [], mach_services: []}`\nand the dev agent's own captured output described the exact toolchain/service\nfailure a named capability preset exists to fix.\n\n### Reproduction / evidence\n\nStatic evidence in this repo (theforge's own source), since the triggering sprint\nran in a different project (`hdp`) and its logs are not present in this repo's\n`.forge/logs`/`.forge/audits`:\n\n1. `src/theforge/config/sandbox_capabilities.py:124-152` defines the `xcode` preset\n   \u2014 write roots for `~/Library/Developer`, CoreSimulator caches, etc., and mach\n   services `com.apple.CoreSimulator.CoreSimulatorService` and others \u2014 whose\n   stated purpose (module docstring lines 1-8) is exactly \"the agent cannot build\n   and therefore cannot verify its own work\" when a toolchain needs simulator/mach\n   access the default sandbox denies.\n2. `src/theforge/coordinator/dev_phase.py:677-700` (`_resolve_dev_sandbox_capabilities`)\n   resolves `config.sandbox.capability_profile` into an audit payload every dev\n   iteration and stores it at `state.dev_sandbox_capabilities` (line 728). This\n   repo's own audit trail confirms the shape: `.forge/audits/runs/6f619a5997a1.json`\n   contains `\"workspace\": {\"sandbox_capabilities\": {\"profile\": null, \"write_roots\":\n   [], \"mach_services\": []}}` and the same block per dev-loop iteration.\n3. `src/theforge/sprint/rca.py` is the module that turns per-story audit/summary\n   data into the operator-facing root-cause classification and recommended next\n   step. `grep -c \"capability|sandbox\" src/theforge/sprint/rca.py` returns `0` \u2014\n   the classifier never reads `sandbox_capabilities`, `capability_profile`,\n   `write_roots`, or `mach_services` from the audit, and no `RcaRule` pattern\n   (lines 130-291) contains any toolchain/network/simulator/permission keyword.\n4. `_collect_text_sources` (rca.py:592-671) does scan the dev/review iteration\n   logs under the story's log dir and the run log for pattern matches \u2014 so the\n   dev agent's own prose (\"simulator service unreachable\", \"could not fetch a\n   cached package\") is available to the engine as text \u2014 but with no rule\n   defined for it, nothing fires.\n5. `_signal_rule_hits` (rca.py:714-839) instead classifies purely from\n   `iteration_usage`/outcome: if `dev_hit or review_hit` and outcome is\n   FAILED/ESCALATE(D), it fires `iteration_budget_exhausted` (lines 828-837),\n   and `_recommended_actions` (rca.py:962-963) then emits literally\n   `\"raise the iteration budget for {ref} or narrow its scope, then re-run\"`.\n   This is the \"recommendation to raise the budget\" the issue describes.\n\n### Hypotheses tested\n\n- **[ruled out]** The capability-profile resolution itself silently drops/ignores a configured profile.\n  - Evidence: dev_phase.py:_resolve_dev_sandbox_capabilities correctly resolves and audits the profile (or its absence) every iteration, and logs a WARNING when a requested profile is unsupported on the host (lines 692-700). The issue's own report confirms the project set NO profile at all \u2014 resolution behaved correctly (null in, null/empty audit out); the gap is downstream in classification, not resolution.\n- **[confirmed]** The RCA/summary engine has no rule that cross-references a reported toolchain/service failure against the resolved (null) sandbox_capabilities audit field, so it always falls back to generic iteration-exhaustion classification for this failure class.\n  - Evidence: sprint/rca.py has zero references to capability/sandbox (grep -c returns 0). Its only primary/contributing rules that could fire on this class are iteration-count-derived (dev_iteration_limit_hit / iteration_budget_exhausted at rca.py:809-837), which look only at iteration usage and outcome \u2014 never at workspace.sandbox_capabilities or capability-shaped text patterns. The recommended action for that class is hardcoded to 'raise the iteration budget ... or narrow its scope' (rca.py:962-963), matching the issue's reported operator-facing outcome exactly.\n- **[ruled out]** Dev-phase logging silently omits any signal when a profile is null but the toolchain needs one, so nothing gets to the audit/log at all.\n  - Evidence: The null/empty case IS captured structurally in the audit payload (sandbox_capabilities.py:104-115, audit_payload() always emits profile/write_roots/mach_services keys, explicit null rather than omitted, by design per its own docstring). The data reaches the audit; the gap is that no downstream consumer (rca.py) reads it alongside the agent's reported symptom.\n\n### Confirmed cause\n\n`src/theforge/sprint/rca.py`'s mechanical root-cause classifier holds no rule that\nreads the per-story audit's resolved `sandbox_capabilities` (profile/write_roots/\nmach_services, populated by `coordinator/dev_phase.py:_resolve_dev_sandbox_capabilities`)\nand cross-references it against the dev agent's own reported toolchain/service\nfailure text (which the engine's `_collect_text_sources`/`_text_rule_hits` already\nscan for other failure classes). Consequently, when a story fails because a\nproject has no `sandbox.capability_profile` set and the dev agent's toolchain\nneeds one, the classifier falls through to its iteration-usage-derived\n`iteration_budget_exhausted` / `dev_iteration_limit_hit` signal rules\n(rca.py:809-837) and emits the generic \"raise the iteration budget ... or narrow\nits scope\" recommendation (rca.py:962-963), even though the resolved\ncapability-profile gap \u2014 data forge already holds in the same audit record \u2014 is\nthe actionable, more specific cause.\n\n### Affected code path\n\nsrc/theforge/sprint/rca.py \u2014 RULES table (lines 130-291), `_signal_rule_hits`\n(lines 714-839, specifically the dev/review iteration-limit signal block at\n809-837), and `_recommended_actions`'s `iteration_exhaustion` action string\n(lines 961-963). These are the pieces that need a new rule/signal correlating\n`audit[\"workspace\"][\"sandbox_capabilities\"]` (or per-iteration\n`dev_loop[*].sandbox_capabilities`) being null/empty with toolchain/service-failure\ntext already visible to `_collect_text_sources`, and a corresponding\n`_recommended_actions` entry pointing at `sandbox.capability_profile` instead of\n(or in addition to) the iteration-budget advice.\n\n### Fix-success criterion\n\nGiven a sprint story whose per-story audit records `sandbox_capabilities.profile:\nnull` (or a profile missing the write roots/mach services the failure implies)\nAND whose dev/review iteration text reports a toolchain/service/network failure\nconsistent with a known capability preset (e.g. simulator-unreachable text\nmatching the `xcode` preset's mach services), `sprint-rca.yaml`'s primary failure\nclass for that story is a capability-profile-gap class (not\n`iteration_exhaustion`), and its recommended action names\n`sandbox.capability_profile` and the applicable preset rather than \"raise the\niteration budget.\"\n\n### Related findings (out of scope)\n\n> These are adjacent problems noticed during investigation. They are **not** the cause of this issue's symptom and are **out of scope for this fix** \u2014 triage them separately under the linked issue. Do not implement them as part of this issue.\n\n- The `xcode` capability preset only grants write roots and mach services \u2014 it has no network-egress axis, so the reported 'build tool could not fetch a cached package because outbound network was restricted' half of the symptom may not be fixable by any existing preset at all; may need a new capability axis or a separate issue.\n- sprint/rca.py's residual `unknown_needs_rca` class (UNKNOWN_CLASS) exists precisely for stories no mechanical rule matches and defers to LLM-assisted `forge diagnose`, but nothing in the pipeline appears to auto-invoke `forge diagnose` on iteration-exhaustion outcomes by default \u2014 so this failure class silently gets the (wrong) mechanical classification instead of falling to the residual/LLM path. Worth checking whether iteration_budget_exhausted should be lower-precedence than unknown_needs_rca when sandbox_capabilities is null, rather than a separate fix.\n\n### Notes\n\nThe triggering sprint (`issues-248,245,246,231`, run `d5e69156e8b2`) ran in a\ndifferent project (`hdp`), not this repo, so I could not read that run's actual\naudit/log files \u2014 `.forge/logs` and `.forge/audits` here contain no matching\nsprint directory. This diagnosis is built entirely from theforge's own source at\nHEAD plus a same-shaped audit record already present in this repo's own audit\nhistory (`.forge/audits/runs/6f619a5997a1.json`), which confirms the\n`sandbox_capabilities: {profile: null, write_roots: [], mach_services: []}` shape\nreally is what lands in the audit today. I did not exhaustively verify whether\nthe \"outbound network restricted\" half of the reported symptom maps to any\nexisting preset axis (the `xcode` preset only grants write roots + mach services,\nnot network egress) \u2014 see related_findings.\n\n---\n\n**Provenance:** produced by `forge diagnose --issue 2029 --dry-run` (run\n`f0406af91756`, 2026-07-29 07:52 PT, 162s, $1.423) and landed here by the\noperator, because the dry-run suppressed the landing step and an earlier\nnon-dry-run attempt (run `59bdfe42256b`, $0.725) was discarded by the PARSE\nfailure now filed as #2055. The artifact above is the renderer's output verbatim;\nnothing was edited. Note that run `f0406af91756`'s own audit record therefore\nshows no landing.\n",
+    "github_issue": 2029,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Worker thread timed out after 3600s",
+    "error_type": "TimeoutError",
+    "start_phase": null,
+    "stop_phase": null,
+    "cost_usd": 9.0011
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "fd86f5e9f4daac4ecc757973bd08d587bf8ac7952165516001f3645f04e41e9c",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-03T04:43:06.659464+00:00",
+    "finished_at": "2026-08-03T05:11:19.992052+00:00",
+    "duration_seconds": 1693.332588
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2029",
+    "branch": "feat/issue-2029",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "FAIL",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "FAIL",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": "15f1f5a07b94d2821a7c5673ffeac8fa9685c145de74e597aa85306146de6e19",
+        "cost_usd": 0.20338669999999998,
+        "duration_s": 680.82,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/rca.py",
+          "tests/test_sprint_rca.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4-mini",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 0.09622715,
+        "duration_s": 269.01,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/rca.py",
+          "tests/test_sprint_rca.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4-mini",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 3,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 2
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 2
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 3,
+        "restated_findings": 0,
+        "cost_usd": 3.686461,
+        "duration_s": 187.52
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 3,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 3,
+          "P2": 3
+        },
+        "new_findings_by_severity": {
+          "P1": 2,
+          "P2": 3
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 5,
+        "restated_findings": 0,
+        "cost_usd": 5.015052,
+        "duration_s": 214.11
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": null,
+      "complexity_band_input": null,
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "dev",
+      "model_actual": "gpt-5.4-mini",
+      "model_provider": null,
+      "model_cli": "codex",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 900,
+      "base_dev_cost_estimate_usd": 30.0,
+      "static_dev_max": 3,
+      "complexity_score_used": null,
+      "rationale": "no complexity score available; using static configured limits"
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-03T04:46:14.939984+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-08-03T04:57:44.006262+00:00"
+      },
+      {
+        "cycle": 2,
+        "cycle_count": 1,
+        "total_count": 3,
+        "timestamp": "2026-08-03T05:06:39.025805+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 9.0011276,
+    "dev_usd": 0.29961384999999996,
+    "review_usd": 8.70151375,
+    "dev_invocations": 2,
+    "review_invocations": 10,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "dev",
+        "cost_usd": 0.20338669999999998,
+        "duration_seconds": 680.8151267499197,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.4-mini",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.20338669999999998
+          }
+        ],
+        "model_used": "gpt-5.4-mini"
+      },
+      {
+        "role": "dev",
+        "profile": "dev",
+        "cost_usd": 0.09622715,
+        "duration_seconds": 269.00756320916116,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.4-mini",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.09622715
+          }
+        ],
+        "model_used": "gpt-5.4-mini"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 0.9281489999999999,
+        "duration_seconds": 37.45350105818361,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.021807
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.906342
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.7523415000000001,
+        "duration_seconds": 37.45350105818361,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.7523415000000001
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": 0.11735374999999999,
+        "duration_seconds": 37.45350105818361,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.4",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.11735374999999999
+          }
+        ],
+        "model_used": "gpt-5.4"
+      },
+      {
+        "role": "review",
+        "profile": "claude-opus",
+        "cost_usd": 1.301632,
+        "duration_seconds": 37.45350105818361,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.021807
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.2798249999999998
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.586985,
+        "duration_seconds": 37.45350105818361,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.586985
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.624464,
+        "duration_seconds": 42.73432655003853,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.624464
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.092447,
+        "duration_seconds": 42.73432655003853,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.092447
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.4",
+        "cost_usd": 0.182039,
+        "duration_seconds": 42.73432655003853,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.4",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.182039
+          }
+        ],
+        "model_used": "gpt-5.4"
+      },
+      {
+        "role": "review",
+        "profile": "claude-opus",
+        "cost_usd": 1.6582005,
+        "duration_seconds": 42.73432655003853,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.6582005
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.457902,
+        "duration_seconds": 42.73432655003853,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.457902
+          }
+        ],
+        "model_used": "gpt-5.5"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "SKIPPED",
+    "reason": null,
+    "complexity": null,
+    "complexity_score": null,
+    "implementation_complexity_score": null,
+    "validation_complexity_score": null,
+    "complexity_projection": null,
+    "complexity_evidence": [],
+    "work_type": null,
+    "domains": [],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.0,
+    "cached": false,
+    "original_verdict": null,
+    "source_run_id": null,
+    "cache_snapshot": null,
+    "cache_validation": null,
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": []
+  },
+  "context_manifests": [
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "missing",
+      "path": null,
+      "handoff": null
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2029/iter_2.yaml",
+      "handoff": {
+        "summary": "I narrowed capability-gap RCA matching so it only fires from non-authored text sources correlated with the resolved sandbox capability payload, which keeps the primary class from being misordered ahead of text-derived failures, and I fixed the import grouping regression in the RCA test module.",
+        "commits": [
+          {
+            "sha": "2ea8fc0",
+            "message": "fix(sprint): narrow capability gap detection"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Given a sprint story whose per-story audit records sandbox_capabilities.profile: null (or a profile missing the write roots or mach services the failure implies) AND whose dev/review iteration text reports a toolchain/service/network failure consistent with a known capability preset, sprint-rca.yaml's primary failure class is a capability-profile-gap class, not iteration_exhaustion.",
+            "status": "MET",
+            "notes": "The classifier now correlates the resolved sandbox capability payload with preset-shaped failure text from non-authored sources, and the xcode capability-gap tests pass."
+          },
+          {
+            "criterion": "The recommended action names sandbox.capability_profile and the applicable preset rather than 'raise the iteration budget'.",
+            "status": "MET",
+            "notes": "The capability-gap action continues to name sandbox.capability_profile and the matched preset, and the test suite confirms the advice stays non-budget-oriented."
+          },
+          {
+            "criterion": "The capability-profile gap wins over generic iteration exhaustion.",
+            "status": "MET",
+            "notes": "Priority ordering already places capability_profile_gap ahead of iteration_exhaustion, and the updated symptom sourcing avoids the structured-text precedence bug that could let iteration advice win incorrectly."
+          },
+          {
+            "criterion": "Focused RCA tests cover a null sandbox capability profile, an incomplete/granted-but-insufficient capability payload, and a comparable exhausted story without capability-shaped text.",
+            "status": "MET",
+            "notes": "The existing RCA tests cover the null, incomplete, granted, and no-symptom cases, and the full repo test command passed."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": [
+        "1db8f00421f76e9e"
+      ]
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    },
+    {
+      "iteration": 3,
+      "finding_ids": [
+        "79b65f58ce9e6f26",
+        "77ac039e73cf6d55"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "46853de21f136e6c38c159b4418f427ffa237154",
+      "verification": {
+        "state": "ungated",
+        "gate_decision": null,
+        "gate_commit": null,
+        "gate_runs": 0,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "claude-sonnet",
+        "google-gemini-3.5-flash",
+        "openai-gpt-5.4",
+        "claude-opus",
+        "openai-gpt-5.5"
+      ],
+      "successful": [
+        "claude-sonnet",
+        "google-gemini-3.5-flash",
+        "openai-gpt-5.4",
+        "claude-opus",
+        "openai-gpt-5.5"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "claude-sonnet": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "openai-gpt-5.4": "succeeded",
+        "claude-opus": "succeeded",
+        "openai-gpt-5.5": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[claude-sonnet] Adds a capability_profile_gap RCA class that correlates a null/empty resolved sandbox_capabilities record with a forge-emitted (log/structured, never agent-authored-prose) report of a preset's denial symptom, ranks it above iteration_exhaustion, and points the recommended action at sandbox.capability_profile + the matching preset; verified logic (tuple shapes, ambiguity-guard bypass for signal hits, priority ordering) and ran the full test_sprint_rca.py (57 passed) and test_cli_sprint_digest.py (18 passed) with no regressions. | [google-gemini-3.5-flash] The implementation correctly surfaces missing sandbox capability profiles as the root cause of toolchain failures. | [openai-gpt-5.4] The original null-profile symptom is covered, but the new RCA path does not satisfy the issue's broader contract for runs whose resolved sandbox record is present yet still missing the grant the failing toolchain needs. | [claude-opus] New capability_profile_gap class correctly correlates the run's own null sandbox_capabilities record with a forge-emitted toolchain denial and replaces the misleading iteration-budget advice; 57/57 rca tests pass, lint clean. Two P2s on detection breadth/precedence. Note: the fix covers the profile-absent case only \u2014 a *granted* profile missing the specific grant a failure implies is deliberately left classified as before, which is a defensible narrowing of the diagnosis' fix-success wording but worth knowing. | [openai-gpt-5.5] The change surfaces the missing sandbox capability profile as the primary RCA cause and the focused RCA test suite passes.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 2,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 972,
+          "description": "When a story reports a preset-shaped toolchain denial and the audit shows a non-default sandbox capability record that still omits the required write roots or mach services, the RCA path skips capability_profile_gap and falls back to iteration_exhaustion with budget advice.",
+          "reviewers": [
+            "openai-gpt-5.4"
+          ],
+          "reporter": "openai-gpt-5.4"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 949,
+          "description": "The capability-gap denial-marker list includes the bare tokens 'sandbox', 'denied' and 'unavailable', so an ordinary informational log line that merely names a toolchain and the word sandbox together (for example a line reporting that xcodebuild is being run under the forge sandbox) satisfies both halves of the correlation and can classify a story as capability_profile_gap without any denial ever having occurred.",
+          "reviewers": [
+            "claude-opus"
+          ],
+          "reporter": "claude-opus"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 1225,
+          "description": "The capability-gap hit is emitted through the signal pass and therefore normalised to source_kind 'structured' even though half its evidence comes from a text scan, so it outranks every text-derived primary class including higher-priority ones such as provider_quota, and a story whose only quota evidence is a scanned phrase is reported as a capability gap instead.",
+          "reviewers": [
+            "claude-opus"
+          ],
+          "reporter": "claude-opus"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: forge held a null resolved sandbox_capabilities record and the dev agent's own reported toolchain/service denial at the same time but classified the story as generic iteration exhaustion instead of surfacing the missing capability profile as the cause.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:296-303 adds the sandbox_capability_profile_missing primary rule; :393-396 ranks capability_profile_gap ahead of iteration_exhaustion in _PRIMARY_PRIORITY; :890-1027 implements _capability_grant_absent (requires every sandbox_capabilities payload in the audit to show no profile/write_roots/mach_services) correlated via _capability_symptom_hit against forge-emitted (non-\"authored\") text sources for the xcode preset's denial vocabulary; :1449-1461 _capability_gap_action names sandbox.capability_profile and the matched preset instead of the iteration budget. tests/test_sprint_rca.py::test_missing_capability_profile_outranks_iteration_exhaustion reproduces the exact production shape (null profile audit + CoreSimulator \"Operation not permitted\" denial text) and asserts primary_failure_class == \"capability_profile_gap\", the action names sandbox.capability_profile and xcode, and no iteration-budget advice is emitted. test_capability_gap_seam_coordinator_audit_to_rca further verifies the seam against the real coordinator.audit.generate_audit_log output. Both tests pass (confirmed via local pytest run); negative cases (granted profile, network-only denial, agent-authored .md prose, no capability-shaped text) correctly stay iteration_exhaustion."
+        },
+        {
+          "criterion": "Symptom resolution: Missing sandbox capability profile is never surfaced, even when the agent reports the exact toolchain failure it causes",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:297-305, 390-396, 596, 893-1028, 1210-1226, 1446-1459; tests/test_sprint_rca.py:1226-1472; The original observed null-profile symptom is covered in code by src/theforge/sprint/rca.py:591-607, 1011-1027, 1210-1226, and 1449-1525, and reproduced by tests/test_sprint_rca.py:1261-1292 plus the coordinator-to-RCA seam at 1414-1471, which assert capability_profile_gap and sandbox.capability_profile guidance for a null profile with a CoreSimulator denial."
+        },
+        {
+          "criterion": "Symptom resolution: a story that failed because the project set no sandbox.capability_profile is reported as iteration exhaustion with 'raise the iteration budget', hiding the configuration gap forge already recorded.",
+          "status": "VERIFIED",
+          "evidence": "Implementation: rca.py adds RcaRule 'sandbox_capability_profile_missing' \u2192 failure_class 'capability_profile_gap' (diff at RULES, near line 296), ranks it above 'iteration_exhaustion' in _PRIMARY_PRIORITY (near line 390), correlates the audit's resolved record with forge-emitted denial text in _capability_grant_absent / _capability_symptom_hit / _capability_profile_gap_evidence (near lines 940-1030), emits the hit in _signal_rule_hits (near line 1225), and replaces the budget advice via _capability_gap_action plus the new exclusion in iteration_advice_applies (near lines 1449 and 1542). Tests reproduce the exact production symptom: tests/test_sprint_rca.py:1261 builds an audit with sandbox_capabilities {profile: null, write_roots: [], mach_services: []} and a dev log line 'xcodebuild failed \u2014 Failed to get the connection to the CoreSimulator service: Operation not permitted' with dev hit_limit true, then asserts primary_failure_class == capability_profile_gap, that the evidence excerpt names sandbox.capability_profile and CoreSimulator, that an action names both sandbox.capability_profile and 'xcode', and that no action mentions the iteration budget \u2014 this test fails on the pre-fix code path, which classified the same inputs as iteration_exhaustion (asserted still-correct for the no-symptom case at line 1295). Negative coverage: granted profile (line 1323), network-egress-only text (line 1352), agent-authored prose (line 1378), preset-name integrity against sandbox_capabilities.preset_names() (line 1404), and a coordinator audit-to-RCA seam test using real generate_audit_log output (line 1413). Full module run: 57 passed."
+        },
+        {
+          "criterion": "Symptom resolution: A story with null sandbox capabilities and CoreSimulator or Xcode toolchain denial is classified as a capability profile gap instead of iteration exhaustion, and the next action names sandbox.capability_profile and the xcode preset.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:596 wires capability-gap correlation into story classification, src/theforge/sprint/rca.py:952-1027 correlates null/empty sandbox_capabilities with Xcode/CoreSimulator denial text, src/theforge/sprint/rca.py:1215-1226 emits the sandbox_capability_profile_missing evidence signal, src/theforge/sprint/rca.py:1457-1462 and src/theforge/sprint/rca.py:1523 emit the capability-profile remediation, and src/theforge/sprint/rca.py:1540-1545 suppresses iteration-budget advice for this class. tests/test_sprint_rca.py:1261-1292 reproduces the original failure mode with a null capability audit, exhausted dev iterations, and the concrete CoreSimulator Operation not permitted denial, then asserts primary_failure_class is capability_profile_gap and recommended_next_actions names sandbox.capability_profile and xcode. tests/test_sprint_rca.py:1414-1471 covers the coordinator-audit-to-RCA seam using generate_audit_log. Verified locally with pytest tests/test_sprint_rca.py -q: 57 passed."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "2ea8fc0061c66010a56b8d2911be808a04643edf",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "2ea8fc0061c66010a56b8d2911be808a04643edf",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "claude-sonnet",
+        "google-gemini-3.5-flash",
+        "openai-gpt-5.4",
+        "claude-opus",
+        "openai-gpt-5.5"
+      ],
+      "successful": [
+        "claude-sonnet",
+        "google-gemini-3.5-flash",
+        "openai-gpt-5.4",
+        "claude-opus",
+        "openai-gpt-5.5"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "claude-sonnet": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "openai-gpt-5.4": "succeeded",
+        "claude-opus": "succeeded",
+        "openai-gpt-5.5": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[claude-sonnet] Cycle-1 P1 (incomplete capability payload skipping the gap class) is fixed via _capability_payload_grants_preset partial-grant matching, verified by the new test_incomplete_capability_profile_outranks_iteration_exhaustion and a live repro. However, the fix's own _select_primary special-case for capability_profile_gap is a new regression: it short-circuits at the 'iteration_exhaustion' priority slot without checking whether a strictly higher-priority text-primary class is also present, so it silently overrides classes like worker_timeout that should win. Reproduced live against the built module. | [google-gemini-3.5-flash] The sandbox capability profile gap RCA classification is fully implemented, robustly tested, and correctly handles incomplete profiles. | [openai-gpt-5.4] The prior incomplete-profile bug is fixed, but the latest narrowing regressed capability-gap detection for denials recorded only in structured summary or audit text. | [claude-opus] Prior cycle-1 P1 is resolved \u2014 an xcode profile missing required write roots/mach services now classifies as capability_profile_gap (verified by test_incomplete_capability_profile_outranks_iteration_exhaustion; 59/59 rca tests and 119 related tests pass, ruff clean). However, the cycle-2 fix to _select_primary introduces a precedence regression: the capability class now short-circuits ALL text-derived classes, including provider_quota which the priority table ranks first. Also note the dev handoff omitted two of the three branch commits, and its reported gate result was BLOCKED. | [openai-gpt-5.5] Cycle 1 P1 is resolved, and I found no blocking regressions in the RCA capability-gap changes.",
+      "sanitization_audit": null,
+      "p1_count": 3,
+      "p2_count": 3,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 1417,
+          "description": "When a story's dev-iteration log contains both a worker-thread-timeout line and a capability-preset denial line, with no sandbox capability profile granted, primary_failure_class resolves to \"capability_profile_gap\" even though the \"worker_thread_timeout\" rule also fired and sits far earlier in the declared _PRIMARY_PRIORITY order.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        },
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 1038,
+          "description": "When the only recorded toolchain denial lives in the story summary or audit error fields, the RCA now skips capability_profile_gap and falls back to iteration_exhaustion even though the same story audit records a missing or incomplete sandbox capability payload.",
+          "reviewers": [
+            "openai-gpt-5.4"
+          ],
+          "reporter": "openai-gpt-5.4"
+        },
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 1415,
+          "description": "When a story has no field-derived primary class and its logs contain both a provider rate-limit phrase and a preset-shaped toolchain denial, the primary failure class is reported as capability_profile_gap rather than provider_quota, because the capability short-circuit returns before the text-derived classes are ever ranked; calling _select_primary with no structured classes and the text classes provider_quota plus capability_profile_gap returns capability_profile_gap, and the same happens for review_rejected.",
+          "reviewers": [
+            "claude-opus"
+          ],
+          "reporter": "claude-opus"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 1524,
+          "description": "For a story whose audit records a resolved xcode profile that is merely missing some of its write roots or mach services, the recommended next action still tells the operator that the run resolved no capability profile, which contradicts the evidence excerpt printed alongside it that names the profile the run did resolve.",
+          "reviewers": [
+            "claude-opus"
+          ],
+          "reporter": "claude-opus"
+        },
+        {
+          "severity": "P2",
+          "file": "tests/test_sprint_rca.py",
+          "line": 799,
+          "description": "The assertion pinning the emitted ruleset_version to a literal value was deleted rather than updated, leaving only a comparison of the artifact field against the module constant, so a future change to that constant no longer trips any test.",
+          "reviewers": [
+            "claude-opus"
+          ],
+          "reporter": "claude-opus"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/sprint/rca.py",
+          "line": 1000,
+          "description": "The preset lookup in the capability-grant check catches every exception type and returns not-granted, so an unrelated programming error inside preset resolution is silently converted into evidence that the run lacked the capability.",
+          "reviewers": [
+            "claude-opus"
+          ],
+          "reporter": "claude-opus"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Given a sprint story whose per-story audit records sandbox_capabilities.profile: null (or a profile missing the write roots or mach services the failure implies) AND whose dev/review iteration text reports a toolchain/service/network failure consistent with a known capability preset, sprint-rca.yaml's primary failure class is a capability-profile-gap class, not iteration_exhaustion.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:988-1010 _capability_payload_grants_preset now does partial-grant checking (write_roots/mach_services subset matching via _capability_root_matches), closing the Cycle-1 gap where an incomplete-but-non-null profile skipped the class. tests/test_sprint_rca.py::test_incomplete_capability_profile_outranks_iteration_exhaustion constructs an xcode profile missing its last write root and mach service and asserts primary_failure_class == \"capability_profile_gap\"; confirmed passing via local pytest run (9/9 capability tests pass, 59/59 full rca suite passes).; Implemented in src/theforge/sprint/rca.py:1050-1075. Tested in tests/test_sprint_rca.py:1256-1301 (test_missing_capability_profile_outranks_iteration_exhaustion) and tests/test_sprint_rca.py:1352-1384 (test_incomplete_capability_profile_outranks_iteration_exhaustion).; src/theforge/sprint/rca.py:598 invokes capability-gap correlation during story classification, src/theforge/sprint/rca.py:1050 correlates recorded sandbox capability payloads with preset-shaped denial text, and src/theforge/sprint/rca.py:1066 suppresses the class only when some recorded payload fully grants the matched preset; tests/test_sprint_rca.py:1265 covers the null-profile CoreSimulator/xcodebuild failure, and tests/test_sprint_rca.py:1352 covers an xcode payload missing required grants."
+        },
+        {
+          "criterion": "The recommended action names sandbox.capability_profile and the applicable preset rather than 'raise the iteration budget'.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/rca.py:1521-1533 _capability_gap_action names sandbox.capability_profile and the matched preset; :1614-1620 excludes capability_profile_gap from iteration-budget advice. test_missing_capability_profile_outranks_iteration_exhaustion asserts both the sandbox.capability_profile/xcode phrasing is present and no \"iteration budget\" phrase appears.; Implemented in src/theforge/sprint/rca.py:1524-1536. Tested in tests/test_sprint_rca.py:1293-1299.; src/theforge/sprint/rca.py:1524 builds the capability-gap remediation around sandbox.capability_profile and the matched preset, src/theforge/sprint/rca.py:1598 wires that action into the recommendation table, and src/theforge/sprint/rca.py:1615 excludes capability_profile_gap from generic iteration-budget advice; tests/test_sprint_rca.py:1292 verifies the xcode action names sandbox.capability_profile and omits iteration-budget advice."
+        },
+        {
+          "criterion": "The capability-profile gap wins over generic iteration exhaustion.",
+          "status": "PARTIAL",
+          "evidence": "Confirmed for the specific documented case (capability_profile_gap vs. iteration_exhaustion alone) by test_missing_capability_profile_outranks_iteration_exhaustion and the seam test. However the mechanism implementing this (_select_primary's special-case at rca.py:1417-1419) is broader than intended and also wins over higher-priority classes it should lose to (see P1 finding) \u2014 the priority guarantee is not reliably scoped to \"outranks iteration_exhaustion only,\" so the underlying implementation of this AC is not fully correct even though the AC's literal test case passes.; Implemented in src/theforge/sprint/rca.py:390-399 and src/theforge/sprint/rca.py:1414-1421. Tested in tests/test_sprint_rca.py:1256-1301.; src/theforge/sprint/rca.py:397 places capability_profile_gap ahead of iteration_exhaustion in priority order, and src/theforge/sprint/rca.py:1418 explicitly lets text-carried capability-gap evidence beat structured iteration exhaustion; tests/test_sprint_rca.py:1265 verifies the exhausted xcodebuild/CoreSimulator denial classifies as capability_profile_gap."
+        },
+        {
+          "criterion": "Focused RCA tests cover a null sandbox capability profile, an incomplete/granted-but-insufficient capability payload, and a comparable exhausted story without capability-shaped text.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_sprint_rca.py: test_missing_capability_profile_outranks_iteration_exhaustion (null), test_incomplete_capability_profile_outranks_iteration_exhaustion (incomplete), test_granted_capability_profile_is_not_reported_as_a_gap (fully granted), test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion (no symptom text) \u2014 all present and passing.; Tested in tests/test_sprint_rca.py:1256-1301 (null profile), tests/test_sprint_rca.py:1352-1384 (incomplete payload), and tests/test_sprint_rca.py:1304-1331 (no capability-shaped text).; tests/test_sprint_rca.py:1265 covers the null sandbox capability profile, tests/test_sprint_rca.py:1352 covers a granted xcode profile with omitted write roots and mach services, tests/test_sprint_rca.py:1299 covers exhausted work without capability-shaped text, and pytest tests/test_sprint_rca.py -q passed with 59 tests."
+        },
+        {
+          "criterion": "Symptom resolution: missing or incomplete sandbox capability profile is surfaced as the actionable cause when forge also holds the matching toolchain denial",
+          "status": "PARTIAL",
+          "evidence": "The new path is wired into classification and action selection in src/theforge/sprint/rca.py:593-604, src/theforge/sprint/rca.py:1050-1073, and src/theforge/sprint/rca.py:1259-1275, and the tests at tests/test_sprint_rca.py:1268-1296, tests/test_sprint_rca.py:1352-1383, and tests/test_sprint_rca.py:1474-1531 verify the null-profile, incomplete-profile, and seam cases when the denial is present in dev-iteration log files. But the latest filter at src/theforge/sprint/rca.py:1038 now rejects structured symptom sources that _collect_text_sources still records at src/theforge/sprint/rca.py:725-748, and no test covers that storage path, so the production symptom is not fully resolved across the run-authored inputs this classifier accepts."
+        },
+        {
+          "criterion": "Symptom resolution: a story that failed because the project set no sandbox.capability_profile was reported as iteration exhaustion with 'raise the iteration budget', hiding the configuration gap forge already recorded.",
+          "status": "VERIFIED",
+          "evidence": "Implementation: rca.py registers RcaRule 'sandbox_capability_profile_missing' \u2192 failure_class 'capability_profile_gap' (near line 298), places it above iteration_exhaustion in _PRIMARY_PRIORITY (near line 392), correlates the audit's recorded capability payloads with a preset-shaped denial in _sandbox_capability_payloads / _capability_payload_grants_preset / _capability_symptom_hit / _capability_profile_gap_evidence (lines 908-1077), emits the hit from _signal_rule_hits (near line 1253), and replaces the budget advice via _capability_gap_action (line 1524) plus the new exclusion in iteration_advice_applies (near line 1617). Tests reproducing the production symptom: tests/test_sprint_rca.py:1257 builds an audit with sandbox_capabilities {profile: null, write_roots: [], mach_services: []} and a dev log line 'xcodebuild failed \u2014 Failed to get the connection to the CoreSimulator service: Operation not permitted' with dev hit_limit true, then asserts primary_failure_class == capability_profile_gap, that the evidence names sandbox.capability_profile, that an action names both the setting and 'xcode', and that no action mentions the iteration budget \u2014 this fails on the pre-fix classifier, which returned iteration_exhaustion for those inputs. The cycle-1 P1 case is now covered at line 1352 (test_incomplete_capability_profile_outranks_iteration_exhaustion: a resolved 'xcode' profile with a truncated write-root and mach-service list still classifies as capability_profile_gap). Negative coverage: fully granted preset built from resolve_capabilities (line 1330), network-egress-only text (line 1385), benign sandbox mention without a refusal (line 1412), agent-authored prose (line 1438), preset-name integrity (line 1464), and a generate_audit_log-to-RCA seam test (line 1473). Verified by running the module: 59 passed. The P1 filed above concerns precedence against other text classes and does not affect this symptom path."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.4",
+      "provider": null,
+      "model": "gpt-5.4",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.4/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-opus",
+      "provider": null,
+      "model": "opus",
+      "cli": "claude",
+      "canonical_id": "anthropic/opus/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.4",
+      "provider": null,
+      "model": "gpt-5.4",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.4/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-opus",
+      "provider": null,
+      "model": "opus",
+      "cli": "claude",
+      "canonical_id": "anthropic/opus/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "Worker timeout (>3600s) during phase DEV",
+  "error_type": "TimeoutError",
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3378 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1417 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1211 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1548 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1089 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2405 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1683 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1507 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1727 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 2026 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1397 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1168 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2075 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1103 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1144 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1245 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1254 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 657 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2781 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/process_group.py",
+      "detail": "src/theforge/process_group.py has 788 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 753 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1446 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/batch_report.py",
+      "detail": "src/theforge/sprint/batch_report.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1899 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 5803 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 603 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1281 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2790 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1226 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1883 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1822 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "1db8f00421f76e9e",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 972,
+      "severity": "P1",
+      "description": "When a story reports a preset-shaped toolchain denial and the audit shows a non-default sandbox capability record that still omits the required write roots or mach services, the RCA path skips capability_profile_gap and falls back to iteration_exhaustion with budget advice.",
+      "reporter": "openai-gpt-5.4",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "3a5ec26e95363250",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 949,
+      "severity": "P2",
+      "description": "The capability-gap denial-marker list includes the bare tokens 'sandbox', 'denied' and 'unavailable', so an ordinary informational log line that merely names a toolchain and the word sandbox together (for example a line reporting that xcodebuild is being run under the forge sandbox) satisfies both halves of the correlation and can classify a story as capability_profile_gap without any denial ever having occurred.",
+      "reporter": "claude-opus",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "a96dca90db4345d1",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 1225,
+      "severity": "P2",
+      "description": "The capability-gap hit is emitted through the signal pass and therefore normalised to source_kind 'structured' even though half its evidence comes from a text scan, so it outranks every text-derived primary class including higher-priority ones such as provider_quota, and a story whose only quota evidence is a scanned phrase is reported as a capability gap instead.",
+      "reporter": "claude-opus",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "79b65f58ce9e6f26",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 1417,
+      "severity": "P1",
+      "description": "When a story's dev-iteration log contains both a worker-thread-timeout line and a capability-preset denial line, with no sandbox capability profile granted, primary_failure_class resolves to \"capability_profile_gap\" even though the \"worker_thread_timeout\" rule also fired and sits far earlier in the declared _PRIMARY_PRIORITY order.",
+      "reporter": "claude-sonnet",
+      "disposition": "corroborated_new"
+    },
+    {
+      "finding_id": "77ac039e73cf6d55",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 1038,
+      "severity": "P1",
+      "description": "When the only recorded toolchain denial lives in the story summary or audit error fields, the RCA now skips capability_profile_gap and falls back to iteration_exhaustion even though the same story audit records a missing or incomplete sandbox capability payload.",
+      "reporter": "openai-gpt-5.4",
+      "disposition": "ac_blocking"
+    },
+    {
+      "finding_id": "d1c2b5ad5477d88a",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 1524,
+      "severity": "P2",
+      "description": "For a story whose audit records a resolved xcode profile that is merely missing some of its write roots or mach services, the recommended next action still tells the operator that the run resolved no capability profile, which contradicts the evidence excerpt printed alongside it that names the profile the run did resolve.",
+      "reporter": "claude-opus",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "c66d1d843a8693a8",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "tests/test_sprint_rca.py",
+      "line": 799,
+      "severity": "P2",
+      "description": "The assertion pinning the emitted ruleset_version to a literal value was deleted rather than updated, leaving only a comparison of the artifact field against the module constant, so a future change to that constant no longer trips any test.",
+      "reporter": "claude-opus",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "2da127d2fb75ac99",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/sprint/rca.py",
+      "line": 1000,
+      "severity": "P2",
+      "description": "The preset lookup in the capability-grant check catches every exception type and returns not-granted, so an unrelated programming error inside preset resolution is silently converted into evidence that the run lacked the capability.",
+      "reporter": "claude-opus",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [
+    {
+      "check": "reviewer_tree_currency",
+      "result": "fail",
+      "producer": "coordinator.review_context.reviewer_tree_currency",
+      "evidence": {
+        "base_branch": "release/v0.13",
+        "expected_commits": [
+          "2ea8fc0 fix(sprint): narrow capability gap detection"
+        ],
+        "actual_commits": [
+          "46853de fix(rca): surface a missing sandbox capability profile as the cause",
+          "99e1fac fix(sprint): address review findings (iter 1)",
+          "2ea8fc0 fix(sprint): narrow capability gap detection"
+        ],
+        "missing_from_branch": [],
+        "omitted_from_handoff": [
+          "46853de fix(rca): surface a missing sandbox capability profile as the cause",
+          "99e1fac fix(sprint): address review findings (iter 1)"
+        ]
+      }
+    }
+  ],
+  "trust_status": "tainted",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.0,
+      "duration_s": null,
+      "outcome": "skipped"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 0.299614,
+      "duration_s": 949.82,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 59.5,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 8.701514,
+      "duration_s": 400.94,
+      "cycles": 2,
+      "outcome": "request_changes",
+      "per_reviewer": {
+        "claude-sonnet": {
+          "cost": 2.552613,
+          "verdict": "REQUEST_CHANGES"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 1.844788,
+          "verdict": "APPROVE"
+        },
+        "openai-gpt-5.4": {
+          "cost": 0.299393,
+          "verdict": "REQUEST_CHANGES"
+        },
+        "claude-opus": {
+          "cost": 2.959833,
+          "verdict": "REQUEST_CHANGES"
+        },
+        "openai-gpt-5.5": {
+          "cost": 1.044887,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 9.001128,
+    "duration_s": 1410.26,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "last_phase": "DEV",
+  "last_model": "gpt-5.4-mini",
+  "sprint_id": "840e994353ba",
+  "sprint_name": "issues-2030,2029,2129,1906,1880,1415,728,727"
+}
