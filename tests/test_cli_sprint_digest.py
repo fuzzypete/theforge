@@ -364,25 +364,80 @@ def test_preflight_already_done_split_from_landed(tmp_path: Path) -> None:
     assert "forge rca" not in output
 
 
-def test_resume_skip_merged_already_done_stays_landed(tmp_path: Path) -> None:
-    """An ALREADY_DONE story that actually merged stays in LANDED, not split out."""
-    name = "merged-already-done"
-    run_id = "runMAD"
-    merged_already_done = {
-        "slug": "issue-42",
-        "path": "Issue #42",
+def _resume_skip_merged_story(num: int) -> dict:
+    """An ALREADY_DONE story whose work merged in an *earlier* run (issue #1906)."""
+    return {
+        "slug": f"issue-{num}",
+        "path": f"Issue #{num}",
         "outcome": "ALREADY_DONE",
         "outcome_source": "resume_skip_merged",
         "merge": True,
+        "cost_usd": 0.0,
+        "started_at": "2026-05-08T00:00:00Z",
+        "finished_at": "2026-05-08T00:00:00Z",
+    }
+
+
+def test_resume_skip_merged_split_from_landed(tmp_path: Path) -> None:
+    """A story merged before this invocation is not counted as landed by it."""
+    name = "merged-already-done"
+    run_id = "runMAD"
+    stories = [_landed_story(1, 1.0), _resume_skip_merged_story(42)]
+    _write_summary(tmp_path, name, run_id, stories)
+    output = _render(tmp_path, run_id)
+
+    # Only the story this run actually landed counts under LANDED.
+    assert "LANDED (1 of 2)" in output
+    assert "ALREADY LANDED (skipped as merged) (1)" in output
+    assert "#42" in output
+    assert "landed before this run — skipped as already merged" in output
+    # A pre-invocation merge is not a no-op preflight acceptance.
+    assert "ALREADY SATISFIED" not in output
+    # It still succeeded: no recovery sections.
+    assert "FAILED" not in output
+    assert "forge rca" not in output
+
+
+def test_resume_skip_merged_and_preflight_verdict_are_distinct_buckets(tmp_path: Path) -> None:
+    """The two pre-invocation completion paths answer different operator questions."""
+    name = "both-buckets"
+    run_id = "runBB"
+    stories = [
+        _landed_story(1, 1.0),
+        _resume_skip_merged_story(158),
+        _already_satisfied_story(1019),
+    ]
+    _write_summary(tmp_path, name, run_id, stories)
+    output = _render(tmp_path, run_id)
+
+    assert "LANDED (1 of 3)" in output
+    assert "ALREADY LANDED (skipped as merged) (1)" in output
+    assert "ALREADY SATISFIED (1)" in output
+    landed_idx = output.index("LANDED (1 of 3)")
+    already_landed_idx = output.index("ALREADY LANDED")
+    satisfied_idx = output.index("ALREADY SATISFIED")
+    assert landed_idx < already_landed_idx < satisfied_idx
+
+
+def test_reexec_reconcile_already_done_stays_landed(tmp_path: Path) -> None:
+    """A re-exec'd generation is the same parent invocation — it still landed here."""
+    name = "reexec-reconcile"
+    run_id = "runRR"
+    reconciled = {
+        "slug": "issue-42",
+        "path": "Issue #42",
+        "outcome": "ALREADY_DONE",
+        "outcome_source": "reexec_reconcile",
         "cost_usd": 2.0,
         "started_at": "2026-05-08T00:00:00Z",
         "finished_at": "2026-05-08T00:10:00Z",
     }
-    stories = [_landed_story(1, 1.0), merged_already_done]
+    stories = [_landed_story(1, 1.0), reconciled]
     _write_summary(tmp_path, name, run_id, stories)
     output = _render(tmp_path, run_id)
 
     assert "LANDED (2 of 2)" in output
+    assert "ALREADY LANDED" not in output
     assert "ALREADY SATISFIED" not in output
 
 

@@ -22,6 +22,10 @@ Layout for a completed sprint with one or more non-DONE stories::
     LANDED (n of m)
       ✓ #NNNN  $cost  elapsed  <title>
 
+    ALREADY LANDED (skipped as merged) (n)
+      ✓ #NNNN  —  —  <title>
+           landed before this run — skipped as already merged
+
     FAILED — <primary_failure_class> (n)
       ✗ #NNNN  $cost  elapsed  <title>
            primary:      <primary_failure_class>
@@ -102,16 +106,20 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
     sprint_block = summary.get("sprint") if isinstance(summary.get("sprint"), dict) else {}
     stories = [s for s in (summary.get("stories") or []) if isinstance(s, dict)]
 
-    # A no-merge ALREADY_DONE acceptance succeeded but shipped no change. It
-    # must not be reported as a landed change (issue #1937), so split it into a
-    # distinct ALREADY SATISFIED bucket. It still counts as succeeded, so it is
-    # excluded from ``non_done`` and never triggers the recovery sections.
-    already_satisfied = [s for s in stories if _is_already_satisfied(s)]
-    landed = [s for s in stories if _outcome(s) in DONE_OUTCOMES and not _is_already_satisfied(s)]
+    # ``LANDED`` is scoped to the reporting invocation: only work this run
+    # actually produced and landed. Stories whose completion was established
+    # *before* this invocation — a prior run's merge/close (issue #1906), or a
+    # preflight verdict that the spec was already satisfied (issue #1937) — are
+    # split into their own buckets. They still count as succeeded, so they are
+    # excluded from ``non_done`` and never trigger the recovery sections.
+    already_landed = [s for s in stories if _completion_bucket(s) == "already_landed"]
+    already_satisfied = [s for s in stories if _completion_bucket(s) == "already_satisfied"]
+    landed = [s for s in stories if _completion_bucket(s) == "landed"]
     non_done = [s for s in stories if _outcome(s) not in DONE_OUTCOMES]
 
     _print_header(sprint_block, run_id)
     _print_landed(landed, len(stories))
+    _print_already_landed(already_landed)
     _print_already_satisfied(already_satisfied)
 
     # Shape-gate skip categories (issue #1453) are independent of story
@@ -170,6 +178,25 @@ def _print_landed(landed: list[dict], total: int) -> None:
         print(f"  ✓ {_story_row(story)}")
 
 
+def _print_already_landed(stories: list[dict]) -> None:
+    """Render stories whose work merged/closed before the reporting invocation.
+
+    A resume or re-dispatch that finds a story already merged (or its issue
+    already closed) records ALREADY_DONE with ``outcome_source:
+    resume_skip_merged`` and zero cost/time. That completion was established by
+    an *earlier* run, so counting it under LANDED credits this run with work it
+    did not do (issue #1906). It gets its own bucket that names what was
+    actually established.
+    """
+    if not stories:
+        return
+    print()
+    print(f"ALREADY LANDED (skipped as merged) ({len(stories)})")
+    for story in stories:
+        print(f"  ✓ {_story_row(story)}")
+        print("       landed before this run — skipped as already merged")
+
+
 def _print_already_satisfied(stories: list[dict]) -> None:
     """Render no-op ALREADY_DONE acceptances distinctly from landed changes.
 
@@ -189,24 +216,40 @@ def _print_already_satisfied(stories: list[dict]) -> None:
             print(f"       no change needed — {reason}")
 
 
-def _is_already_satisfied(story: dict) -> bool:
-    """True when a story is a no-merge, preflight-verdict ALREADY_DONE acceptance.
+def _completion_bucket(story: dict) -> str | None:
+    """Classify a succeeded story by *when and how* its completion was established.
 
-    Distinguishes a no-op acceptance (working tree already satisfied the spec,
-    no PR) from a real landed change. A merged story — even one classified
-    ALREADY_DONE via the resume-skip-merged path — is excluded because it either
-    carries a merge boolean or a structured landing record.
+    Returns one of:
+
+    * ``"already_landed"`` — completion established before this invocation, by a
+      prior run's merge or an issue found already closed (``outcome_source:
+      resume_skip_merged``). Zero cost, zero elapsed: this run did not do it.
+    * ``"already_satisfied"`` — completion determined by other means, without a
+      change shipping: a no-merge preflight verdict that the working tree
+      already satisfies the spec (``outcome_source: preflight_verdict``).
+    * ``"landed"`` — this invocation produced and landed the work.
+    * ``None`` — the story did not succeed.
+
+    ``reexec_reconcile`` deliberately stays in ``"landed"``: a re-exec'd
+    generation is part of the *same* parent invocation, so its completion did
+    happen in the run being reported.
     """
-    if _outcome(story) != "ALREADY_DONE":
-        return False
-    if str(story.get("outcome_source") or "") != "preflight_verdict":
-        return False
+    if _outcome(story) not in DONE_OUTCOMES:
+        return None
+    source = str(story.get("outcome_source") or "")
+    if source == "resume_skip_merged":
+        return "already_landed"
+    if source == "preflight_verdict" and not _shipped_a_change(story):
+        return "already_satisfied"
+    return "landed"
+
+
+def _shipped_a_change(story: dict) -> bool:
+    """True when the story carries merge evidence (merge boolean or landing record)."""
     if story.get("merge"):
-        return False
+        return True
     landing = story.get("landing")
-    if isinstance(landing, dict) and landing.get("merged"):
-        return False
-    return True
+    return bool(isinstance(landing, dict) and landing.get("merged"))
 
 
 def _print_shape_gate_skips(summary: dict) -> None:
