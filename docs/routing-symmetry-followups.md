@@ -13,27 +13,50 @@ them to exist (and be either landed or catalogued here) before further promotion
 mechanisms land.
 
 > **Tracked issues.** Acceptance criterion 3 of #1389 asks for these to be filed
-> as tracked issues, each linking back to #1389. Both open asymmetries below have
-> been filed as GitHub issues (numbers noted per entry); this catalogue and the
+> as tracked issues, each linking back to #1389. Every asymmetry catalogued here
+> was filed as a GitHub issue (numbers noted per entry); this catalogue and the
 > tracker agree. Keep them in sync: when an entry's inverse lands, close its issue
 > and move the entry to "Resolved / not open".
 
 ## Open asymmetries
 
-### Reviewer re-inclusion path (inverse of #1388 completion-rate deprioritization) — #1880
-
-- **Deprioritization path:** `assignment.py:_reviewer_completion_check` (#1388) —
-  a reviewer with a poor attempt-completion history is reranked down.
-- **Gap:** there is no landed mechanism that re-includes a deprioritized reviewer
-  once its subsequent attempts complete cleanly. #1388 (reviewer attempt-completion
-  profiles) has landed, so this inverse is now actionable.
-- **Proposed inverse:** re-include a deprioritized reviewer after K consecutive
-  clean attempts, with audit attribution and tests for both directions.
-- **Registry marker:** `open_followup="reviewer-reinclusion"` on the reviewer pair
-  in `ROUTING_SYMMETRY_REGISTRY`.
-- **Tracked issue:** #1880 (back-links #1389; companion to #1388).
+None currently open. Every registered promotion/deprioritization path in
+`ROUTING_SYMMETRY_REGISTRY` has a landed, tested inverse; no pair carries an
+`open_followup` marker. A new promotion mechanism that lands without its inverse
+must add its entry back to this section (the enforcement test in
+`tests/test_routing_symmetry_invariant.py` requires one or the other).
 
 ## Resolved / not open
+
+### Reviewer re-inclusion path (inverse of #1388 completion-rate deprioritization) — RESOLVED (#1880)
+
+The reviewer completion-rate deprioritization
+(`assignment.py:_rerank_reviewers_by_completion`, surfaced by
+`_reviewer_completion_check`, #1388) is no longer a one-way ratchet. Its paired
+return path is an explicit **K-consecutive-clean-attempts** recovery rule
+(`MECHANISM_REVIEWER_COMPLETION_REINCLUSION = "reviewer_completion_reinclusion"`):
+a reviewer whose recency-weighted completion rate sits below
+`assignment.reviewer_completion_threshold` is restored to normal ranking as soon
+as the newest **K** outcomes in its `_completion_recent` ring are all clean.
+`K` is `assignment.reviewer_completion_min_runs` — the same sample floor the
+deprioritization is gated on — so recovery reuses the existing config surface and
+demands exactly as much fresh evidence as the deprioritization did.
+
+This matters because the two rules are not redundant: the recency weighting decays
+with a ~50-run half-life, so a reviewer with a long stale failure history can
+complete five straight attempts cleanly and *still* score under threshold. Passive
+decay alone would leave it deprioritized for dozens of runs; the explicit streak
+rule re-includes it immediately on demonstrated recovery.
+
+**Audit attribution.** Every `routing_decision[<reviewer role>].completion_check`
+carries a nested `reinclusion_check` block whenever reviewer completion profiles
+were consulted — `mechanism`, `fired`, `clean_attempts_required`, `reincluded`,
+`checked`, `checked_detail` (per-reviewer clean streak and below-threshold state)
+and a `reason` distinguishing fired from checked-but-didn't-fire (ADR-0006
+clause 7). **Registry:** the reviewer pair in `ROUTING_SYMMETRY_REGISTRY` now
+names this as its `demotion` (audit label `reinclusion_check`) instead of
+`open_followup="reviewer-reinclusion"`. **Tests:** both directions in
+`tests/test_assignment_reviewer_completion.py`.
 
 ### Escalation-history decay for dev-tier promotion — RESOLVED (#158)
 
