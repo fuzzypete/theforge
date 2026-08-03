@@ -144,6 +144,7 @@ def apply_cached_preflight_state(
     state.preflight_domains = list(cached_state.preflight_domains or [])
     state.preflight_contract_change = cached_state.preflight_contract_change
     state.preflight_bundle_candidate = cached_state.preflight_bundle_candidate
+    state.preflight_batch_group = cached_state.preflight_batch_group
     state.preflight_warnings = list(cached_state.preflight_warnings or [])
     state.preflight_likely_files = (
         None

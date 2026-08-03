@@ -316,9 +316,15 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     print(header)
     print("  " + "-" * (len(header) - 2))
 
-    # Separate bundle candidates from regular stories
+    # Three scheduling primitives, three renderings. Conflict bundles say
+    # "these overlap and were implemented together to avoid merge pain"; batch
+    # groups say "these are independent and were packed into one dev assignment
+    # for cost". Collapsing them into one section would hide which decision the
+    # scheduler actually made. A story in a bundle is never in a batch group
+    # (compute_batch_groups excludes bundled slugs), so the bundle test wins.
     bundle_entries = [e for e in entries if e.bundle_candidate]
-    regular_entries = [e for e in entries if not e.bundle_candidate]
+    batch_entries = [e for e in entries if not e.bundle_candidate and e.batch_group]
+    regular_entries = [e for e in entries if not e.bundle_candidate and not e.batch_group]
 
     if bundle_entries:
         bundle_slugs = "  ".join(e.slug for e in bundle_entries)
@@ -326,6 +332,17 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         for entry in bundle_entries:
             _print_story_line(entry, status_icons, indent=2, title_cache=title_cache)
         print()
+
+    if batch_entries:
+        groups: dict[str, list] = {}
+        for entry in batch_entries:
+            groups.setdefault(str(entry.batch_group), []).append(entry)
+        for group_id in sorted(groups):
+            group_slugs = "  ".join(e.slug for e in groups[group_id])
+            print(f"[batch: {group_id}  {group_slugs}]")
+            for entry in groups[group_id]:
+                _print_story_line(entry, status_icons, indent=2, title_cache=title_cache)
+            print()
 
     for entry in regular_entries:
         _print_story_line(entry, status_icons, indent=0, title_cache=title_cache)

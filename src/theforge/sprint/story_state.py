@@ -216,6 +216,10 @@ class StoryStateEntry:
     # story's cost is unknown — never coerce it to 0.0 (#1992).
     cost_usd: float | None = 0.0
     bundle_candidate: bool = False
+    # Cost-aware batch group this story was packed into (#727), or None when
+    # it was dispatched on its own. Grouping metadata only: a batched story
+    # keeps its own row, outcome, cost, and audit.
+    batch_group: str | None = None
     blocked_by: list[str] = field(default_factory=list)
     complexity: str | None = None
     complexity_score: int | None = None
@@ -276,6 +280,7 @@ class StoryStateEntry:
             "phase": self.phase,
             "cost_usd": self.cost_usd,
             "bundle_candidate": self.bundle_candidate,
+            "batch_group": self.batch_group,
             "blocked_by": list(self.blocked_by),
             "complexity": self.complexity,
             "complexity_score": self.complexity_score,
@@ -314,6 +319,7 @@ class SprintStoryState:
         phase: str | None = None,
         cost_usd: float | None = 0.0,
         bundle_candidate: bool = False,
+        batch_group: str | None = None,
         blocked_by: list[str] | None = None,
         complexity: str | None = None,
         complexity_score: int | None = None,
@@ -345,6 +351,8 @@ class SprintStoryState:
             elif cost_usd:
                 entry.cost_usd = cost_usd
             entry.bundle_candidate = bundle_candidate
+            if batch_group is not None:
+                entry.batch_group = batch_group
             if blocked_by is not None:
                 entry.blocked_by = list(blocked_by)
             if complexity is not None:
@@ -423,6 +431,8 @@ class SprintStoryState:
                         entry.cost_usd = None
                 elif k == "blocked_by" and isinstance(v, list):
                     entry.blocked_by = list(v)
+                elif k == "batch_group":
+                    entry.batch_group = v  # type: ignore[assignment]
                 elif k == "complexity":
                     entry.complexity = v  # type: ignore[assignment]
                 elif k == "complexity_score":
@@ -508,6 +518,7 @@ class SprintStoryState:
                     else (0.0 if "cost_usd" not in d else None)
                 ),
                 bundle_candidate=bool(d.get("bundle_candidate", False)),
+                batch_group=d.get("batch_group"),
                 blocked_by=list(d.get("blocked_by") or []),
                 complexity=d.get("complexity"),
                 complexity_score=(
@@ -530,6 +541,7 @@ class SprintStoryState:
                     "phase",
                     "cost_usd",
                     "bundle_candidate",
+                    "batch_group",
                     "blocked_by",
                     "complexity",
                     "complexity_score",

@@ -608,6 +608,11 @@ class CoordinatorState:
     preflight_domains: list[str] = field(default_factory=list)
     preflight_contract_change: bool = False  # story intentionally alters a tested contract
     preflight_bundle_candidate: bool = False
+    # Scheduler-written cost-aware batch-group id (#727). Distinct from
+    # preflight_bundle_candidate: that flag means "the scheduler put this story
+    # in a conflict bundle"; this names the independent-story batch the
+    # scheduler packed it into, or None when it was dispatched on its own.
+    preflight_batch_group: str | None = None
     preflight_warnings: list[str] = field(default_factory=list)  # non-blocking advisories
     preflight_likely_files: list[str] | None = None
     preflight_result: AgentResult | None = None
