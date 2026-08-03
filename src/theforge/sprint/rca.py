@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
+
 from theforge.config.sandbox_capabilities import get_preset
 
 SCHEMA_VERSION = 1
@@ -1034,7 +1035,7 @@ def _capability_symptom_hit(sources: list[_TextSource]) -> tuple[str, str, str, 
     for preset in sorted(_CAPABILITY_PRESET_SYMPTOMS):
         symptoms = _CAPABILITY_PRESET_SYMPTOMS[preset]
         for src in sources:
-            if src.kind == "authored":
+            if src.kind in {"authored", "structured"}:
                 continue
             for line in src.text.splitlines():
                 lowered = line.lower()

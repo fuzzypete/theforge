@@ -14,6 +14,7 @@ from types import SimpleNamespace
 
 import yaml
 
+from theforge.config.sandbox_capabilities import resolve_capabilities
 from theforge.sprint.rca import (
     RULES,
     RULES_BY_ID,
@@ -23,7 +24,6 @@ from theforge.sprint.rca import (
     read_sprint_rca,
     write_sprint_rca,
 )
-from theforge.config.sandbox_capabilities import resolve_capabilities
 
 
 def _write(path: Path, data: object) -> None:
