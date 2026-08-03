@@ -26,10 +26,19 @@ test-parallel:
 
 # Gate: run lint, format check, and tests. Exit 0 = PASS, non-zero = FAIL.
 # The coordinator reads the exit code; no handoff file is written.
+#
+# Both forge invocations use .venv/bin/forge — the checkout under test — never
+# the ambient PATH, which resolves to whichever released orchestrator is
+# installed. SCRUBBED_GATE_CMD already pins PATH=".venv/bin:$$PATH" for the same
+# reason; these two calls were the remaining hole. A bare `forge` here validates
+# the checkout's config with the previous release's schema, so any change to a
+# config contract fails its own gate after merge even though the change is
+# correct (observed cutting v0.13.0rc17 against the #1415 model-identity
+# migration: `Unknown model 'anthropic/sonnet/cli'` from the rc16 registry).
 gate:
 	@mkdir -p .forge/index .forge && \
-	forge index && \
-	forge check-story-config && \
+	.venv/bin/forge index && \
+	.venv/bin/forge check-story-config && \
 	$(SCRUBBED_GATE_CMD)
 
 # Transitional alias retained for one release while the scrubbed gate rolls out.
