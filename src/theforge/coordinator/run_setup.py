@@ -24,6 +24,7 @@ from . import util as _cu
 from .git_lock import FETCH_LOCK
 from .logging import StructuredLogger
 from .notify import _escalate_notify
+from .resume_persistence import recover_phase_state
 from .state import CoordinatorResult, CoordinatorState, MergeStepState, Phase
 
 _logger = logging.getLogger(__name__)
@@ -455,11 +456,18 @@ def _setup_resume_entry(
     Returns (state, logger, branch_name, story_content, task_start) on success,
     or a CoordinatorResult on failure (worktree missing).
     """
+    # No preflight verdict is seeded here. A resumed attempt does not run
+    # preflight, but "this process did not run it" is not the same claim as
+    # "the phase was skipped": a prior attempt of the same story may have run it
+    # and the coordinator may have routed on its output. Seeding "SKIPPED" made
+    # the audit assert a bypass that never happened (#2155). The verdict is left
+    # unset and filled below from the durable phase record when one exists;
+    # unrecovered, it stays null — absent, which is distinguishable from the
+    # deliberate SKIPPED the ``--from <phase>`` bypass still writes.
     state = CoordinatorState(
         phase=initial_phase,
         dev_iteration=0,
         review_cycle=0,
-        preflight_verdict="SKIPPED",
     )
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _task_start = time.monotonic()
@@ -547,5 +555,40 @@ def _setup_resume_entry(
 
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
     state.story_content = story_content
+
+    # Restore the phase outputs a fresh CoordinatorState would otherwise lose:
+    # preflight's judgement, the routing decision derived from it, the
+    # plan-review outcome, and any escalate-gate/timeout escalation an earlier
+    # attempt of this story produced (#2155). Applied after story_content is
+    # resolved because the record is keyed to the story text.
+    #
+    # Precedence: this only fills fields that are still unset, so a live
+    # cached_preflight_state — applied later by the engine and validated against
+    # git state — still wins outright, and a phase this attempt runs itself
+    # always beats a recorded one. The routing *record* (restore_routing_decision)
+    # remains the seating authority for the review pool and is applied after
+    # this, re-deriving the panel from the same complexity signal.
+    _recovery = recover_phase_state(
+        config.project_root,
+        state,
+        slug=task.slug,
+        story_content=story_content,
+    )
+    state.phase_recovery = _recovery
+    logger._safe_emit("phase_recovery", phase="RESUME", **_recovery)
+    if _recovery["status"] == "recovered":
+        _cu._log(
+            f"  ↺ RESUME   recovered phase record: {', '.join(_recovery['recovered_phases'])}"
+        )
+    elif _recovery["status"] == "rejected":
+        _cu._log(
+            f"  ⚠ RESUME   persisted phase record rejected ({_recovery['reason']}) — "
+            f"phases run by an earlier attempt will be reported as unrecorded"
+        )
+    elif _recovery["status"] == "unavailable":
+        _cu._log(
+            "  ⚠ RESUME   no persisted phase record — phases run by an earlier "
+            "attempt (if any) will be reported as unrecorded, not skipped"
+        )
 
     return state, logger, branch_name, story_content, _task_start

@@ -63,6 +63,7 @@ from .preflight import (
 )
 from .preflight_cache import capture_preflight_cache_snapshot
 from .preflight_evidence import build_partial_evidence
+from .resume_persistence import save_resume_record
 from .state import CoordinatorResult, CoordinatorState, Phase
 from .util import _fmt_cost_total, _fmt_duration, _log_phase, _round_cost
 from .validation_complexity import (
@@ -908,6 +909,17 @@ def _run_preflight_phase(
         story_content=story_content,
         run_id=getattr(logger, "_run_id", None),
         log_verbose=_log_verbose,
+    )
+    # Durable copy of the preflight judgement itself, alongside the routing
+    # decision derived from it. A resumed attempt allocates a fresh
+    # CoordinatorState, so without this the audit for a story whose preflight
+    # demonstrably ran reports it as never having run (#2155).
+    save_resume_record(
+        config.project_root,
+        state,
+        slug=task.slug,
+        story_content=story_content,
+        run_id=getattr(logger, "_run_id", None),
     )
 
     _log(f"  {'✗' if verdict == NO_JUDGMENT else '✓'} PREFLIGHT   {verdict}")

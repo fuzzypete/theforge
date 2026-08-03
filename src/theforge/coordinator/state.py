@@ -846,6 +846,14 @@ class CoordinatorState:
     # decision at the preflight assign_models call site; persisted as a top-level
     # routing_decision key in the native per-run audit record.
     routing_decision: dict | None = None
+    # Durable-phase-recovery outcome for a resumed attempt (#2155). Set by
+    # _setup_resume_entry from coordinator.resume_persistence and emitted as the
+    # audit's top-level phase_recovery key. None on a run that was not resumed —
+    # a run that produced its own phase outputs recovered nothing. Non-null says
+    # which phases the record restored (or why it could not), so a reader can
+    # always tell a phase this attempt executed from one lifted off disk, and an
+    # absent preflight block from a deliberately skipped one.
+    phase_recovery: dict | None = None
     # Adaptive iteration limits (per-story). Populated by derive_limits() before
     # the dev/review loop starts. 0 means "not computed yet"; engine falls back
     # to config.retry.max_dev_iterations / max_review_cycles in that case.
