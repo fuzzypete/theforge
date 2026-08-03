@@ -7,6 +7,7 @@ import sys
 
 from theforge.cli import (
     audit,
+    batch_report,
     check_config,
     daemon,
     diagnose,
@@ -87,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     todo.register_parser(subparsers)
     diagnose.register_parser(subparsers)
     rca.register_parser(subparsers)
+    batch_report.register_parser(subparsers)
     shape.register_parser(subparsers)
     groom.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
@@ -129,6 +131,7 @@ def main() -> None:
         "todo": todo.cmd_todo,
         "diagnose": diagnose.cmd_diagnose,
         "rca": rca.cmd_rca,
+        "batch-report": batch_report.cmd_batch_report,
         "shape": shape.cmd_shape,
         "groom": groom.cmd_groom,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,

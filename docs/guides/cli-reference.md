@@ -717,6 +717,34 @@ artifact against a fresh generation without writing.
 
 ---
 
+## `forge batch-report`
+
+Post-sprint batchability analytics for a completed run: which stories would
+have qualified for cost-aware batching, what each actually cost per phase,
+which stories conflicted / retried / escalated (and were therefore
+disqualified), and whether a shared dev pass would have been cheaper.
+
+```bash
+forge batch-report <run-id>                     # human-readable terminal report
+forge batch-report <run-id> --format yaml       # structured payload
+forge batch-report <run-id> --format json
+```
+
+The batched-cost figure is an **estimate**, labelled as such wherever it
+appears: per-story preflight cost is preserved (eligibility is decided from
+per-story preflight facts, so preflight does not amortise) and each shared
+downstream phase is charged at the highest measured cost across the group's
+members. It is a ceiling on savings, not a forecast — the methodology is
+printed with every report.
+
+`--max-stories`, `--max-complexity-budget`, and `--max-touched-files` vary the
+hypothetical grouping rules for sensitivity analysis. They are deliberately
+independent of the project's `sprint.batch` config: batching is off by default,
+and a report that inherited the off switch could not measure the opportunity it
+exists to measure.
+
+---
+
 ## `forge audits`
 
 Manage the SQLite audit substrate (distinct from `forge audit`, which renders a
