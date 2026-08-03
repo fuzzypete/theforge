@@ -898,3 +898,226 @@ def test_reexec_landed_story_with_open_issue_is_not_redispatched(
     assert result.specs_succeeded == 2
     assert result.specs_failed == 0
     assert result.total_cost_usd == pytest.approx(1.33)
+
+
+def _accumulated_by_slug(tmp_path: Path, sprint_id: str) -> dict[str, dict]:
+    """Read ``.forge/sprints/<id>/state.yaml`` — the durable per-story record."""
+    state_path = tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml"
+    data = yaml.safe_load(state_path.read_text(encoding="utf-8")) or {}
+    return {s["slug"]: s for s in data.get("stories", [])}
+
+
+def _persist_prior_story(
+    tmp_path: Path,
+    sprint_id: str,
+    *,
+    outcome: str,
+    cost_usd: float,
+    outcome_source: str | None = None,
+    story_run_id: str = "run-prev",
+) -> dict:
+    entry: dict = {
+        "canonical_ref": "feature-a.md",
+        "slug": "feature-a",
+        "path": "feature-a.md",
+        "outcome": outcome,
+        "cost_usd": cost_usd,
+        "story_run_id": story_run_id,
+        "started_at": "2026-08-02T02:32:00Z",
+        "finished_at": "2026-08-02T02:51:46Z",
+        "depends_on": [],
+    }
+    if outcome_source is not None:
+        entry["outcome_source"] = outcome_source
+    persist_accumulated_story_state(sprint_id, "Test Sprint", tmp_path, [entry])
+    return entry
+
+
+def _skip_merged_triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
+    if "feature-a" in spec_path:
+        return StoryTriage(
+            story_path="feature-a.md",
+            action="skip_merged",
+            reason="already merged in PR #2146, skipping",
+            worktree_path=None,
+            slug="feature-a",
+        )
+    return StoryTriage(
+        story_path="feature-b.md",
+        action="full",
+        reason="no worktree found",
+        worktree_path=None,
+        slug="feature-b",
+    )
+
+
+def test_reexec_skip_merged_keeps_prior_done_in_accumulated_state(
+    tmp_path: Path,
+) -> None:
+    """Issue #2150: a story this run carried to DONE, whose queued PR merged
+    around the re-exec boundary, must keep DONE in the durable sprint state.
+
+    The post-re-exec triage sees the branch as merged and returns
+    ``skip_merged``. That is a factually correct statement about git *now* — it
+    is not evidence that the work pre-dated this run. The prior generation's own
+    record (DONE, $11.93, this run's story_run_id) is, so the row must survive
+    intact rather than being restamped ALREADY_DONE / resume_skip_merged while
+    still reporting the spend that contradicts it.
+    """
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 11.93)
+    prior = _persist_prior_story(tmp_path, sprint_id, outcome="DONE", cost_usd=11.93)
+
+    fresh_result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=_skip_merged_triage_side_effect),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", return_value=fresh_result),
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        result = run_sprint(config, manifest_path, reexec=True)
+
+    accumulated = _accumulated_by_slug(tmp_path, sprint_id)["feature-a"]
+    assert accumulated["outcome"] == "DONE"
+    assert accumulated.get("outcome_source") is None
+    # Outcome, cost and elapsed agree: the same run owns all three.
+    assert accumulated["cost_usd"] == pytest.approx(11.93)
+    assert accumulated["story_run_id"] == prior["story_run_id"]
+    assert accumulated["started_at"] == prior["started_at"]
+    assert accumulated["finished_at"] == prior["finished_at"]
+
+    summary = yaml.safe_load(
+        (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text()
+    )
+    by_slug = {s["slug"]: s for s in summary["stories"]}
+    assert by_slug["feature-a"]["outcome"] == "DONE"
+    assert by_slug["feature-a"].get("outcome_source") is None
+    assert result.specs_succeeded == 2
+    assert result.specs_failed == 0
+
+
+def test_reexec_skip_merged_renders_done_in_live_status(tmp_path: Path) -> None:
+    """Issue #2150, operator surface: ``forge status`` mid-sprint.
+
+    The symptom was read from the live status file — five stories showing
+    ``ALREADY_DONE (merged)`` alongside the non-zero cost the same run had just
+    spent on them. This samples that row during the next story's dispatch,
+    which is exactly when the operator consults it.
+    """
+    from theforge.sprint.status_reader import read_live_status
+
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 11.93)
+    _persist_prior_story(tmp_path, sprint_id, outcome="DONE", cost_usd=11.93)
+
+    observed: dict = {}
+
+    def run_task_side_effect(*args, **kwargs):
+        for entry in read_live_status("run-live", tmp_path) or []:
+            if entry.slug == "feature-a":
+                observed["status"] = entry.status
+                observed["detail"] = entry.detail
+                observed["cost_usd"] = entry.cost_usd
+        return _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=_skip_merged_triage_side_effect),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", side_effect=run_task_side_effect),
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        run_sprint(config, manifest_path, reexec=True, run_id="run-live")
+
+    assert observed, "run_task never ran; live status was not sampled mid-sprint"
+    assert observed["status"] == "done"
+    assert observed["detail"] == "DONE"
+    assert "ALREADY_DONE" not in observed["detail"]
+    # The row that reports the spend must be the row that claims the work.
+    assert observed["cost_usd"] == pytest.approx(11.93)
+
+
+def test_reexec_skip_merged_preserves_prior_already_done_as_noop(
+    tmp_path: Path,
+) -> None:
+    """The other half of the #2150 rule: a prior generation that really was a
+    no-op keeps ALREADY_DONE and its ``resume_skip_merged`` source tag.
+
+    The fix lets the recorded execution decide the label, so this pins that it
+    only ever *preserves* a record — a prior entry with no run behind it (a
+    preflight short-circuit, $0, no elapsed) is still classified as
+    pre-existing merged work.
+    """
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 0.0)
+    _persist_prior_story(
+        tmp_path,
+        sprint_id,
+        outcome="ALREADY_DONE",
+        cost_usd=0.0,
+        outcome_source="preflight_verdict",
+    )
+
+    fresh_result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=_skip_merged_triage_side_effect),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", return_value=fresh_result),
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        result = run_sprint(config, manifest_path, reexec=True)
+
+    accumulated = _accumulated_by_slug(tmp_path, sprint_id)["feature-a"]
+    assert accumulated["outcome"] == "ALREADY_DONE"
+    assert accumulated["outcome_source"] == "resume_skip_merged"
+    assert result.specs_failed == 0
+
+
+def test_resume_skip_merged_keeps_prior_done_in_accumulated_state(
+    tmp_path: Path,
+) -> None:
+    """The same rule on the explicit ``--resume`` path, not just re-exec.
+
+    ``resume=True`` takes a second, distinct write of the accumulated state
+    (the resume-time persistence block), so the DONE-preserving rule is pinned
+    on both entry points rather than only the one the incident happened to hit.
+    """
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+    config = _make_config(tmp_path)
+
+    sprint_id = _set_sprint_id(tmp_path)
+    _write_prior_sprint_audit(tmp_path, sprint_id, 11.93)
+    _persist_prior_story(tmp_path, sprint_id, outcome="DONE", cost_usd=11.93)
+
+    fresh_result = _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=_skip_merged_triage_side_effect),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", return_value=fresh_result),
+        patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
+    ):
+        run_sprint(config, manifest_path, resume=True)
+
+    accumulated = _accumulated_by_slug(tmp_path, sprint_id)["feature-a"]
+    assert accumulated["outcome"] == "DONE"
+    assert accumulated.get("outcome_source") is None
+    assert accumulated["cost_usd"] == pytest.approx(11.93)
