@@ -866,3 +866,88 @@ def test_batched_stories_are_visible_as_a_group_in_live_state(tmp_path: Path) ->
     assert by_slug["bug-a"]["batch_group"] == "batch-bug-a"
     assert by_slug["bug-b"]["batch_group"] == "batch-bug-a"
     assert yaml.safe_dump(by_slug["bug-a"])  # serialisable for the .state file
+
+
+# ── A batch leader whose landing resolves LATE (queued PR) ───────────────
+
+
+def _queued_pr_batch_sprint(tmp_path: Path, *, poll_status: str):
+    """Run a two-story batch whose leader's PR is auto-merge queued.
+
+    The leader returns pending_integration, land_story queues its PR, and the
+    real landing verdict only arrives during sprint wrap-up polling — after both
+    member rows have already been written. Returns (SprintResult, story_state).
+    """
+    import yaml
+
+    from tests.test_sprint_resume import _make_coordinator_result, _make_manifest, _make_spec_file
+    from theforge.sprint.runner import run_sprint
+
+    _make_spec_file(tmp_path, "Bug A", "bug-a")
+    _make_spec_file(tmp_path, "Bug B", "bug-b")
+    manifest_path = _make_manifest(tmp_path, ["bug-a.md", "bug-b.md"])
+    config = _batch_sprint_config(tmp_path)
+
+    states = _preflight_states_for(
+        "bug-a", "bug-b", files={"bug-a": ["src/a.py"], "bug-b": ["src/b.py"]}
+    )
+    leader_result = _make_coordinator_result(success=True, cost=0.5)
+    leader_result.state.workspace_path = tmp_path / "bug-a"
+    leader_result.state.branch_name = "forge/bug-a"
+    leader_result.landing_status = "pending_integration"
+
+    member_result = _make_coordinator_result(success=True, cost=0.1)
+
+    with (
+        patch("theforge.sprint.runner.run_batch_preflight", side_effect=lambda *a, **k: states),
+        patch("theforge.sprint.runner.run_task", return_value=leader_result),
+        patch("theforge.sprint.runner.run_review_only", return_value=member_result),
+        patch(
+            "theforge.coordinator.completion.land_story",
+            return_value=({"merge_queued": True, "pr_url": "https://gh/pr/1"}, "queued"),
+        ),
+        patch("theforge.sprint.runner._poll_queued_pr", return_value={"status": poll_status}),
+    ):
+        result = run_sprint(config, manifest_path)
+
+    summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
+    summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
+    return result, list(summary.get("stories") or [])
+
+
+def test_queued_pr_failure_fails_every_member_of_the_batch(tmp_path: Path) -> None:
+    """The P1: a member's changes exist only on the leader's branch.
+
+    When that branch never lands, reporting the member DONE claims work that is
+    not on the base branch. The member must fail with its leader.
+    """
+    result, stories = _queued_pr_batch_sprint(tmp_path, poll_status="closed")
+
+    by_slug = {s["slug"]: s for s in stories}
+    assert set(by_slug) == {"bug-a", "bug-b"}
+    # Neither the leader nor the member is reported as a success.
+    assert result.specs_succeeded == 0
+    assert by_slug["bug-b"]["outcome"] != "DONE"
+    assert "bug-a" in (by_slug["bug-b"].get("error") or "")
+
+    landing = {spec: res.landing_status for spec, res in result.results}
+    assert landing["bug-a.md"] == "failed"
+    assert landing["bug-b.md"] == "failed"
+
+
+def test_queued_pr_success_lands_every_member_of_the_batch(tmp_path: Path) -> None:
+    """The mirror case: the leader's branch lands, so its members landed too.
+
+    The member must not be left at "succeeded but never landed" once the shared
+    branch is confirmed on the base — its commits are on that branch.
+    """
+    result, stories = _queued_pr_batch_sprint(tmp_path, poll_status="merged")
+
+    by_slug = {s["slug"]: s for s in stories}
+    assert set(by_slug) == {"bug-a", "bug-b"}
+    assert result.specs_succeeded == 2
+    assert by_slug["bug-b"]["outcome"] == "DONE"
+
+    landing = {spec: res.landing_status for spec, res in result.results}
+    assert landing["bug-a.md"] == "landed"
+    assert landing["bug-b.md"] == "landed"

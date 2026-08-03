@@ -3479,10 +3479,19 @@ def run_sprint(
     # below can read it on paths that fire before the scheduler gets that far.
     batch_group_by_slug: dict[str, str] = {}
     batch_members_by_group: dict[str, list[str]] = {}
-    # group id -> leader slug, for groups actually dispatched as a batch, and
-    # the landing status that leader reached (members land with it or not at all).
+    # Batch-group landing bookkeeping (#727). A group's commits live on ONE
+    # branch — the leader's — so a member is exactly as landed as its leader is,
+    # and no more. The leader's landing can resolve at four different moments
+    # (immediate integration, the pending-integration retry sweep, queued-PR
+    # polling, sprint wrap-up), and members may be recorded before *or* after
+    # that resolution, so both directions have to be handled:
+    #   _dispatched_batch_leader / _batch_group_of_leader — group <-> leader
+    #   _batch_leader_landing    — the leader's resolved landing status, if any
+    #   _batch_member_records    — members already reported, awaiting the verdict
     _dispatched_batch_leader: dict[str, str] = {}
-    _batch_leader_landing: dict[str, str | None] = {}
+    _batch_group_of_leader: dict[str, str] = {}
+    _batch_leader_landing: dict[str, str] = {}
+    _batch_member_records: dict[str, tuple[str, TaskStory, CoordinatorResult]] = {}
 
     def _break_batch_group(group_id: str, reason: str) -> None:
         """Dissolve a batch group and dispatch its members individually.
@@ -4385,6 +4394,77 @@ def run_sprint(
     plan_done: dict[str, str] = {}  # slug -> workspace_path (set by phase callback)
     use_plan_gates = max_parallel > 1  # only for parallel mode
 
+    def _apply_batch_landing_to_member(
+        member_slug: str,
+        task: TaskStory,
+        result: CoordinatorResult,
+        landing_status: str,
+        leader_slug: str,
+        group_id: str,
+    ) -> None:
+        """Give one batch member the landing verdict its leader's branch reached.
+
+        A member's changes exist only on the leader's branch, so reporting it
+        DONE while that branch failed to land would claim work that is not on
+        the base branch — the exact misreport this propagation exists to
+        prevent. A member that failed on its own merits keeps its own verdict:
+        the leader landing successfully does not retroactively approve it.
+        """
+        if not result.success:
+            return
+        if landing_status == "landed":
+            if result.landing_status == "landed":
+                return
+            result.landing_status = "landed"
+            merged_slugs.add(member_slug)
+            dag.mark_complete(member_slug)
+            _set_outcome(member_slug, StoryOutcome.DONE, phase=result.phase.name, landed=True)
+            _log(f"✓ {member_slug}: landed with batch leader {leader_slug}")
+        else:
+            if result.landing_status == "failed":
+                return
+            reason = (
+                f"batch group {group_id}: leader {leader_slug} failed to land; "
+                "this story's changes exist only on that branch"
+            )
+            result.landing_status = "failed"
+            result.state.error = result.state.error or reason
+            _set_outcome(
+                member_slug,
+                StoryOutcome.MERGE_FAILED,
+                phase=result.phase.name,
+                reason=reason,
+            )
+            _log(f"✗ {member_slug}: {reason}")
+        _write_story_audit(config, task, result, sprint_id=_sprint_id)
+        _times = story_times.get(member_slug)
+        if _times is not None:
+            _persist_current_story_result(
+                member_slug, result, started_at=_times[0], finished_at=_times[1]
+            )
+
+    def _resolve_batch_leader_landing(leader_slug: str, landing_status: str) -> None:
+        """Record a batch leader's final landing status and push it to its members.
+
+        Called from every site where a leader's landing reaches a terminal
+        answer, including the queued-PR paths that resolve long after the
+        member rows were written. A no-op for stories that do not lead a batch.
+        """
+        group_id = _batch_group_of_leader.get(leader_slug)
+        if group_id is None:
+            return
+        _batch_leader_landing[group_id] = landing_status
+        for member_slug, (
+            member_group,
+            member_task,
+            member_result,
+        ) in list(_batch_member_records.items()):
+            if member_group != group_id:
+                continue
+            _apply_batch_landing_to_member(
+                member_slug, member_task, member_result, landing_status, leader_slug, group_id
+            )
+
     def _attempt_integration(
         slug: str,
         task: TaskStory,
@@ -4457,6 +4537,7 @@ def run_sprint(
             merged_slugs.add(slug)
             dag.mark_complete(slug)
             _write_story_audit(config, task, result, sprint_id=_sprint_id)
+            _resolve_batch_leader_landing(slug, "landed")
             if effective_on_approve == "merge-pr" and not merge_info.get(
                 "auto_merge_queued", False
             ):
@@ -4488,6 +4569,7 @@ def run_sprint(
         result.state.error = merge_info.get("error") or "integration failed"
         _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
         _write_story_audit(config, task, result, sprint_id=_sprint_id)
+        _resolve_batch_leader_landing(slug, "failed")
         return True
 
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
@@ -4544,6 +4626,7 @@ def run_sprint(
                             dag.mark_complete(dep)
                             del queued_prs[dep]
                             _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
+                            _resolve_batch_leader_landing(dep, "landed")
                         else:
                             from ..coordinator.completion import (  # noqa: PLC0415
                                 mark_merge_failed as _mark_mf,
@@ -4576,6 +4659,7 @@ def run_sprint(
                             # dag.ready() re-check before the deadlock-cleanup sweep.
                             dag.mark_skipped(dep)
                             _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
+                            _resolve_batch_leader_landing(dep, "failed")
                             _log(
                                 f"✗ {dep}: queued PR {poll_result['status']} "
                                 "before dependent dispatch"
@@ -4751,6 +4835,7 @@ def run_sprint(
                             sum(story_worker_timeouts[m] for m in _dispatchable)
                         )
                         _dispatched_batch_leader[_batch_gid] = _dispatchable[0]
+                        _batch_group_of_leader[_dispatchable[0]] = _batch_gid
                         for _member_slug in _dispatchable:
                             active[_member_slug] = _batch_fut
                             story_deadlines[_member_slug] = _batch_deadline
@@ -4903,6 +4988,7 @@ def run_sprint(
                         _set_outcome(_qp_slug, StoryOutcome.DONE, landed=True)
                         del queued_prs[_qp_slug]
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
+                        _resolve_batch_leader_landing(_qp_slug, "landed")
                         _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
                     else:
                         from ..coordinator.completion import (  # noqa: PLC0415
@@ -4928,6 +5014,7 @@ def run_sprint(
                         # `continue` below.
                         dag.mark_skipped(_qp_slug)
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
+                        _resolve_batch_leader_landing(_qp_slug, "failed")
                         _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
                 continue
 
@@ -5330,29 +5417,19 @@ def run_sprint(
                 else:
                     _write_story_audit(config, task, result, sprint_id=_sprint_id)
 
-                # Batch groups land as one branch (#727). Record the leader's
-                # landing outcome, and correct any member optimistically
-                # classified DONE when that branch never actually landed — a
-                # member's code lives in the leader's branch, so it is exactly as
-                # landed as the leader is, and no more.
+                # Batch groups land as one branch (#727) — the leader's. Register
+                # each member so a leader landing that resolves later (queued PR,
+                # wrap-up) can still correct it, and apply the leader's verdict
+                # immediately when it is already known.
                 _group_id = getattr(result.state, "preflight_batch_group", None)
-                if _group_id:
-                    if slug == _dispatched_batch_leader.get(_group_id):
-                        _batch_leader_landing[_group_id] = result.landing_status
-                    elif _batch_leader_landing.get(_group_id) == "failed":
-                        _batch_fail_reason = (
-                            f"batch group {_group_id}: leader "
-                            f"{_dispatched_batch_leader.get(_group_id)} failed to land"
+                _group_leader = _dispatched_batch_leader.get(_group_id) if _group_id else None
+                if _group_id and _group_leader is not None and slug != _group_leader:
+                    _batch_member_records[slug] = (_group_id, task, result)
+                    _known_landing = _batch_leader_landing.get(_group_id)
+                    if _known_landing is not None:
+                        _apply_batch_landing_to_member(
+                            slug, task, result, _known_landing, _group_leader, _group_id
                         )
-                        result.landing_status = "failed"
-                        result.state.error = result.state.error or _batch_fail_reason
-                        _set_outcome(
-                            slug,
-                            StoryOutcome.MERGE_FAILED,
-                            phase=result.phase.name,
-                            reason=_batch_fail_reason,
-                        )
-                        _log(f"✗ {slug}: {_batch_fail_reason}")
 
                 # Fire StorySource lifecycle callbacks
                 ctx = slug_to_context.get(slug)
@@ -5400,6 +5477,7 @@ def run_sprint(
                 dag.mark_complete(slug)
                 result.landing_status = "landed"
                 _set_outcome(slug, StoryOutcome.DONE, landed=True)
+                _resolve_batch_leader_landing(slug, "landed")
             else:
                 from ..coordinator.completion import (  # noqa: PLC0415
                     mark_merge_failed as _mark_mf,
@@ -5410,6 +5488,7 @@ def run_sprint(
                 )
                 _mark_mf(result.state, result, _err, result.state.branch_name)
                 _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
+                _resolve_batch_leader_landing(slug, "failed")
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
             _write_story_audit(config, task, result, sprint_id=_sprint_id)
             del queued_prs[slug]

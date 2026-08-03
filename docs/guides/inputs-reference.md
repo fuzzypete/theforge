@@ -236,8 +236,18 @@ batches. Batch groups therefore never override dependencies or conflict bundles.
 worktree, one branch, one dev agent, one prompt carrying every member's spec and
 requiring per-story completion notes. Everything else stays per story — each
 member gets its own review against its own spec, its own findings, its own cost,
-its own outcome, and its own audit record. The group's commits land on the
-leader's branch, so a member is exactly as landed as the leader is.
+its own outcome, and its own audit record.
+
+**Landing is shared, and reported as shared.** The group's commits live on one
+branch — the leader's — so a member is exactly as landed as its leader is, and
+no more. Whenever the leader's landing reaches a terminal answer, that answer is
+propagated to every member: if the branch lands, members are recorded DONE and
+landed; if it fails to land, members are recorded `MERGE_FAILED` naming the
+leader, because their changes are not on the base branch. This holds for a
+landing that resolves *late* — an auto-merge PR that only reports MERGED or
+closed during queued-PR polling or sprint wrap-up, long after the member rows
+were written. A member that failed on its own merits keeps its own verdict; a
+leader landing successfully does not retroactively approve it.
 
 `forge status` renders batch groups distinctly from conflict bundles:
 
