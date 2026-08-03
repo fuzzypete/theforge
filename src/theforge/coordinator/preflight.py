@@ -23,6 +23,8 @@ from theforge.review import ReviewFinding
 from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 
 if TYPE_CHECKING:
+    from pathlib import Path
+
     from .state import CoordinatorState
 
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
@@ -1395,3 +1397,167 @@ def _apply_preflight_config(
         _log_verbose(f"[adaptive] {_phase}: {_rsn}")
 
     return config
+
+
+def persist_routing_decision(
+    config: ForgeConfig,
+    state: "CoordinatorState",
+    *,
+    task_slug: str,
+    story_content: str | None = None,
+    run_id: str | None = None,
+    log_verbose: Callable[[str], None] | None = None,
+) -> "Path | None":
+    """Write this story's resolved routing decision to disk.
+
+    Called immediately after :func:`_apply_preflight_config` installs the
+    decision onto ``config``, so what is recorded is exactly what the phases
+    will execute. The record is the only copy that survives a mid-sprint
+    process re-exec, which drops the scheduler's in-memory preflight cache
+    (#2154).
+    """
+    from .routing_persistence import (  # noqa: PLC0415
+        build_routing_record,
+        save_routing_record,
+    )
+
+    _log_verbose = log_verbose or (lambda _msg: None)
+    record = build_routing_record(
+        slug=task_slug,
+        state=state,
+        review_pool_models=[p.model for p in config.review_pool],
+        dev_model=config.dev_profile.model,
+        plan_model=config.plan.model,
+        story_content=story_content,
+        run_id=run_id,
+    )
+    path = save_routing_record(config.project_root, record)
+    if path is not None:
+        _log_verbose(
+            f"[adaptive] routing decision persisted: {record['code_reviewer_count']} "
+            f"reviewer(s) {record['code_reviewers']} → {path}"
+        )
+    return path
+
+
+def _pin_pool_to_recorded(
+    pool: list[ModelProfile], recorded: list[str]
+) -> list[ModelProfile] | None:
+    """Return ``pool`` narrowed to the recorded models, or None if impossible.
+
+    Profiles are taken from ``pool`` — the freshly re-derived, router-sized
+    pool — never from the static roster, so each seat keeps the budget the
+    router sized for it. If any recorded model is absent the caller is told it
+    cannot honour the recorded panel rather than being handed a substitute.
+    """
+    remaining = list(pool)
+    pinned: list[ModelProfile] = []
+    for model in recorded:
+        match = next((p for p in remaining if p.model == model), None)
+        if match is None:
+            return None
+        remaining.remove(match)
+        pinned.append(match)
+    return pinned
+
+
+def restore_routing_decision(
+    config: ForgeConfig,
+    state: "CoordinatorState",
+    *,
+    task_slug: str,
+    story_content: str | None,
+    log: Callable[[str], None] | None = None,
+    log_verbose: Callable[[str], None] | None = None,
+) -> tuple[ForgeConfig, dict]:
+    """Recover a persisted routing decision for a story resumed without a cache.
+
+    Returns ``(config, recovery)``. ``recovery`` is also stitched into
+    ``state.complexity_routing_audit["routing_recovery"]`` so the audit trail
+    always states which panel the phase actually seated and why (convention 6);
+    when the routed panel cannot be honoured, that is said out loud rather than
+    silently substituted with the ``forge.yaml`` roster.
+    """
+    from .routing_persistence import (  # noqa: PLC0415
+        apply_routing_record_to_state,
+        load_routing_record,
+        validate_routing_record,
+    )
+
+    _log_fn = log or (lambda _msg: None)
+    _log_verbose = log_verbose or (lambda _msg: None)
+
+    def _finish(recovery: dict) -> tuple[ForgeConfig, dict]:
+        recovery["seated_review_pool"] = [p.model for p in config.review_pool]
+        recovery["seated_count"] = len(config.review_pool)
+        _audit = dict(state.complexity_routing_audit or {})
+        _audit["routing_recovery"] = recovery
+        state.complexity_routing_audit = _audit
+        return config, recovery
+
+    record = load_routing_record(config.project_root, task_slug)
+    if record is None:
+        _log_fn(
+            f"  ⚠ ROUTING     no persisted routing decision for {task_slug} — "
+            f"REVIEW will seat the configured roster "
+            f"({len(config.review_pool)} reviewer(s)), not a routed panel"
+        )
+        return _finish({"status": "unavailable", "reason": "no_record"})
+
+    usable, reason = validate_routing_record(record, story_content=story_content)
+    if not usable:
+        _log_fn(
+            f"  ⚠ ROUTING     persisted routing decision for {task_slug} rejected "
+            f"({reason}) — REVIEW will seat the configured roster "
+            f"({len(config.review_pool)} reviewer(s))"
+        )
+        return _finish({"status": "rejected", "reason": reason})
+
+    recorded = [str(m) for m in record.get("code_reviewers") or []]
+    apply_routing_record_to_state(state, record)
+    config = _apply_preflight_config(
+        config, state, log=log, log_verbose=log_verbose, task_slug=task_slug
+    )
+    derived = [p.model for p in config.review_pool]
+
+    recovery: dict = {
+        "status": "recovered",
+        "reason": reason,
+        "source_run_id": record.get("run_id"),
+        "recorded_review_pool": recorded,
+        "recorded_count": len(recorded),
+        "rederived_review_pool": derived,
+        "complexity": record.get("complexity"),
+        "complexity_score": record.get("complexity_score"),
+    }
+
+    if derived == recorded:
+        recovery["reconciliation"] = "rederived_match"
+        _log_fn(
+            f"  ✓ ROUTING     recovered routed panel for {task_slug}: "
+            f"{len(recorded)} reviewer(s) {recorded}"
+        )
+        return _finish(recovery)
+
+    pinned = _pin_pool_to_recorded(list(config.review_pool), recorded)
+    if pinned is not None:
+        config = _dc_replace(config, review_pool=pinned)
+        recovery["reconciliation"] = "pinned_to_record"
+        _log_fn(
+            f"  ✓ ROUTING     recovered routed panel for {task_slug}: "
+            f"{len(recorded)} reviewer(s) {recorded} "
+            f"(re-derivation proposed {len(derived)}: {derived})"
+        )
+        return _finish(recovery)
+
+    recovery["reconciliation"] = "unhonoured"
+    _log_fn(
+        f"  ⚠ ROUTING     routed panel for {task_slug} cannot be honoured: "
+        f"recorded {len(recorded)} reviewer(s) {recorded} include models absent "
+        f"from the re-derived pool {derived} — seating {len(derived)}"
+    )
+    _log_verbose(
+        "[adaptive] routing recovery could not reproduce the recorded panel; "
+        "quantities derived from the seat count describe the seated pool"
+    )
+    return _finish(recovery)
