@@ -13,7 +13,7 @@ from ..advisory_conventions import noteworthy_advisory_entries
 from ..coordinator.iteration_usage import dev_usage as _dev_usage
 from ..coordinator.landing_record import build_landing_record
 from ..log_util import _log_line
-from .abnormal import accumulate_failure_history
+from .abnormal import accumulate_failure_history, carry_failure_cause
 from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
@@ -984,6 +984,15 @@ def _write_sprint_summary(
             if slug in story_times:
                 entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
                 entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
+            # A run that ended abnormally carries its cause on the state. Stamp
+            # it onto the row here rather than leaving it to be re-derived from
+            # the ``error`` prose, so the kind, run id, and observing code path
+            # survive into the accumulated state a later generation rewrites.
+            carry_failure_cause(
+                entry,
+                getattr(res.state, "abnormal_termination", None),
+                prior_history=(prior_by_ref.get(canonical_ref) or {}).get("failure_history"),
+            )
             entry["batch"] = batch_assignments.get(slug, 0)
             entry["depends_on"] = list(getattr(tasks_by_slug.get(slug), "depends_on", None) or [])
             if _last_phase_val and outcome != "DONE":

@@ -62,6 +62,7 @@ from .abnormal import (
     ABNORMAL_WORKER_TIMEOUT,
     accumulate_failure_history,
     build_abnormal_cause,
+    carry_failure_cause,
 )
 from .audit import (
     _get_or_create_sprint_id,
@@ -3569,6 +3570,14 @@ def run_sprint(
                 "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
             },
         }
+        # A worker exception or timeout reaches here with the cause on its state.
+        # Carrying it structurally is what keeps it in the accumulated row: the
+        # ``error`` prose alone is a string a later generation overwrites (#2030).
+        carry_failure_cause(
+            current_story_entries_by_ref[canonical_ref],
+            getattr(result.state, "abnormal_termination", None),
+            prior_history=_prior_failure_history_by_ref.get(canonical_ref),
+        )
         _persist_accumulated_story_entries()
 
     # Cost-aware batch-group assignment (#727), filled in after preflight once
@@ -3684,16 +3693,15 @@ def run_sprint(
         }
         if extras:
             entry.update(extras)
-        if failure_cause:
-            # Carried as history from the start so every reader of the entry —
-            # not only the accumulated state file — sees the abnormal kind and
-            # run id rather than the flattened error prose, and sees this
-            # attempt's cause after the ones that preceded it.
-            entry["failure_history"] = accumulate_failure_history(
-                {"failure_history": _prior_failure_history_by_ref.get(canonical_ref) or []},
-                {"failure_history": [dict(failure_cause)]},
-            )
-            entry["abnormal_kind"] = failure_cause.get("kind")
+        # Carried as history from the start so every reader of the entry — not
+        # only the accumulated state file — sees the abnormal kind and run id
+        # rather than the flattened error prose, and sees this attempt's cause
+        # after the ones that preceded it.
+        carry_failure_cause(
+            entry,
+            failure_cause,
+            prior_history=_prior_failure_history_by_ref.get(canonical_ref),
+        )
         current_story_entries_by_ref[canonical_ref] = entry
         _persist_accumulated_story_entries()
 

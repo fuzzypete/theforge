@@ -52,6 +52,26 @@ def _story_audits(project_root: Path) -> dict[str, dict]:
     return {(rec.get("task") or {}).get("slug"): rec for rec in records}
 
 
+def _accumulated_story(tmp_path: Path, slug: str) -> dict:
+    """The story's row in the sprint's accumulated state file."""
+    state_file = next((tmp_path / ".forge" / "sprints").glob("*/state.yaml"))
+    stories = yaml.safe_load(state_file.read_text())["stories"]
+    return {s["slug"]: s for s in stories}[slug]
+
+
+def _run_sprint_landing(tmp_path: Path, manifest_path: Path, *, run_id: str) -> None:
+    """Run the sprint again with every story dispatched and landing."""
+    config = _make_config(tmp_path)
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=_triage_full),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", return_value=_make_coordinator_result()),
+        patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
+    ):
+        mock_gate.return_value = {"passed": True, "message": "ok"}
+        run_sprint(config, manifest_path, run_id=run_id)
+
+
 def _run_sprint_with_drop(tmp_path: Path, *, reason: str, run_id: str = "run-2030"):
     _make_spec_file(tmp_path, "Issue 2048", "issue-2048")
     _make_spec_file(tmp_path, "Issue 2060", "issue-2060")
@@ -181,11 +201,52 @@ def test_worker_exception_audit_names_the_exception(tmp_path: Path) -> None:
     assert record["abnormal_termination"]["kind"] == ABNORMAL_WORKER_EXCEPTION
     assert "advisory artifact missing" in record["abnormal_termination"]["cause"]
 
+    # The same cause is retained in the sprint's accumulated state, which is
+    # where a later generation would otherwise overwrite it.
+    history = _accumulated_story(tmp_path, "issue-2054")["failure_history"]
+    # One attempt, one cause: the row is written by several writers in one
+    # generation and they must not each append their own copy.
+    assert len(history) == 1
+    assert history[0]["kind"] == ABNORMAL_WORKER_EXCEPTION
+    assert history[0]["attempt"] == 1
+    assert "advisory artifact missing" in history[0]["cause"]
 
-def test_worker_timeout_audit_names_the_timeout(tmp_path: Path) -> None:
-    """The pre-existing worker-timeout record keeps working, and gains a kind."""
-    _make_spec_file(tmp_path, "Feature A", "feature-a")
-    manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+
+def test_worker_exception_cause_survives_a_later_successful_generation(tmp_path: Path) -> None:
+    """#2107's exact shape: the resume after a worker exception must not erase it.
+
+    The exception text lived only in the sprint state file, and the resume that
+    followed rewrote it — so the record the issue was filed from no longer
+    existed on disk by the time anyone looked.
+    """
+    _make_spec_file(tmp_path, "Issue 2054", "issue-2054")
+    manifest_path = _make_manifest(tmp_path, ["issue-2054.md"])
+    config = _make_config(tmp_path)
+
+    def _boom(*_args, **_kwargs):
+        raise FileNotFoundError("advisory artifact missing")
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=_triage_full),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", side_effect=_boom),
+        patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
+    ):
+        mock_gate.return_value = {"passed": True, "message": "ok"}
+        run_sprint(config, manifest_path, run_id="run-first")
+
+    _run_sprint_landing(tmp_path, manifest_path, run_id="run-second")
+
+    after = _accumulated_story(tmp_path, "issue-2054")
+    assert after["outcome"] in {"DONE", "ALREADY_DONE"}
+    assert after["failure_history"][0]["kind"] == ABNORMAL_WORKER_EXCEPTION, (
+        "the successful generation erased the worker exception's recorded cause"
+    )
+    assert "advisory artifact missing" in after["failure_history"][0]["cause"]
+
+
+def _run_sprint_to_worker_timeout(tmp_path: Path, manifest_path: Path) -> None:
+    """Run the sprint with a worker that never returns, so its deadline expires."""
     config = _make_config(tmp_path)
 
     class _NeverDoneFuture:
@@ -221,9 +282,36 @@ def test_worker_timeout_audit_names_the_timeout(tmp_path: Path) -> None:
     ):
         run_sprint(config, manifest_path)
 
+
+def test_worker_timeout_audit_names_the_timeout(tmp_path: Path) -> None:
+    """The pre-existing worker-timeout record keeps working, and gains a kind."""
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+
+    _run_sprint_to_worker_timeout(tmp_path, manifest_path)
+
     record = _story_audits(tmp_path)["feature-a"]
     assert record["abnormal_termination"]["kind"] == ABNORMAL_WORKER_TIMEOUT
     assert "Worker timeout" in record["abnormal_termination"]["cause"]
+
+    history = _accumulated_story(tmp_path, "feature-a")["failure_history"]
+    assert history[0]["kind"] == ABNORMAL_WORKER_TIMEOUT
+    assert "Worker timeout" in history[0]["cause"]
+
+
+def test_worker_timeout_cause_survives_a_later_successful_generation(tmp_path: Path) -> None:
+    """A story that later succeeds keeps the record of the attempt that timed out."""
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+
+    _run_sprint_to_worker_timeout(tmp_path, manifest_path)
+    _run_sprint_landing(tmp_path, manifest_path, run_id="run-second")
+
+    after = _accumulated_story(tmp_path, "feature-a")
+    assert after["outcome"] in {"DONE", "ALREADY_DONE"}
+    assert after["failure_history"][0]["kind"] == ABNORMAL_WORKER_TIMEOUT, (
+        "the successful generation erased the timed-out attempt's recorded cause"
+    )
 
 
 # ── a later attempt must not erase an earlier cause ──────────────────

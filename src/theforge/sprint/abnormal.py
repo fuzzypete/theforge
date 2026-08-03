@@ -53,10 +53,18 @@ ABNORMAL_KINDS = frozenset(
 
 #: Outcomes whose recorded ``error`` is a failure cause worth retaining across
 #: attempts. Deliberately string-keyed so this module stays import-free.
+#:
+#: Persisted story rows spell their outcome two ways, and both must be listed:
+#: the ``StoryOutcome`` name (``ESCALATED``, written by the sprint's own outcome
+#: bookkeeping) and the coordinator ``Phase`` name (``ESCALATE``, written by the
+#: rows built from a run's ``CoordinatorResult``). Recognising only the first
+#: silently skipped every worker-exception and worker-timeout row — exactly the
+#: failures with no other surviving account.
 _FAILED_OUTCOMES = frozenset(
     {
         "FAILED",
         "DROPPED",
+        "ESCALATE",
         "ESCALATED",
         "MERGE_FAILED",
         "MERGE_ARMING_FAILED",
@@ -123,6 +131,28 @@ def derive_failure_cause(entry: dict | None) -> dict | None:
         "source": "story_state_entry",
         "recorded_at": _text("finished_at"),
     }
+
+
+def carry_failure_cause(
+    entry: dict,
+    cause: dict | None,
+    *,
+    prior_history: list[dict] | None = None,
+) -> None:
+    """Stamp one attempt's cause onto a persisted story row, keeping earlier ones.
+
+    Used by every writer of a story row so the structured cause — kind, run id,
+    observing code path — travels with the row instead of being flattened to the
+    ``error`` string and re-derived downstream. No-op when there is no cause,
+    so a successful story never grows an empty evidence key.
+    """
+    if not isinstance(cause, dict) or not cause:
+        return
+    entry["failure_history"] = accumulate_failure_history(
+        {"failure_history": list(prior_history or [])},
+        {"failure_history": [dict(cause)]},
+    )
+    entry["abnormal_kind"] = cause.get("kind")
 
 
 def _cause_identity(cause: dict) -> tuple:
