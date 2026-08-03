@@ -861,7 +861,14 @@ def _run_review_pool(
         for r in failed_results
     }
 
-    quorum_threshold = min(config.retry.review_quorum_threshold, pool_size)
+    # Quorum is measured against the reviewers that could actually answer this
+    # cycle, not the nominal pool: a budget-excluded reviewer was withdrawn as a
+    # spend decision, so counting it in the denominator can make the threshold
+    # unreachable before any verdict is weighed (#2154). Same collapse rule the
+    # nominal pool already gets — a threshold of 2 over a single eligible seat
+    # is a demand no run could satisfy, not a stricter standard.
+    eligible_pool_size = pool_size - len(_budget_excluded)
+    quorum_threshold = min(config.retry.review_quorum_threshold, eligible_pool_size)
     if quorum_threshold < 1:
         quorum_threshold = 1
     meta.quorum_threshold = quorum_threshold
@@ -886,7 +893,7 @@ def _run_review_pool(
         )
         if can_degrade:
             warning = (
-                f"Degraded quorum: {len(successful)}/{pool_size} reviewer(s) "
+                f"Degraded quorum: {len(successful)}/{eligible_pool_size} reviewer(s) "
                 f"delivered a verdict (threshold {quorum_threshold}); proceeding "
                 f"on surviving verdict(s) after non-verdict reviewer failure(s): "
                 f"{failed_desc}"
@@ -903,6 +910,7 @@ def _run_review_pool(
                     failed_detail=meta.failed_detail,
                     quorum_threshold=quorum_threshold,
                     pool_size=pool_size,
+                    eligible_pool_size=eligible_pool_size,
                     warning=warning,
                 )
         else:
@@ -919,14 +927,14 @@ def _run_review_pool(
             )
             state.phase = Phase.ESCALATE
             state.error = (
-                f"Quorum unmet: {len(successful)}/{pool_size} succeeded "
+                f"Quorum unmet: {len(successful)}/{eligible_pool_size} succeeded "
                 f"< threshold {quorum_threshold}; failed: {failed_desc}"
             )
             return successful, failed_results, None, [], []
 
     if failed_results and meta.quorum_met:
         _log(
-            f"Panel quorum met ({len(successful)}/{pool_size} reviewers succeeded "
+            f"Panel quorum met ({len(successful)}/{eligible_pool_size} reviewers succeeded "
             f"≥ quorum threshold {quorum_threshold}) — proceeding to synthesis"
         )
 

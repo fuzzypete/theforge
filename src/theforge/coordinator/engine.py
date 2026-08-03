@@ -997,7 +997,10 @@ def run_task(
 
         # ── PREFLIGHT ──────────────────────────────────────────────────
         if cached_preflight_state is not None:
-            from .preflight import _apply_preflight_config  # noqa: PLC0415
+            from .preflight import (  # noqa: PLC0415
+                _apply_preflight_config,
+                persist_routing_decision,
+            )
 
             cache_valid, cache_validation = validate_preflight_cache(
                 cached_preflight_state,
@@ -1009,6 +1012,15 @@ def run_task(
             if cache_valid:
                 apply_cached_preflight_state(state, cached_preflight_state)
                 config = _apply_preflight_config(config, state, task_slug=task.slug)
+                # Routing resolved from a cached verdict is still this run's
+                # decision — persist it so a later resume can recover it (#2154).
+                persist_routing_decision(
+                    config,
+                    state,
+                    task_slug=task.slug,
+                    story_content=story_content,
+                    run_id=_run_id,
+                )
                 from .preflight_flow import _handle_preflight_verdict  # noqa: PLC0415
 
                 config, _pf_result, _pf_already_done_loop = _handle_preflight_verdict(
@@ -1370,7 +1382,10 @@ def _run_resume_coordinator(
             state.timeout_escalation_used = True
 
     if cached_preflight_state is not None:
-        from .preflight import _apply_preflight_config  # noqa: PLC0415
+        from .preflight import (  # noqa: PLC0415
+            _apply_preflight_config,
+            persist_routing_decision,
+        )
 
         cache_valid, cache_validation = validate_preflight_cache(
             cached_preflight_state,
@@ -1382,6 +1397,13 @@ def _run_resume_coordinator(
         if cache_valid:
             apply_cached_preflight_state(state, cached_preflight_state)
             config = _apply_preflight_config(config, state, task_slug=task.slug)
+            persist_routing_decision(
+                config,
+                state,
+                task_slug=task.slug,
+                story_content=story_content,
+                run_id=logger._run_id,
+            )
             # Dispatch the cached verdict just like run_task's cache-valid
             # branch. Without this, a terminal ALREADY_DONE verdict served from
             # cache is applied to state but never acted on, so the resume path
@@ -1433,6 +1455,24 @@ def _run_resume_coordinator(
                 return _pf_result
             if _pf_already_done_loop:
                 skip_dev_first_iter = True
+    else:
+        # No cached preflight state: the scheduler's in-memory map lost this
+        # story (a mid-sprint re-exec drops it for stories already in flight).
+        # Without this branch the resumed phases run against config exactly as
+        # loaded from forge.yaml — the static roster — silently discarding the
+        # panel size routing already decided for this story (#2154). Recover the
+        # persisted decision; when none is usable, say so rather than passing off
+        # the roster as a routed panel.
+        from .preflight import restore_routing_decision  # noqa: PLC0415
+
+        config, _routing_recovery = restore_routing_decision(
+            config,
+            state,
+            task_slug=task.slug,
+            story_content=story_content,
+            log=_log,
+        )
+        logger._safe_emit("routing_recovery", phase="RESUME", **_routing_recovery)
 
     with _run_log_context(config, logger, task, state, _task_start):
         base_branch = config.workspace.base_branch
