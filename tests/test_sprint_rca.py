@@ -1316,7 +1316,10 @@ def test_capability_gap_from_structured_audit_text(tmp_path: Path) -> None:
     )
     audit = _no_capability_audit(
         {
-            "error": "Failed to get the connection to the CoreSimulator service: Operation not permitted",
+            "error": (
+                "Failed to get the connection to the CoreSimulator service: "
+                "Operation not permitted"
+            ),
         }
     )
     _write(d / "issue-248b" / "audit.yaml", audit)
@@ -1437,7 +1440,9 @@ def test_incomplete_capability_profile_outranks_iteration_exhaustion(tmp_path: P
 
     entry = _build(d)["stories"]["issue-248a"]
     assert entry["primary_failure_class"] == "capability_profile_gap"
-    assert any("sandbox.capability_profile='xcode'" in a for a in entry["recommended_next_actions"])
+    assert any(
+        "sandbox.capability_profile='xcode'" in a for a in entry["recommended_next_actions"]
+    )
 
 
 def test_outbound_network_denial_alone_is_not_a_capability_gap(tmp_path: Path) -> None:

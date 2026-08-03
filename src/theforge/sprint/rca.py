@@ -1512,9 +1512,7 @@ def _launch_collision_action(story: dict, ref: str) -> str:
     )
 
 
-def _capability_gap_action(
-    preset: str | None, ref: str, profile_note: str | None = None
-) -> str:
+def _capability_gap_action(preset: str | None, ref: str, profile_note: str | None = None) -> str:
     """Next step for a capability-profile gap: name the setting and the preset.
 
     Deliberately does not mention the iteration budget. The budget was spent on
