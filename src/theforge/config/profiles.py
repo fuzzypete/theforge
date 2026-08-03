@@ -269,8 +269,12 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
     directly (canonical), or supply the raw ``provider``/``cli`` spelling. Either
     way the resulting TransportSpec is computed *here*, at the parse boundary,
     and passed explicitly — a transport switch must never leave the base
-    profile's old TransportSpec in place.
+    profile's old TransportSpec in place. The legacy pair is then rewritten to
+    mirror the resolved transport so an inherited ``cli`` cannot re-derive the
+    transport that was just replaced.
     """
+    from .models import mirror_fields_for_transport
+
     tools = data.get("allowed_tools")
     # Transport switching — mirror _apply_ref_overrides semantics
     if "provider" in data and "cli" not in data:
@@ -282,8 +286,9 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
     else:
         new_cli = data.get("cli", base.cli)
         new_provider = data.get("provider", base.provider)
-    effective_provider = new_provider
     new_transport = _resolve_override_transport(base, data, new_cli, new_provider)
+    new_cli, new_provider = mirror_fields_for_transport(new_transport, new_cli, new_provider)
+    effective_provider = new_provider
     reasoning_effort = data.get("reasoning_effort", base.reasoning_effort)
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
     if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
@@ -328,6 +333,9 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         else None,
         api_fallback=base.api_fallback,
         github_handle=data.get("github_handle", base.github_handle),
+        # An override may assign a reviewer its review_role; omitting it here
+        # dropped both the override's value and the base profile's.
+        review_role=data.get("review_role", base.review_role),
         phase=base.phase,
         sandbox_mode=sandbox_mode,
     )

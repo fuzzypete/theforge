@@ -20,29 +20,39 @@ vllm serve codestral --host 127.0.0.1 --port 11434
 
 ## forge.yaml configuration
 
-Add a profile with `provider: openai`, your model name, and a `base_url`
+Declare the model with `provider: openai`, an `api` transport, and a `base_url`
 pointing to the local server. No API key is required for local endpoints.
 
 ```yaml
-profiles:
-  dev:
-    provider: openai
-    model: codestral          # must match the model name in your server
-    base_url: http://localhost:11434/v1
-    timeout_seconds: 300
-    allowed_tools:
-      - read_file
-      - bash
-      - glob
-      - grep
-      - write_file
-
-  review_pool:
-    - name: local-reviewer
-      provider: openai
-      model: qwen2.5-coder
+models:
+  enabled:
+    - provider: openai
+      model: codestral        # must match the model name in your server
+      transport:
+        kind: api
       base_url: http://localhost:11434/v1
-      timeout_seconds: 120
+      routing:
+        tier: fast
+      cost:
+        input_per_mtok: 0     # local inference is not billed per token
+        output_per_mtok: 0
+
+    - provider: openai
+      model: qwen2.5-coder
+      transport:
+        kind: api
+      base_url: http://localhost:11434/v1
+      routing:
+        tier: fast
+      cost:
+        input_per_mtok: 0
+        output_per_mtok: 0
+
+budget_usd: 1.00
+
+overrides:
+  dev:
+    timeout_seconds: 300      # local models are slower than cloud APIs
 ```
 
 ### Registry shorthand

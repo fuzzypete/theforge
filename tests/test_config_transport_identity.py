@@ -201,6 +201,180 @@ class TestTransportObjectInConfig:
             load_config(path)
 
 
+# ── AC1/AC9: transport-only overrides on an already-derived profile ──────
+
+
+class TestTransportOnlyOverrideSwitchesDispatch:
+    """``overrides.<role>.transport: {kind: ...}`` alone must move dispatch.
+
+    The trap: the role's profile/ref was derived with a mirrored ``cli``. If the
+    override resolves a new transport but leaves that stale ``cli`` in place, the
+    constructor re-derives the *old* transport from it and the switch silently
+    no-ops.
+    """
+
+    def test_loader_switches_dev_from_cli_to_api(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": ["anthropic/sonnet/cli", "anthropic/opus/cli"],
+                "budget_usd": 30.0,
+                "overrides": {"dev": {"transport": {"kind": "api"}}},
+            },
+        )
+        dev = load_config(path).dev_profile
+        assert dev.mode == "api"
+        assert dev.transport == transport_for("anthropic", "api")
+        assert dev.cli is None
+        assert dev.provider_family == "anthropic"
+
+    def test_loader_switches_a_reviewer_from_api_to_cli(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": ["anthropic/sonnet/cli", "openai/gpt-5.4/api"],
+                "budget_usd": 30.0,
+                "overrides": {
+                    "review_pool": [
+                        {"name": "openai-gpt-5.4-api", "transport": {"kind": "cli"}},
+                    ]
+                },
+            },
+        )
+        reviewer = next(p for p in load_config(path).review_pool if p.model == "gpt-5.4")
+        assert reviewer.mode == "cli"
+        assert reviewer.transport == transport_for("openai", "cli")
+        assert reviewer.cli == "codex"
+        assert reviewer.provider is None
+
+    def test_override_without_a_transport_key_leaves_dispatch_alone(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": ["anthropic/sonnet/cli", "anthropic/opus/cli"],
+                "budget_usd": 30.0,
+                "overrides": {"dev": {"timeout_seconds": 1200}},
+            },
+        )
+        dev = load_config(path).dev_profile
+        assert dev.timeout_seconds == 1200
+        assert dev.mode == "cli"
+        assert dev.cli == "claude"
+
+    @pytest.mark.parametrize(
+        ("base_kwargs", "kind", "expected_transport", "expected_cli", "expected_provider"),
+        [
+            ({"cli": "claude"}, "api", ("anthropic", "api"), None, "anthropic"),
+            ({"provider": "openai"}, "cli", ("openai", "cli"), "codex", None),
+            ({"cli": "codex"}, "api", ("openai", "api"), None, "openai"),
+            ({"provider": "google"}, "cli", ("google", "cli"), "gemini", None),
+        ],
+    )
+    def test_profile_override_mirrors_the_legacy_pair_onto_the_new_transport(
+        self, base_kwargs, kind, expected_transport, expected_cli, expected_provider
+    ):
+        from theforge.config.profiles import _apply_profile_overrides
+
+        base = ModelProfile(
+            name="dev",
+            model="m",
+            budget_usd=1.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+            **base_kwargs,
+        )
+        switched = _apply_profile_overrides(base, {"transport": {"kind": kind}})
+        assert switched.transport == transport_for(*expected_transport)
+        assert switched.mode == kind
+        assert switched.cli == expected_cli
+        assert switched.provider == expected_provider
+
+    @pytest.mark.parametrize(
+        ("base_kwargs", "kind", "expected_transport", "expected_cli", "expected_provider"),
+        [
+            ({"cli": "claude"}, "api", ("anthropic", "api"), None, "anthropic"),
+            ({"provider": "openai"}, "cli", ("openai", "cli"), "codex", None),
+        ],
+    )
+    def test_ref_override_mirrors_the_legacy_pair_onto_the_new_transport(
+        self, base_kwargs, kind, expected_transport, expected_cli, expected_provider
+    ):
+        from theforge.config.role_derivation import _apply_ref_overrides
+        from theforge.config.schema import ModelRef
+
+        ref = ModelRef(model="m", budget_usd=1.0, timeout_seconds=60, **base_kwargs)
+        switched = _apply_ref_overrides(ref, {"transport": {"kind": kind}})
+        assert switched.transport == transport_for(*expected_transport)
+        assert switched.cli == expected_cli
+        assert switched.provider == expected_provider
+
+    def test_transport_switch_survives_the_bridge_to_a_profile(self):
+        """A ref-level switch must still be the dispatch truth after bridging."""
+        from theforge.config.bridge import role_assignment_to_profiles
+        from theforge.config.role_derivation import derive_roles
+
+        assignment = derive_roles(
+            ["anthropic/sonnet/cli", "anthropic/opus/cli"],
+            overrides={"dev": {"transport": {"kind": "api"}}},
+            budget_usd=10.0,
+        )
+        assert assignment.dev.ref.transport == transport_for("anthropic", "api")
+        assert assignment.dev.ref.cli is None
+
+        dev_profile = role_assignment_to_profiles(assignment)["dev_profile"]
+        assert dev_profile.mode == "api"
+        assert dev_profile.cli is None
+        assert dev_profile.transport == transport_for("anthropic", "api")
+
+    def test_transport_override_without_a_resolvable_provider_is_rejected(self):
+        from theforge.config.profiles import _apply_profile_overrides
+
+        base = ModelProfile(
+            name="dev",
+            model="m",
+            budget_usd=1.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+        )
+        with pytest.raises(ValueError, match="needs a provider"):
+            _apply_profile_overrides(base, {"transport": {"kind": "api"}})
+
+    def test_override_transport_block_is_validated(self):
+        from theforge.config.profiles import _apply_profile_overrides
+
+        base = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="m",
+            budget_usd=1.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+        )
+        with pytest.raises(ValueError, match="transport.kind' must be 'cli' or 'api'"):
+            _apply_profile_overrides(base, {"transport": {"kind": "local"}})
+        with pytest.raises(ValueError, match="only supports 'kind'"):
+            _apply_profile_overrides(base, {"transport": {"kind": "api", "runner": "codex"}})
+
+    def test_review_role_override_is_preserved(self, tmp_path):
+        """Regression: the override constructor dropped review_role entirely."""
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": ["anthropic/sonnet/cli", "anthropic/opus/cli"],
+                "budget_usd": 30.0,
+                "overrides": {
+                    "review_pool": [{"name": "anthropic-opus-cli", "review_role": "correctness"}]
+                },
+            },
+        )
+        reviewer = next(p for p in load_config(path).review_pool if p.name == "anthropic-opus-cli")
+        assert reviewer.review_role == "correctness"
+
+
 # ── AC5: local models are API transports with endpoint metadata ──────────
 
 

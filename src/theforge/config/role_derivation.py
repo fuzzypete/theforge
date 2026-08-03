@@ -144,9 +144,13 @@ def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
 
     Transport switching: an override may name ``transport: {kind: cli|api}``
     directly (canonical), or supply the raw ``provider``/``cli`` spelling. Either
-    way the TransportSpec is resolved here, at the parse boundary, and passed
-    explicitly — the base ref's transport must not survive a transport switch.
+    way the TransportSpec is resolved here, at the parse boundary, and the
+    legacy pair is then rewritten to mirror it — otherwise a ``cli`` inherited
+    from ``ref`` would survive into the constructor and re-derive the transport
+    that was just replaced.
     """
+    from .models import mirror_fields_for_transport
+
     new_transport = _resolve_ref_override_transport(ref, overrides)
     if "provider" in overrides and "cli" not in overrides:
         # Switching to API transport — clear the derived cli value
@@ -158,9 +162,10 @@ def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
         new_provider = None
     else:
         # Both or neither supplied — preserve caller-provided values. When both
-        # are set, transport inference prefers cli (see models.infer_transport).
+        # are set, transport normalization prefers cli.
         new_cli = overrides.get("cli", ref.cli)
         new_provider = overrides.get("provider", ref.provider)
+    new_cli, new_provider = mirror_fields_for_transport(new_transport, new_cli, new_provider)
 
     return ModelRef(
         model=overrides.get("model", ref.model),

@@ -259,6 +259,31 @@ def provider_for_transport(transport: TransportSpec) -> str | None:
     return _LEGACY_CLI_TO_PROVIDER.get(transport.runner)
 
 
+def mirror_fields_for_transport(
+    transport: TransportSpec | None,
+    cli: str | None,
+    provider: str | None,
+) -> tuple[str | None, str | None]:
+    """Return the ``(cli, provider)`` pair that mirrors ``transport``.
+
+    Once a parse-boundary helper has resolved which transport an override lands
+    on, the legacy spelling has to be rewritten to match it — otherwise a stale
+    ``cli`` inherited from the profile being overridden survives into the
+    constructor and :func:`types._normalize_transport` re-derives the *old*
+    transport from it, silently discarding the switch.
+
+    Following the ``ModelProfile`` convention: a CLI transport mirrors as
+    ``(runner, None)`` and an API transport as ``(None, provider_family)``. When
+    the transport is unresolvable the raw pair is returned untouched so the
+    unresolved value still surfaces in error messages.
+    """
+    if transport is None:
+        return cli, provider
+    if transport.kind == "cli":
+        return transport.runner, None
+    return None, provider_for_transport(transport)
+
+
 def transport_from_raw_fields(
     cli: str | None,
     provider: str | None,

@@ -4,6 +4,19 @@ TheForge supports many provider configurations. This guide presents five named
 patterns to help you pick the right setup for your situation rather than
 configuring from scratch.
 
+Every pattern is written in the canonical model shape: a model is identified by
+**provider + model + transport kind** (`cli` or `api`), written either as the
+identity string `<provider>/<model>/<cli|api>` or as a mapping with a
+first-class `transport: {kind: ...}` object. TheForge derives the preflight,
+plan, dev, review and synthesis roles from that list. See
+[inputs reference](inputs-reference.md#model-identity-and-transport) for the
+full schema.
+
+> The older top-level `profiles:` block (with bare `cli:`/`provider:` keys and
+> no transport object) still loads, but it is legacy: it spells dispatch as a
+> pair of sibling fields instead of one transport object. Prefer `models:` for
+> new configuration.
+
 ---
 
 ## Quick decision
@@ -32,20 +45,11 @@ story today. One model, zero API key setup.
 - Privacy: cloud calls to Anthropic
 
 ```yaml
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 5.00
-    timeout_seconds: 600
-    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
-  review_pool:
-    - name: claude-reviewer
-      cli: claude
-      model: opus
-      budget_usd: 2.00
-      timeout_seconds: 300
-      allowed_tools: [Read, Bash, Glob, Grep]
+models:
+  - anthropic/sonnet/cli        # cheaper tier — dev
+  - anthropic/opus/cli          # strong tier — reviewer
+
+budget_usd: 7.00
 ```
 
 **Prerequisites:** [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
@@ -67,21 +71,24 @@ for review.
 - Quality: good (weaker dev, but review catches issues)
 - Privacy: cloud calls to Anthropic
 
+`haiku` is not in the built-in registry, so declare its identity inline. The
+mapping form spells out all three parts of the identity plus its routing tier:
+
 ```yaml
-profiles:
-  dev:
-    cli: claude
-    model: haiku          # cheaper, faster dev iterations
-    budget_usd: 2.00
-    timeout_seconds: 600
-    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
-  review_pool:
-    - name: claude-reviewer
-      cli: claude
-      model: opus           # strong reviewer catches what haiku misses
-      budget_usd: 2.00
-      timeout_seconds: 300
-      allowed_tools: [Read, Bash, Glob, Grep]
+models:
+  enabled:
+    - provider: anthropic
+      model: haiku                # cheaper, faster dev iterations
+      transport:
+        kind: cli
+      routing:
+        tier: cheap
+      cost:
+        input_per_mtok: 0.80
+        output_per_mtok: 4.00
+    - anthropic/opus/cli          # strong reviewer catches what haiku misses
+
+budget_usd: 4.00
 ```
 
 **Prerequisites:** Claude Code CLI.
@@ -101,35 +108,30 @@ perspectives. Different models catch different bug classes.
 - Quality: excellent (multi-model cross-review)
 - Privacy: cloud calls to multiple providers
 
+Cross-provider coverage comes from listing models whose identities differ in
+provider *and* transport — each entry is one identity, so the same model over
+two transports would be two distinct reviewers:
+
 ```yaml
-profiles:
-  dev:
-    cli: claude
-    model: sonnet
-    budget_usd: 5.00
-    timeout_seconds: 600
-    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
+models:
+  - anthropic/sonnet/cli              # dev
+  - anthropic/opus/cli                # reviewer
+  - openai/gpt-5.4/api                # reviewer, OpenAI API adapter
+  - google/gemini-3-flash-preview/api  # reviewer, Google API adapter
+
+budget_usd: 10.00
+
+# Optional: pin review roles and per-reviewer thinking budgets. Reviewer names
+# are the model identity with '/' replaced by '-'.
+overrides:
   review_pool:
-    - name: claude-reviewer
-      cli: claude
-      model: opus
-      review_role: correctness      # logic bugs, spec compliance
-      budget_usd: 2.00
-      timeout_seconds: 300
-      allowed_tools: [Read, Bash, Glob, Grep]
-    - name: codex-reviewer
-      provider: openai              # API mode
-      model: o4-mini
-      review_role: patterns         # code patterns, style
-      budget_usd: 1.00
-      timeout_seconds: 300
-    - name: gemini-reviewer
-      provider: google              # API mode
-      model: gemini-2.5-flash
-      review_role: edge-cases       # edge cases, error handling
-      thinking_budget: 2048         # optional: enables Gemini extended reasoning
-      budget_usd: 1.00
-      timeout_seconds: 300
+    - name: anthropic-opus-cli
+      review_role: correctness        # logic bugs, spec compliance
+    - name: openai-gpt-5.4-api
+      review_role: patterns           # code patterns, style
+    - name: google-gemini-3-flash-preview-api
+      review_role: edge-cases         # edge cases, error handling
+      thinking_budget: 2048           # optional: Gemini extended reasoning
 ```
 
 **Prerequisites:**
@@ -151,29 +153,33 @@ air-gapped environments). Uses Ollama for fully local inference.
 - Quality: lower (local models lag cloud frontier)
 - Privacy: all inference stays on your machine
 
-A local model is an ordinary **API transport** pointed at a local endpoint —
-there is no `local` provider and no `local` transport kind. The equivalent
-canonical `models:` declaration is in
-[Local Models](local-models.md#registry-shorthand).
+A local model is an ordinary **API transport** pointed at a local endpoint.
+Locality is endpoint metadata (`base_url`) — there is no `local` provider and no
+`local` transport kind:
 
 ```yaml
-profiles:
+models:
+  enabled:
+    - provider: openai              # OpenAI-compatible adapter…
+      model: qwen2.5-coder:32b      # strong local coding model
+      transport:
+        kind: api                   # …over the API transport…
+      base_url: http://localhost:11434/v1   # …pointed at a local endpoint
+      routing:
+        tier: fast
+      cost:
+        input_per_mtok: 0           # local inference is not billed per token
+        output_per_mtok: 0
+
+budget_usd: 1.00
+
+overrides:
   dev:
-    provider: openai              # API transport…
-    model: qwen2.5-coder:32b      # strong local coding model
-    base_url: http://localhost:11434/v1   # …pointed at a local endpoint
-    budget_usd: 0                  # no cost tracking for local
-    timeout_seconds: 1800          # local models are slower — increase timeout
-    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
-  review_pool:
-    - name: local-reviewer
-      provider: openai
-      model: qwen2.5-coder:32b
-      base_url: http://localhost:11434/v1
-      budget_usd: 0
-      timeout_seconds: 900
-      allowed_tools: [Read, Bash, Glob, Grep]
+    timeout_seconds: 1800           # local models are slower — increase timeout
 ```
+
+A single model does both dev and review here: with one entry in `models:`, the
+review pool is that same model.
 
 **Prerequisites:**
 - [Ollama](https://ollama.com) installed and running (`ollama serve`)
@@ -196,22 +202,29 @@ local review for privacy with cloud dev for speed.
 - Quality: good-to-excellent depending on local model
 - Privacy: dev stays local; review uses cloud
 
+Zero-cost local inference lands in the cheapest routing band, so it takes the
+dev role and the cloud model reviews:
+
 ```yaml
-profiles:
+models:
+  enabled:
+    - provider: openai
+      model: qwen2.5-coder:32b
+      transport:
+        kind: api
+      base_url: http://localhost:11434/v1
+      routing:
+        tier: fast
+      cost:
+        input_per_mtok: 0
+        output_per_mtok: 0
+    - anthropic/opus/cli            # strong cloud reviewer
+
+budget_usd: 3.00
+
+overrides:
   dev:
-    provider: openai
-    model: qwen2.5-coder:32b
-    base_url: http://localhost:11434/v1
-    budget_usd: 0
-    timeout_seconds: 1800
-    allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]
-  review_pool:
-    - name: claude-reviewer
-      cli: claude
-      model: opus                   # strong cloud reviewer
-      budget_usd: 2.00
-      timeout_seconds: 300
-      allowed_tools: [Read, Bash, Glob, Grep]
+    timeout_seconds: 1800           # local models are slower
 ```
 
 **Prerequisites:**

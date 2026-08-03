@@ -476,14 +476,17 @@ retry:
                              # investigation; it does NOT re-investigate. 0 disables.
   max_plan_regen_attempts: 3 # plan review reject → regeneration cycles
 
-# ── Classic manual profiles (advanced alternative) ─────────
-# Omit models: when using classic profiles. This path remains supported for
-# fully manual role control, but it is not the v0.8 default.
+# ── Classic manual profiles (LEGACY — mutually exclusive with models:) ─────
+# This path predates first-class transport: it spells dispatch as a pair of
+# sibling cli/provider fields with no transport object, so a profile's identity
+# is not the canonical (provider, model, transport.kind) tuple. It still loads —
+# the pair is normalized into a transport at parse time — but it is legacy.
+# Prefer models: + overrides: above. Omit models: entirely when using it.
 profiles:
   # Dev agent (implements the story)
   dev:
-    cli: claude                # CLI mode: "claude", "codex", or "gemini"
-    # provider: openai         # API mode: "openai", "anthropic", "google", "deepseek"
+    cli: claude                # legacy CLI spelling: "claude", "codex", "gemini"
+    # provider: openai         # legacy API spelling: "openai", "anthropic", …
     model: sonnet
     budget_usd: 5.00
     timeout_seconds: 600
