@@ -620,6 +620,17 @@ state present in the body:
 `forge groom` will never propose adding the `ready` label to a bug whose
 cause is unknown — this is a hard invariant of the lifecycle.
 
+**Groom restructures; it does not write content.** For a feature/task/docs
+issue missing acceptance criteria or an example, groom inserts the section
+heading with a `TODO(forge-groom)` placeholder — and the corresponding
+shape-gate finding *stays*. Those findings are listed under `UNRESOLVED:` in
+the output and recorded as `unsupplied_findings` in the audit event, so the
+gap is carried by the issue instead of erased from it. Fill the placeholder
+sections in yourself before labeling `ready`; a groomed-but-unfilled issue
+will not reach the `runnable` verdict. This is enforced mechanically: any
+proposal that resolves `missing_acceptance_criteria` or `missing_example` is
+discarded and the body falls back to whitespace normalization.
+
 **`--next` is operator hint, not protocol.** Output is human-readable; the
 v0.11 contract does not promise a stable machine-readable shape. A `--json`
 extension may follow when auto-routing in v0.12+ needs it.

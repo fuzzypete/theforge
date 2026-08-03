@@ -23,6 +23,7 @@ from theforge.shape_check.parsing import (
     fenced_code_blocks,
     has_heading,
 )
+from theforge.shape_check.placeholders import is_placeholder_only, strip_placeholder_content
 from theforge.shape_check.types import Reason, Severity
 
 DEFAULT_CLUSTER_THRESHOLD = 4
@@ -629,14 +630,24 @@ def check_missing_acceptance_criteria(
 ) -> Reason | None:
     if is_bug_format_issue(body, labels):
         return None
+    placeholder_only = False
     if has_heading(body, r"acceptance criteria|done criteria|checklist"):
         section = extract_ac_section(body) or ""
-        if extract_bullets(section):
+        # Placeholder bullets are shaped like criteria but assert nothing;
+        # measure substance on what remains once they are stripped.
+        if extract_bullets(strip_placeholder_content(section)):
             return None
+        placeholder_only = bool(extract_bullets(section))
+    detail = (
+        "Acceptance criteria section contains only placeholder/TODO text — "
+        "no verifiable criteria supplied."
+        if placeholder_only
+        else "No acceptance criteria section with a bullet/checklist found."
+    )
     return Reason(
         code="missing_acceptance_criteria",
         severity=Severity.BLOCKING,
-        detail="No acceptance criteria section with a bullet/checklist found.",
+        detail=detail,
     )
 
 
@@ -678,15 +689,26 @@ def check_missing_example(title: str, body: str, labels: Iterable[str]) -> Reaso
             detail="No recognizable example section found for this feature-format issue.",
         )
 
-    content_chars = len(re.sub(r"\s+", "", section))
-    if content_chars < _EXAMPLE_MIN_CONTENT_CHARS or not _has_structured_example_content(section):
+    # A section that only says an example is missing is not an example.
+    # Strip placeholder scaffolding before measuring substance, so a producer
+    # cannot resolve this finding with text merely shaped like the answer.
+    substantive = strip_placeholder_content(section)
+    content_chars = len(re.sub(r"\s+", "", substantive))
+    if content_chars < _EXAMPLE_MIN_CONTENT_CHARS or not _has_structured_example_content(
+        substantive
+    ):
+        detail = (
+            "Example section contains only placeholder/TODO text — no concrete example supplied."
+            if is_placeholder_only(section)
+            else (
+                "Example section is present but not substantive; include a concrete list, "
+                "table, or fenced example."
+            )
+        )
         return Reason(
             code="missing_example",
             severity=Severity.ADVISORY,
-            detail=(
-                "Example section is present but not substantive; include a concrete list, "
-                "table, or fenced example."
-            ),
+            detail=detail,
         )
     return None
 
