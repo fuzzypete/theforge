@@ -1355,6 +1355,23 @@ def get_dev_success_rate(
     )["rate"]
 
 
+def _trailing_clean_streak(recent: list[int]) -> int:
+    """Length of the newest all-clean run in an ordered ``0/1`` outcome ring.
+
+    ``recent`` is oldest-first / newest-last (the shape every ``_completion_recent``
+    ring is folded in). Counts backwards from the newest outcome and stops at the
+    first failure, so the result is the number of *consecutive* clean attempts a
+    model has most recently strung together — the evidence the reviewer
+    re-inclusion recovery rule is defined over (#1880).
+    """
+    streak = 0
+    for outcome in reversed(recent):
+        if int(outcome) != 1:
+            break
+        streak += 1
+    return streak
+
+
 def get_review_signal(
     profiles: dict,
     model: str,
@@ -1385,6 +1402,13 @@ def get_review_signal(
     - ``floor``: ``"pass"`` when ``attempted >= min_runs`` (and ``> 0``), else
       ``"fail"``.
     - ``weighting``: the recency parameters actually applied.
+    - ``recovery``: the re-inclusion evidence (#1880) — ``clean_streak`` (how many
+      of the newest ring outcomes are consecutively clean),
+      ``clean_attempts_required`` (``K``, pinned to ``min_runs`` so the recovery
+      rule reuses the existing sample floor rather than adding a config surface),
+      and ``recovered`` (``True`` once the newest ``K`` attempts are all clean).
+      This is reported unconditionally; the *threshold* comparison that decides
+      whether recovery is relevant lives in the router, which owns the threshold.
     """
     mode, half_life, window = _recency_params(recency)
     matching = _matching_profile_entries(
@@ -1418,6 +1442,8 @@ def get_review_signal(
         min_samples=min_runs,
     )
     floor_ok = attempted >= min_runs and attempted > 0
+    clean_streak = _trailing_clean_streak(recent)
+    required_clean = max(int(min_runs), 1)
     return {
         "raw": raw,
         "weighted": weighted,
@@ -1427,6 +1453,11 @@ def get_review_signal(
         "floor": "pass" if floor_ok else "fail",
         "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
         "rate": weighted if floor_ok else None,
+        "recovery": {
+            "clean_streak": clean_streak,
+            "clean_attempts_required": required_clean,
+            "recovered": clean_streak >= required_clean,
+        },
     }
 
 
