@@ -22,7 +22,7 @@ from theforge.config import (
     TransportSpec,
     WorkspaceConfig,
 )
-from theforge.config.models import AGENT_REGISTRY, AgentDef, AgentSpec
+from theforge.config.models import AGENT_REGISTRY, AgentDef, AgentSpec, RoutingPolicy
 from theforge.config.models import TransportSpec as ModelTransportSpec
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -278,12 +278,12 @@ class TestCheckConfigHappyPath:
         assert "gpt-4" in out
 
     def test_transport_label_uses_explicit_transport(self, tmp_path: Path, capsys) -> None:
-        """Display follows TransportSpec.kind when legacy fields disagree."""
+        """Display follows TransportSpec.kind, not the provider token."""
         review_pool = [
             ModelProfile(
                 name="api-reviewer",
-                cli="codex",
-                provider=None,
+                cli=None,
+                provider="openai",
                 model="gpt-5.4",
                 budget_usd=1.0,
                 timeout_seconds=120,
@@ -314,10 +314,10 @@ class TestCheckConfigHappyPath:
         config = _make_forge_config(
             tmp_path,
             models=[
-                "claude/sonnet",
-                "openai/gpt-5.4",
-                "deepseek/deepseek-reasoner",
-                "openai-api/gpt-5.4",
+                "anthropic/sonnet/cli",
+                "openai/gpt-5.4/cli",
+                "deepseek/deepseek-reasoner/api",
+                "openai/gpt-5.4/api",
             ],
             models_budget_usd=10.0,
         )
@@ -344,10 +344,10 @@ class TestCheckConfigHappyPath:
         config = _make_forge_config(
             tmp_path,
             models=[
-                "claude/sonnet",
-                "openai/gpt-5.4",
-                "deepseek/deepseek-reasoner",
-                "openai-api/gpt-5.4",
+                "anthropic/sonnet/cli",
+                "openai/gpt-5.4/cli",
+                "deepseek/deepseek-reasoner/api",
+                "openai/gpt-5.4/api",
             ],
             models_budget_usd=10.0,
             review_pool=[
@@ -377,27 +377,25 @@ class TestCheckConfigHappyPath:
         self, tmp_path: Path, capsys
     ) -> None:
         custom_registry = dict(AGENT_REGISTRY)
-        custom_registry["gpt-5.5"] = AgentSpec(
+        custom_registry["openai/gpt-5.5/cli"] = AgentSpec(
             provider="openai",
             model="gpt-5.5",
             transport=ModelTransportSpec(kind="cli", runner="codex", executable="codex"),
-            tier="strong",
-            capability=9,
-            cost_rank=3,
+            routing=RoutingPolicy(tier="strong", capability=9, cost_rank=3),
             registry_source="forge.yaml",
             input_cost_per_mtok=5.0,
             output_cost_per_mtok=30.0,
         )
         config = _make_forge_config(
             tmp_path,
-            models=["claude/sonnet", "gpt-5.5"],
+            models=["anthropic/sonnet/cli", "openai/gpt-5.5/cli"],
             models_budget_usd=10.0,
             model_registry=custom_registry,
             model_registry_sources={
                 **{k: "builtin" for k in AGENT_REGISTRY},
-                "gpt-5.5": "forge.yaml",
+                "openai/gpt-5.5/cli": "forge.yaml",
             },
-            custom_models=("gpt-5.5",),
+            custom_models=("openai/gpt-5.5/cli",),
         )
         with (
             patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
@@ -408,7 +406,7 @@ class TestCheckConfigHappyPath:
         out = capsys.readouterr().out
         assert "MODEL REGISTRY" in out
         assert "selected builtin:" in out
-        assert "claude/sonnet" in out
+        assert "anthropic/sonnet/cli" in out
         assert "selected forge.yaml:" in out
         assert "gpt-5.5" in out
         assert "declared forge.yaml:" in out
@@ -967,7 +965,7 @@ class TestComplexityAwareDisplay:
             retry=RetryPolicy(),
             plan=PlanConfig(enabled=True),
             log=LogConfig(enabled=False),
-            models=["claude/sonnet", "claude/opus"],
+            models=["anthropic/sonnet/cli", "anthropic/opus/cli"],
             models_budget_usd=50.0,
         )
 
@@ -1061,7 +1059,7 @@ class TestComplexityAwareDisplay:
 
     def test_providers_header_reports_api_transport(self, tmp_path: Path, capsys) -> None:
         config = self._make_v08_forge_config(tmp_path)
-        config = replace(config, models=["openai-api/gpt-5.4", "deepseek/deepseek-reasoner"])
+        config = replace(config, models=["openai/gpt-5.4/api", "deepseek/deepseek-reasoner/api"])
         with (
             patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
             patch("theforge.cli.check_config.load_config", return_value=config),
@@ -1150,7 +1148,7 @@ class TestComplexityAwareDisplay:
             retry=RetryPolicy(),
             plan=PlanConfig(enabled=False),
             log=LogConfig(enabled=False),
-            models=["claude/sonnet", "claude/opus"],
+            models=["anthropic/sonnet/cli", "anthropic/opus/cli"],
             models_budget_usd=50.0,
             models_overrides={"dev": {"timeout_seconds": 1200}},
         )
@@ -1190,8 +1188,8 @@ class TestCheckConfigIntegration:
             """
 project: integration-test
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 budget_usd: 30.0
 """,
         )
@@ -1218,8 +1216,8 @@ budget_usd: 30.0
             """
 project: integration-test-ov
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 budget_usd: 30.0
 overrides:
   dev:

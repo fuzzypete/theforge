@@ -16,7 +16,8 @@ from theforge.config import (
     resolve_agent_spec,
 )
 from theforge.config.auth import check_agent_auth
-from theforge.config.profiles import _apply_provider_fallback
+from theforge.config.models import provider_for_transport, transport_from_raw_fields
+from theforge.config.profiles import _apply_transport_fallback
 from theforge.config.role_derivation import derive_roles
 from theforge.config.types import PlanConfig
 
@@ -187,45 +188,29 @@ def _run_auth(
         results[key] = (False, str(exc))
 
 
-_CLI_PROVIDER_MAP: dict[str, str] = {
-    "claude": "anthropic",
-    "codex": "openai",
-    "gemini": "google",
-}
-
-
 def _split_provider_transport(
-    cli: str | None,
     provider: str | None,
-    transport: TransportSpec | None = None,
+    transport: TransportSpec | None,
 ) -> tuple[str, str]:
     """Return (provider_label, transport_label) for config display.
 
-    CLI profiles carry an implicit provider (claude → anthropic, codex → openai,
-    gemini → google); API profiles carry the provider explicitly. Transport is
-    rendered as 'cli:<binary>' for CLI profiles and 'api' for API profiles, so
-    the operator never conflates CLI-backed and API-backed models.
-
-    When an explicit TransportSpec is present, it is the same source of truth the
-    runner uses for dispatch and wins over legacy cli/provider inference.
+    Identity and transport are rendered as two separate columns on purpose: an
+    operator must never have to decode ``openai-api`` to learn that a model runs
+    over the API. ``provider`` is the provider family for both transports, and
+    the transport column shows ``cli:<runner>`` or ``api``.
     """
-    if transport is not None:
-        if transport.kind == "api":
-            return provider or transport.runner, "api"
-        runner = transport.executable or transport.runner
-        return provider or _CLI_PROVIDER_MAP.get(runner, runner), f"cli:{runner}"
-    if cli is not None:
-        return _CLI_PROVIDER_MAP.get(cli, cli), f"cli:{cli}"
-    if provider is not None:
-        return provider, "api"
-    return "?", "?"
+    if transport is None:
+        return provider or "?", "?"
+    family = provider or provider_for_transport(transport) or "?"
+    if transport.kind == "api":
+        return family, "api"
+    return family, f"cli:{transport.runner}"
 
 
 def _transport_label(profile: ModelProfile) -> str:
     """Return 'provider  transport  / model' with provider and transport separate."""
     provider_label, transport_label = _split_provider_transport(
-        profile.cli,
-        profile.provider,
+        profile.provider_family,
         profile.transport,
     )
     return f"{provider_label:<10}{transport_label:<10}{profile.model}"
@@ -233,7 +218,9 @@ def _transport_label(profile: ModelProfile) -> str:
 
 def _plan_transport_label(plan: PlanConfig) -> str:
     """Return provider/transport/model label for a PlanConfig."""
-    provider_label, transport_label = _split_provider_transport(plan.cli, plan.provider)
+    provider_label, transport_label = _split_provider_transport(
+        plan.provider_family, plan.transport
+    )
     return f"{provider_label:<10}{transport_label:<10}{plan.model}"
 
 
@@ -257,21 +244,16 @@ def _provider_label(
             warnings_list.append(str(exc))
         return "provider=? transport=?"
 
-    provider_label, transport_label = _split_provider_transport(
-        spec.transport.executable if spec.transport.kind == "cli" else None,
-        spec.provider,
-        spec.transport,
-    )
+    provider_label, transport_label = _split_provider_transport(spec.provider, spec.transport)
     return f"{provider_label} {transport_label}"
 
 
 def _ref_transport_label(
-    cli: str | None,
     provider: str | None,
     model: str,
     transport: TransportSpec | None = None,
 ) -> str:
-    provider_label, transport_label = _split_provider_transport(cli, provider, transport)
+    provider_label, transport_label = _split_provider_transport(provider, transport)
     return f"{provider_label:<10}{transport_label:<10}{model}"
 
 
@@ -318,13 +300,13 @@ def _format_complexity_aware_section(
 
     # Preflight: always static (runs before complexity is known)
     pre = ra_low.preflight.ref
-    pre_label = _ref_transport_label(pre.cli, pre.provider, pre.model, pre.transport)
+    pre_label = _ref_transport_label(pre.provider_family, pre.model, pre.transport)
     lines.append(f"  {'preflight:':<14}{pre_label:<28} (static — runs before complexity known)")
 
     # Plan: show per-complexity, collapsing equal adjacent levels
     def _plan_label(ra) -> str:  # type: ignore[no-untyped-def]
         r = ra.plan.ref
-        return _ref_transport_label(r.cli, r.provider, r.model, r.transport)
+        return _ref_transport_label(r.provider_family, r.model, r.transport)
 
     pl, pm, ph = _plan_label(ra_low), _plan_label(ra_mid), _plan_label(ra_high)
     plan_parts = _collapse_complexity_labels({"LOW": pl, "MEDIUM": pm, "HIGH": ph})
@@ -333,7 +315,7 @@ def _format_complexity_aware_section(
     # Dev: show per-complexity
     def _dev_label(ra) -> str:  # type: ignore[no-untyped-def]
         r = ra.dev.ref
-        return _ref_transport_label(r.cli, r.provider, r.model, r.transport)
+        return _ref_transport_label(r.provider_family, r.model, r.transport)
 
     dl, dm, dh = _dev_label(ra_low), _dev_label(ra_mid), _dev_label(ra_high)
     dev_parts = _collapse_complexity_labels({"LOW": dl, "MEDIUM": dm, "HIGH": dh})
@@ -453,9 +435,7 @@ def _format_config(
                 if spec is None:
                     continue
                 provider_label, transport_label = _split_provider_transport(
-                    spec.transport.executable if spec.transport.kind == "cli" else None,
-                    spec.provider,
-                    spec.transport,
+                    spec.provider, spec.transport
                 )
                 custom_details.append(
                     f"{model_id} [{provider_label} {transport_label} -> {spec.model}]"
@@ -550,7 +530,9 @@ def _format_config(
     if config.assignment.enabled and config.agents:
         lines.append("AGENTS (adaptive pool)")
         for agent in config.agents:
-            provider_label, transport_label = _split_provider_transport(agent.cli, agent.provider)
+            provider_label, transport_label = _split_provider_transport(
+                agent.effective_provider, transport_from_raw_fields(agent.cli, agent.provider)
+            )
             transport_str = f"{provider_label:<10}{transport_label:<10}{agent.model}"
             ready, reason = auth_results.get(_auth_key("agent", agent.name), (True, ""))
             auth_str = "✓ ready" if ready else f"✗ {reason}"
@@ -666,7 +648,7 @@ def cmd_check_config(args: object) -> int:
     if config.plan_agent_review.enabled:
         for p in config.plan_agent_review.profiles:
             _run_auth(
-                _apply_provider_fallback(p, config.provider_fallbacks),
+                _apply_transport_fallback(p, config.transport_fallbacks),
                 "plan_review",
                 auth_results,
                 config.secrets,
@@ -682,7 +664,7 @@ def cmd_check_config(args: object) -> int:
             timeout_seconds=config.plan.timeout,
             allowed_tools=(),
         )
-        plan_profile = _apply_provider_fallback(plan_profile, config.provider_fallbacks)
+        plan_profile = _apply_transport_fallback(plan_profile, config.transport_fallbacks)
         _run_auth(plan_profile, "phase", auth_results, config.secrets)
 
     for agent in config.agents:

@@ -28,21 +28,27 @@ from .defaults import (
 )
 from .models import (
     AGENT_REGISTRY,
+    TRANSPORT_KINDS,
     AgentSpec,
+    RoutingPolicy,
     _parse_assignment,
+    canonical_id_for_spec,
+    canonical_model_id,
     custom_model_capability,
     custom_model_cost_rank,
     custom_model_dev_capable,
     known_model_overlay_providers,
+    normalize_model_key,
     overlay_transport,
     resolve_agent_spec,
+    transport_for,
 )
 from .profiles import (
     CLI_PROVIDER_MAP,
     _agents_from_models,
     _apply_profile_overrides,
-    _apply_provider_fallback,
-    _parse_provider_fallbacks,
+    _apply_transport_fallback,
+    _parse_transport_fallbacks,
     override_constrains_model,
 )
 from .provenance import build_provenance
@@ -53,7 +59,6 @@ from .types import (
     SUPPORTED_PROVIDERS,
     AdvisoryConventionsConfig,
     AdvisoryIssueFilingConfig,
-    ApiFallbackConfig,
     ContextConfig,
     DevConfig,
     DevVerificationCommand,
@@ -75,6 +80,7 @@ from .types import (
     SprintBatchConfig,
     SprintConfig,
     StuckDetectionConfig,
+    TransportFallbackConfig,
     ValidationConfig,
 )
 
@@ -139,16 +145,19 @@ def _parse_sandbox_config(sandbox_raw: Any) -> SandboxConfig:
 
 def _parse_models_section(
     raw_models: Any,
-) -> tuple[list[str] | None, dict[str, Any], bool]:
+) -> tuple[list[str] | None, dict[str, AgentSpec], dict[str, Any], bool]:
     """Normalize the top-level models section.
 
-    Returns ``(enabled_models, custom_raw, simple_mode_enabled)`` where:
-    - ``enabled_models`` is the selected model list for v0.8 simple mode
+    Returns ``(enabled_models, inline_specs, custom_raw, simple_mode_enabled)`` where:
+    - ``enabled_models`` is the selected model list, as canonical
+      ``provider/model/transport-kind`` identities
+    - ``inline_specs`` holds AgentSpecs declared inline under ``models.enabled``
     - ``custom_raw`` is the raw ``models.custom`` mapping (possibly empty)
     - ``simple_mode_enabled`` indicates whether the config opted into simple mode
     """
     if isinstance(raw_models, list):
-        return [str(m) for m in raw_models], {}, True
+        ids, inline = _normalize_enabled_entries(raw_models)
+        return ids, inline, {}, True
     if raw_models is None:
         raise ValueError("'models' must be a non-empty list")
     if not isinstance(raw_models, dict):
@@ -171,16 +180,185 @@ def _parse_models_section(
     if not isinstance(custom_raw, dict):
         raise ValueError("forge.yaml 'models.custom' must be a mapping")
 
-    return (
-        [str(m) for m in enabled_raw] if enabled_raw is not None else None,
-        custom_raw,
-        enabled_raw is not None,
+    enabled_ids, inline_specs = (
+        _normalize_enabled_entries(enabled_raw) if enabled_raw is not None else (None, {})
     )
+    return enabled_ids, inline_specs, custom_raw, enabled_raw is not None
 
 
-def _parse_custom_model_registry(custom_raw: dict[str, Any]) -> dict[str, AgentSpec]:
-    """Parse and validate user-declared model overlays from forge.yaml."""
+def _parse_transport_block(raw: Any, where: str) -> str:
+    """Read the bounded ``transport: {kind: cli|api}`` object off a raw entry."""
+    if not isinstance(raw, dict):
+        raise ValueError(f"forge.yaml '{where}.transport' must be a mapping with a 'kind' key")
+    unknown = set(raw) - {"kind"}
+    if unknown:
+        raise ValueError(
+            f"forge.yaml '{where}.transport' only supports 'kind'; got {sorted(unknown)}"
+        )
+    kind = raw.get("kind")
+    if kind not in TRANSPORT_KINDS:
+        raise ValueError(
+            f"forge.yaml '{where}.transport.kind' must be one of {sorted(TRANSPORT_KINDS)}, "
+            f"got {kind!r}"
+        )
+    return str(kind)
+
+
+_ENABLED_ENTRY_KEYS = {"provider", "model", "transport", "routing", "base_url", "cost"}
+_ROUTING_KEYS = {"tier", "capability", "cost_rank", "dev_capable", "phase_eligibility"}
+
+
+def _parse_enabled_mapping_entry(
+    entry: dict[str, Any], index: int
+) -> tuple[str, AgentSpec | None]:
+    """Normalize one canonical ``models.enabled`` mapping entry.
+
+    Returns ``(canonical_id, spec_or_None)``. The spec is None when the entry
+    only selects a model the built-in registry already knows — declaring
+    ``provider``/``model``/``transport`` is enough to name it, and the built-in
+    routing policy and pricing apply unchanged.
+    """
+    where = f"models.enabled[{index}]"
+    unknown = set(entry) - _ENABLED_ENTRY_KEYS
+    if unknown:
+        raise ValueError(
+            f"forge.yaml '{where}' only supports {sorted(_ENABLED_ENTRY_KEYS)}; "
+            f"unknown key(s): {sorted(unknown)}"
+        )
+    for required in ("provider", "model", "transport"):
+        if required not in entry:
+            raise ValueError(f"forge.yaml '{where}' is missing required field {required!r}")
+    provider = entry["provider"]
+    model = entry["model"]
+    if not isinstance(provider, str) or not provider:
+        raise ValueError(f"forge.yaml '{where}.provider' must be a non-empty string")
+    if not isinstance(model, str) or not model:
+        raise ValueError(f"forge.yaml '{where}.model' must be a non-empty string")
+    kind = _parse_transport_block(entry["transport"], where)
+    transport = transport_for(provider, kind)
+    canonical_id = canonical_model_id(provider, model, kind)
+
+    routing_raw = entry.get("routing") or {}
+    if not isinstance(routing_raw, dict):
+        raise ValueError(f"forge.yaml '{where}.routing' must be a mapping")
+    unknown_routing = set(routing_raw) - _ROUTING_KEYS
+    if unknown_routing:
+        raise ValueError(
+            f"forge.yaml '{where}.routing' only supports {sorted(_ROUTING_KEYS)}; "
+            f"unknown key(s): {sorted(unknown_routing)}"
+        )
+    base_url = entry.get("base_url")
+    if base_url is not None and (not isinstance(base_url, str) or not base_url):
+        raise ValueError(f"forge.yaml '{where}.base_url' must be a non-empty string")
+    cost_raw = entry.get("cost") or {}
+    if not isinstance(cost_raw, dict):
+        raise ValueError(f"forge.yaml '{where}.cost' must be a mapping")
+
+    builtin = AGENT_REGISTRY.get(canonical_id)
+    if builtin is not None and not routing_raw and base_url is None and not cost_raw:
+        return canonical_id, None
+
+    tier = routing_raw.get("tier") or (builtin.tier if builtin is not None else None)
+    if not isinstance(tier, str) or not tier:
+        raise ValueError(
+            f"forge.yaml '{where}.routing.tier' is required for a model that is not "
+            "in the built-in registry"
+        )
+    input_cost = cost_raw.get(
+        "input_per_mtok", builtin.input_cost_per_mtok if builtin is not None else None
+    )
+    output_cost = cost_raw.get(
+        "output_per_mtok", builtin.output_cost_per_mtok if builtin is not None else None
+    )
+    if routing_raw.get("cost_rank") is not None:
+        cost_rank = int(routing_raw["cost_rank"])
+    elif input_cost is not None or output_cost is not None:
+        cost_rank = custom_model_cost_rank(float(input_cost or 0.0), float(output_cost or 0.0))
+    elif builtin is not None:
+        cost_rank = builtin.cost_rank
+    else:
+        cost_rank = custom_model_cost_rank(0.0, 0.0)
+    capability = routing_raw.get("capability")
+    dev_capable = routing_raw.get("dev_capable")
+    phases = routing_raw.get("phase_eligibility")
+    spec = AgentSpec(
+        provider=provider,
+        model=model,
+        transport=transport,
+        routing=RoutingPolicy(
+            tier=tier,
+            capability=(
+                int(capability)
+                if capability is not None
+                else (builtin.capability if builtin is not None else custom_model_capability(tier))
+            ),
+            cost_rank=cost_rank,
+            dev_capable=(
+                bool(dev_capable)
+                if dev_capable is not None
+                else (
+                    builtin.dev_capable
+                    if builtin is not None
+                    else custom_model_dev_capable(transport)
+                )
+            ),
+            phase_eligibility=(
+                frozenset(str(p) for p in phases)
+                if phases is not None
+                else (
+                    builtin.phase_eligibility
+                    if builtin is not None
+                    else RoutingPolicy(tier=tier, capability=1, cost_rank=1).phase_eligibility
+                )
+            ),
+        ),
+        base_url=base_url if base_url is not None else (builtin.base_url if builtin else None),
+        registry_source="forge.yaml",
+        input_cost_per_mtok=float(input_cost) if input_cost is not None else None,
+        output_cost_per_mtok=float(output_cost) if output_cost is not None else None,
+    )
+    return canonical_id, spec
+
+
+def _normalize_enabled_entries(
+    enabled_raw: list[Any],
+) -> tuple[list[str], dict[str, AgentSpec]]:
+    """Normalize ``models.enabled`` into canonical ids plus any inline declarations.
+
+    Two spellings are accepted at this boundary and both leave it as canonical
+    ``provider/model/kind`` identities:
+
+    - a mapping (the recommended shape): ``{provider, model, transport: {kind}}``
+      plus optional ``routing``/``base_url``/``cost`` metadata;
+    - a canonical id string, or one of the legacy provider-prefix spellings
+      (``openai-api/…``, ``gemini-cli/…``), which is rewritten here.
+    """
+    ids: list[str] = []
+    inline: dict[str, AgentSpec] = {}
+    for index, entry in enumerate(enabled_raw):
+        if isinstance(entry, dict):
+            canonical_id, spec = _parse_enabled_mapping_entry(entry, index)
+            if spec is not None:
+                inline[canonical_id] = spec
+            ids.append(canonical_id)
+        else:
+            ids.append(normalize_model_key(str(entry)))
+    return ids, inline
+
+
+def _parse_custom_model_registry(
+    custom_raw: dict[str, Any],
+) -> tuple[dict[str, AgentSpec], dict[str, str]]:
+    """Parse and validate user-declared model overlays from forge.yaml.
+
+    Returns ``(registry, declaration_aliases)``. The registry is keyed by
+    canonical identity (``provider/model/transport-kind``); the alias map
+    translates the operator-chosen declaration key into that identity so a
+    ``models.enabled`` entry may still refer to the declaration by name. The
+    declaration key is raw input and never reaches the registry.
+    """
     registry: dict[str, AgentSpec] = {}
+    aliases: dict[str, str] = {}
     for canonical_id, decl in custom_raw.items():
         if not isinstance(canonical_id, str) or not canonical_id:
             raise ValueError("forge.yaml 'models.custom' keys must be non-empty strings")
@@ -248,34 +426,59 @@ def _parse_custom_model_registry(custom_raw: dict[str, Any]) -> dict[str, AgentS
                 f"non-negative number, got {output_cost!r}"
             )
 
-        normalized_provider, transport = overlay_transport(provider)
-        registry[canonical_id] = AgentSpec(
+        transport_kind = (
+            _parse_transport_block(decl["transport"], f"models.custom.{canonical_id}")
+            if "transport" in decl
+            else None
+        )
+        normalized_provider, transport = overlay_transport(provider, transport_kind)
+        base_url = decl.get("base_url")
+        if base_url is not None and (not isinstance(base_url, str) or not base_url):
+            raise ValueError(
+                f"forge.yaml 'models.custom.{canonical_id}.base_url' must be a non-empty string"
+            )
+        spec = AgentSpec(
             provider=normalized_provider,
             model=model,
             transport=transport,
-            tier=tier,
-            capability=custom_model_capability(tier),
-            cost_rank=custom_model_cost_rank(float(input_cost), float(output_cost)),
-            dev_capable=custom_model_dev_capable(transport),
+            routing=RoutingPolicy(
+                tier=tier,
+                capability=custom_model_capability(tier),
+                cost_rank=custom_model_cost_rank(float(input_cost), float(output_cost)),
+                dev_capable=custom_model_dev_capable(transport),
+            ),
+            base_url=base_url,
             registry_source="forge.yaml",
             input_cost_per_mtok=float(input_cost),
             output_cost_per_mtok=float(output_cost),
         )
-    return registry
+        # The declaration key is operator-chosen; the identity is not. Register
+        # the spec under its canonical id so nothing downstream can select the
+        # same model twice under two different names.
+        identity = canonical_id_for_spec(spec)
+        registry[identity] = spec
+        aliases[canonical_id] = identity
+    return registry, aliases
 
 
 def _merge_model_registry(
     custom_registry: dict[str, AgentSpec],
-    custom_raw: dict[str, Any],
+    override_ids: frozenset[str] = frozenset(),
 ) -> dict[str, AgentSpec]:
-    """Merge built-in and forge.yaml model registries."""
+    """Merge built-in and forge.yaml model registries.
+
+    ``override_ids`` are canonical identities the operator is allowed to replace:
+    a ``models.custom`` declaration carrying ``override: true``, or an inline
+    ``models.enabled`` mapping (which names the model *and* selects it in one
+    place, so refining a built-in entry there is unambiguous).
+    """
     merged = dict(AGENT_REGISTRY)
     for canonical_id, spec in custom_registry.items():
-        override = bool(custom_raw.get(canonical_id, {}).get("override", False))
-        if canonical_id in AGENT_REGISTRY and not override:
+        if canonical_id in AGENT_REGISTRY and canonical_id not in override_ids:
             raise ValueError(
-                f"forge.yaml 'models.custom.{canonical_id}' duplicates a built-in model id. "
-                "Set override: true to replace the built-in entry explicitly."
+                f"forge.yaml 'models.custom' declares {canonical_id!r}, which duplicates a "
+                "built-in model identity. Set override: true to replace the built-in entry "
+                "explicitly."
             )
         merged[canonical_id] = spec
     return merged
@@ -292,11 +495,11 @@ def _validate_selected_models(models: list[str], registry: dict[str, AgentSpec])
         resolve_agent_spec(model_key, registry=registry)
 
 
-def _derive_auto_provider_fallbacks(
+def _derive_auto_transport_fallbacks(
     models: list[str],
     *,
     registry: dict[str, AgentSpec],
-) -> dict[str, ApiFallbackConfig]:
+) -> dict[str, TransportFallbackConfig]:
     """Auto-wire same-provider API fallbacks for CLI transport models.
 
     Returns only unambiguous per-provider fallbacks. If multiple CLI models from the
@@ -316,18 +519,18 @@ def _derive_auto_provider_fallbacks(
             continue
         cli_models_by_provider.setdefault(spec.provider, set()).add(spec.model)
 
-    fallbacks: dict[str, ApiFallbackConfig] = {}
+    fallbacks: dict[str, TransportFallbackConfig] = {}
     for provider, cli_models in cli_models_by_provider.items():
         if len(cli_models) != 1:
             continue
         model = next(iter(cli_models))
         if model not in api_models_by_provider.get(provider, set()):
             continue
-        fallbacks[provider] = ApiFallbackConfig(provider=provider, model=model)
+        fallbacks[provider] = TransportFallbackConfig(provider=provider, model=model)
     return fallbacks
 
 
-def _validate_auto_api_fallback_schema(raw: dict[str, Any]) -> None:
+def _validate_auto_transport_fallback_schema(raw: dict[str, Any]) -> None:
     """Reject legacy plan_agent_review scalar config only when auto-pairing needs it.
 
     v0.8 generally rejects legacy scalar plan_agent_review fields alongside models:.
@@ -358,18 +561,23 @@ def _validate_auto_api_fallback_schema(raw: dict[str, Any]) -> None:
         _validate_v0_8_schema(raw)
         return
 
-    model_key = next(
-        (
-            key
-            for key in models_raw
-            if key in AGENT_REGISTRY
-            and (spec := resolve_agent_spec(str(key))).transport.kind == "cli"
+    # models_raw is still raw here (this runs before _parse_models_section), so
+    # keys may be legacy spellings and entries may be mappings. Resolve each one
+    # through the normalizing lookup rather than matching registry keys directly.
+    def _matches(entry: Any) -> bool:
+        if isinstance(entry, dict):
+            return False
+        try:
+            spec = resolve_agent_spec(str(entry))
+        except ValueError:
+            return False
+        return (
+            spec.transport.kind == "cli"
             and spec.provider == CLI_PROVIDER_MAP.get(cli)
             and spec.model == model
-        ),
-        None,
-    )
-    if model_key is None:
+        )
+
+    if not any(_matches(entry) for entry in models_raw):
         _validate_v0_8_schema(raw)
 
 
@@ -756,13 +964,19 @@ def load_config(config_path: Path) -> ForgeConfig:
     except ValueError as exc:
         if "plan_agent_review has legacy scalar field(s)" not in str(exc):
             raise
-    _validate_auto_api_fallback_schema(raw)
+    _validate_auto_transport_fallback_schema(raw)
 
-    provider_fallbacks = _parse_provider_fallbacks(
-        raw.get("provider_fallbacks", {}),
+    if "provider_fallbacks" in raw:
+        raise ValueError(
+            "forge.yaml 'provider_fallbacks' was renamed to 'transport_fallback': it configures "
+            "a CLI→API transport fallback within one provider, not a fallback to a different "
+            "provider. Rename the key."
+        )
+    transport_fallbacks = _parse_transport_fallbacks(
+        raw.get("transport_fallback", {}),
         secrets=secrets,
     )
-    auto_api_fallback = bool(raw.get("auto_api_fallback", True))
+    auto_transport_fallback = bool(raw.get("auto_transport_fallback", True))
 
     workspace = _parse_workspace(raw.get("workspace", {}))
 
@@ -826,12 +1040,22 @@ def load_config(config_path: Path) -> ForgeConfig:
     model_registry_sources = {key: "builtin" for key in AGENT_REGISTRY}
     custom_models: tuple[str, ...] = ()
     if "models" in raw:
-        models_list, custom_raw, simple_mode_enabled = _parse_models_section(raw["models"])
+        models_list, inline_specs, custom_raw, simple_mode_enabled = _parse_models_section(
+            raw["models"]
+        )
     else:
-        models_list, custom_raw, simple_mode_enabled = (None, {}, False)
-    custom_registry = _parse_custom_model_registry(custom_raw)
+        models_list, inline_specs, custom_raw, simple_mode_enabled = (None, {}, {}, False)
+    overlay_registry, overlay_aliases = _parse_custom_model_registry(custom_raw)
+    custom_registry = {**overlay_registry, **inline_specs}
+    if models_list is not None and overlay_aliases:
+        models_list = [overlay_aliases.get(key, key) for key in models_list]
     if custom_registry:
-        model_registry = _merge_model_registry(custom_registry, custom_raw)
+        override_ids = frozenset(inline_specs) | frozenset(
+            identity
+            for decl_key, identity in overlay_aliases.items()
+            if custom_raw.get(decl_key, {}).get("override", False)
+        )
+        model_registry = _merge_model_registry(custom_registry, override_ids)
         custom_models = tuple(sorted(custom_registry))
         model_registry_sources.update({key: "forge.yaml" for key in custom_registry})
 
@@ -901,12 +1125,12 @@ def load_config(config_path: Path) -> ForgeConfig:
                 ]
 
         models = list(models_list)
-        if auto_api_fallback:
-            auto_provider_fallbacks = _derive_auto_provider_fallbacks(
+        if auto_transport_fallback:
+            auto_transport_fallbacks = _derive_auto_transport_fallbacks(
                 models,
                 registry=model_registry,
             )
-            provider_fallbacks = {**auto_provider_fallbacks, **provider_fallbacks}
+            transport_fallbacks = {**auto_transport_fallbacks, **transport_fallbacks}
         # Track which roles were auto-derived vs explicitly overridden. Complexity-aware
         # adaptation (preflight._apply_complexity_adaptation) only rewrites auto-derived
         # roles so explicit overrides bypass routing. A dev override that only tunes
@@ -925,17 +1149,17 @@ def load_config(config_path: Path) -> ForgeConfig:
         synthesis_profile = None
         _review_pool_is_default = True
 
-    dev_profile = _apply_provider_fallback(dev_profile, provider_fallbacks)
-    preflight_profile = _apply_provider_fallback(preflight_profile, provider_fallbacks)
+    dev_profile = _apply_transport_fallback(dev_profile, transport_fallbacks)
+    preflight_profile = _apply_transport_fallback(preflight_profile, transport_fallbacks)
     if preflight_fallback_profile is not None:
-        preflight_fallback_profile = _apply_provider_fallback(
-            preflight_fallback_profile, provider_fallbacks
+        preflight_fallback_profile = _apply_transport_fallback(
+            preflight_fallback_profile, transport_fallbacks
         )
     review_pool = [
-        _apply_provider_fallback(profile, provider_fallbacks) for profile in review_pool
+        _apply_transport_fallback(profile, transport_fallbacks) for profile in review_pool
     ]
     if synthesis_profile is not None:
-        synthesis_profile = _apply_provider_fallback(synthesis_profile, provider_fallbacks)
+        synthesis_profile = _apply_transport_fallback(synthesis_profile, transport_fallbacks)
 
     # Retry
     retry_data = raw.get("retry", {})
@@ -1059,7 +1283,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             allowed_tools=(),
             api_fallback=plan_cfg.api_fallback,
         )
-        plan_profile = _apply_provider_fallback(plan_profile, provider_fallbacks)
+        plan_profile = _apply_transport_fallback(plan_profile, transport_fallbacks)
         plan_cfg = dataclasses.replace(plan_cfg, api_fallback=plan_profile.api_fallback)
 
     # ── Load-time validation for plan section ────────────────────────────
@@ -1113,7 +1337,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         plan_agent_review_cfg = dataclasses.replace(
             plan_agent_review_cfg,
             pool=[
-                _apply_provider_fallback(profile, provider_fallbacks)
+                _apply_transport_fallback(profile, transport_fallbacks)
                 for profile in plan_agent_review_cfg.pool
             ],
         )
@@ -1127,8 +1351,8 @@ def load_config(config_path: Path) -> ForgeConfig:
             timeout_seconds=plan_agent_review_cfg.timeout,
             allowed_tools=(),
         )
-        legacy_plan_review_profile = _apply_provider_fallback(
-            legacy_plan_review_profile, provider_fallbacks
+        legacy_plan_review_profile = _apply_transport_fallback(
+            legacy_plan_review_profile, transport_fallbacks
         )
         plan_agent_review_cfg = dataclasses.replace(
             plan_agent_review_cfg,
@@ -1525,8 +1749,8 @@ def load_config(config_path: Path) -> ForgeConfig:
         secrets=secrets,
         agents=agents_list,
         assignment=assignment_cfg,
-        provider_fallbacks=provider_fallbacks,
-        auto_api_fallback=auto_api_fallback,
+        transport_fallbacks=transport_fallbacks,
+        auto_transport_fallback=auto_transport_fallback,
         review_pool_is_default=_review_pool_is_default,
         plan_model_is_default=_plan_model_is_default,
         dev_profile_is_default=_dev_profile_is_default,

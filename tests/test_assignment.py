@@ -17,7 +17,7 @@ from theforge.assignment import (
     _reviewer_count,
     assign_models,
 )
-from theforge.config import AgentDef, ApiFallbackConfig
+from theforge.config import AgentDef, TransportFallbackConfig
 
 
 def _dev_profiles(
@@ -796,7 +796,7 @@ def test_agent_to_profile_preserves_api_fallback_for_adaptive_cli_agents(monkeyp
             budget_usd=5.0,
             timeout_seconds=900,
             tier="mid",
-            api_fallback=ApiFallbackConfig(provider="openai", model="gpt-5.4"),
+            api_fallback=TransportFallbackConfig(provider="openai", model="gpt-5.4"),
         ),
         AgentDef(
             name="opus",
@@ -820,7 +820,7 @@ def test_agent_to_profile_preserves_api_fallback_for_adaptive_cli_agents(monkeyp
     decision = assign_models(agents, cfg, "medium")
 
     assert decision.dev.cli == "codex"
-    assert decision.dev.api_fallback == ApiFallbackConfig(provider="openai", model="gpt-5.4")
+    assert decision.dev.api_fallback == TransportFallbackConfig(provider="openai", model="gpt-5.4")
 
 
 # ── test_budget_cap_enforcement ───────────────────────────────────────

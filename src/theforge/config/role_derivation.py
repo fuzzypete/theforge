@@ -94,6 +94,7 @@ def _make_model_ref(
         registry_id=info.registry_id,
         registry_source=info.registry_source,
         transport=info.transport,
+        base_url=info.base_url,
     )
 
 
@@ -111,16 +112,46 @@ def _phase_candidates(
     return eligible if eligible else sorted_models
 
 
+def _resolve_ref_override_transport(ref: ModelRef, overrides: dict[str, Any]) -> Any:
+    """Compute the TransportSpec an override block resolves a ModelRef to."""
+    from .models import provider_for_transport, transport_for, transport_from_raw_fields
+    from .profiles import parse_override_transport_kind
+
+    kind = parse_override_transport_kind(overrides, "overrides")
+    if kind is not None:
+        provider = overrides.get("provider") or (
+            provider_for_transport(ref.transport) if ref.transport is not None else None
+        )
+        if provider is None:
+            raise ValueError(
+                "overrides.transport needs a provider: none is set on the override "
+                "or on the model being overridden"
+            )
+        return transport_for(provider, kind)
+    if "provider" in overrides and "cli" not in overrides:
+        return transport_from_raw_fields(None, overrides["provider"])
+    if "cli" in overrides and "provider" not in overrides:
+        return transport_from_raw_fields(overrides["cli"], None)
+    if "cli" in overrides or "provider" in overrides:
+        return transport_from_raw_fields(
+            overrides.get("cli", ref.cli), overrides.get("provider", ref.provider)
+        )
+    return ref.transport
+
+
 def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
     """Return a new ModelRef with fields replaced by values in overrides.
 
-    Transport switching: when the override supplies ``provider`` without ``cli``,
-    the derived ``cli`` is cleared so the resulting ref unambiguously dispatches
-    via the API adapter; the inverse applies when ``cli`` is supplied without
-    ``provider``. TransportSpec is not copied from ``ref`` — the newly constructed
-    ModelRef's ``__post_init__`` re-infers it from the effective cli/provider
-    pair so transport always matches dispatch identity.
+    Transport switching: an override may name ``transport: {kind: cli|api}``
+    directly (canonical), or supply the raw ``provider``/``cli`` spelling. Either
+    way the TransportSpec is resolved here, at the parse boundary, and the
+    legacy pair is then rewritten to mirror it — otherwise a ``cli`` inherited
+    from ``ref`` would survive into the constructor and re-derive the transport
+    that was just replaced.
     """
+    from .models import mirror_fields_for_transport
+
+    new_transport = _resolve_ref_override_transport(ref, overrides)
     if "provider" in overrides and "cli" not in overrides:
         # Switching to API transport — clear the derived cli value
         new_cli: str | None = None
@@ -131,9 +162,10 @@ def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
         new_provider = None
     else:
         # Both or neither supplied — preserve caller-provided values. When both
-        # are set, transport inference prefers cli (see models.infer_transport).
+        # are set, transport normalization prefers cli.
         new_cli = overrides.get("cli", ref.cli)
         new_provider = overrides.get("provider", ref.provider)
+    new_cli, new_provider = mirror_fields_for_transport(new_transport, new_cli, new_provider)
 
     return ModelRef(
         model=overrides.get("model", ref.model),
@@ -150,6 +182,7 @@ def _apply_ref_overrides(ref: ModelRef, overrides: dict[str, Any]) -> ModelRef:
         max_iterations=overrides.get("max_iterations", ref.max_iterations),
         max_tool_output_bytes=overrides.get("max_tool_output_bytes", ref.max_tool_output_bytes),
         api_fallback=overrides.get("api_fallback", ref.api_fallback),
+        transport=new_transport,
     )
 
 

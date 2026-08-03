@@ -1,7 +1,9 @@
 # Local Models (Ollama / vLLM)
 
-TheForge routes local models through the existing OpenAI adapter by setting
-`base_url` in your profile. No additional adapter code is needed.
+A local model is an ordinary **API transport** pointed at a local endpoint.
+Locality is endpoint metadata (`base_url`) — there is no `local/` provider and
+no `local` transport kind. TheForge routes local models through the existing
+OpenAI adapter; no additional adapter code is needed.
 
 ## Prerequisites
 
@@ -18,46 +20,75 @@ vllm serve codestral --host 127.0.0.1 --port 11434
 
 ## forge.yaml configuration
 
-Add a profile with `provider: openai`, your model name, and a `base_url`
+Declare the model with `provider: openai`, an `api` transport, and a `base_url`
 pointing to the local server. No API key is required for local endpoints.
 
 ```yaml
-profiles:
-  dev:
-    provider: openai
-    model: codestral          # must match the model name in your server
-    base_url: http://localhost:11434/v1
-    timeout_seconds: 300
-    allowed_tools:
-      - read_file
-      - bash
-      - glob
-      - grep
-      - write_file
-
-  review_pool:
-    - name: local-reviewer
-      provider: openai
-      model: qwen2.5-coder
+models:
+  enabled:
+    - provider: openai
+      model: codestral        # must match the model name in your server
+      transport:
+        kind: api
       base_url: http://localhost:11434/v1
-      timeout_seconds: 120
+      routing:
+        tier: fast
+      cost:
+        input_per_mtok: 0     # local inference is not billed per token
+        output_per_mtok: 0
+
+    - provider: openai
+      model: qwen2.5-coder
+      transport:
+        kind: api
+      base_url: http://localhost:11434/v1
+      routing:
+        tier: fast
+      cost:
+        input_per_mtok: 0
+        output_per_mtok: 0
+
+budget_usd: 1.00
+
+overrides:
+  dev:
+    timeout_seconds: 300      # local models are slower than cloud APIs
 ```
 
 ### Registry shorthand
 
-The following model keys are pre-registered and can be used in profiles without
-specifying `cli`:
+These identities are pre-registered as API transports with a localhost
+`base_url`, so they can be selected in `models:` directly:
 
-| Registry key             | Model name       |
-|--------------------------|------------------|
-| `openai/codestral`       | `codestral`      |
-| `openai/deepseek-coder`  | `deepseek-coder` |
-| `openai/llama3.1`        | `llama3.1`       |
-| `openai/qwen2.5-coder`   | `qwen2.5-coder`  |
+| Model identity                | Model name       | Default `base_url`             |
+|-------------------------------|------------------|--------------------------------|
+| `openai/codestral/api`        | `codestral`      | `http://localhost:11434/v1`    |
+| `openai/deepseek-coder/api`   | `deepseek-coder` | `http://localhost:11434/v1`    |
+| `openai/llama3.1/api`         | `llama3.1`       | `http://localhost:11434/v1`    |
+| `openai/qwen2.5-coder/api`    | `qwen2.5-coder`  | `http://localhost:11434/v1`    |
 
-> **Important**: All local registry entries require `base_url` to be set.
-> Without `base_url`, the OpenAI adapter will attempt to contact the real
-> OpenAI API with a model name it doesn't recognise.
+```yaml
+models:
+  enabled:
+    - openai/qwen2.5-coder/api
+```
+
+Point one at a different server by declaring it inline:
+
+```yaml
+models:
+  enabled:
+    - provider: openai
+      model: qwen2.5-coder
+      transport:
+        kind: api
+      base_url: http://127.0.0.1:8000/v1
+      routing:
+        tier: fast
+```
+
+> **Important**: a local model needs a `base_url`. Without one the OpenAI
+> adapter contacts the real OpenAI API with a model name it doesn't recognise.
 
 ## Cost tracking
 

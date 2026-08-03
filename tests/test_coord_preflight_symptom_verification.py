@@ -45,9 +45,9 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/config/load.py"
-    runtime_path: "load_config -> _apply_provider_fallback at config/load.py:638"
+    runtime_path: "load_config -> _apply_transport_fallback at config/load.py:638"
     evidence: >-
-      The configured provider_fallbacks.openai mapping is applied to every
+      The configured transport_fallbacks.openai mapping is applied to every
       review-pool reviewer profile by load.py at the cited line, exercised
       by the live config loader path.
 symptom_verification:
@@ -76,9 +76,9 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/config/load.py"
-    runtime_path: "load_config -> _apply_provider_fallback at config/load.py:638"
+    runtime_path: "load_config -> _apply_transport_fallback at config/load.py:638"
     evidence: >-
-      The diagnosis section claimed no _apply_provider_fallback calls in any
+      The diagnosis section claimed no _apply_transport_fallback calls in any
       module that builds reviewer profiles. That claim is refuted by the
       call at config/load.py:638.
 ```
@@ -97,7 +97,7 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/config/load.py"
-    runtime_path: "load_config -> _apply_provider_fallback at config/load.py:638"
+    runtime_path: "load_config -> _apply_transport_fallback at config/load.py:638"
     evidence: >-
       Refuted the diagnosis sentence by locating the call at the cited
       runtime path; the static evidence is concrete and present.
@@ -120,7 +120,7 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/config/load.py"
-    runtime_path: "load_config -> _apply_provider_fallback at config/load.py:638"
+    runtime_path: "load_config -> _apply_transport_fallback at config/load.py:638"
     evidence: >-
       Static call site at config/load.py:638 wires the fallback into every
       review-pool profile through the live config loader path.
@@ -146,7 +146,7 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/config/load.py"
-    runtime_path: "load_config -> _apply_provider_fallback at config/load.py:638"
+    runtime_path: "load_config -> _apply_transport_fallback at config/load.py:638"
     evidence: >-
       Static call site at config/load.py:638 wires the fallback into every
       review-pool profile through the live config loader path.
@@ -172,7 +172,7 @@ criteria_checked:
     satisfied: true
     files_checked:
       - "src/theforge/config/load.py"
-    runtime_path: "load_config -> _apply_provider_fallback at config/load.py:638"
+    runtime_path: "load_config -> _apply_transport_fallback at config/load.py:638"
     evidence: >-
       Static call site at config/load.py:638 wires the fallback into every
       review-pool profile through the live config loader path.
@@ -213,7 +213,7 @@ def _make_bug_task(tmp_path):
         "## Observed\n\n"
         "Codex CLI reviewer hit quota and the API fallback did not fire.\n\n"
         "## Diagnosis\n\n"
-        "_apply_provider_fallback is missing from review pool config.\n",
+        "_apply_transport_fallback is missing from review pool config.\n",
         encoding="utf-8",
     )
     from theforge.task import TaskStory

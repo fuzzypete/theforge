@@ -722,7 +722,7 @@ def _run_claude(
     env = build_workspace_env(working_dir, extra=secrets)
     env.pop("CLAUDECODE", None)
 
-    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
+    label = profile.name or profile.identity_label
     if not quiet:
         _log(f"  Starting {label} (model={profile.model}, timeout={profile.timeout_seconds}s)...")
 

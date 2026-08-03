@@ -149,7 +149,7 @@ def _run_gemini(
             )
         cmd = sandboxed_cmd
 
-    label = profile.name or f"{profile.cli or profile.provider}/{profile.model}"
+    label = profile.name or profile.identity_label
     _gemini_env = build_workspace_env(working_dir, extra=secrets)
     outcome, elapsed = _run_with_heartbeat(
         run_fn=lambda: subprocess.run(

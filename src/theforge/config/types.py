@@ -14,6 +14,44 @@ if TYPE_CHECKING:
 SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
 
 
+def _normalize_transport(
+    cli: str | None,
+    provider: str | None,
+    transport: "TransportSpec | None",
+) -> "TransportSpec | None":
+    """Resolve the canonical transport for a construction that may mix spellings.
+
+    Shared by every runtime type that carries a transport (ModelProfile,
+    PlanConfig, ModelRef). Three cases:
+
+    - no transport → normalize the raw ``cli``/``provider`` pair into one;
+    - a transport that already agrees with ``cli`` → keep it;
+    - a transport whose CLI runner *disagrees* with ``cli`` → the caller passed a
+      different raw ``cli``, so re-derive. Because ``cli`` always mirrors the
+      transport after construction, a disagreement can only mean the caller
+      changed it. This is what makes ``dataclasses.replace(profile,
+      cli="codex")`` — or ``replace(plan, cli=None, provider="openai")`` —
+      mean what it reads as, instead of silently keeping the old transport (and
+      therefore dispatching to the runner the caller just replaced).
+
+    ``cli`` wins on conflict, matching ``transport_from_raw_fields``. A
+    disagreement the raw pair cannot resolve (both cleared) leaves the existing
+    transport in place rather than dropping dispatch on the floor.
+    """
+    from .models import transport_from_raw_fields
+
+    if transport is None:
+        if not (cli or provider):
+            return None
+        return transport_from_raw_fields(cli, provider)
+    mirrored = transport.runner if transport.kind == "cli" else None
+    if cli != mirrored:
+        rederived = transport_from_raw_fields(cli, provider)
+        if rederived is not None:
+            return rederived
+    return transport
+
+
 @dataclass(frozen=True)
 class RecencyConfig:
     """Recency-weighting parameters for profile-derived routing rates (#1392).
@@ -230,13 +268,19 @@ class ModelProfile:
     budget_usd: float  # cumulative cost ceiling across all invocations
     timeout_seconds: int  # subprocess timeout
     allowed_tools: tuple[str, ...]  # tools the agent may use
-    # Transport identity — ``transport`` below is the single source of truth for
-    # runtime dispatch. ``cli`` names a CLI binary ("claude"/"codex"/"gemini")
-    # and ``provider`` keys auth and pricing ("anthropic"/"openai"/...). Both
-    # may coexist; when set without an explicit transport, __post_init__ infers
-    # a canonical TransportSpec (cli wins).
-    cli: str | None = None  # "claude", "codex", "gemini"
-    provider: str | None = None  # "anthropic", "openai", "google"
+    # ``transport`` below is the ONLY source of truth for runtime dispatch.
+    # ``cli`` and ``provider`` are raw-input spellings accepted at construction
+    # so callers can declare a profile the old way; __post_init__ normalizes them
+    # into a canonical TransportSpec once (cli wins) and then rewrites ``cli`` to
+    # mirror that transport, so the two can never disagree. Nothing downstream
+    # may dispatch on the ``cli``/``provider`` pair.
+    # Convention: ``provider`` is set only on API-transport profiles; on a CLI
+    # profile it stays None and the provider identity is read from
+    # ``provider_family``. Setting ``provider`` therefore *declares* an API
+    # transport, which is what makes ``replace(profile, cli=None,
+    # provider="openai")`` a complete transport switch.
+    cli: str | None = None  # derived mirror of transport (CLI runner name)
+    provider: str | None = None  # "anthropic", "openai", "google" (API transports)
     # Optional
     timeout_medium_seconds: int | None = None  # override for medium complexity
     timeout_large_seconds: int | None = None  # override for large complexity
@@ -249,7 +293,7 @@ class ModelProfile:
     max_iterations: int | None = (
         None  # override default agent loop iterations (None = use default)
     )
-    api_fallback: ApiFallbackConfig | None = None  # CLI-only fallback to same-provider API
+    api_fallback: TransportFallbackConfig | None = None  # CLI-only fallback to same-provider API
     github_handle: str | None = None  # optional GitHub username for reviewer assignment
     fallback_models: tuple[str, ...] = ()  # additional models to try on quota/not-found failure
     sandbox_mode: str = "workspace-write"  # CLI sandbox: "workspace-write" | "read-only" | "none"
@@ -260,22 +304,29 @@ class ModelProfile:
     sandbox_capability_profile: str | None = None
     registry_id: str | None = None  # canonical model registry key, when sourced from a registry
     registry_source: str = "builtin"  # "builtin" | "forge.yaml"
-    # Explicit TransportSpec — when set, it is the runtime dispatch source of
-    # truth. None preserves the legacy inference from cli/provider for the
-    # small number of paths (e.g. raw dataclass constructions in tests) that
-    # have not been migrated yet.
+    # The canonical TransportSpec. Populated at construction (explicitly, or
+    # normalized once from the raw cli/provider spelling) and read by every
+    # dispatch site thereafter.
     transport: TransportSpec | None = None
     # Per-profile stuck-detection thresholds; None falls back to the
     # ForgeConfig-level default and only fires when phase == "dev".
     stuck_detection: StuckDetectionConfig | None = None
 
     def __post_init__(self) -> None:
-        if self.transport is None and (self.cli or self.provider):
-            from .models import infer_transport
+        """Normalize the raw cli/provider spelling into a canonical transport.
 
-            inferred = infer_transport(self.cli, self.provider)
-            if inferred is not None:
-                object.__setattr__(self, "transport", inferred)
+        This runs once, at the construction boundary — it is migration, not
+        dispatch. Afterwards ``cli`` is a derived mirror of ``transport`` so a
+        profile can never carry a CLI name that disagrees with the transport it
+        actually dispatches through.
+        """
+        transport = _normalize_transport(self.cli, self.provider, self.transport)
+        if transport is not self.transport:
+            object.__setattr__(self, "transport", transport)
+        if transport is not None:
+            mirrored = transport.runner if transport.kind == "cli" else None
+            if mirrored != self.cli:
+                object.__setattr__(self, "cli", mirrored)
 
     @property
     def models(self) -> tuple[str, ...]:
@@ -286,13 +337,43 @@ class ModelProfile:
     def mode(self) -> str:
         """Transport kind for runtime dispatch: 'cli' or 'api'.
 
-        Reads TransportSpec.kind — the single source of truth for dispatch.
-        Falls back to cli/provider inference only when transport is absent
-        (e.g. ad-hoc dataclasses with neither cli nor provider set).
+        Reads TransportSpec.kind — the single source of truth for dispatch. A
+        profile with no transport at all (neither cli nor provider declared)
+        defaults to CLI, matching the historical default.
         """
         if self.transport is not None:
             return self.transport.kind
-        return "api" if self.provider else "cli"
+        return "cli"
+
+    @property
+    def transport_kind(self) -> str:
+        """Alias of :attr:`mode` that names what it actually reads."""
+        return self.mode
+
+    @property
+    def identity_label(self) -> str:
+        """``provider/model (transport)`` — the canonical identity, printable.
+
+        Identity and transport stay visibly separate so a log line never
+        collapses "OpenAI over the API" and "OpenAI over Codex" into one token.
+        """
+        return f"{self.provider_family or '?'}/{self.model} ({self.mode})"
+
+    @property
+    def provider_family(self) -> str | None:
+        """Provider identity for *both* transports — e.g. ``anthropic`` for Claude CLI.
+
+        ``provider`` stays None on CLI profiles (legacy consumers read it as
+        "is this an API profile?"), so telemetry that wants the identity half of
+        the (provider, model, transport) tuple reads this instead.
+        """
+        if self.provider is not None:
+            return self.provider
+        if self.transport is not None:
+            from .models import provider_for_transport
+
+            return provider_for_transport(self.transport)
+        return None
 
 
 @dataclass(frozen=True)
@@ -321,8 +402,16 @@ class WorkspaceConfig:
 
 
 @dataclass(frozen=True)
-class ApiFallbackConfig:
-    """Fallback API transport for a CLI profile of the same provider."""
+class TransportFallbackConfig:
+    """A CLI→API *transport* fallback for one provider family.
+
+    This is not a provider-family fallback: the provider never changes. When a
+    CLI transport fails in a retryable way (quota exhaustion, model-not-found),
+    the run continues on the same provider's API transport with the model named
+    here. :meth:`transport` returns the canonical TransportSpec that fallback
+    dispatches through, so a fallback carries the same normalized identity shape
+    (provider + model + transport.kind) as any other model.
+    """
 
     provider: str
     model: str
@@ -331,6 +420,12 @@ class ApiFallbackConfig:
     thinking_budget: int | None = None
     base_url: str | None = None
     max_iterations: int | None = None
+
+    def transport(self) -> "TransportSpec":
+        """Return the canonical API TransportSpec this fallback dispatches through."""
+        from .models import transport_for
+
+        return transport_for(self.provider, "api")
 
 
 @dataclass(frozen=True)
@@ -532,24 +627,48 @@ class PlanConfig:
     Disabled by default; forge.yaml sets enabled: true to opt in.
     This keeps existing test configurations unaffected.
 
-    Field semantics match ModelProfile: cli names a CLI binary, provider keys
-    auth/pricing, model is the identifier. Either or both may be set; when both
-    are supplied the coordinator resolves plan dispatch via the same transport
-    inference as ModelProfile.
+    Identity and transport follow ModelProfile exactly: ``transport`` is the
+    dispatch source of truth, and the raw ``cli``/``provider`` spelling is
+    normalized into it once at construction.
     """
 
     enabled: bool = False
-    cli: str | None = "claude"  # CLI binary name (e.g. "claude", "codex", "gemini")
+    cli: str | None = "claude"  # derived mirror of transport (CLI binary name)
     model: str = "sonnet"  # model identifier passed to the CLI or API
-    provider: str | None = (
-        None  # API transport (e.g. "anthropic", "openai"); mutually exclusive with cli
-    )
+    provider: str | None = None  # "anthropic", "openai", … (API transports)
     budget_usd: float = 0.50
     timeout: int = 600
     timeout_medium: int | None = None  # override for medium complexity
     timeout_large: int | None = None  # override for large complexity
     validate_spec: bool = True  # whether to run story_validator before planning
-    api_fallback: ApiFallbackConfig | None = None  # CLI-only fallback to same-provider API
+    api_fallback: TransportFallbackConfig | None = None  # CLI→API transport fallback
+    transport: TransportSpec | None = None  # canonical transport; dispatch reads this
+
+    def __post_init__(self) -> None:
+        """Normalize the raw cli/provider spelling into a canonical transport."""
+        transport = _normalize_transport(self.cli, self.provider, self.transport)
+        if transport is not self.transport:
+            object.__setattr__(self, "transport", transport)
+        if transport is not None:
+            mirrored = transport.runner if transport.kind == "cli" else None
+            if mirrored != self.cli:
+                object.__setattr__(self, "cli", mirrored)
+
+    @property
+    def mode(self) -> str:
+        """Transport kind for dispatch: 'cli' or 'api'."""
+        return self.transport.kind if self.transport is not None else "cli"
+
+    @property
+    def provider_family(self) -> str | None:
+        """Provider identity for both transports (see ModelProfile.provider_family)."""
+        if self.provider is not None:
+            return self.provider
+        if self.transport is not None:
+            from .models import provider_for_transport
+
+            return provider_for_transport(self.transport)
+        return None
 
 
 @dataclass(frozen=True)
@@ -582,7 +701,7 @@ class PlanAgentReviewConfig:
     timeout: int = 300
     # Pool format — populated by load_forge_yaml when pool: key is present.
     pool: list[ModelProfile] = field(default_factory=list)
-    api_fallback: ApiFallbackConfig | None = None  # legacy scalar profile fallback
+    api_fallback: TransportFallbackConfig | None = None  # legacy scalar profile fallback
     min_reviewers: int = 1
 
     @property
@@ -836,8 +955,8 @@ class ForgeConfig:
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)
-    provider_fallbacks: dict[str, ApiFallbackConfig] = field(default_factory=dict)
-    auto_api_fallback: bool = True
+    transport_fallbacks: dict[str, TransportFallbackConfig] = field(default_factory=dict)
+    auto_transport_fallback: bool = True
     review_pool_is_default: bool = False  # True when review_pool was not explicitly configured
     plan_model_is_default: bool = False  # True when plan.cli/model were not explicitly configured
     dev_profile_is_default: bool = (
@@ -870,6 +989,26 @@ class ForgeConfig:
     # a file, which is exactly the "identity unknown" case the audit record must
     # be able to state rather than fabricate.
     provenance: ConfigProvenance | None = None
+
+    def __post_init__(self) -> None:
+        """Canonicalize the selected model list at the runtime type boundary.
+
+        ``models`` holds model identities, and every consumer (role derivation,
+        escalation chains, the adaptive pool) looks them up in the registry.
+        Normalizing here means a legacy provider-prefix spelling cannot reach a
+        consumer regardless of whether this config came from ``load_config`` or
+        was constructed directly.
+        """
+        if self.models is not None:
+            from .models import normalize_model_key
+
+            registry = self.model_registry
+            normalized = [
+                key if registry is not None and key in registry else normalize_model_key(key)
+                for key in self.models
+            ]
+            if normalized != self.models:
+                object.__setattr__(self, "models", normalized)
 
     @property
     def review_profile(self) -> ModelProfile:

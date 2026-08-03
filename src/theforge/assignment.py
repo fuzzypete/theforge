@@ -1583,6 +1583,8 @@ def _agent_to_profile(
         name=agent.name,
         cli=agent.cli,
         provider=agent.provider,
+        transport=agent.transport,
+        base_url=agent.base_url,
         model=agent.model,
         budget_usd=agent.budget_usd,
         timeout_seconds=agent.timeout_seconds,

@@ -88,9 +88,17 @@ validation:
   gate_command: "make gate"
 
 # v0.8 simple model list — complexity-aware roles are derived automatically.
+# Each entry is a canonical model identity: <provider>/<model>/<cli|api>.
+# The equivalent mapping form makes the same identity explicit:
+#   models:
+#     enabled:
+#       - provider: anthropic
+#         model: sonnet
+#         transport:
+#           kind: cli
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 
 budget_usd: 50.0
 
@@ -109,11 +117,12 @@ context:
   dev_budget: 80
   review_budget: 80
 
-# Optional: same-provider API fallback when a CLI is rate-limited/unavailable.
-# For any CLI model in models: whose same-provider API variant is registered,
-# TheForge wires that API fallback automatically. Set auto_api_fallback: false
-# to disable auto-pairing, or specify provider_fallbacks to override it.
-# provider_fallbacks:
+# Optional: CLI→API transport fallback for when a CLI is rate-limited or
+# unavailable. The provider never changes — only the transport. For any CLI
+# model in models: whose same-provider API variant is registered, TheForge wires
+# the fallback automatically. Set auto_transport_fallback: false to disable
+# auto-pairing, or declare transport_fallback to override it.
+# transport_fallback:
 #   openai:
 #     model: o4-mini
 #   google:

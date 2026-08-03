@@ -4,24 +4,27 @@ project: theforge
 # v0.8 simple model list. TheForge derives preflight, plan, dev, review,
 # and synthesis roles automatically from this list and the story complexity.
 # See docs/guides/inputs-reference.md for the full schema reference.
+# Model identity is provider + model + transport.kind. The identity string form
+# is <provider>/<model>/<cli|api>; transport is never encoded in the provider
+# token (no openai-api/…, no gemini-cli/…).
 models:
   enabled:
-    - claude/sonnet               # CLI alias auto-tracks: Sonnet 5 as of 2026-07 ($3/$15)
-    - claude/opus                 # CLI alias auto-tracks: Opus 4.8 as of 2026-07 ($5/$25)
-    - openai/gpt-5.4              # value strong tier ($2.50/$15); still served, no deprecation (verified 2026-07-07)
-    - openai/gpt-5.4-mini         # cheap tier ($0.75/$4.50). Tried list-first 2026-07-11 to force dispatch via
+    - anthropic/sonnet/cli        # CLI alias auto-tracks: Sonnet 5 as of 2026-07 ($3/$15)
+    - anthropic/opus/cli          # CLI alias auto-tracks: Opus 4.8 as of 2026-07 ($5/$25)
+    - openai/gpt-5.4/cli          # value strong tier ($2.50/$15); still served, no deprecation (verified 2026-07-07)
+    - openai/gpt-5.4-mini/cli     # cheap tier ($0.75/$4.50). Tried list-first 2026-07-11 to force dispatch via
     #                                 the cheap-bucket tie-break: got 4 preflights (at sonnet-equal cost, no
     #                                 savings) but zero dev runs — profile reranker starves zero-history models
     #                                 regardless of order. Reverted same day; real fix is #1617.
-    - openai/gpt-5.5              # OpenAI's recommended coding model; overlay entry below
-    - google/gemini-3.5-flash     # Google re-entry (2026-07-16, the registry story flagged below): stable/GA
+    - openai/gpt-5.5/cli          # OpenAI's recommended coding model; overlay entry below
+    - google/gemini-3.5-flash/api  # Google re-entry (2026-07-16, the registry story flagged below): stable/GA
     #                                 since 2026-05, Google's recommended model for agentic+coding. Beats
     #                                 3.1-pro on tool-call chaining (MCP Atlas 83.6%, Terminal-Bench 76.2 vs
     #                                 70.3) — the exact no-submit failure class that benched 3.1-pro (#1598).
     #                                 Overlay entry below; promote to AGENT_REGISTRY when the registry story lands.
-    # - deepseek/deepseek-reasoner  # disabled 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
+    # - deepseek/deepseek-reasoner/api  # disabled 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
     #                                  Re-enable when adaptive routing can decide reviewer fitness automatically.
-    # - google/gemini-3.1-pro-preview  # benched 2026-07-09: reviewer completed without calling submit_review
+    # - google/gemini-3.1-pro-preview/api  # benched 2026-07-09: reviewer completed without calling submit_review
     #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
     #                                      Same fitness criterion as deepseek above: re-enable when adaptive
     #                                      routing can decide reviewer fitness automatically.
@@ -34,9 +37,11 @@ models:
     # v0.10 rc ladder; #1358 (P2 falsy-dict follow-up) still open but benign for
     # a non-empty custom block. GPT-5.6 launch imminent (2026-07) — expect a
     # re-pin here shortly.
-    openai/gpt-5.5:
-      provider: openai            # routes via Codex CLI; use 'openai-api' for the API adapter
+    openai/gpt-5.5/cli:
+      provider: openai
       model: gpt-5.5
+      transport:
+        kind: cli                 # Codex CLI. Set kind: api for the OpenAI API adapter.
       tier: strong
       input_cost_per_mtok: 5.00
       output_cost_per_mtok: 30.00
@@ -45,14 +50,18 @@ models:
     # tier strong (capability 9): it replaces 3.1-pro-preview's reviewer slot
     # and outbenches it on the agentic axes that matter for submit_review
     # discipline. $1.50/$9 lands in cost_rank 2.
-    google/gemini-3.5-flash:
-      provider: google            # Google API adapter — same reviewer path 3.1-pro was benched on
+    google/gemini-3.5-flash/api:
+      provider: google
       model: gemini-3.5-flash
+      transport:
+        kind: api                 # Google API adapter — same reviewer path 3.1-pro was benched on
       tier: strong
       input_cost_per_mtok: 1.50
       output_cost_per_mtok: 9.00
 
-provider_fallbacks:
+# CLI→API transport fallback, keyed by provider family. The provider never
+# changes across a fallback — only the transport does.
+transport_fallback:
   openai:
     model: gpt-5.4
     timeout_seconds: 600
