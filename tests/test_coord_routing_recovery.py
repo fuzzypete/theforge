@@ -359,6 +359,43 @@ class TestResumeSeatsRoutedPanel:
         assert recovery["status"] == "unavailable"
 
 
+def _three_reviewer_config(tmp_path: Path):
+    """Three-seat pool with a quorum threshold of 2 and no transient retries."""
+    return dataclasses.replace(
+        _make_config(tmp_path),
+        review_pool=[_profile("a"), _profile("b"), _profile("c")],
+        synthesis_profile=None,
+        retry=RetryPolicy(
+            max_dev_iterations=2,
+            max_review_cycles=2,
+            review_quorum_threshold=2,
+            max_review_transport_retries=0,
+        ),
+    )
+
+
+def _run_pool(tmp_path: Path, config) -> tuple[CoordinatorState, ReviewCycleMetadata, object]:
+    task = TaskStory(name="Test Story", story_path=tmp_path / "spec.md", slug="test-story")
+    task.story_path.write_text(STORY_CONTENT, encoding="utf-8")
+    workspace = tmp_path / "ws"
+    workspace.mkdir(exist_ok=True)
+    state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+    meta = ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
+
+    _successful, _failed, merged, _, _ = _run_review_pool(
+        state,
+        config,
+        task,
+        STORY_CONTENT,
+        workspace,
+        "branch",
+        meta,
+        notify=False,
+        enforce_budgets=True,
+    )
+    return state, meta, merged
+
+
 class TestQuorumCountsEligibleSeats:
     """Quorum describes the seats that can answer, not the nominal pool."""
 
@@ -367,28 +404,6 @@ class TestQuorumCountsEligibleSeats:
     def test_budget_excluded_reviewers_leave_the_denominator(
         self, mock_pool, _mock_log, tmp_path: Path
     ) -> None:
-        profiles = [_profile("a"), _profile("b"), _profile("c")]
-        config = dataclasses.replace(
-            _make_config(tmp_path),
-            review_pool=profiles,
-            synthesis_profile=None,
-            retry=RetryPolicy(
-                max_dev_iterations=2,
-                max_review_cycles=2,
-                review_quorum_threshold=2,
-                max_review_transport_retries=0,
-            ),
-        )
-        task = TaskStory(
-            name="Test Story",
-            story_path=tmp_path / "spec.md",
-            slug="test-story",
-        )
-        task.story_path.write_text(STORY_CONTENT, encoding="utf-8")
-        workspace = tmp_path / "ws"
-        workspace.mkdir()
-        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
-
         # Two of three reviewers blow their budget share this cycle: they are
         # withdrawn as a spend decision, so only one seat can answer.
         mock_pool.return_value = [
@@ -397,18 +412,7 @@ class TestQuorumCountsEligibleSeats:
             _make_agent_result(success=True, output=APPROVE_YAML, profile_name="c", cost_usd=5.00),
         ]
 
-        meta = ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
-        _successful, _failed, merged, _, _ = _run_review_pool(
-            state,
-            config,
-            task,
-            STORY_CONTENT,
-            workspace,
-            "branch",
-            meta,
-            notify=False,
-            enforce_budgets=True,
-        )
+        state, meta, merged = _run_pool(tmp_path, _three_reviewer_config(tmp_path))
 
         # Threshold 2 against a nominal pool of 3 was unreachable with one
         # eligible seat; measured against the eligible seat it is met.
@@ -416,3 +420,26 @@ class TestQuorumCountsEligibleSeats:
         assert meta.quorum_met is True
         assert merged is not None
         assert state.phase != Phase.ESCALATE
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_shortfall_names_exclusions_apart_from_failures(
+        self, mock_pool, _mock_log, tmp_path: Path
+    ) -> None:
+        """A reviewer withdrawn over budget did not fail. The escalation reason
+        has to say which reviewers ran and lost, and which were withheld — the
+        #2154 report's 'failed:' list was empty because the missing reviewers
+        were excluded, and the message gave the operator no way to see that."""
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_YAML, profile_name="a", cost_usd=5.00),
+            _make_agent_result(success=True, output=APPROVE_YAML, profile_name="b", cost_usd=5.00),
+            _make_agent_result(success=False, output="boom", profile_name="c", cost_usd=0.10),
+        ]
+
+        state, _meta, merged = _run_pool(tmp_path, _three_reviewer_config(tmp_path))
+
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert "Quorum unmet: 0/1 succeeded < threshold 1" in state.error
+        assert "failed: c (exit=1)" in state.error
+        assert "budget-excluded (ran, verdict not counted): a, b" in state.error

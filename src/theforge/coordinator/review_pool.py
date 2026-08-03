@@ -898,6 +898,13 @@ def _run_review_pool(
                 f"on surviving verdict(s) after non-verdict reviewer failure(s): "
                 f"{failed_desc}"
             )
+            if _budget_excluded:
+                # Same attribution rule as the escalation path: an excluded
+                # reviewer is a spend decision, not a failure to degrade past.
+                warning += (
+                    "; budget-excluded (ran, verdict not counted): "
+                    f"{', '.join(sorted(_budget_excluded))}"
+                )
             meta.degraded_quorum = True
             meta.degraded_quorum_warning = warning
             _log(f"  ⚠ {warning}")
@@ -911,6 +918,7 @@ def _run_review_pool(
                     quorum_threshold=quorum_threshold,
                     pool_size=pool_size,
                     eligible_pool_size=eligible_pool_size,
+                    budget_excluded=sorted(_budget_excluded),
                     warning=warning,
                 )
         else:
@@ -926,9 +934,20 @@ def _run_review_pool(
                 budget_excluded=_budget_excluded,
             )
             state.phase = Phase.ESCALATE
+            # A reviewer withdrawn over budget did not fail — its verdict was
+            # dropped as a spend decision. Naming the two causes separately is
+            # what makes the shortfall diagnosable; the original #2154 report
+            # read "Quorum unmet: 1/5 succeeded < threshold 2; failed:" with an
+            # empty list, because the missing four had been excluded, not failed.
+            _shortfall = f"failed: {failed_desc}"
+            if _budget_excluded:
+                _shortfall += (
+                    "; budget-excluded (ran, verdict not counted): "
+                    f"{', '.join(sorted(_budget_excluded))}"
+                )
             state.error = (
                 f"Quorum unmet: {len(successful)}/{eligible_pool_size} succeeded "
-                f"< threshold {quorum_threshold}; failed: {failed_desc}"
+                f"< threshold {quorum_threshold}; {_shortfall}"
             )
             return successful, failed_results, None, [], []
 
