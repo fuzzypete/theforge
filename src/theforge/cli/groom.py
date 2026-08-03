@@ -107,6 +107,16 @@ def cmd_groom(args: argparse.Namespace) -> int:
                 file=sys.stdout,
             )
 
+    if result.unsupplied_findings:
+        codes = ", ".join(result.unsupplied_findings)
+        print(
+            f"\nUNRESOLVED: {codes}\n"
+            "      groom scaffolds sections but does not invent their content, so\n"
+            "      these findings still stand. Fill the placeholder sections in\n"
+            "      before labeling this issue ready.",
+            file=sys.stdout,
+        )
+
     if result.needs_change:
         if apply_changes:
             print(
