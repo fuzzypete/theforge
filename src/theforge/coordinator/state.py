@@ -932,6 +932,14 @@ class CoordinatorState:
     # surfaced. Non-fatal by construction: the story's own outcome, audit, and
     # cost accounting are unaffected.
     shared_infrastructure_failures: list[dict] = field(default_factory=list)
+    # ── Abnormal termination (#2030) ──────────────────────────────────────────
+    # Set when the run did not end by its own state machine: the worker raised,
+    # the worker's deadline expired, or the launch guard dropped the story before
+    # it was ever dispatched. Carries the kind, the primary cause, and where that
+    # cause was observed (see theforge.sprint.abnormal). None for every run that
+    # ended normally. Recorded here so the account of the failure is the run's
+    # own structured telemetry rather than an agent's prose about itself.
+    abnormal_termination: dict | None = None
     # Phases that completed with a reviewer/agent pool shrunk by substrate
     # failures. Each entry: phase, pool_size, lost (names), remaining, failures.
     # A degraded-pool completion is not the same kind of result as a full-pool

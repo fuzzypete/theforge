@@ -228,6 +228,25 @@ class StoryStateEntry:
     canonical_ref: str | None = None
     depends_on: list[str] = field(default_factory=list)
     extras: dict = field(default_factory=dict)
+    # Every attempt's recorded failure cause, oldest first. Appended to, never
+    # replaced: a retry's cause must not erase the cause of the attempt before
+    # it, which is the only account of a story that ended abnormally (#2030).
+    failure_history: list[dict] = field(default_factory=list)
+
+    def record_failure_cause(self, cause: dict) -> None:
+        """Retain one attempt's failure cause, keeping every earlier one.
+
+        Idempotent per (run_id, kind, cause) so a path that records the same
+        cause twice (e.g. an exception exit that also terminalizes the row) does
+        not inflate the attempt count.
+        """
+        identity = (cause.get("run_id"), cause.get("kind"), cause.get("cause"))
+        for existing in self.failure_history:
+            if (existing.get("run_id"), existing.get("kind"), existing.get("cause")) == identity:
+                return
+        recorded = {k: v for k, v in cause.items() if k != "attempt"}
+        recorded["attempt"] = len(self.failure_history) + 1
+        self.failure_history.append(recorded)
 
     def as_dict(self) -> dict:
         # ``status`` is the legacy live-status field that ``read_live_status``
@@ -289,6 +308,8 @@ class StoryStateEntry:
             "canonical_ref": self.canonical_ref,
             "depends_on": list(self.depends_on),
         }
+        if self.failure_history:
+            d["failure_history"] = deepcopy(self.failure_history)
         if self.extras:
             for k, v in self.extras.items():
                 if k not in d:
@@ -449,6 +470,17 @@ class SprintStoryState:
                     merged = dict(entry.detail)
                     merged.update(v)
                     entry.detail = merged
+                elif k == "failure_cause":
+                    # Append, never replace: a second attempt at the same story
+                    # records an additional cause, and the first attempt's cause
+                    # stays readable (#2030). A caller with nothing to record
+                    # passes None, which must not land in extras as a null.
+                    if isinstance(v, dict) and v:
+                        entry.record_failure_cause(v)
+                elif k == "failure_history":
+                    for cause in v if isinstance(v, list) else []:
+                        if isinstance(cause, dict) and cause:
+                            entry.record_failure_cause(cause)
                 elif k == "reason":
                     entry.reason = v  # type: ignore[assignment]
                 elif k == "depends_on" and isinstance(v, list):
@@ -532,8 +564,12 @@ class SprintStoryState:
                 depends_on=list(d.get("depends_on") or []),
             )
             entry = state._stories[slug]
+            for cause in d.get("failure_history") or []:
+                if isinstance(cause, dict):
+                    entry.record_failure_cause(cause)
             for k, v in d.items():
                 if k in {
+                    "failure_history",
                     "slug",
                     "path",
                     "outcome",
