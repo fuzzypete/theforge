@@ -670,6 +670,17 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # finalization, so without this the least recoverable runs were the ones
         # with no record of a cause at all. None for a normally-terminating run.
         "abnormal_termination": state.abnormal_termination,
+        # ── Durable phase recovery (#2155) ────────────────────────────────
+        # A resumed attempt allocates a fresh CoordinatorState, so the phases an
+        # earlier attempt of the same story ran (preflight and the routing
+        # decision derived from it, plan review, the escalate gate) exist only in
+        # the durable phase record. Null on a run that produced its own phase
+        # outputs. Non-null names which phases were lifted off disk — and, when
+        # the record was missing or did not describe this story text, says so.
+        # That distinction is the point: without it a null ``preflight`` block on
+        # a resumed run is indistinguishable from a phase that never ran, and the
+        # SKIPPED verdict this replaced asserted a bypass that never happened.
+        "phase_recovery": state.phase_recovery,
         "outcome": {
             "success": result.success,
             "final_phase": result.phase.name,
