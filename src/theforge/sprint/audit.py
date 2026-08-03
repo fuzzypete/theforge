@@ -13,6 +13,7 @@ from ..advisory_conventions import noteworthy_advisory_entries
 from ..coordinator.iteration_usage import dev_usage as _dev_usage
 from ..coordinator.landing_record import build_landing_record
 from ..log_util import _log_line
+from .abnormal import accumulate_failure_history, carry_failure_cause
 from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
@@ -862,6 +863,21 @@ def _write_sprint_summary(
     accumulated_for_state: list[dict] = []
     results_by_spec = {spec_str: res for spec_str, res in result.results}
 
+    def _accumulated_entry(canonical_ref: str, entry: dict) -> dict:
+        """This generation's entry, with every attempt's failure cause retained.
+
+        The end-of-sprint write is the last one to touch
+        ``.forge/sprints/<id>/state.yaml``, and it replaced the prior
+        generation's entry wholesale — so resuming a sprint destroyed the record
+        of why the attempt being resumed from had failed (#2030). The rest of the
+        entry is still this generation's; only the failure history accumulates.
+        """
+        merged = {"canonical_ref": canonical_ref, **entry}
+        history = accumulate_failure_history(prior_by_ref.get(canonical_ref), merged)
+        if history:
+            merged["failure_history"] = history
+        return merged
+
     seen_refs: set[str] = set()
     for canonical_ref in canonical_refs:
         seen_refs.add(canonical_ref)
@@ -968,16 +984,25 @@ def _write_sprint_summary(
             if slug in story_times:
                 entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
                 entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")
+            # A run that ended abnormally carries its cause on the state. Stamp
+            # it onto the row here rather than leaving it to be re-derived from
+            # the ``error`` prose, so the kind, run id, and observing code path
+            # survive into the accumulated state a later generation rewrites.
+            carry_failure_cause(
+                entry,
+                getattr(res.state, "abnormal_termination", None),
+                prior_history=(prior_by_ref.get(canonical_ref) or {}).get("failure_history"),
+            )
             entry["batch"] = batch_assignments.get(slug, 0)
             entry["depends_on"] = list(getattr(tasks_by_slug.get(slug), "depends_on", None) or [])
             if _last_phase_val and outcome != "DONE":
                 entry["last_phase"] = _last_phase_val
             spec_entries.append(entry)
-            accumulated_for_state.append({"canonical_ref": canonical_ref, **entry})
+            accumulated_for_state.append(_accumulated_entry(canonical_ref, entry))
         elif canonical_ref in current_story_entries_by_ref:
             current_entry = dict(current_story_entries_by_ref[canonical_ref])
             spec_entries.append(current_entry)
-            accumulated_for_state.append({"canonical_ref": canonical_ref, **current_entry})
+            accumulated_for_state.append(_accumulated_entry(canonical_ref, current_entry))
         elif canonical_ref in prior_by_ref:
             # Story ran under an earlier run_id — use its accumulated data instead
             # of emitting a SKIPPED entry (which would hide a completed story).
@@ -989,7 +1014,7 @@ def _write_sprint_summary(
                 historical_entry = prior_by_ref[canonical_ref]
             entry = {k: v for k, v in historical_entry.items() if k != "canonical_ref"}
             spec_entries.append(entry)
-            accumulated_for_state.append({"canonical_ref": canonical_ref, **entry})
+            accumulated_for_state.append(_accumulated_entry(canonical_ref, entry))
         else:
             drop_reason = dropped_slugs.get(slug)
             triage_action = triage_actions_by_ref.get(canonical_ref)
@@ -1227,8 +1252,15 @@ def _write_story_audit(
     result: "CoordinatorResult",
     sprint_id: str | None = None,
     telemetry_snapshot: dict | None = None,
+    overwrite_story_audit: bool = True,
 ) -> None:
     """Write per-story audit.yaml to the durable log directory and preserve ESCALATE worktrees.
+
+    ``overwrite_story_audit=False`` refuses to replace an existing
+    ``audit.yaml``: a story dropped at launch shares its log directory with the
+    generation that actually ran it, and a synthetic drop record must never
+    overwrite a real run's evidence. The drop record is written beside it
+    instead.
 
     Best-effort: silently ignores missing workspace or log dir.
     """
@@ -1294,6 +1326,10 @@ def _write_story_audit(
     if log_dir is not None:
         try:
             _story_audit_path = log_dir / "audit.yaml"
+            if not overwrite_story_audit and _story_audit_path.exists():
+                _run_id = audit_data.get("run_id")
+                _suffix = _run_id if isinstance(_run_id, str) and _run_id else "unknown-run"
+                _story_audit_path = log_dir / f"audit-abnormal-{_suffix}.yaml"
             _story_audit_path.parent.mkdir(parents=True, exist_ok=True)
             with open(_story_audit_path, "w", encoding="utf-8") as f:
                 yaml.dump(audit_data, f, default_flow_style=False, sort_keys=False)

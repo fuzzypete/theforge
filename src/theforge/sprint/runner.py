@@ -55,6 +55,15 @@ from ..intake import (
 )
 from ..log_util import _log_line
 from ..task import BatchMember, TaskStory
+from .abnormal import (
+    ABNORMAL_LAUNCH_GUARD_DROP,
+    ABNORMAL_SHARED_INFRASTRUCTURE,
+    ABNORMAL_WORKER_EXCEPTION,
+    ABNORMAL_WORKER_TIMEOUT,
+    accumulate_failure_history,
+    build_abnormal_cause,
+    carry_failure_cause,
+)
 from .audit import (
     _get_or_create_sprint_id,
     _write_sprint_audit,
@@ -1861,6 +1870,14 @@ def _run_single_story(
         )
         failure_state.infrastructure_failure = {"message": message, **failure_record}
         failure_state.shared_infrastructure_failures.append(failure_record)
+        failure_state.run_id = failure_state.run_id or _generate_run_id()
+        failure_state.abnormal_termination = build_abnormal_cause(
+            kind=ABNORMAL_SHARED_INFRASTRUCTURE,
+            cause=message,
+            error_type=ERROR_TYPE_INFRASTRUCTURE_ABORT,
+            run_id=failure_state.run_id,
+            source="sprint.runner:worker-shared-infrastructure",
+        )
         result = CoordinatorResult(
             success=False,
             phase=Phase.ESCALATE,
@@ -1877,6 +1894,18 @@ def _run_single_story(
             log_dir=_make_story_log_dir(config, task.slug, sprint_name),
             error=f"Worker exception: {exc}",
             error_type=type(exc).__name__,
+        )
+        # A worker that raises here never reached audit finalization, so this is
+        # the only place the cause can be recorded as structured telemetry. The
+        # run id is synthesized when the exception preceded one, so the record is
+        # addressable as a run instead of dissolving into the summary (#2030).
+        failure_state.run_id = failure_state.run_id or _generate_run_id()
+        failure_state.abnormal_termination = build_abnormal_cause(
+            kind=ABNORMAL_WORKER_EXCEPTION,
+            cause=f"Worker exception: {exc}",
+            error_type=type(exc).__name__,
+            run_id=failure_state.run_id,
+            source="sprint.runner:worker-body",
         )
         result = CoordinatorResult(
             success=False,
@@ -2347,6 +2376,7 @@ def _terminal_state_for(
     started_at: datetime.datetime,
     error: str,
     error_type: str,
+    phase: Phase = Phase.ESCALATE,
 ) -> CoordinatorState:
     """Build the CoordinatorState for a story the scheduler had to terminate itself.
 
@@ -2358,8 +2388,11 @@ def _terminal_state_for(
     (#2013). Prefer the engine's own live state for the slug, and fall back to a
     bare state only when the story never reached the engine.
 
-    The returned state is always stamped ESCALATE with the scheduler's error, so
-    the telemetry is preserved without the audit misreporting how the story ended.
+    The returned state is stamped with the scheduler's error and, by default,
+    ESCALATE, so the telemetry is preserved without the audit misreporting how
+    the story ended. ``phase`` is overridden for a story the launch guard dropped
+    before dispatch: it never reached the state machine, and stamping it ESCALATE
+    would claim an escalation that never happened (and mark its worktree as one).
     """
     from ..coordinator.live_state import snapshot_live_state  # noqa: PLC0415
 
@@ -2379,10 +2412,46 @@ def _terminal_state_for(
             )
         if state.log_dir is None:
             state.log_dir = _make_story_log_dir(config, slug, sprint_name)
-    state.phase = Phase.ESCALATE
+    state.phase = phase
     state.error = error
     state.error_type = error_type
     return state
+
+
+def _abnormal_story_result(
+    slug: str,
+    *,
+    config: ForgeConfig,
+    sprint_name: str,
+    started_at: datetime.datetime,
+    error: str,
+    error_type: str,
+    message: str,
+    phase: Phase = Phase.ESCALATE,
+) -> CoordinatorResult:
+    """Synthesize the CoordinatorResult for a story that never returned one.
+
+    Every abnormal exit — launch-guard drop, worker exception, worker timeout —
+    needs the same thing before it can be audited: a result carrying the primary
+    cause in ``state.error``. Built here so all three produce records of the same
+    shape, and so a story that never reached the engine still gets a ``run_id``
+    and is therefore addressable as a run rather than dissolving into the sprint
+    summary (#2030).
+    """
+    state = _terminal_state_for(
+        slug,
+        config=config,
+        sprint_name=sprint_name,
+        started_at=started_at,
+        error=error,
+        error_type=error_type,
+        phase=phase,
+    )
+    if not state.run_id:
+        state.run_id = _generate_run_id()
+    if not state.sprint_name:
+        state.sprint_name = sprint_name
+    return CoordinatorResult(success=False, phase=phase, state=state, message=message)
 
 
 def _failing_required_pr_checks(pr_url: str, project_root: Path, base_branch: str) -> list[str]:
@@ -3003,6 +3072,23 @@ def run_sprint(
     except Exception:
         pass
 
+    # Failure causes already on disk for this sprint, by canonical ref. Read
+    # unconditionally — not just when resuming — because every generation
+    # rewrites the accumulated state file, so a plain re-run of the same sprint
+    # would otherwise erase the previous attempt's recorded cause before anything
+    # had a chance to read it (#2030).
+    _prior_failure_history_by_ref: dict[str, list[dict]] = {}
+    if _sprint_id:
+        from .audit import _load_accumulated_stories  # noqa: PLC0415
+
+        for _prior in _load_accumulated_stories(_sprint_id, config.project_root):
+            if not isinstance(_prior, dict):
+                continue
+            _ref = _prior.get("canonical_ref")
+            _history = accumulate_failure_history(_prior, None)
+            if isinstance(_ref, str) and _ref and _history:
+                _prior_failure_history_by_ref[_ref] = _history
+
     # Landing precondition, first pass: a dirty project root makes every local
     # merge refuse, and discovering that at landing means the story's full
     # dev+review spend is already sunk (#2048). Only the configuration-level
@@ -3400,7 +3486,19 @@ def run_sprint(
             ref: dict(entry) for ref, entry in recovered_prior_entries_by_ref.items()
         }
         for canonical_ref, entry in current_story_entries_by_ref.items():
-            accumulated_by_ref[canonical_ref] = {"canonical_ref": canonical_ref, **entry}
+            # This generation's entry replaces the prior one — except for the
+            # failure history, which accumulates. Wholesale replacement is what
+            # let a resume destroy the only recorded cause of the attempt it was
+            # resuming from, so the story that failed became undiagnosable the
+            # moment someone tried to fix it (#2030).
+            prior_entry = accumulated_by_ref.get(canonical_ref) or {
+                "failure_history": _prior_failure_history_by_ref.get(canonical_ref) or []
+            }
+            merged_entry: dict = {"canonical_ref": canonical_ref, **entry}
+            history = accumulate_failure_history(prior_entry, merged_entry)
+            if history:
+                merged_entry["failure_history"] = history
+            accumulated_by_ref[canonical_ref] = merged_entry
         persist_accumulated_story_state(
             _sprint_id,
             resolved.name,
@@ -3472,6 +3570,14 @@ def run_sprint(
                 "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
             },
         }
+        # A worker exception or timeout reaches here with the cause on its state.
+        # Carrying it structurally is what keeps it in the accumulated row: the
+        # ``error`` prose alone is a string a later generation overwrites (#2030).
+        carry_failure_cause(
+            current_story_entries_by_ref[canonical_ref],
+            getattr(result.state, "abnormal_termination", None),
+            prior_history=_prior_failure_history_by_ref.get(canonical_ref),
+        )
         _persist_accumulated_story_entries()
 
     # Cost-aware batch-group assignment (#727), filled in after preflight once
@@ -3547,6 +3653,7 @@ def run_sprint(
         error_type: str | None = None,
         cost_usd: float | None = 0.0,
         extras: dict | None = None,
+        failure_cause: dict | None = None,
     ) -> None:
         task_ctx = slug_to_context.get(slug)
         if task_ctx is None:
@@ -3586,6 +3693,15 @@ def run_sprint(
         }
         if extras:
             entry.update(extras)
+        # Carried as history from the start so every reader of the entry — not
+        # only the accumulated state file — sees the abnormal kind and run id
+        # rather than the flattened error prose, and sees this attempt's cause
+        # after the ones that preceded it.
+        carry_failure_cause(
+            entry,
+            failure_cause,
+            prior_history=_prior_failure_history_by_ref.get(canonical_ref),
+        )
         current_story_entries_by_ref[canonical_ref] = entry
         _persist_accumulated_story_entries()
 
@@ -3986,6 +4102,61 @@ def run_sprint(
             return StoryOutcome.DONE
         return StoryOutcome.ALREADY_DONE
 
+    def _record_dropped_story_audit(slug: str, cause_text: str) -> dict:
+        """Write the per-run audit record for a story dropped before dispatch.
+
+        A dropped story never reaches the coordinator, so it never reaches audit
+        finalization either — which made the runs with the least recoverable
+        context the only ones with no record at all (#2030). The record written
+        here is deliberately the same shape as the worker-exception and
+        worker-timeout ones: same synthetic result, same ``error``, same
+        ``abnormal_termination`` block, differing only in ``kind``.
+
+        Returns the cause record so the caller can retain it in sprint state as
+        well. Best-effort: a story is never left un-dropped because its evidence
+        could not be written.
+        """
+        task_ctx = slug_to_context.get(slug)
+        if task_ctx is None:
+            return {}
+        dropped_at = datetime.datetime.now(datetime.timezone.utc)
+        try:
+            drop_result = _abnormal_story_result(
+                slug,
+                config=config,
+                sprint_name=resolved.name,
+                started_at=dropped_at,
+                error=f"Dropped before dispatch: {cause_text}",
+                error_type="LaunchGuardDrop",
+                message=f"Launch guard dropped {slug} before dispatch: {cause_text}",
+                # Never ESCALATE: the story did not escalate, it never ran, and
+                # stamping ESCALATE would mark its worktree as escalated too.
+                phase=Phase.INIT,
+            )
+            cause = build_abnormal_cause(
+                kind=ABNORMAL_LAUNCH_GUARD_DROP,
+                cause=cause_text,
+                error_type="LaunchGuardDrop",
+                phase="LAUNCH",
+                run_id=drop_result.state.run_id,
+                source="sprint.runner:launch-guard-drop",
+            )
+            drop_result.state.abnormal_termination = cause
+            _write_story_audit(
+                config,
+                task_ctx[0],
+                drop_result,
+                sprint_id=_sprint_id,
+                # A dropped story shares its log directory with the generation
+                # that actually ran it. Its audit.yaml is that run's evidence and
+                # must survive the drop record, not be replaced by it.
+                overwrite_story_audit=False,
+            )
+            return cause
+        except Exception as exc:  # noqa: BLE001 - evidence writing must not fail the sprint
+            _log(f"WARN {slug}: could not write drop audit record: {exc}")
+            return {}
+
     for slug, reason in _dropped_slugs.items():
         if slug not in slug_to_context:
             continue
@@ -4020,13 +4191,17 @@ def run_sprint(
             # collision (do NOT clear the worktree and re-sprint fresh).
             _log(f"DROPPED {slug} (stranded prior-generation sprint state)")
             dag.mark_skipped(slug)
-            _set_outcome(slug, StoryOutcome.DROPPED, reason=reason)
+            _stranded_cause = _record_dropped_story_audit(slug, reason)
+            _set_outcome(
+                slug, StoryOutcome.DROPPED, reason=reason, failure_cause=_stranded_cause or None
+            )
             _record_current_story_entry(
                 slug,
                 "DROPPED",
                 error=reason,
                 error_type="dropped",
                 extras={"drop_reason": reason},
+                failure_cause=_stranded_cause or None,
             )
         else:
             # A dropped story is normally a story that never ran — but if its
@@ -4042,6 +4217,10 @@ def run_sprint(
             _log(f"DROPPED {slug} (reason: {_detail_msg})")
             dag.mark_skipped(slug)
             _extras: dict[str, object] = {"drop_reason": reason, **work.as_state_fields()}
+            # The drop audit carries the fullest account available — the guard's
+            # reason plus whatever work the drop abandoned — because that record,
+            # not the sprint summary line, is what outlives the next resume.
+            _drop_cause = _record_dropped_story_audit(slug, _detail_msg)
             if work_detail:
                 unmeasured_spend.append(f"dropped-with-work:{slug}")
                 _set_outcome(
@@ -4050,6 +4229,7 @@ def run_sprint(
                     reason=_detail_msg,
                     cost_usd=None,
                     detail={"final_outcome": "DROPPED", **_extras},
+                    failure_cause=_drop_cause or None,
                 )
                 _record_current_story_entry(
                     slug,
@@ -4058,15 +4238,19 @@ def run_sprint(
                     error_type="dropped",
                     cost_usd=None,
                     extras=_extras,
+                    failure_cause=_drop_cause or None,
                 )
             else:
-                _set_outcome(slug, StoryOutcome.DROPPED, reason=reason)
+                _set_outcome(
+                    slug, StoryOutcome.DROPPED, reason=reason, failure_cause=_drop_cause or None
+                )
                 _record_current_story_entry(
                     slug,
                     "DROPPED",
                     error=reason,
                     error_type="dropped",
                     extras=_extras,
+                    failure_cause=_drop_cause or None,
                 )
 
     # Persist resume-time already-completed stories before any possible re-exec
@@ -5092,20 +5276,27 @@ def run_sprint(
                     else:
                         story_started_at = timed_out_at
                     _phase_label = f" during phase {last_phase}" if last_phase else ""
-                    _timeout_state = _terminal_state_for(
+                    _timeout_error = (
+                        f"Worker timeout (>{story_worker_timeouts[slug]}s){_phase_label}"
+                    )
+                    _timeout_result = _abnormal_story_result(
                         slug,
                         config=config,
                         sprint_name=resolved.name,
                         started_at=story_started_at,
-                        error=(f"Worker timeout (>{story_worker_timeouts[slug]}s){_phase_label}"),
+                        error=_timeout_error,
                         error_type="TimeoutError",
-                    )
-                    _timeout_result = CoordinatorResult(
-                        success=False,
-                        phase=Phase.ESCALATE,
-                        state=_timeout_state,
                         message=f"Worker thread timed out after {story_worker_timeouts[slug]}s",
                     )
+                    _timeout_cause = build_abnormal_cause(
+                        kind=ABNORMAL_WORKER_TIMEOUT,
+                        cause=_timeout_error,
+                        error_type="TimeoutError",
+                        phase=last_phase,
+                        run_id=_timeout_result.state.run_id,
+                        source="sprint.runner:worker-deadline",
+                    )
+                    _timeout_result.state.abnormal_termination = _timeout_cause
                     story_times[slug] = (story_started_at, timed_out_at)
                     live_telemetry_snapshots[slug] = snapshot
                     # A worker the auth breaker cancelled can also cross its
@@ -5134,6 +5325,7 @@ def run_sprint(
                         _timeout_outcome,
                         phase="ESCALATE",
                         last_phase=last_phase,
+                        failure_cause=_timeout_cause,
                         # The gate this story may have been sitting in never
                         # reported a decision and never will; leaving the live
                         # detail at gate_status=running is what made the state
@@ -5179,20 +5371,25 @@ def run_sprint(
                     else:
                         story_started_at = failed_at
                     _phase_label = f" during phase {last_phase}" if last_phase else ""
-                    _exc_state = _terminal_state_for(
+                    _exc_error = f"Worker exception{_phase_label}: {exc}"
+                    _exc_result = _abnormal_story_result(
                         slug,
                         config=config,
                         sprint_name=resolved.name,
                         started_at=story_started_at,
-                        error=f"Worker exception{_phase_label}: {exc}",
+                        error=_exc_error,
                         error_type=type(exc).__name__,
-                    )
-                    _exc_result = CoordinatorResult(
-                        success=False,
-                        phase=Phase.ESCALATE,
-                        state=_exc_state,
                         message=f"Worker thread raised {type(exc).__name__}: {exc}",
                     )
+                    _exc_cause = build_abnormal_cause(
+                        kind=ABNORMAL_WORKER_EXCEPTION,
+                        cause=_exc_error,
+                        error_type=type(exc).__name__,
+                        phase=last_phase,
+                        run_id=_exc_result.state.run_id,
+                        source="sprint.runner:worker-exception",
+                    )
+                    _exc_result.state.abnormal_termination = _exc_cause
                     story_times[slug] = (story_started_at, failed_at)
                     live_telemetry_snapshots[slug] = snapshot
                     # Same attribution as the other two cancellation exits: a
@@ -5220,6 +5417,7 @@ def run_sprint(
                         _exc_outcome,
                         phase="ESCALATE",
                         last_phase=last_phase,
+                        failure_cause=_exc_cause,
                         detail_updates={"gate_status": GATE_STATUS_INCOMPLETE},
                     )
                     _persist_current_story_result(

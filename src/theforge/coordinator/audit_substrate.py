@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 17
+CURRENT_RECORD_SCHEMA_VERSION = 18
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1068,6 +1068,26 @@ def _migrate_v16_to_v17(record: dict) -> dict:
     return {**record, "shared_infrastructure_failures": []}
 
 
+def _migrate_v17_to_v18(record: dict) -> dict:
+    """Add the abnormal-termination record (issue #2030).
+
+    v18 records name how a run ended when it did not end by its own state
+    machine — dropped at launch, killed by a worker exception, cancelled at the
+    worker deadline — so the cause of such a failure is the run's own structured
+    telemetry instead of the agent's prose about itself.
+
+    A v17 record predates the field. ``None`` is the honest backfill: it says the
+    writer recorded no abnormal termination, which is true of every normally
+    terminating run and is not a claim that an abnormal one ended cleanly — the
+    ``error`` / ``error_type`` fields those records already carry stay
+    authoritative. The stored record is never rewritten (ADR-0002
+    refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    if "abnormal_termination" in record:
+        return record
+    return {**record, "abnormal_termination": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1093,6 +1113,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     14: _migrate_v14_to_v15,
     15: _migrate_v15_to_v16,
     16: _migrate_v16_to_v17,
+    17: _migrate_v17_to_v18,
 }
 
 
