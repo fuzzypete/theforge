@@ -1,0 +1,2098 @@
+{
+  "schema_version": 17,
+  "run_id": "60560f5a6113",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc16",
+  "task": {
+    "name": "Cost-aware batch groups for small independent stories",
+    "slug": "issue-727",
+    "story_path": null,
+    "story_text": "## What\n\nAdd a third scheduling primitive \u2014 batch groups \u2014 distinct from DAG dependencies and conflict bundles. Batch groups pack small independent stories into single dev assignments for cost and throughput, not for collision avoidance.\n\n## Why\n\nCurrent bundling is conflict-aware: stories bundle only when they overlap by area or likely files. The original intent was also cost-aware: reduce per-story orchestration overhead by having one dev agent handle multiple small bugs in a single run.\n\nAt ~$0.50/story for small P2 fixes (observed in v0.7.0 sprint 39cf8e4e8175), the question is how much of that cost is fixed context reload versus irreducible implementation/review work. Batching is most valuable when the fixed overhead dominates.\n\n## Product language\n\n- **Dependencies / DAG**: stories that must run before other stories\n- **Conflict bundles**: stories that overlap enough to implement together to avoid merge pain\n- **Batch groups**: small independent stories grouped into one dev assignment for cost and throughput\n\nThis story adds the third primitive.\n\n## Acceptance Criteria\n\n- Sprint scheduler computes optional batch groups for independent stories\n- Batch groups are visible in `forge status` (distinct from conflict bundles)\n- Batching gated by preflight fields: complexity (small), work_type (bug/mechanical), sufficiency (implementation_ready), and estimated touched files\n- Config knob controls max stories per batch and/or max complexity budget per batch\n- Dev prompt for a batch contains multiple story specs and requires per-story completion notes\n- Validation and review still report per-story, even if implementation was batched\n- Batch groups do not override DAG dependencies or conflict bundles\n\n## Cautions\n\nBatching is not automatically cheaper. It can get more expensive if: combined prompt is too large, dev agent has to hold too much context, tests get broader, or review becomes harder. Treat as an adaptive strategy with conservative defaults, not a blanket optimization.\n\nDepends on: #719 (batch groups should be visible in status), sprint cost analytics (experiment data should inform defaults).",
+    "github_issue": 727,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Cost-aware batch groups for small independent stories' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-727",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "resolved_sha256": "d7e86e8f65dd502c4869756330af8fe26f18a69bf9235090d20adb962d610118",
+    "source_sha256_at_finish": "c146768e58c4560fc56f7c49f692dfb1a6415d830102f7a8d3eb670bef2dd3e4",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-03T02:42:52.009708+00:00",
+    "finished_at": "2026-08-03T03:18:20.898422+00:00",
+    "duration_seconds": 2128.888714
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-727",
+    "branch": "feat/issue-727",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 15.605923,
+        "duration_s": 1329.36,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/cli/sprint_status.py",
+          "src/theforge/config/__init__.py",
+          "src/theforge/config/load.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/dev_phase.py",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/preflight_cache.py",
+          "src/theforge/coordinator/preflight_flow.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/sprint/collision.py",
+          "src/theforge/sprint/runner.py",
+          "src/theforge/sprint/state_writer.py",
+          "src/theforge/sprint/status_reader.py",
+          "src/theforge/sprint/story_state.py",
+          "src/theforge/task/__init__.py",
+          "src/theforge/task/dev_prompts.py",
+          "src/theforge/task/story.py",
+          "tests/test_sprint_batch_groups.py"
+        ],
+        "files_changed_count": 20,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 6.541887999999999,
+        "duration_s": 381.24,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/sprint/runner.py",
+          "tests/test_sprint_batch_groups.py"
+        ],
+        "files_changed_count": 3,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 3.137434,
+        "duration_s": 162.24
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 2.499521,
+        "duration_s": 153.39
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 7,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 7,
+      "base_review": 5,
+      "profile_history_runs": 173,
+      "profile_avg_iterations": 1.5723,
+      "profile_avg_cost_usd": 4.545599,
+      "profile_raw_dev_max": 2.3584,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.0912,
+      "review_history_sample_size": 20,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 173 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-03T02:42:53.522133+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-08-03T03:08:32.075435+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 28.092636300000002,
+    "dev_usd": 22.147811,
+    "review_usd": 5.6369545,
+    "dev_invocations": 2,
+    "review_invocations": 5,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 15.605923,
+        "duration_seconds": 1329.3612481660675,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.006018
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 15.599905
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 6.541887999999999,
+        "duration_seconds": 381.2397289581131,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 6.541887999999999
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 1.266196,
+        "duration_seconds": 81.0235026460141,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.266196
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.871238,
+        "duration_seconds": 81.0235026460141,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.871238
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 1.206684,
+        "duration_seconds": 64.64135029143654,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.206684
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.2029445,
+        "duration_seconds": 64.64135029143654,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.2029445
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 0.089892,
+        "duration_seconds": null,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.089892
+          }
+        ],
+        "model_used": "gpt-5.5"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Batch groups are entirely absent from the codebase (no matches for 'batch group'/'batch_group' anywhere); existing bundling in collision.py is strictly conflict-aware (requires area/file overlap via _bundle_overlap), so this is genuinely new, unfinished scheduling work.",
+    "complexity": "medium",
+    "complexity_score": 7,
+    "implementation_complexity_score": 7,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 7",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "feature",
+    "domains": [
+      "backend",
+      "cli"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.3078708,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "4fb369ff78b6",
+    "cache_snapshot": {
+      "worktree_head": "3f47e38c25af63c9158214ea9538f2eeced4cc4e",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "3f47e38c25af63c9158214ea9538f2eeced4cc4e",
+      "story_content_hash": "eb93beda120c7a860f6bee33e2197eea16abd4a9b6146dd50c7a1efbd262e5f6"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "3f47e38c25af63c9158214ea9538f2eeced4cc4e",
+      "current_worktree_head": "3f47e38c25af63c9158214ea9538f2eeced4cc4e",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "3f47e38c25af63c9158214ea9538f2eeced4cc4e",
+      "current_evaluation_base_branch_head": "3f47e38c25af63c9158214ea9538f2eeced4cc4e",
+      "cached_story_content_hash": "eb93beda120c7a860f6bee33e2197eea16abd4a9b6146dd50c7a1efbd262e5f6",
+      "current_story_content_hash": "eb93beda120c7a860f6bee33e2197eea16abd4a9b6146dd50c7a1efbd262e5f6",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.3078708,
+        "duration_s": 48.53,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 7,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 173 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 7,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/task",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/task",
+          "lines": 15
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/task",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/task",
+          "lines": 15
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/task",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/task/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/task",
+          "lines": 15
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-727/iter_1.yaml",
+      "handoff": {
+        "summary": "Added cost-aware batch groups as a third scheduling primitive. compute_batch_groups (sprint/collision.py) packs small, independent, implementation-ready bug/mechanical stories into groups, gated on preflight complexity/work_type/sufficiency/likely_files and bounded by new sprint.batch.{max_stories,max_complexity_budget,max_touched_files} config. The sprint runner computes groups after conflict bundles (excluding bundled slugs and anything on a dependency edge), stamps a scheduler-written batch_group through CoordinatorState, SprintStoryState, live state, per-story audit, and sprint-summary entries, and dispatches each group as one worker: the leader runs a normal coordinator pass whose DEV prompt (build_batch_dev_prompt) carries every member's spec and requires per-story handoff attribution, then each remaining member is reviewed via run_review_only against its own spec on the shared worktree. The batch future returns one result tuple per original slug, so validation/review/cost/outcome/audit stay per-story; only the leader lands, and a leader landing failure is propagated to members. forge status renders [batch: <group-id> ...] in its own section, distinct from [bundle: ...].",
+        "commits": [
+          {
+            "sha": "577d215",
+            "message": "feat(sprint): cost-aware batch groups for small independent stories"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Sprint scheduler computes optional batch groups for independent stories",
+            "status": "MET",
+            "notes": "compute_batch_groups in sprint/collision.py, called from run_sprint after compute_bundle_assignments. Optional: returns [] unless sprint.batch.max_stories >= 2."
+          },
+          {
+            "criterion": "Batch groups are visible in `forge status` (distinct from conflict bundles)",
+            "status": "MET",
+            "notes": "StoryStatusEntry.batch_group populated from live state, sprint-summary entries, and per-story audit fallback. display_sprint_status renders bundles as [bundle: ...] then batch groups as [batch: <group-id> <slugs>] then ungrouped rows. Pinned by test_status_renders_batch_groups_separately_from_conflict_bundles (real .state file through the CLI)."
+          },
+          {
+            "criterion": "Batching gated by preflight fields: complexity (small), work_type (bug/mechanical), sufficiency (implementation_ready), and estimated touched files",
+            "status": "MET",
+            "notes": "build_batch_hint fails closed on each gate and names the reason. Unknown/empty likely_files never batches. Parametrised tests cover every ineligible field value."
+          },
+          {
+            "criterion": "Config knob controls max stories per batch and/or max complexity budget per batch",
+            "status": "MET",
+            "notes": "SprintBatchConfig adds max_stories, max_complexity_budget, and max_touched_files under sprint.batch, validated in load_config (integer, >= 1, bool rejected, mapping required). Default max_stories=1 disables batching \u2014 deliberate, per the story's Cautions section; see story_deviations."
+          },
+          {
+            "criterion": "Dev prompt for a batch contains multiple story specs and requires per-story completion notes",
+            "status": "MET",
+            "notes": "render_batch_spec_section renders every member's spec under its slug plus a 'Per-Story Handoff (required)' contract requiring slug keys on acceptance_criteria and commits. build_batch_dev_prompt is a thin wrapper over build_dev_prompt so policy/gate/handoff language cannot drift; dev_phase selects it from task.batch_members."
+          },
+          {
+            "criterion": "Validation and review still report per-story, even if implementation was batched",
+            "status": "MET",
+            "notes": "_run_batch_group returns one (task, result, elapsed, t0, t1) tuple per original slug; the completion loop unpacks by slug and every downstream path (classify, outcome, cost, audit, StorySource callbacks) is unchanged. Each member is reviewed via run_review_only against its own spec, and the shared gate result is copied onto each member's state so a batched story's audit shows the validation it passed."
+          },
+          {
+            "criterion": "Batch groups do not override DAG dependencies or conflict bundles",
+            "status": "MET",
+            "notes": "Any story touched by a dependency edge in either direction (own depends_on/collision_deps, or another story depending on it) is excluded from batching; bundled slugs are excluded via excluded_slugs; members must be pairwise non-overlapping under the bundling predicate. Dispatch happens only after the existing depends_on, collision_deps, queued-PR reachability, parallelism-cap, and budget checks; a group whose members do not become ready simultaneously is dissolved and its stories dispatched individually."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Batching defaults to OFF (sprint.batch.max_stories: 1) rather than on-with-small-limits. The story's Cautions section says batching is not automatically cheaper and should be treated as an adaptive strategy with conservative defaults, and AC 1 calls the groups 'optional'. A new dispatch path that silently changes how every sprint runs is not something an operator should discover mid-sprint, so it is opt-in via forge.yaml. Documented in docs/guides/inputs-reference.md.",
+          "Batch members are excluded from plan gates (plan_gate=None, no plan_gates registration). They are selected precisely because they are pairwise non-overlapping and they share one worker, so there is no sibling footprint for a PLAN_DONE gate to arbitrate; registering one would park the scheduler on a signal the batch path never emits."
+        ],
+        "deferred_items": [
+          "Validation is shared, not re-run per story: the gate runs once on the group's shared worktree and its decision is copied onto each member's state. Per-story validation would require per-story worktrees, which would defeat the cost saving. Members report the validation they actually passed rather than a fabricated independent one.",
+          "run_review_only has no DEV retry, so a batch member whose review returns REQUEST_CHANGES escalates rather than iterating. The leader story retains the full DEV->VALIDATE->REVIEW loop. A future story could route member REQUEST_CHANGES back into a shared fix pass.",
+          "No cost analytics comparing batched vs unbatched spend. The story notes experiment data should inform defaults; with batching off by default, that data has to come from a deliberate opt-in run first."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-727/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 fixes the P1 landing-propagation bug in the cost-aware batch groups feature. A batch group's commits live on a single branch (the leader's), but the leader's landing can resolve at four distinct moments and cycle 1 only read it at one \u2014 the instant the leader's worker result was processed, when an auto-merge PR is still queued. Members were therefore written DONE and never corrected when the PR later closed. Replaced the ad-hoc _batch_leader_landing peek with a single _resolve_batch_leader_landing helper invoked at every leader-landing resolution site (immediate _attempt_integration merged and integration-failed exits, the dependent-dispatch queued-PR gate, the no-active-workers queued-PR poll, and the sprint wrap-up queued-PR poll), plus _batch_member_records so a verdict arriving after a member row was written still corrects it. Both directions now hold: a landed leader marks members DONE with the landed immutability marker; a failed leader marks them MERGE_FAILED naming the leader; a member that failed on its own merits keeps its own verdict. Added two seam tests driving run_sprint through a queued-PR leader that resolves during wrap-up (closed and merged), and documented the shared-landing contract in docs/guides/inputs-reference.md.",
+        "commits": [
+          {
+            "sha": "577d215",
+            "message": "feat(sprint): cost-aware batch groups for small independent stories"
+          },
+          {
+            "sha": "a93eaa3",
+            "message": "fix(sprint): propagate batch leader landing to members (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Sprint scheduler computes optional batch groups for independent stories",
+            "status": "MET",
+            "notes": "compute_batch_groups in sprint/collision.py, called from run_sprint after compute_bundle_assignments. Optional: returns [] unless sprint.batch.max_stories >= 2. Unchanged this iteration."
+          },
+          {
+            "criterion": "Batch groups are visible in `forge status` (distinct from conflict bundles)",
+            "status": "MET",
+            "notes": "StoryStatusEntry.batch_group populated from live state, sprint-summary entries, and per-story audit fallback. display_sprint_status renders [bundle: ...] then [batch: <group-id> <slugs>] then ungrouped rows. Unchanged this iteration."
+          },
+          {
+            "criterion": "Batching gated by preflight fields: complexity (small), work_type (bug/mechanical), sufficiency (implementation_ready), and estimated touched files",
+            "status": "MET",
+            "notes": "build_batch_hint fails closed on each gate and names the reason. Unknown/empty likely_files never batches. Unchanged this iteration."
+          },
+          {
+            "criterion": "Config knob controls max stories per batch and/or max complexity budget per batch",
+            "status": "MET",
+            "notes": "SprintBatchConfig adds max_stories, max_complexity_budget, max_touched_files under sprint.batch, validated in load_config. Default max_stories=1 disables batching \u2014 see story_deviations. Unchanged this iteration."
+          },
+          {
+            "criterion": "Dev prompt for a batch contains multiple story specs and requires per-story completion notes",
+            "status": "MET",
+            "notes": "render_batch_spec_section renders every member's spec under its slug plus a 'Per-Story Handoff (required)' contract requiring slug keys on acceptance_criteria and commits. Unchanged this iteration."
+          },
+          {
+            "criterion": "Validation and review still report per-story, even if implementation was batched",
+            "status": "MET",
+            "notes": "This iteration closed the reported gap. Per-story review/cost/audit were already correct on the happy path; the defect was that a member's LANDING verdict was not per-story-correct when the shared branch's PR resolved late. _resolve_batch_leader_landing now fires at all five leader-landing resolution sites and corrects already-written member rows in both directions. Pinned by test_queued_pr_failure_fails_every_member_of_the_batch and test_queued_pr_success_lands_every_member_of_the_batch, which drive run_sprint end to end with land_story and _poll_queued_pr mocked; verified as genuine regression tests by short-circuiting the helper (sprint then reported 1 succeeded / 1 failed instead of 0 / 2)."
+          },
+          {
+            "criterion": "Batch groups do not override DAG dependencies or conflict bundles",
+            "status": "MET",
+            "notes": "Any story touched by a dependency edge in either direction is excluded; bundled slugs excluded via excluded_slugs; members must be pairwise non-overlapping. Dispatch happens only after the existing depends_on, collision_deps, queued-PR reachability, parallelism-cap, and budget checks. Unchanged this iteration."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Batching defaults to OFF (sprint.batch.max_stories: 1) rather than on-with-small-limits. The story's Cautions section says batching is not automatically cheaper and should be treated as an adaptive strategy with conservative defaults, and AC 1 calls the groups 'optional'. A new dispatch path that silently changes how every sprint runs is not something an operator should discover mid-sprint, so it is opt-in via forge.yaml. Documented in docs/guides/inputs-reference.md.",
+          "Batch members are excluded from plan gates (plan_gate=None, no plan_gates registration). They are selected precisely because they are pairwise non-overlapping and they share one worker, so there is no sibling footprint for a PLAN_DONE gate to arbitrate; registering one would park the scheduler on a signal the batch path never emits."
+        ],
+        "deferred_items": [
+          "Validation is shared, not re-run per story: the gate runs once on the group's shared worktree and its decision is copied onto each member's state. Per-story validation would require per-story worktrees, which would defeat the cost saving. Members report the validation they actually passed rather than a fabricated independent one.",
+          "run_review_only has no DEV retry, so a batch member whose review returns REQUEST_CHANGES escalates rather than iterating. The leader story retains the full DEV->VALIDATE->REVIEW loop. A future story could route member REQUEST_CHANGES back into a shared fix pass.",
+          "If the sprint process is killed while a batch leader's PR is still queued, members stay DONE and the leader stays queued \u2014 the same shape as any non-batch queued PR at kill time, not a batch-specific misreport, and not what this P1 described. Not addressed.",
+          "No cost analytics comparing batched vs unbatched spend. The story notes experiment data should inform defaults; with batching off by default, that data has to come from a deliberate opt-in run first."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "0e0ad300b9cdae52"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "577d215ed827b5362f61c98fa442c6075112f83d",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "577d215ed827b5362f61c98fa442c6075112f83d",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] Batching is mostly implemented, but queued PR landing failures can leave batch members reported as successful when their shared branch did not land. | [google-gemini-3.5-flash] Successfully implemented cost-aware batch groups as a third scheduling primitive with robust preflight gating, deterministic grouping, and per-story validation/review reporting.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/runner.py",
+          "line": 5390,
+          "description": "When a batched leader's auto-merge PR later failed during queued-PR wrap-up, the runner updated only the leader to MERGE_FAILED and left already-processed batch members recorded as DONE even though their changes existed only on the leader branch.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Sprint scheduler computes optional batch groups for independent stories",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/collision.py:249 implements compute_batch_groups with opt-in max_stories gating and independence checks, src/theforge/sprint/runner.py:3811 invokes it after preflight and bundle assignment, and tests/test_sprint_batch_groups.py:58 plus tests/test_sprint_batch_groups.py:724 exercise grouping and runtime dispatch.; src/theforge/sprint/collision.py:249-356 implements compute_batch_groups, called in src/theforge/sprint/runner.py:3811-3816. Covered by tests in tests/test_sprint_batch_groups.py:83-101."
+        },
+        {
+          "criterion": "Batch groups are visible in forge status (distinct from conflict bundles)",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint_status.py:316 separates bundle, batch, and regular entries, src/theforge/sprint/status_reader.py:991 reads batch_group from live state, and tests/test_sprint_batch_groups.py:330 verifies distinct bundle and batch rendering through the CLI status path."
+        },
+        {
+          "criterion": "Batching gated by preflight fields: complexity (small), work_type (bug/mechanical), sufficiency (implementation_ready), and estimated touched files",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/collision.py:200 gates batch eligibility on complexity, work_type, sufficiency, and likely_files, and tests/test_sprint_batch_groups.py:82, tests/test_sprint_batch_groups.py:104, and tests/test_sprint_batch_groups.py:114 cover ineligible fields and unknown footprints.; src/theforge/sprint/collision.py:200-241 implements build_batch_hint which gates batching on these preflight fields. Covered by tests in tests/test_sprint_batch_groups.py:104-151."
+        },
+        {
+          "criterion": "Config knob controls max stories per batch and/or max complexity budget per batch",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:664 defines SprintBatchConfig, src/theforge/config/load.py:1203 validates sprint.batch knobs, and tests/test_sprint_batch_groups.py:203 plus tests/test_sprint_batch_groups.py:232 verify max_stories, max_complexity_budget, max_touched_files, defaults, and invalid config rejection.; src/theforge/config/types.py:668-695 defines SprintBatchConfig with max_stories, max_complexity_budget, and max_touched_files. src/theforge/config/load.py:1206-1229 loads and validates these knobs. Covered by tests in tests/test_sprint_batch_groups.py:214-307."
+        },
+        {
+          "criterion": "Dev prompt for a batch contains multiple story specs and requires per-story completion notes",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/task/dev_prompts.py:145 renders all BatchMember specs and the per-story handoff contract, src/theforge/coordinator/dev_phase.py:722 selects the batch prompt builder for batch_members, and tests/test_sprint_batch_groups.py:488, tests/test_sprint_batch_groups.py:499, and tests/test_sprint_batch_groups.py:530 verify the prompt content and runtime builder selection.; src/theforge/task/dev_prompts.py:145-245 implements render_batch_spec_section and build_batch_dev_prompt. Covered by tests in tests/test_sprint_batch_groups.py:370-435."
+        },
+        {
+          "criterion": "Validation and review still report per-story, even if implementation was batched",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/sprint/runner.py:1925 returns one result tuple per batch slug and src/theforge/sprint/runner.py:2039 reviews each non-leader member with run_review_only, with happy-path coverage in tests/test_sprint_batch_groups.py:557 and tests/test_sprint_batch_groups.py:724, but src/theforge/sprint/runner.py:5390 does not propagate delayed queued-PR failure from the leader branch to member story records.; src/theforge/sprint/runner.py:1925-2080 implements _run_batch_group which runs a shared dev pass and then reviews each member story individually via run_review_only. Covered by tests in tests/test_sprint_batch_groups.py:438-610."
+        },
+        {
+          "criterion": "Batch groups do not override DAG dependencies or conflict bundles",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/collision.py:289 excludes dependency-touched and conflict-bundled slugs before grouping, src/theforge/sprint/runner.py:4652 dispatches batches only after existing readiness, queued-PR, parallelism, and budget checks, and tests/test_sprint_batch_groups.py:155, tests/test_sprint_batch_groups.py:167, and tests/test_sprint_batch_groups.py:177 cover bundle and dependency precedence.; src/theforge/sprint/collision.py:250-356 implements compute_batch_groups which excludes bundled slugs and any story touched by a dependency edge. Covered by tests in tests/test_sprint_batch_groups.py:154-211."
+        },
+        {
+          "criterion": "Batch groups are visible in `forge status` (distinct from conflict bundles)",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint_status.py:325-346 renders batch groups separately from conflict bundles. Covered by tests in tests/test_sprint_batch_groups.py:310-349."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "a93eaa30e520fb361154858a304322bb2a04bead",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "a93eaa30e520fb361154858a304322bb2a04bead",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 1,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Prior late queued-PR landing propagation P1 is fixed; no blocking regressions found, and tests/test_sprint_batch_groups.py passed with 49 tests. | [google-gemini-3.5-flash] The landing-propagation bug for batch group members has been successfully resolved by routing all terminal landing resolutions through a unified helper and registering members for late-resolving queued PRs.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Sprint scheduler computes optional batch groups for independent stories",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/collision.py:249 computes batch groups only when sprint.batch is enabled, and src/theforge/sprint/runner.py:3820 invokes it after preflight and bundle assignment; tests/test_sprint_batch_groups.py:68 covers eligible grouping and tests/test_sprint_batch_groups.py:754 covers run_sprint dispatching one dev pass for two batched stories.; Implemented in src/theforge/sprint/collision.py:234 (compute_batch_groups) and verified by tests in tests/test_sprint_batch_groups.py:17 (test_small_independent_implementation_ready_bugs_batch)."
+        },
+        {
+          "criterion": "Batch groups are visible in forge status (distinct from conflict bundles)",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint_status.py:325 separates bundle, batch, and regular entries and renders batch groups at line 342; src/theforge/sprint/status_reader.py:839 carries batch_group from summary or audit; tests/test_sprint_batch_groups.py:349 verifies distinct status rendering and tests/test_sprint_batch_groups.py:389 verifies live-state reading."
+        },
+        {
+          "criterion": "Batching gated by preflight fields: complexity (small), work_type (bug/mechanical), sufficiency (implementation_ready), and estimated touched files",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/collision.py:220 checks complexity, work_type, sufficiency, missing likely_files, and max_touched_files; tests/test_sprint_batch_groups.py:80 covers mechanical eligibility, tests/test_sprint_batch_groups.py:102 covers blocked preflight fields, tests/test_sprint_batch_groups.py:112 covers unknown footprints, and tests/test_sprint_batch_groups.py:123 covers wide footprints.; Implemented in src/theforge/sprint/collision.py:201 (build_batch_hint) and verified by tests in tests/test_sprint_batch_groups.py:50 (test_ineligible_preflight_fields_block_batching)."
+        },
+        {
+          "criterion": "Config knob controls max stories per batch and/or max complexity budget per batch",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:667 defines SprintBatchConfig with max_stories, max_complexity_budget, and max_touched_files, while src/theforge/config/load.py:1206 loads and validates sprint.batch; tests/test_sprint_batch_groups.py:242 verifies max_stories, tests/test_sprint_batch_groups.py:253 verifies max_complexity_budget, and tests/test_sprint_batch_groups.py:297 verifies forge.yaml loading.; Implemented in src/theforge/config/types.py:668 (SprintBatchConfig) and verified by tests in tests/test_sprint_batch_groups.py:231 (test_max_stories_caps_group_size)."
+        },
+        {
+          "criterion": "Dev prompt for a batch contains multiple story specs and requires per-story completion notes",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/task/dev_prompts.py:145 renders all batch member specs and src/theforge/task/dev_prompts.py:206 adds the required per-story handoff contract; src/theforge/coordinator/dev_phase.py:715 selects the batch prompt builder at runtime; tests/test_sprint_batch_groups.py:464 verifies both specs appear and tests/test_sprint_batch_groups.py:474 verifies per-story completion-note requirements.; Implemented in src/theforge/task/dev_prompts.py:145 (render_batch_spec_section) and verified by tests in tests/test_sprint_batch_groups.py:384 (test_batch_prompt_contains_every_member_spec)."
+        },
+        {
+          "criterion": "Validation and review still report per-story, even if implementation was batched",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:1925 runs one shared dev pass and per-member run_review_only, copies shared gate results at line 2063, and returns one result tuple per story; src/theforge/sprint/runner.py:4397 propagates leader landing verdicts to member records and src/theforge/sprint/runner.py:5424 registers members for late verdicts; tests/test_sprint_batch_groups.py:556 verifies per-story rows, review, cost, and validation state, tests/test_sprint_batch_groups.py:918 verifies late queued-PR failure marks every member failed, and tests/test_sprint_batch_groups.py:938 verifies late queued-PR success marks every member landed.; Implemented in src/theforge/sprint/runner.py:1906 (_run_batch_group) and verified by tests in tests/test_sprint_batch_groups.py:454 (test_batch_run_returns_one_result_row_per_original_story)."
+        },
+        {
+          "criterion": "Batch groups do not override DAG dependencies or conflict bundles",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/collision.py:292 excludes dependency edge endpoints, src/theforge/sprint/collision.py:310 excludes bundled slugs, and src/theforge/sprint/collision.py:342 rejects overlapping members; src/theforge/sprint/runner.py:4736 dispatches batches only after ordinary readiness gates; tests/test_sprint_batch_groups.py:153 covers overlap exclusion, tests/test_sprint_batch_groups.py:176 covers conflict-bundle exclusion, and tests/test_sprint_batch_groups.py:199 covers dependency-edge exclusion.; Implemented in src/theforge/sprint/collision.py:234 (compute_batch_groups) and verified by tests in tests/test_sprint_batch_groups.py:115 (test_overlapping_stories_are_a_bundle_question_not_a_batch)."
+        },
+        {
+          "criterion": "Batch groups are visible in `forge status` (distinct from conflict bundles)",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/cli/sprint_status.py:322 (display_sprint_status) and verified by tests in tests/test_sprint_batch_groups.py:298 (test_status_renders_batch_groups_separately_from_conflict_bundles)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2144",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-727",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2144",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2144",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-03T03:18:20.898422+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 603 lines (limit 600)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "0e0ad300b9cdae52",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/runner.py",
+      "line": 5390,
+      "severity": "P1",
+      "description": "When a batched leader's auto-merge PR later failed during queued-PR wrap-up, the runner updated only the leader to MERGE_FAILED and left already-processed batch members recorded as DONE even though their changes existed only on the leader branch.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 5,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 7,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 3,
+            "raw": 0.75,
+            "weighted": 0.75,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 9,
+            "completed": 9,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 7,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.9249,
+              "weighted": 1.0,
+              "runs": 173,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 1.0
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": 0.9077,
+              "weighted": 0.9,
+              "runs": 65,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.9,
+              "by_domain": {
+                "backend": {
+                  "runs": 43,
+                  "raw": 0.907,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 22,
+                  "raw": 0.9091,
+                  "weighted": 0.9,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "cli"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "cli"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "cli"
+          ],
+          "raw": 0.9077,
+          "weighted": 0.9,
+          "runs": 65,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.9,
+          "by_domain": {
+            "backend": {
+              "runs": 43,
+              "raw": 0.907,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "cli": {
+              "runs": 22,
+              "raw": 0.9091,
+              "weighted": 0.9,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.9249,
+        "weighted_success_rate": 1.0,
+        "sample_size": 173,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 1.0,
+          "threshold": 0.6,
+          "sample_size": 173,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend+cli",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "cli"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 173 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 83,
+            "completed": 76,
+            "raw": 0.9157,
+            "weighted": 0.9323,
+            "rate": 0.9323,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 41,
+            "completed": 33,
+            "raw": 0.8049,
+            "weighted": 0.7906,
+            "rate": 0.7906,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 104,
+            "completed": 104,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 83,
+            "completed": 76,
+            "raw": 0.9157,
+            "weighted": 0.9323,
+            "rate": 0.9323,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 41,
+            "completed": 33,
+            "raw": 0.8049,
+            "weighted": 0.7906,
+            "rate": 0.7906,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.307871,
+      "duration_s": 48.53,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": null,
+    "dev": {
+      "cost_usd": 22.147811,
+      "duration_s": 1710.6,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 90.61,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 5.636954,
+      "duration_s": 291.33,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 2.562772,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 3.074183,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 28.092636,
+    "duration_s": 2141.07,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "840e994353ba",
+  "sprint_name": "issues-2030,2029,2129,1906,1880,1415,728,727"
+}
