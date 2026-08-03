@@ -1,0 +1,2495 @@
+{
+  "schema_version": 17,
+  "run_id": "77b94cd43a39",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc16",
+  "task": {
+    "name": "Preflight and routing records are reported as skipped and absent on runs where they demonstrably ran",
+    "slug": "issue-2155",
+    "story_path": null,
+    "story_text": "## What happened\n\nIn sprint `issues-2030,2029,2129,1906,1880,1415,728,727` (run `675e2792fa1b`,\n2026-08-02), stories #1415 and #2029 finished with audit records reporting that\npreflight had been skipped and that no routing decision was made. Both had run.\n\nStory #1415's audit records:\n\n```yaml\npreflight:\n  verdict: SKIPPED\n  complexity: null\n  complexity_score: null\n  reason: null\nrouting_decision: null\n```\n\nThe run log for the same story records preflight completing successfully and a\nfull adaptive routing block derived from its result:\n\n```\n20:18:21  \u25b8 PREFLIGHT   sonnet\n20:19:08  [PREFLIGHT[primary]] OK | exit=0 | cost=$0.317 | output=6747 chars\n20:19:08  Complexity: large (from preflight)\n20:19:08  [adaptive] Complexity: HIGH (from preflight)\n20:19:08  [adaptive] dev: complexity score 9 (HIGH) \u2192 tier strong\n20:19:08  [adaptive] code_review: 3 reviewer(s), tier strong, complexity score 9\n20:19:08  \u2713 PREFLIGHT   PROCEED\n```\n\nThe six stories in the same sprint that completed normally all carry populated\n`preflight` and `routing_decision` blocks. The two that lost theirs are the two\nthat terminated abnormally. Both had also been restarted mid-run: #1415 ran a\nplan review at 19:37, then preflight at 20:18, then a second plan review at\n20:57.\n\nThe same records are missing elsewhere in #1415's audit. `escalation` and\n`timeout_escalation` are both null despite an escalation advisory having been\ncomputed, rendered to the operator with six options and per-option evidence, and\ncharged to the run. `plan_review` is null despite two plan-review cycles\nappearing in the log.\n\n## What was expected\n\nA phase that ran is recorded as having run. A record that reports a phase as\nskipped asserts something about execution, and a run that executed the phase and\nacted on its output must not produce that assertion \u2014 an abnormal ending, a\nrestart, or a later attempt at the same story should leave the earlier phase\nrecords intact rather than replacing them with the shape of a run that never\nhappened.\n\nWhere a record cannot be recovered, absent and skipped must remain\ndistinguishable, since an operator reading the record cannot otherwise tell a\nphase that was deliberately bypassed from one whose evidence was lost. The\nartifacts most likely to be needed are produced by the runs least likely to\nfinish cleanly, so preservation should not depend on reaching a normal\nfinalization path.\n\n## Diagnosis\n\n> \u26a0 Partial diagnosis \u2014 the investigation hit its budget or timeout before reaching a confirmed cause. Operator review required.\n\n**Baseline:** `ad70c525e695ad17ddc61496b16b20c2ac206f14` captured at `2026-08-03T13:09:45.993191+00:00`\n\n**Inspected files:**\n\n- `src/theforge/coordinator/audit.py` \u2014 `sha256:add6efa564c9a8ba15b65c10997d421a9f54dc4c95c1f2c1b6825e487aa11e11`\n- `src/theforge/coordinator/run_setup.py` \u2014 `sha256:bbf053106973377160f17b1a41bc0a3becf459ac29ab7196b21f20d8764169c2`\n- `src/theforge/coordinator/state.py` \u2014 `sha256:ab938c0553e32b6b79dde4564a5708fe96ddd6ce0bc1eb94f137e60f29165992`\n- `src/theforge/coordinator/engine.py` \u2014 `sha256:f51f0a370566a4171cc5e5d2ce8fcd79123ad261ca30c491d920d9f96b1ea641`\n- `src/theforge/coordinator/review_phase.py` \u2014 `sha256:80589f69df80a88c395805e83f10dba90488be56217122457a4e7ee79293c1a7`\n- `src/theforge/coordinator/preflight.py` \u2014 `sha256:0729ec9b44042cbf81b1c1c77c18d0e648f9eae6a9f4bf81305f1af8bdef4d8c`\n- `src/theforge/coordinator/pending_hitl.py` \u2014 `sha256:4b4fef2ee1c2374f7d235c25a5fe1a7994f83e9aa4499f6b98854946f3d88bdc`\n- `src/theforge/pending.py` \u2014 `sha256:444d89c5ecdb092548da7f461ac2a69918010ea473bfa84cec797a43b5bb24b5`\n- `src/theforge/coordinator/live_state.py` \u2014 `sha256:c08394d79a55369540aae8d8448d615d0094b81bb6bf9043c9fc3708cc0b4ad1`\n- `src/theforge/sprint/runner.py` \u2014 `sha256:b49ff97e9bc3fe8261a94dbe7e4eda1f91aebe67ed78c24030ef909a0e20d9d0`\n- `src/theforge/sprint/audit.py` \u2014 `sha256:39768d816079d66635ecfd2e73141b4e7224a9a4f6a5ce35ef797dc95e61601b`\n- `src/theforge/cli/shared.py` \u2014 `sha256:a7b0517bf0968a1dbc3ff2be9afb3dc699a92d26d0c1fc74f4bcf08123c06b6d`\n- `.forge/logs/issues-2030,2029,2129,1906,1880,1415,728,727/run-675e2792fa1b.log` \u2014 `sha256:b7293648c42a1fd4357db0c4fb11e5ac3353e18952f330ffb3bf7beb379de029`\n\n### Observed symptom\n\nFor stories whose coordinator process was restarted/resumed mid-run (a mid-run\nre-exec, an inherited-agent worker-timeout restart, etc.), the final persisted\naudit record reports phases that demonstrably ran (preflight, plan_review,\nescalation/timeout_escalation, and the derived routing_decision) as SKIPPED or\nnull, even though the run log shows those phases completing normally and their\noutput being acted upon (adaptive routing derived from preflight, an\nescalation advisory rendered to the operator, two plan-review cycles).\n\n### Reproduction / evidence\n\nRun log .forge/logs/issues-.../run-675e2792fa1b.log for issue-1415:\n  - Attempt 1 (19:33-19:53): plan + first plan_review cycle complete (PLAN_DONE).\n  - \"\u21ba RESUME   synced forge.yaml ...\" at 20:18:21.387 \u2014 a resumed coordinator\n    attempt begins; PREFLIGHT then genuinely runs and completes (20:19:08,\n    \"\u2713 PREFLIGHT   PROCEED\", full adaptive routing block logged).\n  - Mid-run re-exec at 20:20:40 (\"agent process group from this sprint\n    survived the re-exec\"); after waiting 1800s, \"resuming FULL (worktree\n    exists but 0 commits ahead of release/v0.13 (stale))\" at 20:53:42 \u2014 the\n    story restarts from a fresh workspace/coordinator attempt, discarding the\n    preflight verdict computed 20:18-20:19.\n  - Further \"\u21ba RESUME\" events at 21:01:45 and 21:43:04 (each going through\n    _setup_resume_entry again). A second plan_review cycle runs 20:57-21:01.\n  - At 22:08:47 the escalation advisor invokes preflight-agent machinery for\n    fresh-context evidence (not the coordinator's own PREFLIGHT phase); an\n    advisory is generated and rendered via the pending escalate gate\n    (22:09:22), which times out at 22:19:22 (\"auto-escalating\" / \"preserving\n    for operator decision\").\n  - At 22:19:22.829: \"[model_profiles] skipping update: preflight_complexity\n    unset for story=issue-1415\" \u2014 confirms state.preflight_complexity is\n    still None in this same final live attempt, even after all that activity.\n  - The committed audit for issue-1415\n    (.forge/audits/... via `git log`/`git show` on the run's audit record)\n    shows preflight.verdict == SKIPPED, preflight.complexity == null,\n    routing_decision == null, plan_review == null, escalation == null,\n    timeout_escalation == null.\n\n### Hypotheses tested\n\n- **[ruled out]** The audit generator (generate_audit_log) itself has a bug that renders completed phases as skipped/null.\n  - Evidence: src/theforge/coordinator/audit.py builds every phase block straight from CoordinatorState fields (state.preflight_verdict, state.routing_decision, state.plan_review_decision, state.escalate_decision, state.timeout_escalation_audit) with no special-casing that would zero them out given a populated state. The bug is upstream of the audit generator: it is fed a state that never had these fields populated.\n- **[confirmed]** A resumed coordinator attempt allocates a fresh CoordinatorState that restores only trajectory and plan data, and unconditionally hardcodes preflight_verdict=\"SKIPPED\" \u2014 discarding preflight, routing_decision, plan_review, and escalation results a prior attempt of the same story genuinely produced, with no restore path for those fields at all.\n  - Evidence: coordinator/run_setup.py:_setup_resume_entry constructs `CoordinatorState(phase=initial_phase, dev_iteration=0, review_cycle=0, preflight_verdict=\"SKIPPED\")` unconditionally, then only calls load_trajectory_state() (restores trajectory_cycle, finding_trajectory, gate_runs, last_gate_commit/decision, escalate_kind, hygiene_escalation_* \u2014 nothing preflight/plan_review/escalation related) and load_plan_state() (restores only plan_output/plan_structured from plan.md). CoordinatorState defaults preflight_complexity, routing_decision, plan_review_decision, escalate_decision, and timeout_escalation_audit to None (state.py:590-848), and nothing in the resume path restores them. This exactly matches the audit: a resumed attempt that does not itself re-execute PREFLIGHT/PLAN_REVIEW/ESCALATE finalizes with these fields at their None/\"SKIPPED\" defaults regardless of what an earlier attempt of the same story computed. A parallel mechanism (`cached_preflight_state` / `apply_cached_preflight_state`, threaded from a sprint-level `preflight_states` cache) can overwrite the hardcoded \"SKIPPED\" when present and cache-valid, but is optional and was evidently not populated/valid across this story's worker-timeout \"FULL\" restart and re-exec-driven resumes, since preflight_complexity was still unset at 22:19:22 in the log.\n- **[ruled out]** The abnormal-termination audit path (sprint.runner._abnormal_story_result / _terminal_state_for) synthesizes an entirely empty state from scratch, independent of any live state, and that is the sole cause of the loss.\n  - Evidence: _terminal_state_for already calls coordinator.live_state.snapshot_live_state(slug) first and prefers that live, in-process CoordinatorState over a bare synthetic one (added for #2013 specifically to stop this class of loss). The salvaged state is whatever CoordinatorState object the engine most recently registered for the slug \u2014 which, for a resumed attempt, is exactly the hardcoded/under-restored state from hypothesis 2. So the abnormal- termination path inherits the loss rather than causing it independently.\n\n### Confirmed cause\n\ncoordinator/run_setup.py's `_setup_resume_entry` (used by both\n`run_from_review` and `run_from_dev`, i.e. every `forge run --resume`-style\nreentry into an existing worktree) builds a brand-new `CoordinatorState` and\nunconditionally sets `preflight_verdict=\"SKIPPED\"` on it, then restores only\ntwo narrow slices of prior-attempt data \u2014 trajectory bookkeeping\n(`load_trajectory_state`) and the parsed plan (`load_plan_state`). It has no\nrestore path at all for `preflight_complexity`/other preflight fields (beyond\nthe hardcoded string), `routing_decision`, `plan_review_decision`/\n`plan_review_results`, `escalate_decision`/`escalate_selected_action`, or\n`timeout_escalation_audit`. When a resumed attempt does not itself\nre-execute the PREFLIGHT, PLAN_REVIEW, or ESCALATE phases (because it\nresumes past them, or because the story is later re-synthesized through the\nabnormal-termination/live-state-salvage path from that same\nunder-restored state), the audit ultimately generated for the story reports\nthose phases as skipped or absent \u2014 indistinguishable from a phase that was\ndeliberately never run \u2014 even though an earlier attempt of the same story\ngenuinely executed them and the run log shows it.\n\n### Affected code path\n\nsrc/theforge/coordinator/run_setup.py: `_setup_resume_entry` (state\nconstruction at ~line 458-463, hardcoded `preflight_verdict=\"SKIPPED\"`),\n`load_trajectory_state` (~173-227) and `load_plan_state` (~229-266) \u2014 the\ncomplete set of state restored on resume, which omits preflight\n(complexity/routing), plan_review, and escalate/timeout_escalation results.\n\n### Fix-success criterion\n\nFor a story whose coordinator process is resumed/restarted mid-run after a\nphase (preflight, plan_review, or escalate) already produced a real result in\nan earlier attempt, the final persisted audit for that story reports that\nphase's real outcome (or an explicit, distinguishable \"lost/unrecoverable\"\nmarker distinct from \"skipped\") rather than SKIPPED/null \u2014 verified by\nresuming a story past PREFLIGHT/PLAN_REVIEW with `--resume` (or via a\nworker-timeout restart) and checking that `preflight`, `routing_decision`,\nand `plan_review` in the resulting audit are non-null when those phases ran\nin a prior attempt of the same story.\n\n### Related findings (out of scope)\n\n> These are adjacent problems noticed during investigation. They are **not** the cause of this issue's symptom and are **out of scope for this fix** \u2014 triage them separately under the linked issue. Do not implement them as part of this issue.\n\n- The escalation advisor's fresh-context evidence gathering reuses the \"Starting preflight...\" agent-invocation code path/log line, which is easy to misread in logs as the coordinator's own PREFLIGHT phase re-running (it does not set state.preflight_verdict/complexity). Not the cause of this issue but a source of confusion when diagnosing similar reports.\n- sprint/runner.py's worker-deadline timeout does not actually stop the underlying worker thread (`Future.cancel()` is a no-op for an already-running thread, per its own comment) \u2014 the story continued executing and spending money for ~8 more minutes after being declared \"TIMEOUT ... marking as failed\" and counted in the sprint's final tally. Worth its own investigation independent of the audit-field-loss symptom here.\n\n### Notes\n\nThis diagnosis is scoped to why the audit fields go missing across a resume;\nit does not prescribe the fix mechanism (e.g. persisting preflight/plan_review\n/escalation results to a sidecar the way trajectory.yaml/plan.md already are,\nvs. hardening the existing `cached_preflight_state` cache to always be\npopulated/valid across every restart kind). The existing\n`cached_preflight_state` / `preflight_states` / `apply_cached_preflight_state`\nmachinery (coordinator/engine.py ~999-1010, ~1372-1400) shows the project\nalready solved this specific problem for preflight in the ordinary\ncross-story-batch case; a durable fix likely extends/reuses that pattern\n(or the sidecar pattern) to also cover plan_review, escalate, and\nrouting_decision, and to guarantee `cached_preflight_state` is available\nacross a worker-timeout \"FULL\" restart and mid-run re-exec, not just the\ncases it is currently threaded through for.\n",
+    "github_issue": 2155,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Preflight and routing records are reported as skipped and absent on runs where they demonstrably ran' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-2155",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "resolved_sha256": "cb2f49bf607a0c760e76e3418fd44c942e0825fbb52b88451db360ebde2191d8",
+    "source_sha256_at_finish": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-03T17:51:57.937940+00:00",
+    "finished_at": "2026-08-03T18:19:55.954286+00:00",
+    "duration_seconds": 1678.016346
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2155",
+    "branch": "feat/issue-2155",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "gate_runs": 1,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 9.383186500000003,
+        "duration_s": 859.76,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/audit_substrate.py",
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/plan_flow.py",
+          "src/theforge/coordinator/preflight_flow.py",
+          "src/theforge/coordinator/resume_persistence.py",
+          "src/theforge/coordinator/review_phase.py",
+          "src/theforge/coordinator/run_setup.py",
+          "src/theforge/coordinator/state.py",
+          "tests/fixtures/audit_record_schema_v19.json",
+          "tests/test_coord_resume_phase_recovery.py",
+          "tests/test_coord_review_phase_cycle.py"
+        ],
+        "files_changed_count": 12,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 4.426506,
+        "duration_s": 171.09
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 104,
+      "profile_avg_iterations": 1.8846,
+      "profile_avg_cost_usd": 10.052468,
+      "profile_raw_dev_max": 2.8269,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 25.1312,
+      "review_history_sample_size": 15,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 104 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-03T18:01:45.844971+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 19.99219945,
+    "dev_usd": 9.383186500000003,
+    "review_usd": 4.4265064,
+    "dev_invocations": 1,
+    "review_invocations": 3,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 9.383186500000003,
+        "duration_seconds": 859.7604572919663,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.009774
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 9.373412500000002
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 1.355837,
+        "duration_seconds": 56.96385613867702,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.355837
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.4314799999999999,
+        "duration_seconds": 56.96385613867702,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.4314799999999999
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.6391894000000002,
+        "duration_seconds": 56.96385613867702,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.050977999999999996
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.5882114
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed unfixed cause: coordinator/run_setup.py:_setup_resume_entry hardcodes preflight_verdict=\"SKIPPED\" and only restores trajectory/plan slices on resume, dropping preflight/routing_decision/plan_review/escalation data from prior attempts; fix requires coordinated changes across resume state construction, the existing cached_preflight_state machinery in engine.py, and possibly a new persistence/sidecar mechanism.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "8 operator-visible surfaces enumerated in acceptance criteria: --resume, 727/run-675e2792fa1b.log, and unconditionally sets, captured at, forge.yaml, forge/logs/issues-.../run-675e2792fa1b.log, plan.md, trajectory.yaml/plan.md",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "cost_usd": 0.2307108,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "f4991d5229a4",
+    "cache_snapshot": {
+      "worktree_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "story_content_hash": "03e76f281c4f3804a1d833b7047d971a908c5ae376df94e757387cb9c8bd6af0"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "current_worktree_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "current_evaluation_base_branch_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "cached_story_content_hash": "03e76f281c4f3804a1d833b7047d971a908c5ae376df94e757387cb9c8bd6af0",
+      "current_story_content_hash": "03e76f281c4f3804a1d833b7047d971a908c5ae376df94e757387cb9c8bd6af0",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.2307108,
+        "duration_s": 36.69,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.78 \u2265 threshold 0.60 over 104 admissible runs \u2014 pre-promotion held) (profile success_rate=0.78 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2155/iter_1.yaml",
+      "handoff": {
+        "summary": "Added a durable per-story phase sidecar (src/theforge/coordinator/resume_persistence.py, stdlib-only, at .forge/resume_state/<slug>.json keyed by slug + story_content_hash) that each phase writes as it produces output: preflight verdict/reason/complexity fields, routing_decision, complexity_routing_audit, plan_review outcome, escalate-gate decision + advisory, and timeout_escalation. Writes are merge-based so a later phase never erases an earlier one, and best-effort so a recovery aid can never fail the run it protects. Write sites: preflight_flow after _apply_preflight_config (next to the existing persist_routing_decision), both cached-preflight branches in engine.py, the --from <phase> deliberate bypass, both plan-review paths in _run_plan_phase, a finally wrapper around _run_escalate_gate covering all its exits, and the timeout_escalation_audit assignment. _setup_resume_entry no longer hardcodes preflight_verdict='SKIPPED'; it calls recover_phase_state after story_content resolves, filling only fields still unset (so a live cached_preflight_state and any phase this attempt runs still win), sets state.phase_recovery, and emits structured telemetry plus an operator log line for the recovered/rejected/unavailable cases. restore_routing_decision remains the single seating authority for the review pool. The audit gains a top-level phase_recovery block naming which phases were lifted off disk or why none were, which required the standard versioning work: CURRENT_RECORD_SCHEMA_VERSION 18 -> 19, MIGRATION_HELPERS[18] = _migrate_v18_to_v19 backfilling null, and a new tests/fixtures/audit_record_schema_v19.json (diff vs v18 is exactly one added path). Costs are recorded in the sidecar for provenance but deliberately not restored onto the resumed state, so a prior process's spend is not double-counted in this run's aggregates or the sprint roll-up.",
+        "commits": [
+          {
+            "sha": "43aa6cf",
+            "message": "fix(coordinator): preserve preflight/routing/plan-review records across a resume"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A phase that ran is recorded as having run \u2014 an abnormal ending, a restart, or a later attempt at the same story leaves the earlier phase records intact rather than replacing them with the shape of a run that never happened.",
+            "status": "MET",
+            "notes": "Each phase persists its output at the moment it produces it, and _setup_resume_entry merges the record into the freshly allocated state before any resumed phase or abnormal-termination audit can finalize. Seam tests through run_from_review assert preflight, routing_decision, plan_review, escalation and timeout_escalation all survive into the final audit; one test additionally synthesizes an abnormally-terminated CoordinatorResult from the salvaged live state and asserts the recovered phases are still present there."
+          },
+          {
+            "criterion": "A record that reports a phase as skipped must not be produced by a run that executed the phase and acted on its output.",
+            "status": "MET",
+            "notes": "The resume-time SKIPPED default is removed from run_setup.py. engine.py:965 (the --from <phase> bypass) is now the sole writer of the literal, verified by grep; that bypass is itself persisted so a resume past a genuinely skipped preflight still reports SKIPPED rather than degrading to absent."
+          },
+          {
+            "criterion": "Where a record cannot be recovered, absent and skipped remain distinguishable.",
+            "status": "MET",
+            "notes": "An unrecovered resumed run leaves preflight_verdict null (audit preflight block absent) and records phase_recovery.status = unavailable | rejected with a reason and source_run_id. test_no_record_reports_absent_not_skipped pins audit['preflight'] is None together with the recovery status, and test_deliberate_skip_is_recorded_as_skipped pins the SKIPPED side."
+          },
+          {
+            "criterion": "Preservation should not depend on reaching a normal finalization path.",
+            "status": "MET",
+            "notes": "Every write happens at the moment the phase output exists, not at finalization. The escalate gate uses try/finally so a raise or an early return still persists; the timeout-escalation write happens at assignment inside the dev loop. All writes are best-effort and control-flow-neutral (test_save_is_best_effort patches Path.mkdir to raise OSError and asserts the call returns None instead of propagating)."
+          },
+          {
+            "criterion": "Seam-level integration tests cover the touched coordinator phase boundary (project convention 8).",
+            "status": "MET",
+            "notes": "tests/test_coord_resume_phase_recovery.py, 21 tests: record round-trip / cross-phase merge / corrupt / unknown-version / changed-story rejection; apply precedence (live judgement beats the record, plan-review durations refused when this attempt has its own results so the per-attempt reviewer builder cannot be misattributed); and four run_from_review seam tests plus one escalate-gate write-side test."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Plan Step 1 proposed a new module while plan review P2 suggested extending routing_persistence instead. Kept a separate module but wrote it against routing_persistence's record shape and precedence rules, and both are written from the same call sites so they cannot disagree. routing_decision has one authoritative restore order (cached_preflight_state > this sidecar > routing record, which is applied later in the REVIEW-seating path and re-derives the block from the same complexity signal). Merging them would have coupled the audit-honesty concern to the panel-seating concern, which routing_persistence's docstring explicitly scopes itself away from.",
+          "Updated two assertions in tests/test_coord_review_phase_cycle.py (test_run_from_review_skips_preflight, test_run_from_review_request_changes_iterates). They pinned the resume-time preflight_verdict == 'SKIPPED' this story exists to remove, so they encode the defect rather than a separate contract; both now assert the new contract (verdict absent + phase_recovery status) with the reasoning in the docstring."
+        ],
+        "deferred_items": [
+          "Preflight and plan-review costs from a prior attempt are recorded in the sidecar but not folded back into the resumed run's cost aggregates, so a recovered phase's audit cost_usd reads 0.0/null. Restoring them would double-count spend at the sprint roll-up; attributing prior-process spend across attempts is a separate question from whether the phase is recorded as having run.",
+          "Full gate not run (coordinator-owned). Targeted verification: 6887 passed / 17 failed on the full suite; all 17 (test_cut_rc_isolation, test_sprint_lock, test_sprint_reexec_collision) reproduce identically on a clean archive of baseline HEAD with these changes absent \u2014 the known nested process-supervision / multiprocessing PermissionError environment failures. ruff check and ruff format clean across src/ and tests/."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "43aa6cf795ac3e612abd000d4d2d52c97651753d",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "43aa6cf795ac3e612abd000d4d2d52c97651753d",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": "PASS"
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] The implementation preserves recovered phase records across resume paths, distinguishes absent from skipped, and has focused seam coverage; no blocking defects found. | [google-gemini-3.5-flash] The implementation successfully preserves preflight, routing, plan-review, and escalation records across resumes using a durable per-story sidecar, with excellent test coverage and strict adherence to project conventions. | [claude-sonnet] Durable per-story phase sidecar correctly restores preflight/routing/plan_review/escalation records across a resume; write ordering, None-safety, and precedence against the existing routing_persistence/cached_preflight_state mechanisms all verified against the actual code, not just developer claims.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "A phase that ran is recorded as having run \u2014 an abnormal ending, a restart, or a later attempt at the same story leaves the earlier phase records intact rather than replacing them with the shape of a run that never happened.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/preflight_flow.py:917 persists preflight and routing after routing is applied, src/theforge/coordinator/plan_flow.py:1000 and 1017 persist plan-review outcomes after the plan-review paths return, src/theforge/coordinator/review_phase.py:227-247 persists escalation output in a finally block, and src/theforge/coordinator/run_setup.py:571-577 applies the durable record during resume setup. tests/test_coord_resume_phase_recovery.py:360-389 verifies recovered preflight, routing_decision, and plan_review appear in the final audit, and tests/test_coord_resume_phase_recovery.py:439-459 verifies an abnormally terminated audit built from salvaged state retains the recovered fields.; src/theforge/coordinator/resume_persistence.py implements the durable sidecar. save_resume_record is called in preflight_flow.py (line 914), engine.py (lines 674, 980, 1047, 1437), plan_flow.py (line 738), and review_phase.py (line 238). recover_phase_state is called in run_setup.py (line 571) during resume setup. Covered by tests/test_coord_resume_phase_recovery.py::TestResumedAuditReportsPhasesThatRan::test_audit_reports_preflight_routing_and_plan_review_that_ran.; resume_persistence.py save/merge/apply functions; write sites confirmed at preflight_flow.py:917 (after state.preflight_verdict and routing_decision are set, before any crash-prone downstream work), plan_flow.py:993/1014, review_phase.py:213-266 (try/finally), engine.py:667-679 (timeout escalation). run_setup.py:559-587 calls recover_phase_state after story_content resolves. test_audit_reports_preflight_routing_and_plan_review_that_ran and test_escalation_and_timeout_escalation_survive_the_resume in tests/test_coord_resume_phase_recovery.py reproduce the exact #1415 symptom (preflight+routing+plan_review+escalation+timeout_escalation all null on a fresh resumed state) and assert they survive into generate_audit_log output."
+        },
+        {
+          "criterion": "A record that reports a phase as skipped must not be produced by a run that executed the phase and acted on its output.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/run_setup.py:467-471 constructs resumed state without the prior SKIPPED default, while src/theforge/coordinator/engine.py:976-989 keeps SKIPPED only for the explicit --from phase bypass and persists that deliberate bypass. tests/test_coord_review_phase_cycle.py:294-309 verifies run_from_review with no recovered record produces absent preflight rather than SKIPPED, and tests/test_coord_resume_phase_recovery.py:222-232 verifies a deliberate skip still recovers as SKIPPED.; In src/theforge/coordinator/run_setup.py, the default preflight_verdict='SKIPPED' is removed from CoordinatorState initialization on resume. It is now only set to 'SKIPPED' in engine.py (line 977) when the operator deliberately bypasses the phase via --from <phase>. Covered by tests/test_coord_resume_phase_recovery.py::TestRecordPersistence::test_deliberate_skip_is_recorded_as_skipped and tests/test_coord_resume_phase_recovery.py::TestResumedAuditReportsPhasesThatRan::test_no_record_reports_absent_not_skipped.; run_setup.py:467-471 no longer seeds preflight_verdict=\"SKIPPED\"; grep confirms engine.py:977 (--from <phase> bypass) is the sole remaining literal writer, and it persists the bypass via save_resume_record (engine.py:983-989) so a later resume reports the deliberate skip rather than degrading to absent. test_run_from_review_skips_preflight and test_deliberate_skip_is_recorded_as_skipped cover both sides."
+        },
+        {
+          "criterion": "Where a record cannot be recovered, absent and skipped remain distinguishable.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/resume_persistence.py:494-519 returns structured unavailable, rejected, recovered, or not_needed recovery status, and src/theforge/coordinator/audit.py:673-683 emits that block into the audit. tests/test_coord_resume_phase_recovery.py:426-434 verifies missing recovery records produce null preflight plus phase_recovery.status unavailable, and tests/test_coord_resume_phase_recovery.py:312-323 verifies changed-story records are rejected without filling preflight.; If no record is recovered, preflight_verdict remains None (absent), and phase_recovery is set with status='unavailable' or status='rejected'. If it was deliberately skipped, preflight_verdict is 'SKIPPED'. Covered by tests/test_coord_resume_phase_recovery.py::TestResumedAuditReportsPhasesThatRan::test_no_record_reports_absent_not_skipped and tests/test_coord_resume_phase_recovery.py::TestRecordPersistence::test_deliberate_skip_is_recorded_as_skipped.; recover_phase_state returns status unavailable/rejected with reason and source_run_id (resume_persistence.py:475-518); state.phase_recovery is set and emitted as audit['phase_recovery'] (audit.py:673-683). audit.py:812/263/298 gate phase blocks on is not None checks that correctly stay None/absent when recovery fails, verified None-safe against all other preflight_verdict/ plan_review_decision/escalate_decision consumers in audit.py and sprint/*.py. test_no_record_reports_absent_not_skipped pins this."
+        },
+        {
+          "criterion": "Preservation should not depend on reaching a normal finalization path.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/preflight_flow.py:917 writes when preflight output exists, src/theforge/coordinator/engine.py:674 writes immediately when timeout escalation is assigned, and src/theforge/coordinator/review_phase.py:227-247 wraps the escalation gate so all returns and raises attempt persistence. tests/test_coord_resume_phase_recovery.py:208-220 verifies persistence failures are best-effort, and tests/test_coord_resume_phase_recovery.py:439-459 verifies abnormal audit synthesis from recovered live state retains the recovered fields.; save_resume_record is called immediately after each phase produces its output (e.g., in preflight_flow.py right after preflight runs, in plan_flow.py right after plan review, in review_phase.py inside a finally block around _run_escalate_gate_inner, and in engine.py right after timeout escalation is assigned). Covered by tests/test_coord_resume_phase_recovery.py::TestPhasesWriteTheRecordAsTheyRun::test_escalate_gate_persists_its_decision and tests/test_coord_resume_phase_recovery.py::TestResumedAuditReportsPhasesThatRan::test_recovered_state_reaches_an_abnormally_terminated_audit.; All writes happen at the moment output exists (not at finalization); escalate gate uses try/finally (review_phase.py:225-243); save_resume_record is best-effort (catches OSError/TypeError/ValueError, returns None on failure). test_save_is_best_effort patches Path.mkdir to raise OSError and asserts no propagation."
+        },
+        {
+          "criterion": "Seam-level integration tests cover the touched coordinator phase boundary (project convention 8).",
+          "status": "VERIFIED",
+          "evidence": "tests/test_coord_resume_phase_recovery.py:348-459 exercises run_from_review across the resume boundary for recovered preflight, routing_decision, plan_review, escalation, timeout_escalation, missing records, and abnormal audit synthesis. tests/test_coord_review_phase_cycle.py:239-246 and 294-309 update existing run_from_review seam assertions for the new absent versus skipped contract. Targeted verification run passed: .venv/bin/python -m pytest tests/test_coord_resume_phase_recovery.py tests/test_coord_review_phase_cycle.py -q, 46 passed; schema/substrate verification also passed, 55 passed.; tests/test_coord_resume_phase_recovery.py contains 21 tests covering the seam-level integration.; tests/test_coord_resume_phase_recovery.py \u2014 TestResumedAuditReportsPhasesThatRan runs full run_from_review with a pre-seeded sidecar and inspects generate_audit_log output; TestPhasesWriteTheRecordAsTheyRun exercises _run_escalate_gate directly. Confirmed via code reading that recover_phase_state's precedence (live judgement > sidecar) does not conflict with routing_persistence's separate restore_routing_decision, which is applied later and derived from the same original preflight write site."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [claude-opus] Step 4 names tests/fixtures/audit_record_schema_v18.json as the file to update, but v18 is the CURRENT frozen snapshot (audit_substrate.py:46 CURRENT_RECORD_SCHEMA_VERSION = 18). Any added recovery/reconstruction block or per-phase recovery field is a record shape change, and tests/test_audit_schema_guard.py::test_audit_record_schema_unchanged requires bumping SCHEMA_VERSION plus adding MIGRATION_HELPERS[18] and committing a NEW v19 fixture \u2014 the CI guard asserts max(MIGRATION_HELPERS) == CURRENT_RECORD_SCHEMA_VERSION - 1. Editing v18 in place would defeat the guard rather than satisfy it.\n  Suggestion: Treat the fixture as tests/fixtures/audit_record_schema_v19.json: bump SCHEMA_VERSION in audit.py and CURRENT_RECORD_SCHEMA_VERSION in audit_substrate.py, add the MIGRATION_HELPERS[18] -> v19 helper, then regenerate with REGENERATE_AUDIT_SCHEMA_SNAPSHOT=1. Both files the bump touches (audit.py, audit_substrate.py) are already in Step 4's file list. Alternatively, if the dev can express recovery status purely through existing null/populated field values, no bump is needed.\n- [P2] [claude-opus] Step 1 proposes a new resume_persistence.py sidecar while two overlapping mechanisms already exist: routing_persistence.py (project-root record keyed by _safe_slug + story_content_hash, with build/save/load/validate/apply_routing_record_to_state) and preflight_cache.py (capture/validate/apply_cached_preflight_state). The plan keeps restore_routing_decision (preflight.py:1464, called from engine.py:1466) as a fallback, so routing state may end up with two writers.\n  Suggestion: Either model the new module directly on routing_persistence's record shape and precedence rules, or extend routing_persistence to carry the additional phase blocks, so routing_decision has one authoritative restore order (cached_preflight_state > sidecar > routing record) rather than two independent ones.\n- [P2] [claude-opus] Step 2 does not mention engine.py:965, where preflight_verdict is set to 'SKIPPED' on the genuine deliberate-bypass path. Step 4's rule that SKIPPED means only a real bypass depends on that site remaining the sole writer of the literal.\n  Suggestion: Have the dev confirm engine.py:965 is the only remaining SKIPPED writer after run_setup.py:462 is removed, and persist that deliberate bypass to the sidecar too so a resume past a genuinely skipped preflight still reports SKIPPED rather than degrading to absent.\n- [P1-impl] [openai-gpt-5.4] Step 4 names src/theforge/coordinator/audit.py, src/theforge/coordinator/audit_substrate.py, and tests/fixtures/audit_record_schema_v18.json, but any additive top-level audit field or newly pinned nested field will also require the standard schema-versioning work enforced by tests/test_audit_schema_guard.py: bump CURRENT_RECORD_SCHEMA_VERSION in audit_substrate.py, keep audit.py in sync through its re-export, add a new MIGRATION_HELPERS[18] entry, and commit a new tests/fixtures/audit_record_schema_v19.json snapshot rather than editing only v18.\n  Suggestion: Keep the Step 4 approach, but explicitly include the schema-version bump, migration helper, and new snapshot file in the implementation scope.",
+    "cost_usd": 5.243393,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "APPROVE",
+        "cost_usd": 0.706014
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": 4.421488
+      },
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.4",
+        "verdict": "APPROVE",
+        "cost_usd": 0.11589
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "claude-opus",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 82.98,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 466.89,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "openai-gpt-5.4",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 59.2,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Step 4 names tests/fixtures/audit_record_schema_v18.json as the file to update, but v18 is the CURRENT frozen snapshot (audit_substrate.py:46 CURRENT_RECORD_SCHEMA_VERSION = 18). Any added recovery/reconstruction block or per-phase recovery field is a record shape change, and tests/test_audit_schema_guard.py::test_audit_record_schema_unchanged requires bumping SCHEMA_VERSION plus adding MIGRATION_HELPERS[18] and committing a NEW v19 fixture \u2014 the CI guard asserts max(MIGRATION_HELPERS) == CURRENT_RECORD_SCHEMA_VERSION - 1. Editing v18 in place would defeat the guard rather than satisfy it.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 1 proposes a new resume_persistence.py sidecar while two overlapping mechanisms already exist: routing_persistence.py (project-root record keyed by _safe_slug + story_content_hash, with build/save/load/validate/apply_routing_record_to_state) and preflight_cache.py (capture/validate/apply_cached_preflight_state). The plan keeps restore_routing_decision (preflight.py:1464, called from engine.py:1466) as a fallback, so routing state may end up with two writers.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2 does not mention engine.py:965, where preflight_verdict is set to 'SKIPPED' on the genuine deliberate-bypass path. Step 4's rule that SKIPPED means only a real bypass depends on that site remaining the sole writer of the literal.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 names src/theforge/coordinator/audit.py, src/theforge/coordinator/audit_substrate.py, and tests/fixtures/audit_record_schema_v18.json, but any additive top-level audit field or newly pinned nested field will also require the standard schema-versioning work enforced by tests/test_audit_schema_guard.py: bump CURRENT_RECORD_SCHEMA_VERSION in audit_substrate.py, keep audit.py in sync through its re-export, add a new MIGRATION_HELPERS[18] entry, and commit a new tests/fixtures/audit_record_schema_v19.json snapshot rather than editing only v18.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2167",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2155",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2167",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2167",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-03T18:19:55.954286+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "PASS",
+    "cost_usd": 0.14940499999999998,
+    "duration_s": 12.606602541869506,
+    "findings": []
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3378 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 726 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1417 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1211 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1548 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 874 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1107 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2448 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1683 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1507 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1804 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 2048 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1563 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1192 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2119 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1130 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1160 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1245 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1254 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 657 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2781 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/process_group.py",
+      "detail": "src/theforge/process_group.py has 788 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 753 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 730 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1125 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1482 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/batch_report.py",
+      "detail": "src/theforge/sprint/batch_report.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1908 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 6046 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1044 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 603 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1234 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1281 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2790 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1016 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1324 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1226 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1978 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_reexec_reconcile.py",
+      "detail": "tests/test_sprint_reexec_reconcile.py has 1123 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1827 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 3,
+            "raw": 0.75,
+            "weighted": 0.75,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 10,
+            "completed": 10,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8558,
+              "weighted": 0.7843,
+              "runs": 104,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.7843
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8558,
+        "weighted_success_rate": 0.7843,
+        "sample_size": 104,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.7843,
+          "threshold": 0.6,
+          "sample_size": 104,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "complexity_not_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": []
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.78 \u2265 threshold 0.60 over 104 admissible runs \u2014 pre-promotion held) (profile success_rate=0.78 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 103,
+            "completed": 96,
+            "raw": 0.932,
+            "weighted": 0.9538,
+            "rate": 0.9538,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 47,
+            "completed": 39,
+            "raw": 0.8298,
+            "weighted": 0.8255,
+            "rate": 0.8255,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "runs": 1,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.0,
+              "weighted": 0.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 44.74,
+              "weighted": 44.74,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "runs": 3,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.8333,
+              "weighted": 0.8333,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 79.4667,
+              "weighted": 79.4667,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "claude-sonnet": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 125,
+            "completed": 124,
+            "raw": 0.992,
+            "weighted": 0.9866,
+            "rate": 0.9866,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 103,
+            "completed": 96,
+            "raw": 0.932,
+            "weighted": 0.9538,
+            "rate": 0.9538,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 47,
+            "completed": 39,
+            "raw": 0.8298,
+            "weighted": 0.8255,
+            "rate": 0.8255,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.230711,
+      "duration_s": 36.69,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": 0.558998,
+      "duration_s": 95.31,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Persist coordinator phase outputs to a durable project-root sidecar as soon as each phase produces them, then merge that sidecar into freshly allocated resume state before any resumed phase or abnormal audit can finalize. Stop using resume-time SKIPPED as a default; only explicit bypass paths should report SKIPPED, while unrecovered resume evidence remains null or is marked through recovery metadata.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Add durable resume-phase persistence helpers",
+            "files": [
+              "src/theforge/coordinator/resume_persistence.py",
+              "src/theforge/coordinator/state.py"
+            ],
+            "action": "create",
+            "details": "Create a stdlib-only JSON sidecar module under project_root/.forge/resume_state keyed by safe story slug and story_content_hash. Provide helpers to build, save, load, validate, and merge audit-relevant CoordinatorState fields without overwriting real prior values with None or SKIPPED. Persist preflight verdict/reason/complexity fields, routing_decision, plan_review decision/results/cost/duration/finding fields needed by audit.py, timeout_escalation_audit, and escalation/advisory fields. Add only minimal CoordinatorState recovery metadata if needed for audit visibility."
+          },
+          {
+            "id": 2,
+            "description": "Write phase sidecar immediately after phase outputs are produced",
+            "files": [
+              "src/theforge/coordinator/preflight_flow.py",
+              "src/theforge/coordinator/plan_flow.py",
+              "src/theforge/coordinator/review_phase.py",
+              "src/theforge/coordinator/engine.py"
+            ],
+            "action": "modify",
+            "details": "Call the new save helper immediately after _run_preflight_phase/_handle_preflight_verdict has populated preflight fields and routing_decision, after plan_review_decision and related plan-review state are set in plan_flow, after run_escalation_advisor/_pending_escalate_gate decisions populate advisory/escalate fields in review_phase, and after engine.py sets timeout_escalation_audit. These writes must be best-effort and must not change phase control flow.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Restore durable phase outputs during resume setup",
+            "files": [
+              "src/theforge/coordinator/run_setup.py",
+              "src/theforge/coordinator/engine.py"
+            ],
+            "action": "modify",
+            "details": "In _setup_resume_entry, remove the unconditional preflight_verdict=\"SKIPPED\" default and load the durable resume sidecar after load_trajectory_state/load_plan_state. Preserve cached_preflight_state as the strongest live source when valid, then let durable recovery fill only missing fields; keep existing restore_routing_decision as a fallback for seating the routed reviewer pool when the fuller sidecar is unavailable. Emit structured recovery telemetry so the audit/log can distinguish recovered, unavailable, rejected, and story_changed cases.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Make audit output distinguish skipped from unrecovered",
+            "files": [
+              "src/theforge/coordinator/audit.py",
+              "src/theforge/coordinator/audit_substrate.py",
+              "tests/fixtures/audit_record_schema_v18.json"
+            ],
+            "action": "modify",
+            "details": "Update generate_audit_log so SKIPPED is emitted only when the coordinator deliberately bypassed preflight, not as a resume default. Add an additive recovery/reconstruction block or explicit per-phase recovery status for resumed records whose sidecar was unavailable or rejected, without relaxing existing schema validation. Keep populated phase blocks sourced from recovered state fields when available.",
+            "depends_on": [
+              3
+            ]
+          },
+          {
+            "id": 5,
+            "description": "Add seam-level regression coverage for resumed phase preservation",
+            "files": [
+              "tests/test_run_setup.py",
+              "tests/test_generate_audit_log.py",
+              "tests/test_coord_resume_phase_persistence.py"
+            ],
+            "action": "create",
+            "details": "Cover a story that runs preflight and plan_review, saves the durable sidecar, then resumes from review/dev with a fresh CoordinatorState and verifies preflight, routing_decision, and plan_review survive into the final audit. Cover escalation/advisory and timeout_escalation persistence. Add a missing-sidecar resume case proving the audit no longer reports PREFLIGHT as SKIPPED merely because resume allocated a fresh state.",
+            "depends_on": [
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "A phase that ran is recorded as having run.",
+            "steps": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "criterion": "An abnormal ending, a restart, or a later attempt at the same story should leave the earlier phase records intact rather than replacing them with the shape of a run that never happened.",
+            "steps": [
+              1,
+              2,
+              3,
+              5
+            ]
+          },
+          {
+            "criterion": "Where a record cannot be recovered, absent and skipped must remain distinguishable.",
+            "steps": [
+              3,
+              4,
+              5
+            ]
+          },
+          {
+            "criterion": "Preservation should not depend on reaching a normal finalization path.",
+            "steps": [
+              1,
+              2,
+              5
+            ]
+          },
+          {
+            "criterion": "For a story whose coordinator process is resumed/restarted mid-run after a phase already produced a real result in an earlier attempt, the final persisted audit reports that phase's real outcome or a distinguishable lost/unrecoverable marker rather than SKIPPED/null.",
+            "steps": [
+              1,
+              2,
+              3,
+              4,
+              5
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "Plan-review and escalation state include richer objects/lists than the existing routing_persistence record.",
+            "mitigation": "Persist only fields already serialized by audit.py, using explicit JSON-safe normalization in the new helper and focused tests around those fields."
+          },
+          {
+            "description": "Existing routing_persistence already recovers reviewer seating for #2154, so a second sidecar could diverge from it.",
+            "mitigation": "Treat the new sidecar as the fuller audit/state recovery source and keep restore_routing_decision as a fallback only when the fuller record is absent or rejected."
+          },
+          {
+            "description": "Changing SKIPPED semantics may affect consumers that assumed resume-created states always carry a preflight block.",
+            "mitigation": "Update audit substrate/schema additively and add regression tests for explicit skip paths so deliberate --from/start-phase skips still report SKIPPED."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": 5.243393,
+      "duration_s": 466.93,
+      "iterations": 3,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "APPROVE",
+          "cost_usd": 0.706014
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": 4.421488
+        },
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.4",
+          "verdict": "APPROVE",
+          "cost_usd": 0.11589
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 9.383187,
+      "duration_s": 859.76,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 48.31,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 4.426506,
+      "duration_s": 170.89,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 1.355837,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 1.43148,
+          "verdict": "APPROVE"
+        },
+        "claude-sonnet": {
+          "cost": 1.639189,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 19.992199,
+    "duration_s": 1677.89,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "057f7c567abd",
+  "sprint_name": "issues-1415,2154,2155,2150"
+}

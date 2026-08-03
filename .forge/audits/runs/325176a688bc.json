@@ -1,0 +1,2798 @@
+{
+  "schema_version": 17,
+  "run_id": "325176a688bc",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc16",
+  "task": {
+    "name": "Simplify model config with first-class transport",
+    "slug": "issue-1415",
+    "story_path": null,
+    "story_text": "## Summary\n\nModel configuration should have one clean normalized shape. Transport must be a first-class field, not encoded in provider-like prefixes (`openai-api/`, `gemini-cli/`) or inferred from legacy sibling fields (`cli` plus `provider`).\n\nThis does not need to preserve the existing `forge.yaml` contract. A breaking config cleanup is acceptable if it removes the old leakage and leaves one model abstraction that is easy to reason about.\n\nToday, the same model name can mean different execution paths depending on where it appears: a built-in registry key, a custom overlay provider token, or a provider fallback. Local OpenAI-compatible models add another wrinkle: locality is endpoint metadata (`base_url`), not a transport kind.\n\n## Desired behavior\n\nA selected model has one normalized identity:\n\n- provider family, for example `openai`, `anthropic`, `google`, or `deepseek`\n- provider model name, for example `gpt-5.4`, `sonnet`, or `qwen2.5-coder:32b`\n- transport kind, with bounded values `cli` or `api`\n\nThat tuple is the canonical identity. Do not add a separate free-form model `id` that can drift from the provider/model/transport tuple. If a friendly display label is needed, it must not be the lookup key.\n\nExecution details are derived from identity where unambiguous:\n\n- `(openai, cli)` resolves to the Codex CLI runner\n- `(anthropic, cli)` resolves to the Claude CLI runner\n- `(google, cli)` resolves to the Gemini CLI runner\n- `(openai, api)` resolves to the OpenAI API adapter\n- `(google, api)` resolves to the Google API adapter\n- `(deepseek, api)` resolves to the DeepSeek API adapter\n\nOnly require an explicit runner/executor when there are genuinely multiple valid runners for the same provider and transport kind.\n\nRouting policy is separate from model identity. Tier, capability, cost rank, dev capability, and phase eligibility may still be configured or derived, but they should live in an explicit routing/policy layer rather than being confused with the identity of the model itself. Pricing metadata is similarly metadata used for accounting, not part of the model identity.\n\nLocal LLMs are API transports with endpoint metadata:\n\n- `transport.kind: api`\n- `provider: openai` or another OpenAI-compatible adapter family\n- `base_url` pointing at a localhost-ish endpoint such as `localhost`, `127.0.0.1`, `::1`, or `0.0.0.0`\n\nDo not introduce a `local/...` provider prefix or a `local` transport kind. Locality is endpoint metadata.\n\nThe loader may choose to reject old spellings instead of supporting aliases. If temporary aliases are kept for operator convenience, they must terminate at the raw input boundary. After loading, no legacy transport state should remain: no fake provider prefixes, no duplicated `cli`/`provider` dispatch inference, and no fallback shape that has to be interpreted differently from normal model transport.\n\n## Example\n\n```yaml\nmodels:\n  enabled:\n    - provider: openai\n      model: gpt-5.5\n      transport:\n        kind: cli\n      routing:\n        tier: strong\n\n    - provider: openai\n      model: gpt-5.5\n      transport:\n        kind: api\n      routing:\n        tier: strong\n\n    - provider: openai\n      model: qwen2.5-coder:32b\n      transport:\n        kind: api\n      base_url: http://localhost:11434/v1\n      routing:\n        tier: fast\n```\n\n## Acceptance criteria\n\n1. The model config schema has a first-class transport object with a bounded `kind` enum of `cli` and `api`.\n2. Canonical model identity is derived from provider, model, and transport kind. There is no required free-form `id` that can diverge from that tuple.\n3. CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as `openai-api/...` or `gemini-cli/...` are removed or treated only as raw input aliases.\n4. Runner/executor is inferred from provider plus transport kind where unambiguous; config only requires an explicit runner when the tuple has more than one valid executor.\n5. Local LLMs are represented as API transports with endpoint metadata such as `base_url`; local is not a separate provider prefix or transport kind.\n6. Routing policy is separate from identity. Tier, capability, cost rank, dev capability, and phase eligibility do not define the model identity.\n7. Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.\n8. Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API, not a provider-family fallback.\n9. After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy `cli`/`provider` field combinations.\n10. Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.\n11. Documentation shows only the canonical shape as the recommended configuration. Any old shape, if documented, is marked as rejected or migration-only.\n\n## Relationship to existing work\n\nThis supersedes the narrow transport portion of #751. That issue can either be closed as covered by this broader cleanup or kept only for its unrelated config-type cleanup items (`PlanConfig.validate_spec`, `RetryPolicy.plan_escalation_threshold`, and `NotificationConfig.human_review_timeout_seconds` loader/default drift).\n",
+    "github_issue": 1415,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "outcome": {
+    "success": false,
+    "final_phase": "MERGE_FAILED",
+    "message": "Merge failed: a pull request for branch \"feat/issue-1415\" into branch \"release/v0.13\" already exists:\nhttps://github.com/fuzzypete/theforge/pull/2163. Branch 'feat/issue-1415' carries reviewed work. Story is recoverable but unmerged.",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "resolved_sha256": "cb2f49bf607a0c760e76e3418fd44c942e0825fbb52b88451db360ebde2191d8",
+    "source_sha256_at_finish": "f2b068ff475c95447b0f81c4189c46214a12193551ccd148c12b46c0e665ec23",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-03T16:56:14.341277+00:00",
+    "finished_at": "2026-08-03T17:51:57.829096+00:00",
+    "duration_seconds": 3343.487819
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1415",
+    "branch": "feat/issue-1415",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 29.152017999999998,
+        "duration_s": 2163.06,
+        "meaningful_progress": true,
+        "files_changed": [
+          "README.md",
+          "docs/guides/choose-your-provider-setup.md",
+          "docs/guides/getting-started.md",
+          "docs/guides/inputs-reference.md",
+          "docs/guides/local-models.md",
+          "docs/vision/cost-tiered-generation.md",
+          "forge.yaml",
+          "src/theforge/assignment.py",
+          "src/theforge/cli/check_config.py",
+          "src/theforge/config/__init__.py",
+          "src/theforge/config/defaults.py",
+          "src/theforge/config/load.py",
+          "src/theforge/config/models.py",
+          "src/theforge/config/profiles.py",
+          "src/theforge/config/role_derivation.py",
+          "src/theforge/config/schema.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/plan_flow.py",
+          "src/theforge/coordinator/preflight.py",
+          "src/theforge/model_profiles.py",
+          "src/theforge/runners/cli.py",
+          "src/theforge/runners/runner_claude.py",
+          "src/theforge/runners/runner_codex.py",
+          "src/theforge/runners/runner_gemini.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_agent_spec.py",
+          "tests/test_assignment.py",
+          "tests/test_assignment_price_tiebreak.py",
+          "tests/test_check_config.py",
+          "tests/test_config_auto_api_fallback.py",
+          "tests/test_config_github.py",
+          "tests/test_config_load.py",
+          "tests/test_config_models.py",
+          "tests/test_config_schema.py",
+          "tests/test_config_transport_identity.py",
+          "tests/test_config_v08_loader.py",
+          "tests/test_coord_preflight_escalation.py",
+          "tests/test_coord_preflight_symptom_verification.py",
+          "tests/test_model_preference.py",
+          "tests/test_preflight_custom_model.py",
+          "tests/test_profile_transport_mutation.py",
+          "tests/test_review_pool_provider_fallback.py",
+          "tests/test_runner_providers.py",
+          "tests/test_runner_submit_tool_gating.py"
+        ],
+        "files_changed_count": 44,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 11.0914295,
+        "duration_s": 483.7,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/choose-your-provider-setup.md",
+          "docs/guides/inputs-reference.md",
+          "docs/guides/local-models.md",
+          "src/theforge/config/models.py",
+          "src/theforge/config/profiles.py",
+          "src/theforge/config/role_derivation.py",
+          "tests/test_config_transport_identity.py"
+        ],
+        "files_changed_count": 7,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 4,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 4,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 4,
+        "restated_findings": 0,
+        "cost_usd": 4.171356,
+        "duration_s": 207.53
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 6.537856,
+        "duration_s": 179.62
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 9,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "claude-opus",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 9,
+      "base_review": 5,
+      "profile_history_runs": 103,
+      "profile_avg_iterations": 1.8835,
+      "profile_avg_cost_usd": 9.759352,
+      "profile_raw_dev_max": 2.8253,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 24.3984,
+      "review_history_sample_size": 8,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 103 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-03T16:59:38.446792+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-08-03T17:39:58.377915+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 54.826659150000005,
+    "dev_usd": 40.2434475,
+    "review_usd": 10.709211999999999,
+    "dev_invocations": 2,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 29.152017999999998,
+        "duration_seconds": 2163.0618975001853,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.008283
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 29.143735
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "claude-opus",
+        "cost_usd": 11.0914295,
+        "duration_seconds": 483.69864329183474,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 11.0914295
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 1.930319,
+        "duration_seconds": 69.09102399996482,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.930319
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 0.5360925,
+        "duration_seconds": 69.09102399996482,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.5360925
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 1.7049442000000001,
+        "duration_seconds": 69.09102399996482,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.101359
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.6035852000000002
+          }
+        ],
+        "model_used": "sonnet"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5",
+        "cost_usd": 2.202931,
+        "duration_seconds": 59.78554570837878,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.202931
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash",
+        "cost_usd": 1.315098,
+        "duration_seconds": 59.78554570837878,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.315098
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "claude-sonnet",
+        "cost_usd": 3.0198272999999998,
+        "duration_seconds": 59.78554570837878,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 3.0198272999999998
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Substantial legacy transport-inference machinery (provider-like prefixes such as openai-api/ and gemini-cli/, cli/provider dual fields, ApiFallbackConfig provider-fallback naming) is still live runtime dispatch truth across models.py, types.py, and schema.py, and forge.yaml still documents the old cli/provider shape \u2014 this is unfinished, cross-cutting work, not already done.",
+    "complexity": "large",
+    "complexity_score": 9,
+    "implementation_complexity_score": 9,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 9",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "refactor",
+    "domains": [
+      "config",
+      "backend",
+      "cli",
+      "api"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "cost_usd": 0.3533599,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "f767c006379b",
+    "cache_snapshot": {
+      "worktree_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "story_content_hash": "8b90a2c8a345943e9fc21ba276c141bded24811d497bac1595df2bc180cc66d7"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "current_worktree_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "current_evaluation_base_branch_head": "8810bd2e142434a80d24190e5af12741b9aade29",
+      "cached_story_content_hash": "8b90a2c8a345943e9fc21ba276c141bded24811d497bac1595df2bc180cc66d7",
+      "current_story_content_hash": "8b90a2c8a345943e9fc21ba276c141bded24811d497bac1595df2bc180cc66d7",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.3533599,
+        "duration_s": 55.99,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 9,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 9 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.77 \u2265 threshold 0.60 over 103 admissible runs \u2014 pre-promotion held) (profile success_rate=0.77 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 9,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1415/iter_1.yaml",
+      "handoff": {
+        "summary": "Normalized model configuration around a canonical (provider, model, transport.kind) identity. AGENT_REGISTRY is re-keyed to <provider>/<model>/<cli|api>; the openai-api/ and gemini-cli/ prefixes survive only as raw-input aliases normalized at the lookup/parse boundary (normalize_model_key, resolve_agent_spec, ForgeConfig.__post_init__). Runner/executor is derived from (provider, kind) by transport_for(), with an explicit runner required only for the genuinely ambiguous gh-aw tuple. Routing knobs moved into a RoutingPolicy container on AgentSpec so they cannot be confused with identity; pricing and base_url are metadata. Local OpenAI-compatible models are now API transports carrying a localhost base_url, which flows registry -> ModelInfo -> ModelRef/AgentDef -> ModelProfile. models.enabled accepts the canonical mapping form ({provider, model, transport:{kind}, routing, base_url, cost}) alongside identity strings, and models.custom declarations are re-keyed to their identity with the declaration name kept only as a parse-time alias. ModelProfile/PlanConfig/ModelRef share one _normalize_transport() that turns the raw cli/provider spelling into a TransportSpec once at construction and then mirrors cli from it, so the two cannot diverge; dispatch (runners/cli.py), auth, and both fallback builders read transport only. ApiFallbackConfig became TransportFallbackConfig with a transport() accessor, provider_fallbacks became transport_fallback (old key rejected with a message naming the new one), auto_api_fallback became auto_transport_fallback. Telemetry surfaces emit provider, model and transport kind distinctly via provider_family/transport_kind/identity_label. Docs, forge.yaml and the generated default config show only the canonical shape.",
+        "commits": [
+          {
+            "sha": "ab1ba09",
+            "message": "refactor(config): make transport first class in model identity"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "The model config schema has a first-class transport object with a bounded `kind` enum of `cli` and `api`.",
+            "status": "MET",
+            "notes": "TransportSpec validates kind against TRANSPORT_KINDS; models.enabled and models.custom accept `transport: {kind: cli|api}` and reject any other kind at load (_parse_transport_block). Covered by TestTransportObjectInConfig."
+          },
+          {
+            "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form `id`.",
+            "status": "MET",
+            "notes": "Registry keys are asserted equal to canonical_id_for_spec(spec); registry_id is optional metadata always set to the canonical identity. models.custom declaration keys are operator-chosen raw input and are replaced by the identity at load."
+          },
+          {
+            "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config.",
+            "status": "MET",
+            "notes": "openai-api/ and gemini-cli/ are gone from AGENT_REGISTRY and from the overlay provider map's output; they remain only in _LEGACY_MODEL_KEY_ALIASES / _MODEL_OVERLAY_PROVIDER_MAP as raw-input aliases normalized immediately. A test asserts no registry key's provider segment contains -api/-cli."
+          },
+          {
+            "criterion": "Runner/executor is inferred from provider plus transport kind where unambiguous; explicit runner only when the tuple has more than one valid executor.",
+            "status": "MET",
+            "notes": "transport_for(provider, kind) derives runner+executable from _CLI_RUNNER_BY_PROVIDER/_API_RUNNER_BY_PROVIDER and raises on a contradicting runner. The only explicit runner is ghaw (gh-aw over the `gh` binary), which collides with the provider's native CLI."
+          },
+          {
+            "criterion": "Local LLMs are represented as API transports with endpoint metadata such as `base_url`.",
+            "status": "MET",
+            "notes": "The four local entries are openai/<model>/api with base_url http://localhost:11434/v1. AgentSpec.base_url, ModelInfo.base_url and AgentDef.base_url carry it to ModelProfile, and apply_model_info moves it on a mid-run swap. No local provider or local kind exists (asserted)."
+          },
+          {
+            "criterion": "Routing policy is separate from identity.",
+            "status": "MET",
+            "notes": "RoutingPolicy holds tier/capability/cost_rank/dev_capable/phase_eligibility; AgentSpec exposes them as read-only passthrough properties so existing readers are unaffected. Tests assert a routing change (and a pricing change) leaves canonical_id_for_spec unchanged."
+          },
+          {
+            "criterion": "Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.",
+            "status": "MET",
+            "notes": "check_config's _split_provider_transport now takes (provider_family, transport) and renders two columns; sprint runner cost warnings classify on transport.kind and carry provider/model separately; model_profiles already stored provider/model/transport separately in _identity and now shares the CLI->provider map with config instead of a private copy; runner labels use ModelProfile.identity_label ('anthropic/sonnet (cli)')."
+          },
+          {
+            "criterion": "Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API.",
+            "status": "MET",
+            "notes": "ApiFallbackConfig -> TransportFallbackConfig with a transport() accessor returning the canonical API TransportSpec; ForgeConfig.provider_fallbacks -> transport_fallbacks; YAML key provider_fallbacks -> transport_fallback with the old key raising a ValueError that names the new one; auto_api_fallback -> auto_transport_fallback. _apply_transport_fallback now reads transport.kind rather than the cli/provider pair."
+          },
+          {
+            "criterion": "After loading, runtime dispatch reads only the normalized transport object; it does not infer dispatch from legacy cli/provider field combinations.",
+            "status": "MET",
+            "notes": "_profile_transport_kind delegates to ModelProfile.mode (transport.kind); _profile_cli_runner returns transport.runner and no longer falls back to profile.cli; _build_api_fallback_profile and _build_cli_fallback_api_profile pass an explicit transport (previously replace() carried the stale CLI spec across, which a new test pins); auth.py and profiles.py fallback attachment read transport kind. The remaining cli/provider read is one error message naming an unresolvable raw cli."
+          },
+          {
+            "criterion": "Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.",
+            "status": "PARTIAL",
+            "notes": "The 'not the source of dispatch truth' half is fully met: cli is a derived mirror of transport (rewritten in __post_init__, so it cannot diverge) and nothing dispatches on it. The fields themselves were NOT removed from ModelProfile/PlanConfig/ModelRef \u2014 that would break ~290 test constructions and a dozen src call sites for no correctness gain once they are normalized. Documented in the dataclass comments as raw-input spellings."
+          },
+          {
+            "criterion": "Documentation shows only the canonical shape as the recommended configuration; any old shape is marked as rejected or migration-only.",
+            "status": "MET",
+            "notes": "forge.yaml, config/defaults.py's generated template, README, getting-started, inputs-reference, local-models and choose-your-provider-setup all show canonical identities. inputs-reference gained a 'Model identity and transport' section including the mapping form and an explicit 'Rejected/migration-only spellings' paragraph naming openai-api/, gemini-cli/ and claude/."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Profile and agent-pool names are derived from the model key, so canonical keys change them (claude-opus -> anthropic-opus-cli). This is operator-visible in check-config output, in overrides.review_pool[].name matching, and in assignment/profile history keys. Accepted as part of the sanctioned breaking cleanup; affected tests updated.",
+          "Where a construction supplies both a transport and a conflicting raw cli, cli wins and the transport is re-derived (matching transport_from_raw_fields' documented precedence). The previous 'explicit transport always wins' behavior would have made replace(profile, cli=...) a silent no-op for dispatch; test_agent_spec's assertion of the old precedence was rewritten to cover the new one plus the re-derivation.",
+          "The spec's example uses models.enabled mapping entries. That form is only in the informational Example, not an AC, but I implemented it (plus routing/base_url/cost sub-blocks) since AC11 requires docs to show the canonical shape and a doc-only shape that cannot load would be worse than useless."
+        ],
+        "deferred_items": [
+          "sprint/rca.py still uses the audit rule id 'provider_fallback_not_applied'. Renaming it would churn an audit-record contract for no behavioral gain; left as-is.",
+          "17 tests fail in this sandbox on mktemp/multiprocessing-semaphore 'Operation not permitted' (test_cut_rc_isolation.py x11, test_sprint_lock.py x5, test_sprint_reexec_collision.py x1). Pre-existing and unrelated to this change \u2014 confirmed the failures are shell/OS permission errors, not assertion failures. The coordinator's out-of-sandbox gate should clear them."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-1415/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 fixes the transport-only override defect and the non-canonical docs. The three code P1s were one bug at two call sites: _resolve_override_transport / _resolve_ref_override_transport computed the correct TransportSpec for an `overrides.<role>.transport: {kind: ...}` block, but the caller then constructed ModelProfile/ModelRef with the cli inherited from the profile being overridden; _normalize_transport's cli-wins-on-conflict rule re-derived the old transport from that stale cli, so the switch silently no-opped unless the operator also changed provider/cli. Added models.mirror_fields_for_transport(transport, cli, provider), which returns the (cli, provider) pair mirroring a resolved transport (CLI -> (runner, None), API -> (None, provider_family), unresolvable -> pair untouched so bad values still surface in errors), and applied it in both _apply_profile_overrides and _apply_ref_overrides immediately after the transport is resolved. Verified cli->api and api->cli at the ModelProfile level, the ModelRef level, the loader level (dev and review_pool), and through derive_roles -> bridge -> ModelProfile. Audited the other seven runtime sites that pair cli/provider with a transport (auto-assign, agent pool, bridge, apply_model_info swaps, _build_api_fallback_profile, _build_cli_fallback_api_profile, _apply_transport_fallback, assignment._agent_to_profile) \u2014 all already self-consistent. For the docs P1, rewrote all five recommended patterns in choose-your-provider-setup.md and the primary example in local-models.md into the canonical models:/transport shape (local models as api transports with base_url and zero per-token cost), and marked the classic profiles: block in inputs-reference.md explicitly LEGACY. Every YAML example in those guides was run through load_config to confirm it loads and yields the documented role assignments.",
+        "commits": [
+          {
+            "sha": "ab1ba09",
+            "message": "refactor(config): make transport first class in model identity"
+          },
+          {
+            "sha": "f8ccdd5",
+            "message": "fix(config): address review findings (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "The model config schema has a first-class transport object with a bounded `kind` enum of `cli` and `api`.",
+            "status": "MET",
+            "notes": "TransportSpec validates kind against TRANSPORT_KINDS. models.enabled, models.custom AND overrides.<role> all accept `transport: {kind: cli|api}` and reject anything else (unknown sub-keys and out-of-enum kinds both raise). The override path now actually switches dispatch \u2014 fixed this iteration and covered by TestTransportOnlyOverrideSwitchesDispatch."
+          },
+          {
+            "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form `id`.",
+            "status": "MET",
+            "notes": "Registry keys are asserted equal to canonical_id_for_spec(spec); registry_id is optional metadata always set to the canonical identity; models.custom declaration keys are raw input replaced by the identity at load."
+          },
+          {
+            "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config.",
+            "status": "MET",
+            "notes": "openai-api/ and gemini-cli/ are absent from AGENT_REGISTRY and from overlay_transport's output; they survive only in _LEGACY_MODEL_KEY_ALIASES / _MODEL_OVERLAY_PROVIDER_MAP as raw-input aliases normalized immediately. A test asserts no registry key's provider segment contains -api/-cli."
+          },
+          {
+            "criterion": "Runner/executor is inferred from provider plus transport kind where unambiguous; explicit runner only when the tuple has more than one valid executor.",
+            "status": "MET",
+            "notes": "transport_for(provider, kind) derives runner+executable and raises on a contradicting runner. ghaw (gh-aw over the `gh` binary) is the only tuple needing an explicit runner. mirror_fields_for_transport is the inverse direction of the same mapping."
+          },
+          {
+            "criterion": "Local LLMs are represented as API transports with endpoint metadata such as `base_url`.",
+            "status": "MET",
+            "notes": "The four built-in local entries are openai/<model>/api with base_url http://localhost:11434/v1, carried registry -> ModelInfo -> ModelRef/AgentDef -> ModelProfile and moved by apply_model_info on a swap. Both local-facing guides now show the api-transport-plus-base_url shape as the recommended configuration."
+          },
+          {
+            "criterion": "Routing policy is separate from identity.",
+            "status": "MET",
+            "notes": "RoutingPolicy holds tier/capability/cost_rank/dev_capable/phase_eligibility; AgentSpec exposes them as read-only passthroughs. Tests assert a routing change and a pricing change both leave canonical_id_for_spec unchanged."
+          },
+          {
+            "criterion": "Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.",
+            "status": "MET",
+            "notes": "check_config renders provider and transport in separate columns; sprint cost warnings classify on transport.kind while naming provider/model separately; model_profiles stores provider/model/transport distinctly in _identity; runner labels use identity_label. review_role is now also preserved through overrides (it was being dropped, so a reviewer's declared role never reached telemetry)."
+          },
+          {
+            "criterion": "Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API.",
+            "status": "MET",
+            "notes": "TransportFallbackConfig with a transport() accessor; ForgeConfig.transport_fallbacks; YAML transport_fallback (old provider_fallbacks key raises naming the new one); auto_transport_fallback. _apply_transport_fallback reads transport.kind."
+          },
+          {
+            "criterion": "After loading, runtime dispatch reads only the normalized transport object; it does not infer dispatch from legacy `cli`/`provider` field combinations.",
+            "status": "MET",
+            "notes": "_profile_transport_kind delegates to ModelProfile.mode; _profile_cli_runner returns transport.runner with no cli fallback; both fallback builders pass an explicit transport. This iteration closes the last hole: an override's resolved transport can no longer be overturned by an inherited cli."
+          },
+          {
+            "criterion": "Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.",
+            "status": "PARTIAL",
+            "notes": "The 'not the source of dispatch truth' half is fully met and now airtight: cli is a derived mirror of transport at every construction site, including the two override paths fixed this iteration. The fields themselves remain on ModelProfile/PlanConfig/ModelRef \u2014 removing them would touch ~290 test constructions and a dozen src call sites for no correctness gain once mirrored. Documented in the dataclass comments as raw-input spellings."
+          },
+          {
+            "criterion": "Documentation shows only the canonical shape as the recommended configuration; any old shape is marked as rejected or migration-only.",
+            "status": "MET",
+            "notes": "forge.yaml, the generated default template, README, getting-started, inputs-reference, local-models and choose-your-provider-setup all present canonical identities. choose-your-provider-setup's five patterns were converted this iteration and carry a note that profiles: is legacy; local-models' primary example likewise; inputs-reference's classic profiles: block is headed LEGACY and explains why (dispatch as sibling fields, not one transport object). All YAML examples verified to load."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Profile and agent-pool names derive from the canonical model key, so they changed (claude-opus -> anthropic-opus-cli). Operator-visible in check-config, in overrides.review_pool[].name matching, and in assignment history keys. The new provider-setup guide documents the naming rule where it uses those names.",
+          "Where a construction supplies both a transport and a conflicting raw cli, cli wins and the transport is re-derived. This is what makes replace(profile, cli=...) honest; the override paths now pre-mirror the pair so the rule can never fire against an intended transport switch.",
+          "The spec's models.enabled mapping form is only in the informational Example, not an AC, but it is implemented \u2014 AC11 requires docs to show the canonical shape, and a documented shape that cannot load would be worse than none."
+        ],
+        "deferred_items": [
+          "sprint/rca.py still uses the audit rule id 'provider_fallback_not_applied'. Renaming it would churn an audit-record contract for no behavioral gain.",
+          "17 tests fail in this sandbox on mktemp/multiprocessing-semaphore 'Operation not permitted' (test_cut_rc_isolation.py x11, test_sprint_lock.py x5, test_sprint_reexec_collision.py x1). Pre-existing, unchanged across both iterations, and shell/OS permission errors rather than assertion failures. The coordinator's out-of-sandbox gate should clear them."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "2c0a6c0e25e6d82a",
+        "90fbd604274c3bd0",
+        "75a7a9543223b3bb",
+        "9de9a905f0a3ef19"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "ab1ba09c7d79db07e73b2cd528a3359edec4a7c6",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "ab1ba09c7d79db07e73b2cd528a3359edec4a7c6",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": "WARN"
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5] The model registry and loader mostly implement the canonical transport shape, but explicit transport overrides can still be overwritten by inherited legacy cli state, and one guide still recommends a non-canonical local profile shape. | [google-gemini-3.5-flash] Approved: Normalized model configuration around a canonical (provider, model, transport.kind) identity with first-class transport. | [claude-sonnet] Canonical transport identity is well-built end to end, but the profile/ref override path silently no-ops a transport-kind switch when it isn't paired with a provider/cli key change, contradicting AC1/AC9 and the code's own stated guarantee.",
+      "sanitization_audit": null,
+      "p1_count": 4,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/config/profiles.py",
+          "line": 282,
+          "description": "A models config with overrides.dev.transport.kind set to api on a CLI-derived dev profile loads the dev profile as the Codex CLI transport instead of the OpenAI API transport.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P1",
+          "file": "docs/guides/choose-your-provider-setup.md",
+          "line": 159,
+          "description": "The local/privacy-first provider setup guide presents the recommended configuration as profiles entries with provider: openai and no first-class transport object.",
+          "reviewers": [
+            "openai-gpt-5.5"
+          ],
+          "reporter": "openai-gpt-5.5"
+        },
+        {
+          "severity": "P1",
+          "file": "src/theforge/config/profiles.py",
+          "line": 286,
+          "description": "Applying an override of the canonical form overrides.dev.transport: {kind: api} to a CLI-transport profile (e.g. cli=claude) leaves the resulting ModelProfile's transport, mode, and cli fields unchanged at cli/'cli' instead of switching to the API transport, even though _resolve_override_transport correctly computed the API TransportSpec.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        },
+        {
+          "severity": "P1",
+          "file": "src/theforge/config/role_derivation.py",
+          "line": 150,
+          "description": "The same defect exists in _apply_ref_overrides: overriding a ModelRef with {'transport': {'kind': 'api'}} alone (no 'cli'/'provider' keys) computes the correct API TransportSpec in _resolve_ref_override_transport, but the constructed ModelRef still carries the old cli value, and ModelRef.__post_init__ re-derives the transport from that stale cli, discarding the intended switch.",
+          "reviewers": [
+            "claude-sonnet"
+          ],
+          "reporter": "claude-sonnet"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "The model config schema has a first-class transport object with a bounded kind enum of cli and api.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/config/models.py:34 and src/theforge/config/models.py:57-63 bound TransportSpec.kind, src/theforge/config/load.py:190-204 validates transport.kind, and src/theforge/config/load.py:211-239 parses models.enabled mapping entries; tests/test_config_transport_identity.py:149-201 covers valid mapping entries, invalid kind, and missing transport.; The transport object is validated at the models.enabled/custom parse boundary (config/load.py _parse_transport_block) and works correctly there. However the same canonical transport: {kind} object accepted under overrides.<role> is silently ignored when it is the only key present, per the reproduced bug in profiles.py:286 / role_derivation.py:150 \u2014 so the object is first-class in one config surface but inert in another that documents the identical syntax."
+        },
+        {
+          "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form id that can diverge from that tuple.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:389-396 derives canonical IDs from provider, model, and transport.kind, AgentSpec at src/theforge/config/models.py:162-183 has no required id field, and tests/test_config_transport_identity.py:93-103 verifies same provider/model with different transport produces distinct identities."
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as openai-api/... or gemini-cli/... are removed or treated only as raw input aliases.",
+          "status": "VERIFIED",
+          "evidence": "AGENT_REGISTRY is keyed by canonical entries at src/theforge/config/models.py:407-672, legacy aliases are isolated in src/theforge/config/models.py:675-727, and tests/test_config_transport_identity.py:105-140 checks registry prefixes and load-time alias normalization."
+        },
+        {
+          "criterion": "Runner/executor is inferred from provider plus transport kind where unambiguous; config only requires an explicit runner when the tuple has more than one valid executor.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:92-148 derives transports from provider and kind with explicit runner handling for ghaw, and tests/test_config_transport_identity.py:41-88 covers derived CLI/API runners, explicit ghaw, contradictory runners, missing provider runners, and bounded kind validation.; src/theforge/config/models.py:100-140 (transport_for), and tests/test_config_transport_identity.py:43-79 (TestRunnerDerivation); config/models.py transport_for(); tests/test_config_transport_identity.py TestRunnerDerivation covers unambiguous derivation and the ghaw ambiguous-tuple explicit-runner case."
+        },
+        {
+          "criterion": "Local LLMs are represented as API transports with endpoint metadata such as base_url; local is not a separate provider prefix or transport kind.",
+          "status": "VERIFIED",
+          "evidence": "Local OpenAI-compatible registry entries are API transports with LOCAL_OPENAI_COMPATIBLE_BASE_URL at src/theforge/config/models.py:624-670, ModelInfo and apply_model_info carry base_url at src/theforge/config/models.py:826-841 and src/theforge/config/models.py:876-899, and tests/test_config_transport_identity.py:204-238 verifies local profile propagation and endpoint override.; config/models.py AGENT_REGISTRY local entries (openai/<model>/api + LOCAL_OPENAI_COMPATIBLE_BASE_URL); test_config_models.py TestLocalModelRegistry.test_local_models_are_api_transports_with_localhost_base_url; test_agent_spec.py test_no_local_provider_or_transport_kind."
+        },
+        {
+          "criterion": "Routing policy is separate from identity. Tier, capability, cost rank, dev capability, and phase eligibility do not define the model identity.",
+          "status": "VERIFIED",
+          "evidence": "RoutingPolicy is a separate dataclass at src/theforge/config/models.py:69-83, canonical_id_for_spec ignores routing at src/theforge/config/models.py:394-396, and tests/test_config_transport_identity.py:241-268 verifies routing and pricing changes do not change identity.; src/theforge/config/models.py:66-80 (RoutingPolicy definition), and tests/test_config_transport_identity.py:241-261 (TestRoutingPolicyIsSeparateFromIdentity); RoutingPolicy dataclass in config/models.py; tests/test_config_transport_identity.py TestRoutingPolicyIsSeparateFromIdentity confirms routing/pricing changes leave canonical_id_for_spec unchanged."
+        },
+        {
+          "criterion": "Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.",
+          "status": "VERIFIED",
+          "evidence": "ModelProfile exposes provider_family, transport_kind, and identity_label at src/theforge/config/types.py:337-375, check-config renders provider and transport separately at src/theforge/cli/check_config.py:191-216, recorded profile identity maps CLI to provider separately at src/theforge/model_profiles.py:313-335, and tests/test_config_transport_identity.py:390-450 covers profile, check-config, canonical telemetry IDs, and registry attribution.; src/theforge/cli/check_config.py:191-207 (_split_provider_transport), src/theforge/config/types.py:343-365 (ModelProfile identity properties), and tests/test_config_transport_identity.py:398-435 (TestTelemetryKeepsIdentityAndTransportDistinct); cli/check_config.py _split_provider_transport(provider, transport) two-column rendering; ModelProfile.identity_label/provider_family; sprint/runner.py _Agent dataclass carries provider and transport_kind separately."
+        },
+        {
+          "criterion": "Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API, not a provider-family fallback.",
+          "status": "VERIFIED",
+          "evidence": "TransportFallbackConfig defines same-provider API transport fallback at src/theforge/config/types.py:404-428, load_config rejects provider_fallbacks and reads transport_fallback at src/theforge/config/load.py:969-979, and tests/test_config_transport_identity.py:275-328 verifies fallback transport, YAML wiring, and old-key rejection.; src/theforge/config/types.py:405-424 (TransportFallbackConfig), src/theforge/config/load.py:967-977 (provider_fallbacks rename check), and tests/test_config_transport_identity.py:264-305 (TestTransportFallback); types.py TransportFallbackConfig with .transport(); load.py rejects the old 'provider_fallbacks' key with a ValueError naming 'transport_fallback'; test_config_transport_identity.py TestTransportFallback covers both the rename and the rejection message."
+        },
+        {
+          "criterion": "After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy cli/provider field combinations.",
+          "status": "PARTIAL",
+          "evidence": "Runtime dispatch uses profile.mode and transport.runner at src/theforge/runners/cli.py:439-495 and fallback builders pass explicit API transports at src/theforge/runners/cli.py:223-280, with coverage in tests/test_config_transport_identity.py:331-384; however src/theforge/config/profiles.py:282-310 plus src/theforge/config/types.py:47-51 allow an inherited cli to overwrite an explicit transport-only override during load, so the normalized transport object can still be determined from legacy fields in that path.; True for the load_config() happy path and for runners/cli.py dispatch helpers (_profile_transport_kind/_profile_cli_runner read only .transport). However the reproduced bug shows that the overrides application path (part of load_config) can end up with a ModelProfile/ModelRef whose transport was silently re-derived from a stale cli field rather than the transport the override intended, meaning dispatch downstream does end up reflecting an inferred-from-cli value rather than the configured transport in this one case."
+        },
+        {
+          "criterion": "Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.",
+          "status": "PARTIAL",
+          "evidence": "ModelProfile, PlanConfig, and ModelRef normalize transport in src/theforge/config/types.py:315-329 and src/theforge/config/types.py:647-655, and tests/test_config_transport_identity.py:331-384 cover dispatch helpers; but a loaded override path reuses an already-normalized profile's inherited cli as input to _normalize_transport, making that retained field the source of truth over the explicit transport object for transport-only overrides.; src/theforge/config/types.py:271-285 (ModelProfile cli/provider comments), src/theforge/config/types.py:310-325 (ModelProfile.__post_init__ normalization), and tests/test_config_transport_identity.py:308-345 (TestDispatchReadsTransportOnly); Matches the dev's own PARTIAL self-assessment: cli/provider fields remain on ModelProfile/PlanConfig/ModelRef as documented raw-input mirrors, which is a reasonable scope call. The reproduced bug shows this \"mirror, never source of truth\" invariant is not actually upheld in the overrides code path, since a stale mirror value there overrides an explicitly-computed transport."
+        },
+        {
+          "criterion": "Documentation shows only the canonical shape as the recommended configuration. Any old shape, if documented, is marked as rejected or migration-only.",
+          "status": "PARTIAL",
+          "evidence": "README.md, forge.yaml, docs/guides/getting-started.md, and docs/guides/inputs-reference.md show canonical model IDs and docs/guides/inputs-reference.md:383-387 marks legacy key spellings as migration-only, but docs/guides/choose-your-provider-setup.md:159-176 still recommends a local profiles block using provider/base_url without a first-class transport object.; docs/guides/inputs-reference.md:340-375 (Model identity and transport documentation), and forge.yaml:4-55 (canonical shape examples); docs/guides/inputs-reference.md 'Model identity and transport' section with explicit 'Rejected/migration-only spellings' paragraph; forge.yaml, README.md, getting-started.md, local-models.md, choose-your-provider-setup.md all updated to canonical <provider>/<model>/<cli|api> form."
+        },
+        {
+          "criterion": "The model config schema has a first-class transport object with a bounded `kind` enum of `cli` and `api`.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:33-53 (TransportSpec definition and validation), src/theforge/config/load.py:190-208 (_parse_transport_block), and tests/test_config_transport_identity.py:161-204 (TestTransportObjectInConfig)"
+        },
+        {
+          "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form `id` that can diverge from that tuple.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:388-408 (canonical_model_id and canonical_id_for_spec), and tests/test_config_transport_identity.py:90-125 (TestCanonicalIdentity)"
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as `openai-api/...` or `gemini-cli/...` are removed or treated only as raw input aliases.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:409-438 (AGENT_REGISTRY keys and _LEGACY_MODEL_KEY_ALIASES), src/theforge/config/models.py:454-465 (normalize_model_key), and tests/test_config_transport_identity.py:90-125 (TestCanonicalIdentity)"
+        },
+        {
+          "criterion": "Local LLMs are represented as API transports with endpoint metadata such as `base_url`; local is not a separate provider prefix or transport kind.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:409-438 (AGENT_REGISTRY local entries), and tests/test_config_transport_identity.py:207-238 (TestLocalModelsAreApiTransports)"
+        },
+        {
+          "criterion": "After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy `cli`/`provider` field combinations.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/cli.py:435-449 (_profile_transport_kind and _profile_cli_runner), and tests/test_config_transport_identity.py:308-345 (TestDispatchReadsTransportOnly)"
+        },
+        {
+          "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form id.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_config_transport_identity.py TestCanonicalIdentity and TestRunnerDerivation; AGENT_REGISTRY keys asserted equal to canonical_id_for_spec(spec) in test_agent_spec.py test_every_key_is_a_canonical_identity."
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config.",
+          "status": "VERIFIED",
+          "evidence": "test_agent_spec.py test_every_key_is_a_canonical_identity and TestNoProviderPrefixGuessingInConfigLoad; legacy aliases confined to _LEGACY_MODEL_KEY_ALIASES/_MODEL_OVERLAY_PROVIDER_MAP in config/models.py."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "f8ccdd5d9e4c9da0cad256b697abf6a6ebeff8fd",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "f8ccdd5d9e4c9da0cad256b697abf6a6ebeff8fd",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": "WARN"
+      },
+      "pool_models": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "successful": [
+        "openai-gpt-5.5",
+        "google-gemini-3.5-flash",
+        "claude-sonnet"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5": "succeeded",
+        "google-gemini-3.5-flash": "succeeded",
+        "claude-sonnet": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5] Cycle 1 P1s are resolved; the focused transport identity and override regression tests pass against the worktree source. | [google-gemini-3.5-flash] All prior P1 findings are fully resolved, and the first-class transport implementation is robust, clean, and well-tested. | [claude-sonnet] Both cycle-1 P1s are fixed and verified: overrides.<role>.transport now actually switches dispatch (mirror_fields_for_transport keeps cli/provider consistent with the resolved transport), and the privacy-first local-models guide is rewritten in the canonical models:/transport shape. Reproduced the original bug against pre-fix code, confirmed it no longer occurs, and ran the full test suite (6875 passed) plus targeted transport/override/docs tests with no regressions.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "The model config schema has a first-class transport object with a bounded kind enum of cli and api.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:34 and src/theforge/config/models.py:57 validate TransportSpec.kind against the bounded set; src/theforge/config/load.py:189 parses only transport.kind and rejects unknown keys/kinds; tests/test_config_transport_identity.py:148, tests/test_config_transport_identity.py:175, and tests/test_config_transport_identity.py:191 cover accepted mapping form, invalid kind, and missing transport.; config/load.py _parse_transport_block validates kind against TRANSPORT_KINDS for models.enabled/custom; config/profiles.py parse_override_transport_kind does the same for overrides.<role>. The override path, previously a documented no-op, now demonstrably switches dispatch \u2014 reproduced live: _apply_profile_overrides(base_cli_profile, {'transport': {'kind': 'api'}}) now returns mode='api', cli=None, provider='anthropic', matching TestTransportOnlyOverrideSwitchesDispatch in tests/test_config_transport_identity.py (60/60 passing)."
+        },
+        {
+          "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form id that can diverge from that tuple.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:420 derives canonical_id_for_spec from spec.provider, spec.model, and spec.transport.kind; src/theforge/config/load.py:455 rekeys models.custom declarations to that identity; tests/test_config_transport_identity.py:92 and tests/test_config_transport_identity.py:701 assert registry identity derivation and custom declaration key replacement.; test_agent_spec.py test_every_key_is_a_canonical_identity; AGENT_REGISTRY keys == canonical_id_for_spec(spec) for every entry."
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as openai-api/... or gemini-cli/... are removed or treated only as raw input aliases.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:480 defines AGENT_REGISTRY with canonical provider/model/kind keys, while src/theforge/config/models.py:700 confines legacy prefixes to raw-input aliases normalized by src/theforge/config/models.py:743; tests/test_config_transport_identity.py:105, tests/test_config_transport_identity.py:111, and tests/test_config_transport_identity.py:128 cover absence of provider-prefix encoding and loaded-config normalization.; config/models.py _LEGACY_MODEL_KEY_ALIASES / _MODEL_OVERLAY_PROVIDER_MAP confine legacy prefixes to the parse boundary; test_config_transport_identity.py TestCanonicalIdentity.test_loaded_config_never_carries_a_legacy_spelling."
+        },
+        {
+          "criterion": "Runner/executor is inferred from provider plus transport kind where unambiguous; config only requires an explicit runner when the tuple has more than one valid executor.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:92 and src/theforge/config/models.py:98 define provider-plus-kind runner maps, and src/theforge/config/models.py:111 derives or validates the runner with ghaw as the explicit ambiguous case; tests/test_config_transport_identity.py:44, tests/test_config_transport_identity.py:63, and tests/test_config_transport_identity.py:70 cover derived runners, explicit ghaw, and contradictory runner rejection.; src/theforge/config/models.py:100-150 (transport_for) and tests/test_config_transport_identity.py:43-89 (TestRunnerDerivation); config/models.py transport_for(); TestRunnerDerivation covers unambiguous derivation and the ghaw ambiguous-tuple case."
+        },
+        {
+          "criterion": "Local LLMs are represented as API transports with endpoint metadata such as base_url; local is not a separate provider prefix or transport kind.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:649 registers local OpenAI-compatible models as openai API entries with LOCAL_OPENAI_COMPATIBLE_BASE_URL, and src/theforge/config/models.py:850 carries base_url into ModelInfo; tests/test_config_transport_identity.py:381 and tests/test_agent_spec.py:101 cover built-in local API transport and base_url propagation.; AGENT_REGISTRY local entries (openai/<model>/api + LOCAL_OPENAI_COMPATIBLE_BASE_URL); docs/guides/local-models.md and docs/guides/choose-your-provider-setup.md now show only the api-transport-plus-base_url shape (verified no profiles: recommended pattern remains, only one LEGACY callout); test_config_models.py TestLocalModelRegistry confirms the registry shape."
+        },
+        {
+          "criterion": "Routing policy is separate from identity. Tier, capability, cost rank, dev capability, and phase eligibility do not define the model identity.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:69 defines RoutingPolicy separately from AgentSpec identity fields, and src/theforge/config/models.py:420 excludes routing and pricing from canonical_id_for_spec; tests/test_config_transport_identity.py:420, tests/test_config_transport_identity.py:429, and tests/test_config_transport_identity.py:440 cover routing and pricing changes preserving identity.; src/theforge/config/models.py:68-80 (RoutingPolicy) and tests/test_config_transport_identity.py:313-333 (TestRoutingPolicyIsSeparateFromIdentity); RoutingPolicy dataclass; TestRoutingPolicyIsSeparateFromIdentity asserts routing/pricing changes leave canonical_id_for_spec unchanged."
+        },
+        {
+          "criterion": "Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:337 exposes transport kind from transport while src/theforge/config/types.py:363 exposes provider_family separately; src/theforge/cli/check_config.py:191 renders provider and transport as separate labels; src/theforge/sprint/runner.py:1375 classifies cost warnings by transport while carrying provider/model separately; tests/test_config_transport_identity.py:564, tests/test_config_transport_identity.py:580, and tests/test_config_transport_identity.py:592 cover the distinct telemetry labels.; src/theforge/cli/check_config.py:191-212 (_split_provider_transport) and tests/test_config_transport_identity.py:411-450 (TestTelemetryKeepsIdentityAndTransportDistinct); check_config.py _split_provider_transport two-column rendering; ModelProfile.identity_label/provider_family; sprint/runner.py _Agent carries provider and transport_kind separately; review_role (previously silently dropped by the override constructor) is now carried through, confirmed by test_review_role_override_is_preserved."
+        },
+        {
+          "criterion": "Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API, not a provider-family fallback.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:405 defines TransportFallbackConfig with an API transport accessor, src/theforge/config/load.py:969 rejects provider_fallbacks in favor of transport_fallback, and src/theforge/config/profiles.py:630 applies fallbacks only to CLI-transport profiles by provider_family; tests/test_config_transport_identity.py:449, tests/test_config_transport_identity.py:477, and tests/test_config_transport_identity.py:491 cover same-provider API transport fallback and old-key rejection.; src/theforge/config/types.py:405-425 (TransportFallbackConfig) and tests/test_config_transport_identity.py:336-380 (TestTransportFallback); TransportFallbackConfig with .transport(); provider_fallbacks key rejected naming transport_fallback; TestTransportFallback covers rename and rejection."
+        },
+        {
+          "criterion": "After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy cli/provider field combinations.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/cli.py:439 reads profile.mode for transport kind and src/theforge/runners/cli.py:450 returns a CLI runner only from profile.transport; src/theforge/config/profiles.py:289 and src/theforge/config/role_derivation.py:154 now mirror resolved transport into the legacy pair before construction; tests/test_config_transport_identity.py:216, tests/test_config_transport_identity.py:232, tests/test_config_transport_identity.py:302, and tests/test_config_transport_identity.py:537 cover loader, ref, and dispatch-source behavior.; Fixed this iteration: mirror_fields_for_transport is applied immediately after transport resolution in both _apply_profile_overrides (profiles.py:287) and _apply_ref_overrides (role_derivation.py:167), so the constructed profile/ref never carries a stale cli/provider that could re-derive a different transport. Reproduced live and via TestTransportOnlyOverrideSwitchesDispatch (loader-level dev cli->api, reviewer api->cli, and bridge-survival tests) \u2014 all pass."
+        },
+        {
+          "criterion": "Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:271 documents cli/provider as raw spellings with transport as dispatch truth, src/theforge/config/types.py:323 normalizes them at construction, and src/theforge/runners/cli.py:439 plus src/theforge/runners/cli.py:450 dispatch from transport; tests/test_config_transport_identity.py:508 and tests/test_config_transport_identity.py:551 cover mirroring and raw-field normalization as migration behavior.; src/theforge/config/types.py:268-304 (ModelProfile.__post_init__ and comments) and tests/test_config_transport_identity.py:383-408 (TestDispatchReadsTransportOnly); cli/provider remain as documented raw-input mirrors on ModelProfile/PlanConfig/ModelRef, but are now provably never the dispatch source of truth in any construction path, including the two override sites that were the exception found in cycle 1. Full removal would touch ~290 test constructions for no correctness gain \u2014 a reasonable, disclosed scope decision, matching the dev's own honest PARTIAL framing for the mechanical-removal half while the substantive 'not the source of dispatch truth' guarantee holds."
+        },
+        {
+          "criterion": "Documentation shows only the canonical shape as the recommended configuration. Any old shape, if documented, is marked as rejected or migration-only.",
+          "status": "VERIFIED",
+          "evidence": "docs/guides/choose-your-provider-setup.md:7 introduces canonical provider/model/transport configuration and docs/guides/choose-your-provider-setup.md:160 shows local API transport with base_url; docs/guides/local-models.md:21 and docs/guides/local-models.md:26 show canonical local configuration; docs/guides/inputs-reference.md:383 marks old spellings rejected/migration-only and docs/guides/inputs-reference.md:479 marks classic profiles as LEGACY; tests/test_config_transport_identity.py:148 and tests/test_config_transport_identity.py:381 verify the documented canonical mapping forms load.; docs/guides/choose-your-provider-setup.md, docs/guides/local-models.md, and docs/guides/inputs-reference.md; docs/guides/choose-your-provider-setup.md's five patterns and docs/guides/local-models.md's primary example now show only the canonical models:/transport shape; the sole remaining profiles: appearance in choose-your-provider-setup.md is an explicit 'legacy' disclaimer at the top of the file (grep-verified); docs/guides/inputs-reference.md marks the classic profiles: block LEGACY with an explanation."
+        },
+        {
+          "criterion": "The model config schema has a first-class transport object with a bounded `kind` enum of `cli` and `api`.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:268-304 (ModelProfile.__post_init__), src/theforge/config/models.py:33-66 (TransportSpec), and tests/test_config_transport_identity.py:204-231 (TestTransportObjectInConfig)"
+        },
+        {
+          "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form `id` that can diverge from that tuple.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:411-427 (canonical_model_id, is_canonical_model_id) and tests/test_config_transport_identity.py:114-149 (TestCanonicalIdentity)"
+        },
+        {
+          "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as `openai-api/...` or `gemini-cli/...` are removed or treated only as raw input aliases.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:680-704 (_LEGACY_MODEL_KEY_ALIASES, normalize_model_key) and tests/test_config_transport_identity.py:131-149 (TestCanonicalIdentity.test_loaded_config_never_carries_a_legacy_spelling)"
+        },
+        {
+          "criterion": "Local LLMs are represented as API transports with endpoint metadata such as `base_url`; local is not a separate provider prefix or transport kind.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/models.py:620-660 (AGENT_REGISTRY local entries) and tests/test_config_transport_identity.py:278-310 (TestLocalModelsAreApiTransports)"
+        },
+        {
+          "criterion": "After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy `cli`/`provider` field combinations.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/runners/cli.py:433-449 (_profile_transport_kind, _profile_cli_runner) and tests/test_config_transport_identity.py:383-408 (TestDispatchReadsTransportOnly)"
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "claude-sonnet",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": null,
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1] [claude-opus] The loader and profile-builder modules that own the raw-input boundary are absent from every step: src/theforge/config/load.py and src/theforge/config/profiles.py. This is not a stylistic omission \u2014 profiles.py:212-282 (_apply_profile_overrides, and _apply_ref_overrides alongside it) constructs ModelProfile with transport=None on purpose, with a docstring stating it relies on __post_init__ re-inferring TransportSpec from the effective cli/provider pair. Step 3 deletes exactly that inference, so every forge.yaml profile override would produce a profile with no transport, and dispatch at runners/cli.py:440-449 falls through to profile.cli (which the same step removes). Likewise load.py:251 calls overlay_transport(provider) from models.py \u2014 the function Step 2 rewrites \u2014 and load.py:400/1033-1124 still builds profiles from cli=/provider= pairs.\n  Suggestion: Add src/theforge/config/load.py and src/theforge/config/profiles.py to Steps 2, 3, and 4, and state the replacement contract explicitly: profiles.py override/ref-override paths must construct the TransportSpec directly (from the effective provider + transport.kind) instead of passing transport=None, and load.py must normalize provider-prefix aliases and cli/provider raw keys into transport at parse time so nothing downstream re-infers. Check src/theforge/config/_loaders.py for the same pattern while there.\n- [P1] [claude-opus] Step 4 (fallback rename) and Step 5 (telemetry) under-enumerate their callers. ApiFallbackConfig is constructed in load.py:299-326 (_derive_api_fallbacks, plus _validate_auto_api_fallback_schema and the auto_api_fallback raw key at load.py:330/759/765/904) and profiles.py:519-592, and consumed in runners/cli.py:222-384, sprint/runner.py:1384-1439, and assignment.py:1590. Identity/transport display consumers also include cli/check_config.py:197-275 (_split_provider_transport, _transport_label, _plan_transport_label, which read profile.cli/plan.cli directly) and src/theforge/model_profiles.py. None of these files or their directories appear in the plan, so renaming the fallback type or dropping ModelProfile.cli breaks them at import/attribute time.\n  Suggestion: Extend Step 4's file list with config/load.py, config/profiles.py, runners/cli.py, sprint/runner.py, and assignment.py, and Step 5's with cli/check_config.py, model_profiles.py, assignment.py, and sprint/runner.py. Name concrete files rather than directories (src/theforge/coordinator, src/theforge/task) so coverage is checkable.\n- [P1-impl] [claude-opus] PlanConfig (schema.py:54-65) carries its own cli/provider/api_fallback trio and calls infer_transport independently of ModelProfile; load.py:1049-1124 validates plan_cfg.cli against SUPPORTED_CLIS. The plan touches schema.py but never says whether PlanConfig converges on the same normalized transport shape.\n  Suggestion: Dev should give PlanConfig the same transport object and drop the SUPPORTED_CLIS check, or explicitly note it as a raw-input-only field.\n- [P2] [claude-opus] Step 7 lists three test files plus a bare tests entry, but the change touches sprint/runner.py, assignment.py, and cli/check_config.py, whose tests (e.g. tests/test_agent_spec.py, tests/test_config_schema.py, tests/test_empty_model_registry.py, which already import resolve_agent_spec/infer_transport) will also need updates.\n  Suggestion: Name those test modules explicitly so the dev agent runs the full affected suite rather than the three listed files.\n- [P1] [openai-gpt-5.4] The plan does not include the real config-ingestion path that must change for the new canonical YAML shape to work. src/theforge/config/load.py::_parse_models_section currently accepts models.enabled only as list[str], _parse_custom_model_registry still parses provider-like overlay tokens via overlay_transport(), and src/theforge/config/profiles.py / src/theforge/config/bridge.py still construct ModelProfile from legacy cli/provider fields. As written, the documented models.enabled: [{provider, model, transport: {kind}}] shape cannot load end-to-end.\n  Suggestion: Expand the plan to explicitly cover src/theforge/config/load.py, src/theforge/config/_loaders.py, src/theforge/config/profiles.py, and src/theforge/config/bridge.py, and update derive_roles()/ModelRef plumbing to consume normalized model declarations instead of string registry keys plus legacy transport fields.\n- [P1-impl] [openai-gpt-5.4] Step 4 renames fallback config in types.py / schema.py / models.py, but the live fallback behavior is implemented elsewhere: src/theforge/config/profiles.py::_parse_provider_fallbacks and _apply_provider_fallback, src/theforge/config/load.py::_derive_auto_provider_fallbacks, and src/theforge/runners/cli.py::_build_api_fallback_profile. If those modules are not part of the refactor, runtime will still carry provider-named fallback state and legacy CLI\u2192API rewrite logic after load, which breaks AC8-AC10.\n  Suggestion: Add those fallback parser/application modules and the CLI fallback runner path to the plan, and make the rename a full raw-input-to-runtime migration so only normalized transport-fallback objects survive past config loading.",
+    "cost_usd": 3.252935,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "claude-opus",
+        "verdict": "REQUEST_CHANGES",
+        "cost_usd": 0.637306
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash",
+        "verdict": "APPROVE",
+        "cost_usd": 2.455075
+      },
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.4",
+        "verdict": "REQUEST_CHANGES",
+        "cost_usd": 0.160553
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "claude-opus",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 2,
+        "latency_s": 89.48,
+        "latency_per_p1_s": 44.74,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 118.89,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "openai-gpt-5.4",
+        "complexity": "large",
+        "unique_p1_count": 1,
+        "total_p1_count": 2,
+        "latency_s": 101.3,
+        "latency_per_p1_s": 50.65,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "The loader and profile-builder modules that own the raw-input boundary are absent from every step: src/theforge/config/load.py and src/theforge/config/profiles.py. This is not a stylistic omission \u2014 profiles.py:212-282 (_apply_profile_overrides, and _apply_ref_overrides alongside it) constructs ModelProfile with transport=None on purpose, with a docstring stating it relies on __post_init__ re-inferring TransportSpec from the effective cli/provider pair. Step 3 deletes exactly that inference, so every forge.yaml profile override would produce a profile with no transport, and dispatch at runners/cli.py:440-449 falls through to profile.cli (which the same step removes). Likewise load.py:251 calls overlay_transport(provider) from models.py \u2014 the function Step 2 rewrites \u2014 and load.py:400/1033-1124 still builds profiles from cli=/provider= pairs.",
+        "severity": "P1",
+        "original_severity": null,
+        "effective_severity": "P1",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 (fallback rename) and Step 5 (telemetry) under-enumerate their callers. ApiFallbackConfig is constructed in load.py:299-326 (_derive_api_fallbacks, plus _validate_auto_api_fallback_schema and the auto_api_fallback raw key at load.py:330/759/765/904) and profiles.py:519-592, and consumed in runners/cli.py:222-384, sprint/runner.py:1384-1439, and assignment.py:1590. Identity/transport display consumers also include cli/check_config.py:197-275 (_split_provider_transport, _transport_label, _plan_transport_label, which read profile.cli/plan.cli directly) and src/theforge/model_profiles.py. None of these files or their directories appear in the plan, so renaming the fallback type or dropping ModelProfile.cli breaks them at import/attribute time.",
+        "severity": "P1",
+        "original_severity": null,
+        "effective_severity": "P1",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "PlanConfig (schema.py:54-65) carries its own cli/provider/api_fallback trio and calls infer_transport independently of ModelProfile; load.py:1049-1124 validates plan_cfg.cli against SUPPORTED_CLIS. The plan touches schema.py but never says whether PlanConfig converges on the same normalized transport shape.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 7 lists three test files plus a bare tests entry, but the change touches sprint/runner.py, assignment.py, and cli/check_config.py, whose tests (e.g. tests/test_agent_spec.py, tests/test_config_schema.py, tests/test_empty_model_registry.py, which already import resolve_agent_spec/infer_transport) will also need updates.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The plan does not include the real config-ingestion path that must change for the new canonical YAML shape to work. src/theforge/config/load.py::_parse_models_section currently accepts models.enabled only as list[str], _parse_custom_model_registry still parses provider-like overlay tokens via overlay_transport(), and src/theforge/config/profiles.py / src/theforge/config/bridge.py still construct ModelProfile from legacy cli/provider fields. As written, the documented models.enabled: [{provider, model, transport: {kind}}] shape cannot load end-to-end.",
+        "severity": "P1",
+        "original_severity": null,
+        "effective_severity": "P1",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 renames fallback config in types.py / schema.py / models.py, but the live fallback behavior is implemented elsewhere: src/theforge/config/profiles.py::_parse_provider_fallbacks and _apply_provider_fallback, src/theforge/config/load.py::_derive_auto_provider_fallbacks, and src/theforge/runners/cli.py::_build_api_fallback_profile. If those modules are not part of the refactor, runtime will still carry provider-named fallback state and legacy CLI\u2192API rewrite logic after load, which breaks AC8-AC10.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against\n  finding[5]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": null,
+    "merged": false,
+    "merge_queued": false,
+    "auto_merge_queued": false,
+    "success": false,
+    "error": "a pull request for branch \"feat/issue-1415\" into branch \"release/v0.13\" already exists:\nhttps://github.com/fuzzypete/theforge/pull/2163",
+    "branch": "feat/issue-1415",
+    "strand_state": {
+      "branch": "feat/issue-1415",
+      "worktree_path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-1415",
+      "pr_url": null,
+      "next_action": "Retry PR creation after sanitizing review text, or run `gh pr create` manually from the feature branch."
+    }
+  },
+  "landing": null,
+  "landing_status": "failed",
+  "landing_event": {
+    "landing_status": "failed",
+    "landed": false,
+    "timestamp": "2026-08-03T17:51:57.829096+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "a pull request for branch \"feat/issue-1415\" into branch \"release/v0.13\" already exists:\nhttps://github.com/fuzzypete/theforge/pull/2163",
+  "error_type": null,
+  "story_validation": {
+    "verdict": "WARN",
+    "cost_usd": 0.162383,
+    "duration_s": 35.64384179213084,
+    "findings": [
+      {
+        "category": "requirement",
+        "description": "AC7 requires that provider/model identity and transport identity be 'preserved distinctly in status, audit, model profile, and assignment telemetry,' but no requirement in the Summary or Desired behavior section mentions status, audit, model profile, or assignment telemetry surfaces at all \u2014 those sections only describe the config schema, loader, and dispatch resolution. This is an orphaned acceptance criterion with no corresponding requirement to anchor its scope (which fields, which surfaces, what 'distinctly' means operationally).",
+        "split_suggestion": null
+      },
+      {
+        "category": "scope",
+        "description": "The story bundles two separable concerns: (a) the core model-identity schema/loader/dispatch normalization (ACs 1-6, 9-10), which is self-contained config and runtime-dispatch work, and (b) propagating that identity distinctly through status, audit, model-profile, and assignment-telemetry surfaces (AC7), which touches unrelated observability/reporting subsystems with their own data shapes and consumers. AC7's surfaces are not derivable from the identity model itself and would require separate investigation of each telemetry/audit consumer, making it a poor fit for review alongside the schema/loader change.",
+        "split_suggestion": {
+          "stories": [
+            {
+              "name": "Normalize model identity schema, loader, and runtime dispatch",
+              "acs": [
+                "The model config schema has a first-class transport object with a bounded kind enum of cli and api.",
+                "Canonical model identity is derived from provider, model, and transport kind, with no required free-form id that can diverge from that tuple.",
+                "CLI/API selection is never encoded in provider-like prefixes in normalized config; existing keys such as openai-api/... or gemini-cli/... are removed or treated only as raw input aliases.",
+                "Runner/executor is inferred from provider plus transport kind where unambiguous; config only requires an explicit runner when the tuple has more than one valid executor.",
+                "Local LLMs are represented as API transports with endpoint metadata such as base_url; local is not a separate provider prefix or transport kind.",
+                "Routing policy (tier, capability, cost rank, dev capability, phase eligibility) is separate from and does not define model identity.",
+                "After loading, runtime dispatch reads only the normalized transport object and does not infer dispatch from legacy cli/provider field combinations.",
+                "Legacy transport fields and names are removed from runtime-facing dataclasses where practical; retained compatibility fields are confined to raw parsing/migration code."
+              ]
+            },
+            {
+              "name": "Propagate normalized model identity through status, audit, and telemetry surfaces",
+              "acs": [
+                "Provider/model identity and transport identity are preserved distinctly in status output.",
+                "Provider/model identity and transport identity are preserved distinctly in audit records.",
+                "Provider/model identity and transport identity are preserved distinctly in model profile data.",
+                "Provider/model identity and transport identity are preserved distinctly in assignment telemetry."
+              ]
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/profiles.py",
+      "detail": "src/theforge/config/profiles.py has 669 lines (limit 600)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "2c0a6c0e25e6d82a",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/config/profiles.py",
+      "line": 282,
+      "severity": "P1",
+      "description": "A models config with overrides.dev.transport.kind set to api on a CLI-derived dev profile loads the dev profile as the Codex CLI transport instead of the OpenAI API transport.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "90fbd604274c3bd0",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "docs/guides/choose-your-provider-setup.md",
+      "line": 159,
+      "severity": "P1",
+      "description": "The local/privacy-first provider setup guide presents the recommended configuration as profiles entries with provider: openai and no first-class transport object.",
+      "reporter": "openai-gpt-5.5",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "75a7a9543223b3bb",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/config/profiles.py",
+      "line": 286,
+      "severity": "P1",
+      "description": "Applying an override of the canonical form overrides.dev.transport: {kind: api} to a CLI-transport profile (e.g. cli=claude) leaves the resulting ModelProfile's transport, mode, and cli fields unchanged at cli/'cli' instead of switching to the API transport, even though _resolve_override_transport correctly computed the API TransportSpec.",
+      "reporter": "claude-sonnet",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "9de9a905f0a3ef19",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/config/role_derivation.py",
+      "line": 150,
+      "severity": "P1",
+      "description": "The same defect exists in _apply_ref_overrides: overriding a ModelRef with {'transport': {'kind': 'api'}} alone (no 'cli'/'provider' keys) computes the correct API TransportSpec in _resolve_ref_override_transport, but the constructed ModelRef still carries the old cli value, and ModelRef.__post_init__ re-derives the transport from that stale cli, discarding the intended switch.",
+      "reporter": "claude-sonnet",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 9,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "claude-sonnet": {
+            "attempted": 4,
+            "completed": 3,
+            "raw": 0.75,
+            "weighted": 0.75,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 9,
+            "completed": 9,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "claude-opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 9 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 9,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8544,
+              "weighted": 0.774,
+              "runs": 103,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.774
+            },
+            "domain": {
+              "domains": [
+                "config",
+                "backend",
+                "cli",
+                "api"
+              ],
+              "raw": 0.9022,
+              "weighted": 0.95,
+              "runs": 92,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.95,
+              "by_domain": {
+                "config": {
+                  "runs": 11,
+                  "raw": 0.9091,
+                  "weighted": 0.9091,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 53,
+                  "raw": 0.9057,
+                  "weighted": 0.95,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 28,
+                  "raw": 0.8929,
+                  "weighted": 0.95,
+                  "tainted_runs": 0
+                },
+                "api": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "config",
+                "backend",
+                "cli",
+                "api"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "api": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "config",
+          "backend",
+          "cli",
+          "api"
+        ],
+        "influenced": false,
+        "complexity_only_head": "claude-opus",
+        "domain_head": "claude-opus",
+        "selected_model_slice": {
+          "domains": [
+            "config",
+            "backend",
+            "cli",
+            "api"
+          ],
+          "raw": 0.9022,
+          "weighted": 0.95,
+          "runs": 92,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.95,
+          "by_domain": {
+            "config": {
+              "runs": 11,
+              "raw": 0.9091,
+              "weighted": 0.9091,
+              "tainted_runs": 0
+            },
+            "backend": {
+              "runs": 53,
+              "raw": 0.9057,
+              "weighted": 0.95,
+              "tainted_runs": 0
+            },
+            "cli": {
+              "runs": 28,
+              "raw": 0.8929,
+              "weighted": 0.95,
+              "tainted_runs": 0
+            },
+            "api": {
+              "runs": 0,
+              "raw": null,
+              "weighted": null,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "claude-opus",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8544,
+        "weighted_success_rate": 0.774,
+        "sample_size": 103,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.774,
+          "threshold": 0.6,
+          "sample_size": 103,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "complexity_not_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:api+backend+cli+config",
+        "pool": [
+          "claude-sonnet",
+          "claude-opus",
+          "openai-gpt-5.4",
+          "openai-gpt-5.4-mini",
+          "openai-gpt-5.5",
+          "google-gemini-3.5-flash"
+        ],
+        "selected": "claude-opus",
+        "winner": "claude-opus",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "api",
+          "backend",
+          "cli",
+          "config"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 9 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.77 \u2265 threshold 0.60 over 103 admissible runs \u2014 pre-promotion held) (profile success_rate=0.77 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 101,
+            "completed": 94,
+            "raw": 0.9307,
+            "weighted": 0.9521,
+            "rate": 0.9521,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 45,
+            "completed": 37,
+            "raw": 0.8222,
+            "weighted": 0.8149,
+            "rate": 0.8149,
+            "floor": "pass",
+            "selected": false
+          }
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "claude-opus": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 93.875,
+              "weighted": 93.875,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "claude-sonnet": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 9; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "claude-sonnet",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "claude-opus",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5": {
+            "attempted": 123,
+            "completed": 122,
+            "raw": 0.9919,
+            "weighted": 0.9861,
+            "rate": 0.9861,
+            "floor": "pass",
+            "selected": true
+          },
+          "google-gemini-3.5-flash": {
+            "attempted": 101,
+            "completed": 94,
+            "raw": 0.9307,
+            "weighted": 0.9521,
+            "rate": 0.9521,
+            "floor": "pass",
+            "selected": true
+          },
+          "openai-gpt-5.4": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "openai-gpt-5.4-mini": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "selected": false
+          },
+          "claude-sonnet": {
+            "attempted": 45,
+            "completed": 37,
+            "raw": 0.8222,
+            "weighted": 0.8149,
+            "rate": 0.8149,
+            "floor": "pass",
+            "selected": true
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 9; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.35336,
+      "duration_s": 55.99,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": 0.105322,
+      "duration_s": 37.73,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Normalize model configuration around provider, model, and transport.kind, then push legacy transport spellings back to raw parsing or migration-only handling. Runtime config, dispatch, telemetry, tests, and docs should all consume the same canonical shape.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Define the canonical runtime model/profile shape",
+            "files": [
+              "src/theforge/config/models.py",
+              "src/theforge/config/types.py"
+            ],
+            "action": "modify",
+            "details": "Keep TransportSpec as the bounded cli/api transport object, remove runtime dependence on legacy cli/provider dispatch fields, introduce an explicit routing/policy container for tier, capability, cost_rank, dev_capable, and phase_eligibility, and ensure canonical identity is derived only from provider, model, and transport.kind."
+          },
+          {
+            "id": 2,
+            "description": "Replace provider-prefix registry keys and overlays with canonical identities",
+            "files": [
+              "src/theforge/config/models.py",
+              "src/theforge/config/role_derivation.py"
+            ],
+            "action": "modify",
+            "details": "Remove openai-api, gemini-cli, and similar provider-like transport prefixes from normalized registry and overlay paths. If aliases are retained, confine them to raw lookup/migration input and normalize immediately to provider, model, and transport.kind. Represent local OpenAI-compatible models as api transport entries with base_url metadata.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Make runtime dispatch read normalized transport only",
+            "files": [
+              "src/theforge/config/schema.py",
+              "src/theforge/config/types.py",
+              "src/theforge/config/models.py"
+            ],
+            "action": "modify",
+            "details": "Remove dispatch inference from legacy cli/provider combinations after loading. Infer runner/executor from provider plus transport.kind where unambiguous, and require explicit runner only for genuinely ambiguous provider/transport tuples.",
+            "depends_on": [
+              1,
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Rename and normalize CLI-to-API fallback configuration",
+            "files": [
+              "src/theforge/config/types.py",
+              "src/theforge/config/schema.py",
+              "src/theforge/config/models.py"
+            ],
+            "action": "modify",
+            "details": "Replace provider-family fallback naming with an explicit transport fallback concept for CLI to API. Ensure fallback entries normalize to the same provider/model/transport identity shape and do not reintroduce provider-prefix dispatch.",
+            "depends_on": [
+              1,
+              3
+            ]
+          },
+          {
+            "id": 5,
+            "description": "Preserve distinct identity and transport fields in observability surfaces",
+            "files": [
+              "src/theforge/config/types.py",
+              "src/theforge/config/schema.py",
+              "src/theforge/config/models.py",
+              "src/theforge/coordinator",
+              "src/theforge/runners",
+              "src/theforge/task"
+            ],
+            "action": "modify",
+            "details": "Audit status, assignment, model profile, and audit telemetry consumers that currently read registry_id, cli, provider, or prefixed provider tokens. Update them to emit provider, model, transport.kind, and any endpoint metadata distinctly, while keeping routing metadata separate from identity.",
+            "depends_on": [
+              1,
+              3
+            ]
+          },
+          {
+            "id": 6,
+            "description": "Update configuration examples and migration-facing docs",
+            "files": [
+              "forge.yaml",
+              "docs/guides/choose-your-provider-setup.md",
+              "docs/guides/local-models.md"
+            ],
+            "action": "modify",
+            "details": "Show only the canonical provider/model/transport shape as recommended configuration. Document old provider-prefix and cli/provider spellings only as rejected or migration-only inputs if compatibility aliases are retained.",
+            "depends_on": [
+              1,
+              2,
+              4
+            ]
+          },
+          {
+            "id": 7,
+            "description": "Update tests around loading, normalization, dispatch, and migration behavior",
+            "files": [
+              "tests/test_config_models.py",
+              "tests/test_profile_transport_mutation.py",
+              "tests/test_profiles_migration.py",
+              "tests"
+            ],
+            "action": "modify",
+            "details": "Adjust existing tests to assert canonical transport normalization, no runtime dispatch from legacy cli/provider combinations, local models as API transports with base_url, separated routing policy, renamed CLI-to-API fallback behavior, and telemetry/profile preservation of provider/model versus transport identity.",
+            "depends_on": [
+              1,
+              2,
+              3,
+              4,
+              5,
+              6
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "The model config schema has a first-class transport object with a bounded kind enum of cli and api.",
+            "steps": [
+              1,
+              3,
+              7
+            ]
+          },
+          {
+            "criterion": "Canonical model identity is derived from provider, model, and transport kind. There is no required free-form id that can diverge from that tuple.",
+            "steps": [
+              1,
+              2,
+              5,
+              7
+            ]
+          },
+          {
+            "criterion": "CLI/API selection is never encoded in provider-like prefixes in normalized config. Existing keys such as openai-api/... or gemini-cli/... are removed or treated only as raw input aliases.",
+            "steps": [
+              2,
+              3,
+              6,
+              7
+            ]
+          },
+          {
+            "criterion": "Runner/executor is inferred from provider plus transport kind where unambiguous; config only requires an explicit runner when the tuple has more than one valid executor.",
+            "steps": [
+              1,
+              3,
+              7
+            ]
+          },
+          {
+            "criterion": "Local LLMs are represented as API transports with endpoint metadata such as base_url; local is not a separate provider prefix or transport kind.",
+            "steps": [
+              1,
+              2,
+              6,
+              7
+            ]
+          },
+          {
+            "criterion": "Routing policy is separate from identity. Tier, capability, cost rank, dev capability, and phase eligibility do not define the model identity.",
+            "steps": [
+              1,
+              5,
+              7
+            ]
+          },
+          {
+            "criterion": "Provider/model identity and transport identity are preserved distinctly in status, audit, model profile, and assignment telemetry.",
+            "steps": [
+              1,
+              5,
+              7
+            ]
+          },
+          {
+            "criterion": "Provider fallback configuration is renamed or normalized so it is clearly a transport fallback from CLI to API, not a provider-family fallback.",
+            "steps": [
+              4,
+              6,
+              7
+            ]
+          },
+          {
+            "criterion": "After loading, runtime dispatch reads only the normalized transport object. It does not infer dispatch from legacy cli/provider field combinations.",
+            "steps": [
+              1,
+              3,
+              7
+            ]
+          },
+          {
+            "criterion": "Legacy transport fields and names are removed from runtime-facing dataclasses where practical; any retained compatibility fields are confined to raw parsing/migration code and are not the source of dispatch truth.",
+            "steps": [
+              1,
+              2,
+              3,
+              4,
+              7
+            ]
+          },
+          {
+            "criterion": "Documentation shows only the canonical shape as the recommended configuration. Any old shape, if documented, is marked as rejected or migration-only.",
+            "steps": [
+              6,
+              7
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The spec permits either rejecting old spellings or retaining temporary aliases, but does not choose one.",
+            "mitigation": "Prefer rejection for schema integrity unless current tests or migration requirements already depend on aliases; if aliases remain, keep them strictly at raw parsing/migration boundaries."
+          },
+          {
+            "description": "Telemetry and assignment consumers may be spread outside the preflight file list.",
+            "mitigation": "Use repository-wide searches for legacy fields and prefixed provider tokens, then update only consumers that are runtime-facing or observability-facing."
+          },
+          {
+            "description": "Runner ambiguity rules are underspecified for future providers or multiple executors.",
+            "mitigation": "Encode only currently known unambiguous mappings and require explicit runner for any tuple with more than one executor rather than adding permissive fallback behavior."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": 3.252935,
+      "duration_s": 118.93,
+      "iterations": 3,
+      "outcome": "no_judgment",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "claude-opus",
+          "verdict": "REQUEST_CHANGES",
+          "cost_usd": 0.637306
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash",
+          "verdict": "APPROVE",
+          "cost_usd": 2.455075
+        },
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.4",
+          "verdict": "REQUEST_CHANGES",
+          "cost_usd": 0.160553
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 40.243448,
+      "duration_s": 2646.76,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 98.56,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 10.709212,
+      "duration_s": 386.63,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5": {
+          "cost": 4.13325,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash": {
+          "cost": 1.85119,
+          "verdict": "APPROVE"
+        },
+        "claude-sonnet": {
+          "cost": 4.724772,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 54.826659,
+    "duration_s": 3344.6,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "057f7c567abd",
+  "sprint_name": "issues-1415,2154,2155,2150"
+}

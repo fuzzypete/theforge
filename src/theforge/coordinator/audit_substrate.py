@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 18
+CURRENT_RECORD_SCHEMA_VERSION = 19
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1088,6 +1088,27 @@ def _migrate_v17_to_v18(record: dict) -> dict:
     return {**record, "abnormal_termination": None}
 
 
+def _migrate_v18_to_v19(record: dict) -> dict:
+    """Add the durable-phase-recovery block (issue #2155).
+
+    v19 records name which phase outputs a resumed attempt lifted off the
+    durable phase record — and, when none was usable, say that instead of
+    letting an absent ``preflight`` block read as a phase that never ran.
+
+    A v18 record predates both the field and the sidecar that feeds it. ``None``
+    is the honest backfill: it says the writer recorded no recovery, which is
+    true of every run that produced its own phase outputs. It is emphatically
+    NOT a claim that a v18 resumed run's ``preflight.verdict: SKIPPED`` was a
+    real bypass — that ambiguity is exactly what this version exists to end, and
+    it cannot be resolved retroactively from the record alone. The stored record
+    is never rewritten (ADR-0002 refusal-to-forget); this is the reader-side lift
+    applied on load.
+    """
+    if "phase_recovery" in record:
+        return record
+    return {**record, "phase_recovery": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1114,6 +1135,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     15: _migrate_v15_to_v16,
     16: _migrate_v16_to_v17,
     17: _migrate_v17_to_v18,
+    18: _migrate_v18_to_v19,
 }
 
 

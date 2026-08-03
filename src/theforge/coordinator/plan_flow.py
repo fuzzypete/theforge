@@ -77,6 +77,7 @@ from .plan_trajectory import (
 from .preflight import _escalate_dev_model, _find_registry_key_for_profile
 from .preflight_evidence import render_partial_evidence
 from .remote_gates import _plan_review_remote
+from .resume_persistence import save_resume_record
 from .reviewer_progress import ReviewerProgressChannel
 from .state import CoordinatorResult, CoordinatorState, Phase, PlanFindingRecord
 from .util import (
@@ -729,6 +730,21 @@ def _run_plan_phase(
     """
     _ensure_runners()
 
+    def _persist_plan_review_record() -> None:
+        """Write the plan-review outcome to the story's durable phase record.
+
+        Best-effort and control-flow-neutral by contract (#2155): the helper the
+        coordinator calls here must never turn a recovery-aid failure into a
+        phase failure.
+        """
+        save_resume_record(
+            config.project_root,
+            state,
+            slug=task.slug,
+            story_content=story_content,
+            run_id=run_id,
+        )
+
     if plan_path is None:
         _clean_stale_plan_files(workspace_path)
 
@@ -977,6 +993,11 @@ def _run_plan_phase(
                 advisory=(_work_type == "refactor"),
                 state_update_fn=state_update_fn,
             )
+            # Durable copy of the plan-review outcome. A resumed attempt starts
+            # at DEV/REVIEW and never re-runs plan review, so without this the
+            # audit for a story whose plan review demonstrably ran reports it as
+            # absent (#2155).
+            _persist_plan_review_record()
             if result is not None:
                 return result
 
@@ -993,6 +1014,7 @@ def _run_plan_phase(
                 logger=logger,
                 run_id=run_id,
             )
+            _persist_plan_review_record()
             if result is not None:
                 if _work_type == "refactor" and not _is_terminal_plan_result(result):
                     _log(
