@@ -722,7 +722,9 @@ artifact against a fresh generation without writing.
 Post-sprint batchability analytics for a completed run: which stories would
 have qualified for cost-aware batching, what each actually cost per phase,
 which stories conflicted / retried / escalated (and were therefore
-disqualified), and whether a shared dev pass would have been cheaper.
+disqualified), and whether a shared dev pass would have been cheaper. Stories
+on either end of a `depends_on` edge are excluded too — a batch is dispatched
+as one unit, so it cannot honour an ordering constraint crossing its boundary.
 
 ```bash
 forge batch-report <run-id>                     # human-readable terminal report

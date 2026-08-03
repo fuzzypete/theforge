@@ -214,7 +214,58 @@ def test_dependency_edge_disqualifies(tmp_path: Path) -> None:
 
     story = _by_slug(build_batch_report(summary), "issue-101")
     assert not story.eligible
-    assert any("dependency edge" in reason for reason in story.disqualifiers)
+    assert any("depends_on: issue-100" in reason for reason in story.disqualifiers)
+
+
+def test_dependency_parent_endpoint_is_also_disqualified(tmp_path: Path) -> None:
+    """A story another story depends on is excluded too, not just the child.
+
+    The live batcher excludes both endpoints of a dependency edge. The parent
+    side carries no ``depends_on`` of its own, so it is only knowable from the
+    sprint-wide reverse edge map.
+    """
+    summary = _write_sprint(
+        tmp_path,
+        [_story_row("issue-101"), _story_row("issue-102", depends_on=["issue-101"])],
+    )
+    _write_story_artifacts(tmp_path, "issue-101", likely_files=["src/a.py"])
+    _write_story_artifacts(tmp_path, "issue-102", likely_files=["src/b.py"])
+
+    report = build_batch_report(summary)
+    parent = _by_slug(report, "issue-101")
+    child = _by_slug(report, "issue-102")
+
+    assert parent.dependents == ("issue-102",)
+    assert parent.depends_on == ()
+    assert not parent.eligible
+    assert any("depended on by: issue-102" in r for r in parent.disqualifiers)
+
+    assert not child.eligible
+    assert child.dependents == ()
+
+    # Neither endpoint may reach a hypothetical batch group.
+    assert report.qualified == ()
+    assert report.groups == ()
+
+
+def test_dependents_are_reported_in_payload(tmp_path: Path) -> None:
+    summary = _write_sprint(
+        tmp_path,
+        [
+            _story_row("issue-101"),
+            _story_row("issue-102", depends_on=["issue-101"]),
+            _story_row("issue-103", depends_on=["issue-101"]),
+        ],
+    )
+    for slug in ("issue-101", "issue-102", "issue-103"):
+        _write_story_artifacts(tmp_path, slug, likely_files=[f"src/{slug}.py"])
+
+    payload = report_payload(build_batch_report(summary))
+    by_slug = {s["slug"]: s for s in payload["stories"]}
+    # Sorted and deduplicated, so the parent's exclusion is auditable.
+    assert by_slug["issue-101"]["dependents"] == ["issue-102", "issue-103"]
+    assert by_slug["issue-102"]["dependents"] == []
+    assert by_slug["issue-102"]["depends_on"] == ["issue-101"]
 
 
 def test_preflight_gates_disqualify(tmp_path: Path) -> None:

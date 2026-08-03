@@ -103,6 +103,11 @@ class StoryBatchReport:
     likely_files: tuple[str, ...]
     files_touched: tuple[str, ...]
     depends_on: tuple[str, ...]
+    #: Slugs of sibling stories that declared a ``depends_on`` edge *to* this
+    #: story. Recorded separately from ``depends_on`` because a dependency
+    #: disqualifies *both* endpoints, and only this side is invisible from the
+    #: story's own summary row.
+    dependents: tuple[str, ...]
     dev_iterations: int | None
     review_cycles: int | None
     #: Per-phase cost. ``0.0`` = phase did not run; ``None`` = it ran but its
@@ -197,17 +202,21 @@ def build_batch_report(
     sprint_log_dir = summary_path.parent
     rca_classes = _rca_classes(sprint_log_dir, resolved_run_id)
 
+    rows = [
+        raw
+        for raw in (summary.get("stories") or [])
+        if isinstance(raw, dict) and str(raw.get("slug") or "")
+    ]
+    dependents = _dependents_by_slug(rows)
+
     stories: list[StoryBatchReport] = []
-    for raw in summary.get("stories") or []:
-        if not isinstance(raw, dict):
-            continue
-        slug = str(raw.get("slug") or "")
-        if not slug:
-            continue
+    for raw in rows:
+        slug = str(raw.get("slug"))
         stories.append(
             _build_story_report(
                 raw,
                 sprint_log_dir / slug,
+                dependents=dependents.get(slug, ()),
                 rca_class=rca_classes.get(slug),
                 max_touched_files=max_touched_files,
             )
@@ -235,10 +244,35 @@ def build_batch_report(
     )
 
 
+def _dependents_by_slug(rows: list[dict]) -> dict[str, tuple[str, ...]]:
+    """Reverse the sprint's ``depends_on`` edges: slug ─▶ slugs depending on it.
+
+    A dependency disqualifies *both* endpoints, matching
+    ``collision.compute_batch_groups``: batch members are dispatched as one unit
+    and only the group leader lands a branch, so an edge crossing a group
+    boundary is a scheduling constraint the batch cannot honour — in either
+    direction. The child endpoint is visible on its own summary row; the parent
+    endpoint is only knowable sprint-wide, which is why it is computed here.
+
+    Only declared ``depends_on`` edges are recoverable: the sprint summary does
+    not persist the ``collision_deps`` the collision detector injects, so a
+    story serialized purely by a synthetic edge is not excluded on that basis.
+    Its overlapping ``likely_files`` — the same signal that produced the
+    synthetic edge — still keeps it out of any group at the grouping step.
+    """
+    dependents: dict[str, list[str]] = {}
+    for raw in rows:
+        slug = str(raw.get("slug"))
+        for target in _slug_tuple(raw.get("depends_on")):
+            dependents.setdefault(target, []).append(slug)
+    return {target: tuple(sorted(set(slugs))) for target, slugs in dependents.items()}
+
+
 def _build_story_report(
     raw: dict,
     story_log_dir: Path,
     *,
+    dependents: tuple[str, ...],
     rca_class: str | None,
     max_touched_files: int,
 ) -> StoryBatchReport:
@@ -250,7 +284,7 @@ def _build_story_report(
     audit_preflight = audit.get("preflight") if isinstance(audit.get("preflight"), dict) else {}
 
     outcome = str(raw.get("outcome") or "").upper()
-    depends_on = tuple(str(d) for d in (raw.get("depends_on") or []) if str(d))
+    depends_on = _slug_tuple(raw.get("depends_on"))
 
     # audit.yaml is the coordinator's canonical record; preflight.yaml carries
     # the two fields the audit block omits (sufficiency, likely_files) and backs
@@ -288,6 +322,7 @@ def _build_story_report(
     disqualifiers = _disqualifiers(
         outcome=outcome,
         depends_on=depends_on,
+        dependents=dependents,
         conflict_detail=conflict_detail,
         retried=retried,
         dev_iterations=dev_iterations,
@@ -310,6 +345,7 @@ def _build_story_report(
         likely_files=likely_files,
         files_touched=files_touched,
         depends_on=depends_on,
+        dependents=dependents,
         dev_iterations=dev_iterations,
         review_cycles=review_cycles,
         phase_costs=phase_costs,
@@ -328,6 +364,7 @@ def _disqualifiers(
     *,
     outcome: str,
     depends_on: tuple[str, ...],
+    dependents: tuple[str, ...],
     conflict_detail: str | None,
     retried: bool,
     dev_iterations: int | None,
@@ -349,8 +386,11 @@ def _disqualifiers(
 
     if outcome not in DONE_OUTCOMES:
         reasons.append(f"outcome={outcome or 'unknown'} (batching requires a completed story)")
+    # Both endpoints of a dependency edge are excluded, not just the child.
     if depends_on:
         reasons.append(f"dependency edge (depends_on: {', '.join(depends_on)})")
+    if dependents:
+        reasons.append(f"dependency edge (depended on by: {', '.join(dependents)})")
     if conflict_detail:
         reasons.append(f"conflicted — {conflict_detail}")
     if retried:
@@ -585,6 +625,13 @@ def _first_str(*values: object) -> str | None:
     return None
 
 
+def _slug_tuple(value: object) -> tuple[str, ...]:
+    """Normalise a summary row's slug list (``depends_on``), dropping blanks."""
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(item).strip() for item in value if str(item).strip())
+
+
 def _file_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list):
         return ()
@@ -640,6 +687,7 @@ def report_payload(report: BatchabilityReport) -> dict:
                 "likely_files": list(s.likely_files),
                 "files_touched": list(s.files_touched),
                 "depends_on": list(s.depends_on),
+                "dependents": list(s.dependents),
                 "dev_iterations": s.dev_iterations,
                 "review_cycles": s.review_cycles,
                 "conflicted": s.conflicted,
