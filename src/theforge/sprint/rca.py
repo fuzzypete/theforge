@@ -34,7 +34,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.config.sandbox_capabilities import get_preset
+from theforge.config.sandbox_capabilities import SandboxCapabilityError, get_preset
 
 SCHEMA_VERSION = 1
 # Version of the classifier RULES themselves. Bump whenever a rule change can
@@ -43,7 +43,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 8
+RULESET_VERSION = 9
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -691,6 +691,7 @@ def _classify_story(
         contributing,
         story,
         capability_preset=capability_gap.preset if capability_gap else None,
+        capability_profile_note=capability_gap.profile_note if capability_gap else None,
     )
 
     return {
@@ -989,7 +990,7 @@ def _capability_payload_grants_preset(payload: dict, preset_name: str) -> bool:
     """True when one recorded capability payload fully grants a preset."""
     try:
         preset = get_preset(preset_name)
-    except Exception:
+    except SandboxCapabilityError:
         return False
 
     write_roots = payload.get("write_roots")
@@ -1035,7 +1036,7 @@ def _capability_symptom_hit(sources: list[_TextSource]) -> tuple[str, str, str, 
     for preset in sorted(_CAPABILITY_PRESET_SYMPTOMS):
         symptoms = _CAPABILITY_PRESET_SYMPTOMS[preset]
         for src in sources:
-            if src.kind in {"authored", "structured"}:
+            if src.kind == "authored":
                 continue
             for line in src.text.splitlines():
                 lowered = line.lower()
@@ -1406,27 +1407,17 @@ def _select_primary(
 ) -> str | None:
     """Choose the winning primary failure class by declared priority.
 
-    Structured fields from the current run outrank broad text scans. Text scans
-    remain valuable fallback evidence, but they must not override the run's own
-    recorded terminal state.
+    Structured fields and text scans are both eligible evidence; the declared
+    priority list decides which class is most actionable overall.
     """
-    present = set(structured_primary_classes)
-    for cls in _PRIMARY_PRIORITY:
-        # Capability-gap evidence may be carried as text when the denial lives in
-        # a log line, but it still needs to outrank the generic iteration-limit
-        # symptom it usually presents as.
-        if cls == "iteration_exhaustion" and "capability_profile_gap" in text_primary_classes:
-            return "capability_profile_gap"
-        if cls in present:
-            return cls
-    if structured_primary_classes:
-        return structured_primary_classes[0]
-    present = set(text_primary_classes)
+    present = set(structured_primary_classes) | set(text_primary_classes)
     for cls in _PRIMARY_PRIORITY:
         if cls in present:
             return cls
     # A primary rule fired but its class is not in the priority list — return
     # the first seen so we never lose a real classification.
+    if structured_primary_classes:
+        return structured_primary_classes[0]
     return text_primary_classes[0] if text_primary_classes else None
 
 
@@ -1521,7 +1512,9 @@ def _launch_collision_action(story: dict, ref: str) -> str:
     )
 
 
-def _capability_gap_action(preset: str | None, ref: str) -> str:
+def _capability_gap_action(
+    preset: str | None, ref: str, profile_note: str | None = None
+) -> str:
     """Next step for a capability-profile gap: name the setting and the preset.
 
     Deliberately does not mention the iteration budget. The budget was spent on
@@ -1529,10 +1522,11 @@ def _capability_gap_action(preset: str | None, ref: str) -> str:
     same failure (#2029).
     """
     named = f"'{preset}'" if preset else "the preset matching the failing toolchain"
+    profile_clause = f"{profile_note}; " if profile_note else ""
     return (
         f"set sandbox.capability_profile: {preset or '<preset>'} in the project's forge.yaml "
-        f"and re-sprint {ref} — the run resolved no capability profile while the agent "
-        f"reported exactly the toolchain/service denial the {named} preset removes, so the "
+        f"and re-sprint {ref} — {profile_clause}recorded capability payloads did not "
+        f"grant the {named} preset's required write roots or mach services, so the "
         "dev agent could not build or verify its own work"
     )
 
@@ -1543,6 +1537,7 @@ def _recommend_actions(
     story: dict,
     *,
     capability_preset: str | None = None,
+    capability_profile_note: str | None = None,
 ) -> list[str]:
     """Map primary class + contributing factors to actionable next steps."""
     ref = _story_ref(story)
@@ -1595,7 +1590,9 @@ def _recommend_actions(
             "discard partial work"
         ),
         "dependency_skip": _dependency_action(story, ref),
-        "capability_profile_gap": _capability_gap_action(capability_preset, ref),
+        "capability_profile_gap": _capability_gap_action(
+            capability_preset, ref, capability_profile_note
+        ),
         "iteration_exhaustion": (
             f"raise the iteration budget for {ref} or narrow its scope, then re-run"
         ),

@@ -797,6 +797,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
+    assert payload["ruleset_version"] == 9
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -1291,9 +1292,68 @@ def test_missing_capability_profile_outranks_iteration_exhaustion(tmp_path: Path
 
     actions = entry["recommended_next_actions"]
     assert any("sandbox.capability_profile" in a and "xcode" in a for a in actions)
+    assert any("sandbox.capability_profile unset" in a for a in actions)
     # The budget was spent on iterations that could not have succeeded; naming it
     # is the misdirection this class exists to remove.
     assert not any("iteration budget" in a for a in actions)
+
+
+def test_capability_gap_from_structured_audit_text(tmp_path: Path) -> None:
+    """Run-authored structured audit text can carry the same capability symptom."""
+    d = _sprint_dir(tmp_path, name="capability-structured-audit")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-248b",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    audit = _no_capability_audit(
+        {
+            "error": "Failed to get the connection to the CoreSimulator service: Operation not permitted",
+        }
+    )
+    _write(d / "issue-248b" / "audit.yaml", audit)
+
+    entry = _build(d)["stories"]["issue-248b"]
+    assert entry["primary_failure_class"] == "capability_profile_gap"
+    actions = entry["recommended_next_actions"]
+    assert any("sandbox.capability_profile" in a and "xcode" in a for a in actions)
+    assert any("sandbox.capability_profile unset" in a for a in actions)
+
+
+def test_capability_gap_does_not_override_worker_timeout_text(tmp_path: Path) -> None:
+    """Higher-priority text classes still win over the capability-gap class."""
+    d = _sprint_dir(tmp_path, name="capability-worker-timeout")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-248c",
+                    "outcome": "FAILED",
+                    "error": "dev exhausted iterations",
+                    "iteration_usage": _exhausted_usage(),
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-248c" / "audit.yaml", _no_capability_audit())
+    story_dir = d / "issue-248c"
+    story_dir.mkdir(parents=True, exist_ok=True)
+    (story_dir / "dev-iteration-1.log").write_text(
+        "Worker thread timed out after 3600s\n", encoding="utf-8"
+    )
+    (story_dir / "dev-iteration-2.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
+
+    entry = _build(d)["stories"]["issue-248c"]
+    assert entry["primary_failure_class"] == "worker_timeout"
 
 
 def test_exhausted_story_without_capability_symptom_stays_iteration_exhaustion(
@@ -1377,10 +1437,7 @@ def test_incomplete_capability_profile_outranks_iteration_exhaustion(tmp_path: P
 
     entry = _build(d)["stories"]["issue-248a"]
     assert entry["primary_failure_class"] == "capability_profile_gap"
-    assert any(
-        "sandbox.capability_profile" in a and "xcode" in a
-        for a in entry["recommended_next_actions"]
-    )
+    assert any("sandbox.capability_profile='xcode'" in a for a in entry["recommended_next_actions"])
 
 
 def test_outbound_network_denial_alone_is_not_a_capability_gap(tmp_path: Path) -> None:
