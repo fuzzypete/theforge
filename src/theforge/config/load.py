@@ -72,6 +72,7 @@ from .types import (
     RetryPolicy,
     SandboxConfig,
     ShapeCheckConfig,
+    SprintBatchConfig,
     SprintConfig,
     StuckDetectionConfig,
     ValidationConfig,
@@ -1202,9 +1203,29 @@ def load_config(config_path: Path) -> ForgeConfig:
             f"forge.yaml 'sprint.worker_timeout_seconds' must be >= 1, "
             f"got {sprint_worker_timeout_raw}"
         )
+    sprint_batch_data = sprint_data.get("batch", {}) or {}
+    if not isinstance(sprint_batch_data, dict):
+        raise ValueError(f"forge.yaml 'sprint.batch' must be a mapping, got {sprint_batch_data!r}")
+    _batch_defaults = SprintBatchConfig()
+    _batch_values: dict[str, int] = {}
+    for _key, _default in (
+        ("max_stories", _batch_defaults.max_stories),
+        ("max_complexity_budget", _batch_defaults.max_complexity_budget),
+        ("max_touched_files", _batch_defaults.max_touched_files),
+    ):
+        _raw_value = sprint_batch_data.get(_key, _default)
+        # bool is an int subclass; `max_stories: true` is a config error, not a 1.
+        if isinstance(_raw_value, bool) or not isinstance(_raw_value, int):
+            raise ValueError(
+                f"forge.yaml 'sprint.batch.{_key}' must be an integer, got {_raw_value!r}"
+            )
+        if _raw_value < 1:
+            raise ValueError(f"forge.yaml 'sprint.batch.{_key}' must be >= 1, got {_raw_value}")
+        _batch_values[_key] = _raw_value
     sprint_cfg = SprintConfig(
         max_parallel=sprint_max_parallel_raw,
         worker_timeout_seconds=sprint_worker_timeout_raw,
+        batch=SprintBatchConfig(**_batch_values),
     )
 
     shape_check_data = raw.get("shape_check", {}) or {}

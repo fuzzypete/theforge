@@ -6,7 +6,7 @@ from theforge.coordinator.state import CycleHistory
 from .context_assembler import ContextPack
 from .conventions import render_conventions_block
 from .plan_parser import PlanData
-from .story import TaskStory
+from .story import BatchMember, TaskStory
 
 
 def _render_dev_p2_policy_section(p2_policy: str) -> str:
@@ -140,6 +140,109 @@ def render_verification_section(
         This is for your own feedback loop. It does not replace the gate, which
         the coordinator still runs authoritatively after you complete.
     """)
+
+
+def render_batch_spec_section(members: "tuple[BatchMember, ...]") -> str:
+    """Render every batch member's spec, plus the per-story handoff contract.
+
+    A batch group is several *independent* stories implemented in one dev pass
+    for cost. That only works if the agent keeps them separate in its head and
+    in its handoff: each story is reviewed on its own, against its own
+    acceptance criteria, so a handoff that merges the claims into one blob
+    cannot be attributed and the downstream per-story review has nothing to
+    check against.
+    """
+    if not members:
+        return ""
+    header = "\n".join(f"- `{m.slug}` — {m.display_ref or m.slug}: {m.name}" for m in members)
+    spec_blocks = []
+    for index, member in enumerate(members, start=1):
+        spec_blocks.append(
+            dedent(f"""\
+
+                ### Batch story {index} of {len(members)}: `{member.slug}`
+
+                Reference: {member.display_ref or member.slug}
+                Title: {member.name}
+
+                """)
+            + member.story_text.rstrip()
+            + "\n"
+        )
+    return (
+        dedent(f"""\
+
+            ## Batch Assignment — {len(members)} Independent Stories
+
+            This is a **cost-aware batch group**: {len(members)} small,
+            independent stories packed into one dev assignment to avoid paying
+            the per-story orchestration overhead {len(members)} times. They were
+            grouped *because* the scheduler proved they do not overlap — this is
+            not a bundle of related work, and nothing here asks you to unify
+            them.
+
+            Stories in this batch:
+            {header.strip()}
+
+            How to work them:
+
+            - Implement **every** story listed below. Finishing some and
+              deferring the rest fails the whole assignment.
+            - Keep the changes for each story separable. Prefer one commit per
+              story, with the story's slug in the commit message, so each can be
+              reviewed on its own.
+            - Do **not** refactor across stories, share helpers between them, or
+              let one story's approach constrain another's. If you discover they
+              are not actually independent, say so explicitly in your handoff
+              rather than silently merging them.
+            - Each story's own acceptance criteria are the checklist for that
+              story. There is no combined acceptance criterion.
+
+            ## Specs
+            """)
+        + "".join(spec_blocks)
+        + dedent(f"""\
+
+            ## Per-Story Handoff (required)
+
+            Each of these {len(members)} stories is validated and reviewed
+            **separately**, against its own spec. Your `<forge_handoff>` block
+            must therefore report per story, not for the batch as a whole:
+
+            - `acceptance_criteria` entries must each carry a `slug` key naming
+              which batch story the criterion belongs to.
+            - `commits` entries must each carry a `slug` key naming which batch
+              story the commit implements.
+            - `summary` must contain one sentence per story, each prefixed with
+              that story's slug.
+            - `story_deviations` and `deferred_items`, when not `none`, must name
+              the slug they apply to.
+
+            An unattributed claim cannot be checked against the story it claims
+            to satisfy, and will be treated as unsupported by that story's
+            review.
+            """)
+    )
+
+
+def build_batch_dev_prompt(
+    task: TaskStory,
+    *,
+    members: "tuple[BatchMember, ...]",
+    **kwargs: object,
+) -> str:
+    """Build the dev prompt for a batch group's shared dev pass.
+
+    Deliberately a thin wrapper over :func:`build_dev_prompt`: policy,
+    verification, conventions, plan, gate, and handoff language must not drift
+    between a batched and an unbatched dev run. The only difference is the story
+    body — every member's spec plus the per-story handoff contract, in place of
+    the single leader spec.
+    """
+    if not members:
+        return build_dev_prompt(task, **kwargs)  # type: ignore[arg-type]
+    batch_kwargs = {**kwargs, "story_content": render_batch_spec_section(members)}
+    return build_dev_prompt(task, **batch_kwargs)  # type: ignore[arg-type]
 
 
 def build_dev_prompt(

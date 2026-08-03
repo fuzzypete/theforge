@@ -182,6 +182,89 @@ The `bundle_candidate` field in per-story audit dumps is **scheduler-written
 audit output** — it reflects "the scheduler placed this story in a bundle",
 not anything the preflight agent asserted.
 
+### Batch groups (cost-aware, scheduler-decided, opt-in)
+
+Forge has **three** scheduling primitives, and they answer different questions:
+
+| Primitive | Question it answers | Grouping signal |
+|-----------|--------------------|-----------------|
+| Dependencies / DAG | Which stories must run *before* others? | `depends_on`, collision edges |
+| Conflict bundles | Which stories overlap enough that implementing them apart causes merge pain? | shared `Area:` / `likely_files` |
+| **Batch groups** | Which small *independent* stories can share one dev assignment to cut per-story overhead? | **absence** of overlap |
+
+A batch group packs several small, independent stories into a single dev
+assignment. It exists for cost and throughput, not for collision avoidance —
+so where bundling requires evidence of overlap, batching requires evidence of
+*independence*.
+
+Batching is **off by default**. It is not automatically cheaper: a combined
+prompt can exceed what one dev agent holds well, tests can broaden, and review
+can get harder. Enable it deliberately:
+
+```yaml
+sprint:
+  batch:
+    max_stories: 2            # 1 (default) disables batching entirely
+    max_complexity_budget: 2  # summed complexity weight across the group
+    max_touched_files: 6      # cap on the group's combined likely_files
+```
+
+A story is batch-eligible only when **all** of its preflight evidence is
+present and bounded:
+
+- `complexity == small`
+- `work_type` in `{bug, mechanical}`
+- `sufficiency == implementation_ready`
+- `likely_files` is known, non-empty, and within `max_touched_files`
+
+and a *group* forms only when, in addition:
+
+- no member touches a dependency edge in either direction — not its own
+  `depends_on`/collision edges, and nothing else depends on it;
+- no member was already claimed by a conflict bundle (bundling wins when both
+  would apply);
+- members are pairwise non-overlapping under the bundling predicate (no shared
+  `Area:`, no `likely_files` intersection) — otherwise it is a bundle question,
+  not a cost question;
+- the group's summed complexity and combined footprint stay under the configured
+  budgets.
+
+Anything missing fails closed: an unknown footprint or a missing preflight never
+batches. Batch groups therefore never override dependencies or conflict bundles.
+
+**What is shared, and what is not.** Only the DEV assignment is shared: one
+worktree, one branch, one dev agent, one prompt carrying every member's spec and
+requiring per-story completion notes. Everything else stays per story — each
+member gets its own review against its own spec, its own findings, its own cost,
+its own outcome, and its own audit record.
+
+**Landing is shared, and reported as shared.** The group's commits live on one
+branch — the leader's — so a member is exactly as landed as its leader is, and
+no more. Whenever the leader's landing reaches a terminal answer, that answer is
+propagated to every member: if the branch lands, members are recorded DONE and
+landed; if it fails to land, members are recorded `MERGE_FAILED` naming the
+leader, because their changes are not on the base branch. This holds for a
+landing that resolves *late* — an auto-merge PR that only reports MERGED or
+closed during queued-PR polling or sprint wrap-up, long after the member rows
+were written. A member that failed on its own merits keeps its own verdict; a
+leader landing successfully does not retroactively approve it.
+
+`forge status` renders batch groups distinctly from conflict bundles:
+
+```
+[bundle: issue-41  issue-42]
+    ✓ issue-41  ...
+    ✓ issue-42  ...
+
+[batch: batch-issue-10  issue-10  issue-11]
+    ✓ issue-10  ...
+    ✓ issue-11  ...
+```
+
+The `batch_group` field in per-story audit dumps and live state is
+scheduler-written, like `bundle_candidate`: it records the group the scheduler
+packed the story into, and is `null` for a story dispatched on its own.
+
 ### Story entry formats
 
 | Format | Description |

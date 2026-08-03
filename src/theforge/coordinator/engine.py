@@ -1647,20 +1647,32 @@ def run_review_only(
     workspace_path: Path,
     *,
     notify: bool = False,
+    run_id: str | None = None,
+    sprint_name: str | None = None,
+    branch_name: str | None = None,
 ) -> CoordinatorResult:
     """Run only the REVIEW phase on an existing worktree.
 
     Skips WORKSPACE, PREFLIGHT, DEV, VALIDATE.
     Returns a CoordinatorResult with phase=DONE (APPROVE) or ESCALATE
     (REQUEST_CHANGES — no DEV retry in review-only mode).
+
+    ``sprint_name`` nests this story's logs and audit under the sprint, exactly
+    as ``run_task`` does; without it a review run inside a sprint would write
+    its record outside the sprint's log tree. ``branch_name`` overrides the
+    branch derived from ``task.slug`` — needed when the worktree under review
+    belongs to another story's branch, as it does for a batch-group member
+    reviewed against the group leader's shared branch (#727).
     """
     _ensure_runners()
     state = _fresh_run_state()
     state.started_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     _ro_task_start = time.monotonic()
 
-    _run_id = _generate_run_id()
+    _run_id = run_id or _generate_run_id()
     state.run_id = _run_id
+    state.sprint_name = sprint_name
+    state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
     logger = StructuredLogger(
         run_id=_run_id,
         project=config.project,
@@ -1693,8 +1705,8 @@ def run_review_only(
         )
 
     state.workspace_path = workspace_path
-    branch_name = config.workspace.branch_pattern.format(slug=task.slug)
-    state.branch_name = branch_name
+    _branch_name = branch_name or config.workspace.branch_pattern.format(slug=task.slug)
+    state.branch_name = _branch_name
 
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
     state.story_content = story_content
@@ -1705,7 +1717,7 @@ def run_review_only(
         task,
         story_content,
         workspace_path,
-        branch_name,
+        _branch_name,
         notify=notify,
         logger=logger,
         task_start=_ro_task_start,

@@ -23,6 +23,22 @@ class FrontmatterParseResult:
 
 
 @dataclass(frozen=True)
+class BatchMember:
+    """One story in a cost-aware batch group, as seen by the shared dev pass.
+
+    Carries only what the dev prompt needs to state the story: its identity and
+    its spec text. The member keeps its own :class:`TaskStory`, state row,
+    review, cost, and audit everywhere else — this type exists solely so a
+    single dev assignment can name every story it is expected to implement.
+    """
+
+    name: str
+    slug: str
+    story_text: str
+    display_ref: str | None = None  # e.g. "Issue #712"; falls back to slug
+
+
+@dataclass(frozen=True)
 class TaskStory:
     """A single unit of work for the orchestrator to execute."""
 
@@ -45,6 +61,11 @@ class TaskStory:
     fix_ready: bool | None = None  # True iff bug has full Diagnosis section or non-bug type
     investigation_ready: bool = False  # True when bug passes gate but cause is not yet asserted
     readiness_warnings: list[str] = field(default_factory=list)  # why fix_ready is False/None
+    # Cost-aware batch group (#727). Non-empty only on the group *leader* the
+    # sprint scheduler dispatches: it lists every story the shared dev pass must
+    # implement, leader first. Empty for every ordinary story.
+    batch_members: tuple[BatchMember, ...] = ()
+    batch_group: str | None = None  # id of the batch group, when batched
 
 
 # Backward-compat alias
