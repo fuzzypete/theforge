@@ -663,6 +663,13 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # operator sees the real errno and path and can attribute the failure to
         # the infrastructure instead of to this story's work.
         "shared_infrastructure_failures": list(state.shared_infrastructure_failures),
+        # ── Abnormal termination (#2030) ──────────────────────────────────
+        # How the run ended when it did not end by its own state machine: the
+        # worker raised, its deadline expired, or the launch guard dropped the
+        # story before dispatch. Those exits never reach the coordinator's own
+        # finalization, so without this the least recoverable runs were the ones
+        # with no record of a cause at all. None for a normally-terminating run.
+        "abnormal_termination": state.abnormal_termination,
         "outcome": {
             "success": result.success,
             "final_phase": result.phase.name,
