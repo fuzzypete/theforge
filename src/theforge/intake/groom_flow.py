@@ -30,6 +30,7 @@ from ..shape_check.heuristics import (
     is_bug_format_issue,
 )
 from ..shape_check.parsing import find_heading
+from ..shape_check.placeholders import PLACEHOLDER_MARKER
 from .diagnosis_staleness import StalenessReport, evaluate_staleness
 
 # ── Types ─────────────────────────────────────────────────────────────────
@@ -74,6 +75,9 @@ class GroomResult:
     staleness: StalenessReport | None = None
     confirm_diagnosis_current: bool = False
     staleness_notice: bool = False
+    #: Finding codes groom deliberately left standing because resolving them
+    #: requires content it cannot supply. Reported, never silently dropped.
+    unsupplied_findings: tuple[str, ...] = field(default_factory=tuple)
 
     @property
     def needs_change(self) -> bool:
@@ -91,6 +95,7 @@ class GroomResult:
             "bug_diagnosis_state": self.bug_state.value,
             "applied": self.applied,
             "refusal_reason": self.refusal_reason,
+            "unsupplied_findings": list(self.unsupplied_findings),
         }
         if self.staleness is not None:
             payload["staleness_verdict"] = self.staleness.state.value
@@ -243,17 +248,25 @@ def _normalize_body(body: str) -> str:
     return out
 
 
+# Findings whose resolution requires *content* groom cannot invent. Groom
+# may scaffold the section, but it must never emit text that resolves these
+# — an unresolved finding keeps the issue out of a sprint, while a finding
+# satisfied by placeholder text admits it.
+UNSUPPLIABLE_FINDING_CODES: frozenset[str] = frozenset(
+    {"missing_acceptance_criteria", "missing_example"}
+)
+
 _AC_STUB = (
     "\n## Acceptance criteria\n\n"
-    "- TODO: replace with verifiable observable-behavior bullets "
+    f"- {PLACEHOLDER_MARKER}: replace with verifiable observable-behavior bullets "
     "(returns/emits/writes/...)\n"
 )
 
 _EXAMPLE_STUB = (
     "\n## Example\n\n"
     "```\n"
-    "TODO: replace with a concrete example — sample output, target sketch,\n"
-    "or before/after snippet that lets a reviewer eyeball the behavior.\n"
+    f"{PLACEHOLDER_MARKER}: replace with a concrete example — sample output, "
+    "target sketch, or before/after snippet.\n"
     "```\n"
 )
 
@@ -262,11 +275,11 @@ def _restructure_feature_body(body: str) -> str:
     """Insert placeholder sections when AC or Example heading is missing.
 
     Conservative — only adds stub sections; does not rewrite or remove
-    existing content. The stubs are deliberately shape-gate-clean (the AC
-    bullet contains observable-verb tokens; the Example stub is wrapped in
-    a fenced block) so the post-groom verdict can reach ``runnable`` even
-    while operator-readable TODO markers make it clear that substantive
-    content still needs to be filled in by a human or a future LLM pass.
+    existing content. The stubs are deliberately *not* shape-gate-clean:
+    they carry :data:`PLACEHOLDER_MARKER`, which the heuristics strip before
+    measuring substance, so the corresponding finding stands until a human
+    or a later content-supplying pass fills the section in. Groom scaffolds
+    the gap into the issue; it does not erase it.
     """
     out = body or ""
     if not find_heading(out, r"acceptance criteria|done criteria|checklist"):
@@ -276,6 +289,18 @@ def _restructure_feature_body(body: str) -> str:
     ):
         out = out.rstrip() + "\n" + _EXAMPLE_STUB
     return _normalize_body(out)
+
+
+def _fabricated_resolutions(pre: ShapeResult, post: ShapeResult) -> tuple[str, ...]:
+    """Return unsuppliable finding codes present in ``pre`` but gone in ``post``.
+
+    Mechanical guard, not a convention: if a body edit ever makes one of
+    these findings disappear, the content was fabricated by definition —
+    groom supplies no substance. Callers discard such a proposal.
+    """
+    pre_codes = {r.code for r in pre.reasons}
+    post_codes = {r.code for r in post.reasons}
+    return tuple(sorted((pre_codes - post_codes) & UNSUPPLIABLE_FINDING_CODES))
 
 
 # ── Issue loading ─────────────────────────────────────────────────────────
@@ -534,6 +559,9 @@ def run_groom(
                 and staleness.is_stale
                 and bug_state is BugDiagnosisState.CAUSE_UNKNOWN
             ),
+            unsupplied_findings=tuple(
+                sorted({r.code for r in pre_result.reasons} & UNSUPPLIABLE_FINDING_CODES)
+            ),
         )
 
     # Body restructure / normalization
@@ -549,6 +577,16 @@ def run_groom(
             proposed = _restructure_feature_body(body)
 
     post_result = shape_check(title, proposed, shape_labels)
+
+    # Mechanical guard: if the proposal resolved a finding whose resolution
+    # needs content groom cannot supply, the content was fabricated. Discard
+    # the restructure and fall back to normalization, so the gap is carried
+    # by the issue rather than erased from it.
+    fabricated = _fabricated_resolutions(pre_result, post_result)
+    if fabricated:
+        proposed = _normalize_body(body)
+        post_result = shape_check(title, proposed, shape_labels)
+
     post_verdict = post_result.verdict
 
     applied = False
@@ -565,8 +603,8 @@ def run_groom(
             refetched = fetch(loaded.number, project_root)
             if refetched is not None:
                 confirmed_body = refetched.get("body", "") or ""
-                confirmed_result = shape_check(title, confirmed_body, shape_labels)
-                post_verdict = confirmed_result.verdict
+                post_result = shape_check(title, confirmed_body, shape_labels)
+                post_verdict = post_result.verdict
         elif loaded.file_path is not None:
             try:
                 loaded.file_path.write_text(proposed, encoding="utf-8")
@@ -580,8 +618,10 @@ def run_groom(
                 raise GroomError(
                     f"could not re-read {loaded.file_path} after apply: {exc}"
                 ) from exc
-            confirmed_result = shape_check(title, confirmed_body, shape_labels)
-            post_verdict = confirmed_result.verdict
+            post_result = shape_check(title, confirmed_body, shape_labels)
+            post_verdict = post_result.verdict
+
+    unsupplied = tuple(sorted({r.code for r in post_result.reasons} & UNSUPPLIABLE_FINDING_CODES))
 
     next_cmd = _next_command(
         issue_ref=issue_ref,
@@ -613,4 +653,5 @@ def run_groom(
             and staleness.is_stale
             and bug_state is BugDiagnosisState.CAUSE_UNKNOWN
         ),
+        unsupplied_findings=unsupplied,
     )

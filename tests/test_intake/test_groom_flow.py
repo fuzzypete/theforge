@@ -10,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from theforge.intake import groom_flow
 from theforge.intake.groom_flow import (
     BugDiagnosisState,
     GroomAction,
@@ -18,6 +19,8 @@ from theforge.intake.groom_flow import (
     run_groom,
 )
 from theforge.shape_check import ShapeVerdict
+from theforge.shape_check import check as shape_check
+from theforge.shape_check.placeholders import has_placeholder_marker
 
 # ── Bug fixtures ──────────────────────────────────────────────────────────
 
@@ -201,15 +204,24 @@ def test_groom_feature_inserts_missing_ac_and_example():
     assert "## Acceptance criteria" in result.proposed_body
     assert "## Example" in result.proposed_body
     assert result.needs_change
-    # P1: the groomed feature body must be shape-gate-clean.
-    assert result.post_verdict is ShapeVerdict.RUNNABLE
+    # Groom scaffolds the missing sections but does not invent their content,
+    # so the findings it could not resolve must still stand (#2129).
+    assert result.post_verdict is not ShapeVerdict.RUNNABLE
+    assert result.unsupplied_findings == ("missing_acceptance_criteria", "missing_example")
 
 
 def test_groom_docs_reaches_runnable():
     """Docs-typed issues are first-class per ADR-0001; normalize them onto
     the shape gate's recognized type vocabulary so the post-groom verdict
-    can reach runnable rather than tripping on missing_type."""
-    body = "## What\n\nDocument the new endpoint.\n"
+    can reach runnable rather than tripping on missing_type.
+
+    Body already carries real AC and example content — groom supplies
+    neither (#2129), so type normalization is what's under test here."""
+    body = (
+        "## What\n\nDocument the new endpoint.\n\n"
+        "## Acceptance criteria\n\n- Docs build produces a page for the export endpoint\n\n"
+        "## Example\n\n```\nGET /api/export -> 200 text/csv\n```\n"
+    )
     fetch = _fake_fetch(
         {
             "title": "Document export endpoint",
@@ -225,8 +237,15 @@ def test_groom_docs_reaches_runnable():
 
 def test_groom_story_reaches_runnable():
     """Story-typed issues are supported per the lifecycle spec; normalize
-    them to a shape-gate-recognized label so they reach a real verdict."""
-    body = "## What\n\nUsers can filter by date.\n"
+    them to a shape-gate-recognized label so they reach a real verdict.
+
+    Body already carries real AC and example content — groom supplies
+    neither (#2129), so type normalization is what's under test here."""
+    body = (
+        "## What\n\nUsers can filter by date.\n\n"
+        "## Acceptance criteria\n\n- Filter emits only rows within the date range\n\n"
+        "## Example\n\n```\nfilter --from 2026-01-01 --to 2026-02-01\n```\n"
+    )
     fetch = _fake_fetch(
         {
             "title": "Filter by date",
@@ -364,8 +383,10 @@ def test_apply_rechecks_persisted_file_after_local_write(tmp_path: Path):
     )
     result = run_groom(str(f), apply_changes=True)
     assert result.applied is True
-    # File on disk has the canonical groomed body, so re-read verdict is runnable.
-    assert result.post_verdict is ShapeVerdict.RUNNABLE
+    # Re-read verdict is derived from disk. Groom scaffolded the missing
+    # sections but supplied no content, so the findings still stand.
+    assert result.post_verdict is not ShapeVerdict.RUNNABLE
+    assert result.unsupplied_findings == ("missing_acceptance_criteria", "missing_example")
     on_disk = f.read_text(encoding="utf-8")
     assert "## Acceptance criteria" in on_disk
     assert "## Example" in on_disk
@@ -419,3 +440,78 @@ def test_event_payload_for_restructured():
     ev = result.as_event()
     assert ev["action"] == "restructured"
     assert ev["bug_diagnosis_state"] == "confirmed-cause"
+
+
+# ── Content groom cannot supply (#2129) ───────────────────────────────────
+
+
+def _feature_fetch():
+    return _fake_fetch(
+        {
+            "title": "Add export",
+            "body": "## What\n\nUsers can export.\n",
+            "labels": ["enhancement"],
+        }
+    )
+
+
+def test_groom_stub_body_still_fails_the_checks_it_did_not_resolve():
+    """The proposed body must not pass a check groom did not actually
+    resolve — re-running the shape gate on it keeps both findings."""
+    result = run_groom("42", fetch_issue=_feature_fetch(), edit_issue_body=_no_op_edit)
+    codes = {
+        r.code for r in shape_check("Add export", result.proposed_body, ["enhancement"]).reasons
+    }
+    assert "missing_example" in codes
+    assert "missing_acceptance_criteria" in codes
+
+
+def test_groom_marks_stub_sections_as_placeholders():
+    result = run_groom("42", fetch_issue=_feature_fetch(), edit_issue_body=_no_op_edit)
+    assert has_placeholder_marker(result.proposed_body)
+
+
+def test_unsupplied_findings_are_reported_in_the_event_payload():
+    result = run_groom("42", fetch_issue=_feature_fetch(), edit_issue_body=_no_op_edit)
+    ev = result.as_event()
+    assert ev["unsupplied_findings"] == ["missing_acceptance_criteria", "missing_example"]
+
+
+def test_next_command_is_not_ready_when_content_is_unsupplied():
+    result = run_groom("42", fetch_issue=_feature_fetch(), edit_issue_body=_no_op_edit)
+    assert "--add-label ready" not in (result.next_command or "")
+
+
+def test_fabricated_resolution_is_discarded_and_body_falls_back_to_normalization(monkeypatch):
+    """Mechanical guard: any restructure that resolves an unsuppliable
+    finding is discarded, whatever text produced it."""
+
+    def fabricate(body: str) -> str:
+        return (
+            body.rstrip()
+            + "\n\n## Acceptance criteria\n\n- Export writes a CSV file\n"
+            + "\n## Example\n\n```\nexport --format csv > out.csv\n```\n"
+        )
+
+    monkeypatch.setattr(groom_flow, "_restructure_feature_body", fabricate)
+    result = run_groom("42", fetch_issue=_feature_fetch(), edit_issue_body=_no_op_edit)
+    assert "## Acceptance criteria" not in result.proposed_body
+    assert result.post_verdict is not ShapeVerdict.RUNNABLE
+    assert result.unsupplied_findings == ("missing_acceptance_criteria", "missing_example")
+
+
+def test_body_with_real_content_keeps_no_unsupplied_findings():
+    fetch = _fake_fetch(
+        {
+            "title": "Add export",
+            "body": (
+                "## What\n\nUsers can export.\n\n"
+                "## Acceptance criteria\n\n- Export writes a CSV to the download directory\n\n"
+                "## Example\n\n```\nexport --format csv > out.csv\n```\n"
+            ),
+            "labels": ["enhancement"],
+        }
+    )
+    result = run_groom("42", fetch_issue=fetch, edit_issue_body=_no_op_edit)
+    assert result.unsupplied_findings == ()
+    assert result.post_verdict is ShapeVerdict.RUNNABLE
