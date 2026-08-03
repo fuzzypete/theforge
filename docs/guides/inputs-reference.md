@@ -315,8 +315,8 @@ Controls everything: which models to use, budgets, timeouts, retry policies.
 project: my-project
 
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 
 budget_usd: 30.0
 
@@ -337,16 +337,70 @@ In v0.8, `models:` is the primary config path. TheForge derives preflight,
 plan, dev, review, and synthesis roles from the model list and the story's
 complexity. Use `forge check-config` to inspect the derived role table.
 
+### Model identity and transport
+
+A model is identified by exactly three things: **provider**, **model**, and
+**transport kind** (`cli` or `api`). Runner/executor is derived from
+`(provider, transport.kind)` — `(openai, cli)` is the Codex CLI, `(anthropic,
+cli)` is the Claude CLI, `(google, api)` is the Google API adapter — so no
+config names a runner.
+
+The mapping form spells the same identity out, and is the place to attach
+endpoint and routing metadata:
+
+```yaml
+models:
+  enabled:
+    - provider: openai
+      model: gpt-5.5
+      transport:
+        kind: cli
+      routing:
+        tier: strong
+
+    - provider: openai
+      model: gpt-5.5
+      transport:
+        kind: api                  # same provider + model, different identity
+      routing:
+        tier: strong
+
+    # A locally served OpenAI-compatible model. Locality is endpoint metadata:
+    # there is no `local/` provider and no `local` transport kind.
+    - provider: openai
+      model: qwen2.5-coder:32b
+      transport:
+        kind: api
+      base_url: http://localhost:11434/v1
+      routing:
+        tier: fast
+```
+
+`routing` (tier, capability, cost rank, dev capability, phase eligibility) is
+selection *policy*, not identity — two entries differing only in `routing` are
+the same model.
+
+**Rejected/migration-only spellings.** `openai-api/gpt-5.4`,
+`gemini-cli/gemini-2.5-pro` and `claude/opus` are legacy aliases. They still
+load, but they are rewritten to their canonical identity at the parse boundary
+and never appear in loaded config, telemetry, or audit records. Write the
+canonical form.
+
 ### Full config reference
 
 ```yaml
 project: my-project                # project name for logging/audit
 
 # ── Model list and derived roles ──────────────────────────
+# A model identity is provider + model + transport kind, written
+# <provider>/<model>/<cli|api>. Transport is never encoded in the provider
+# token: openai-api/... and gemini-cli/... are rejected spellings, accepted only
+# as migration aliases at the parse boundary.
 models:
-  - claude/sonnet
-  - claude/opus
-  - openai/gpt-5.4
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
+  - openai/gpt-5.4/cli             # Codex CLI
+  - openai/gpt-5.4/api             # same model, OpenAI API adapter — a distinct identity
 
 budget_usd: 50.0                   # budget used to derive per-role ceilings
 

@@ -172,8 +172,8 @@ This is the smallest useful mental model for `forge.yaml`:
 
 ```yaml
 models:
-  - claude/sonnet
-  - claude/opus
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
 
 budget_usd: 30.0
 

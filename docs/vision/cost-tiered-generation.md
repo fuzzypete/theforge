@@ -179,9 +179,9 @@ that API variant as `api_fallback` for the CLI profile. This makes the ergonomic
 default "burn CLI quota first, then fall back to tracked API usage if quota or
 availability forces the crossing."
 
-Operators can disable this behavior with top-level `auto_api_fallback: false`,
+Operators can disable this behavior with top-level `auto_transport_fallback: false`,
 or override the auto choice for a provider with an explicit
-`provider_fallbacks:` entry.
+`transport_fallback:` entry.
 
 Sprint-start warnings for CLI transports now distinguish between fully
 untracked CLI-only usage and CLI profiles that have a tracked API fallback. In

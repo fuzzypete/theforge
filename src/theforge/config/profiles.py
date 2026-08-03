@@ -17,9 +17,10 @@ from .defaults import (
     SUPPORTED_CLIS,
 )
 from .models import AgentDef, AgentSpec, _resolve_model_info, price_tiebreak_signal
-from .types import SUPPORTED_PROVIDERS, ApiFallbackConfig, ModelProfile
+from .types import SUPPORTED_PROVIDERS, ModelProfile, TransportFallbackConfig
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
+    from .models import TransportSpec
     from .types import ForgeConfig
 
 _COST_RANK_TO_TIER = {1: "cheap", 2: "mid", 3: "strong"}
@@ -112,6 +113,8 @@ def _agents_from_models(
                 timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
                 tier=tier,
                 cli=info.cli,
+                transport=info.transport,
+                base_url=info.base_url,
                 registry_id=info.registry_id,
                 registry_source=info.registry_source,
                 input_cost_per_mtok=info.input_cost_per_mtok,
@@ -190,7 +193,7 @@ _VALID_SANDBOX_MODES = {"workspace-write", "read-only", "none"}
 # Resource-only keys (timeout*, budget) express a preference about limits, not
 # model choice, and must leave routing active. See #1764.
 _MODEL_SELECTION_KEYS: frozenset[str] = frozenset(
-    {"model", "models", "fallback_models", "provider", "cli"}
+    {"model", "models", "fallback_models", "provider", "cli", "transport"}
 )
 
 
@@ -209,14 +212,64 @@ def override_constrains_model(data: dict[str, Any] | None) -> bool:
     return any(key in _MODEL_SELECTION_KEYS for key in data)
 
 
+def parse_override_transport_kind(data: dict[str, Any], where: str) -> str | None:
+    """Read the canonical ``transport: {kind: cli|api}`` object off an override block.
+
+    Returns None when the block does not declare a transport (the raw
+    ``cli``/``provider`` spelling is then used to derive one).
+    """
+    if "transport" not in data:
+        return None
+    raw = data["transport"]
+    if not isinstance(raw, dict):
+        raise ValueError(f"'{where}.transport' must be a mapping with a 'kind' key")
+    unknown = set(raw) - {"kind"}
+    if unknown:
+        raise ValueError(f"'{where}.transport' only supports 'kind'; got {sorted(unknown)}")
+    kind = raw.get("kind")
+    if kind not in ("cli", "api"):
+        raise ValueError(f"'{where}.transport.kind' must be 'cli' or 'api', got {kind!r}")
+    return str(kind)
+
+
+def _resolve_override_transport(
+    base: ModelProfile,
+    data: dict[str, Any],
+    new_cli: str | None,
+    new_provider: str | None,
+) -> "TransportSpec | None":
+    """Compute the TransportSpec an override block resolves to.
+
+    An explicit ``transport.kind`` wins and is applied to the effective provider
+    family. Otherwise the raw cli/provider spelling is normalized. When the
+    override touches neither, the base profile's transport carries over.
+    """
+    from .models import provider_for_transport, transport_for, transport_from_raw_fields
+
+    kind = parse_override_transport_kind(data, f"overrides.{base.name}")
+    if kind is not None:
+        provider = new_provider or (
+            provider_for_transport(base.transport) if base.transport is not None else None
+        )
+        if provider is None:
+            raise ValueError(
+                f"overrides.{base.name}.transport needs a provider: none is set on the "
+                "override or on the profile being overridden"
+            )
+        return transport_for(provider, kind)
+    if "provider" in data or "cli" in data:
+        return transport_from_raw_fields(new_cli, new_provider)
+    return base.transport
+
+
 def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelProfile:
     """Apply partial forge.yaml profile overrides on top of an auto-assigned profile.
 
-    Transport switching: when the override supplies ``provider`` without ``cli``,
-    the base ``cli`` is cleared so dispatch routes to the API adapter. The
-    inverse applies when ``cli`` is supplied without ``provider``. The resulting
-    ModelProfile is constructed with ``transport=None`` so ``__post_init__``
-    re-infers the TransportSpec from the effective cli/provider pair.
+    Transport switching: an override may name ``transport: {kind: cli|api}``
+    directly (canonical), or supply the raw ``provider``/``cli`` spelling. Either
+    way the resulting TransportSpec is computed *here*, at the parse boundary,
+    and passed explicitly — a transport switch must never leave the base
+    profile's old TransportSpec in place.
     """
     tools = data.get("allowed_tools")
     # Transport switching — mirror _apply_ref_overrides semantics
@@ -230,6 +283,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         new_cli = data.get("cli", base.cli)
         new_provider = data.get("provider", base.provider)
     effective_provider = new_provider
+    new_transport = _resolve_override_transport(base, data, new_cli, new_provider)
     reasoning_effort = data.get("reasoning_effort", base.reasoning_effort)
     _VALID_REASONING_EFFORTS = {"low", "medium", "high"}
     if reasoning_effort is not None and reasoning_effort not in _VALID_REASONING_EFFORTS:
@@ -252,10 +306,7 @@ def _apply_profile_overrides(base: ModelProfile, data: dict[str, Any]) -> ModelP
         name=base.name,
         cli=new_cli,
         provider=new_provider,
-        # Transport=None forces __post_init__ to re-infer from the effective
-        # cli/provider pair so a transport switch override doesn't leave the
-        # base profile's old TransportSpec in place.
-        transport=None,
+        transport=new_transport,
         model=model_str,
         fallback_models=fallback_models,
         budget_usd=float(data.get("budget_usd", base.budget_usd)),
@@ -334,6 +385,8 @@ def _auto_assign_models(
         name="dev",
         cli=dev_info.cli,
         provider=dev_info.provider,
+        transport=dev_info.transport,
+        base_url=dev_info.base_url,
         model=dev_info.model,
         budget_usd=dev_budget,
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
@@ -346,6 +399,8 @@ def _auto_assign_models(
         name="preflight",
         cli=preflight_info.cli,
         provider=preflight_info.provider,
+        transport=preflight_info.transport,
+        base_url=preflight_info.base_url,
         model=preflight_info.model,
         budget_usd=preflight_budget,
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
@@ -359,6 +414,8 @@ def _auto_assign_models(
             name=k.replace("/", "-"),
             cli=i.cli,
             provider=i.provider,
+            transport=i.transport,
+            base_url=i.base_url,
             model=i.model,
             budget_usd=reviewer_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
@@ -376,6 +433,8 @@ def _auto_assign_models(
             name="synthesis",
             cli=synth_info.cli,
             provider=synth_info.provider,
+            transport=synth_info.transport,
+            base_url=synth_info.base_url,
             model=synth_info.model,
             budget_usd=synthesis_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
@@ -512,30 +571,35 @@ def _parse_profile(
     )
 
 
-def _parse_provider_fallbacks(
+def _parse_transport_fallbacks(
     data: dict[str, Any],
     *,
     secrets: dict[str, str] | None = None,
-) -> dict[str, ApiFallbackConfig]:
-    """Parse top-level provider_fallbacks config."""
+) -> dict[str, TransportFallbackConfig]:
+    """Parse the top-level ``transport_fallback:`` block.
+
+    Keyed by provider family: the entry under ``anthropic`` names the model the
+    *Anthropic API* transport runs when the *Anthropic CLI* transport fails. The
+    provider never changes across a fallback — only the transport does.
+    """
     if not data:
         return {}
     if not isinstance(data, dict):
-        raise ValueError("provider_fallbacks must be a mapping of provider -> config")
+        raise ValueError("transport_fallbacks must be a mapping of provider -> config")
 
-    fallbacks: dict[str, ApiFallbackConfig] = {}
+    fallbacks: dict[str, TransportFallbackConfig] = {}
     for provider, raw in data.items():
         if provider not in SUPPORTED_PROVIDERS:
             raise ValueError(
-                f"Unsupported provider {provider!r} in provider_fallbacks. "
+                f"Unsupported provider {provider!r} in transport_fallbacks. "
                 f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
             )
         if provider == "deepseek":
             raise ValueError(
-                "provider_fallbacks does not support 'deepseek' because it has no CLI"
+                "transport_fallbacks does not support 'deepseek' because it has no CLI"
             )
         if not isinstance(raw, dict):
-            raise ValueError(f"provider_fallbacks.{provider} must be a mapping")
+            raise ValueError(f"transport_fallbacks.{provider} must be a mapping")
 
         fallback_profile = _parse_profile(
             f"{provider}-api-fallback",
@@ -543,7 +607,7 @@ def _parse_provider_fallbacks(
             role="review",
             secrets=secrets,
         )
-        fallbacks[provider] = ApiFallbackConfig(
+        fallbacks[provider] = TransportFallbackConfig(
             provider=provider,
             model=fallback_profile.model,
             timeout_seconds=fallback_profile.timeout_seconds,
@@ -555,14 +619,18 @@ def _parse_provider_fallbacks(
     return fallbacks
 
 
-def _apply_provider_fallback(
+def _apply_transport_fallback(
     profile: ModelProfile,
-    fallbacks: dict[str, ApiFallbackConfig],
+    fallbacks: dict[str, TransportFallbackConfig],
 ) -> ModelProfile:
-    """Attach a same-provider API fallback to CLI profiles when configured."""
-    if profile.provider or not profile.cli:
+    """Attach the CLI→API transport fallback to CLI-transport profiles.
+
+    Reads ``transport.kind`` — not the legacy cli/provider pair — to decide what
+    a profile currently dispatches through.
+    """
+    if profile.mode != "cli":
         return profile
-    provider = CLI_PROVIDER_MAP.get(profile.cli)
+    provider = profile.provider_family
     if provider is None:
         return profile
     fallback = fallbacks.get(provider)

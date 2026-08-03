@@ -24,7 +24,7 @@ def test_cli_model_auto_pairs_same_provider_api_fallback(tmp_path):
         tmp_path,
         """
 models:
-  - openai/gpt-5.4
+  - openai/gpt-5.4/cli
 """,
     )
     with _auth_ok, _import_ok:
@@ -41,7 +41,7 @@ def test_cli_model_without_matching_api_sibling_does_not_auto_pair(tmp_path):
         tmp_path,
         """
 models:
-  - claude/sonnet
+  - anthropic/sonnet/cli
 """,
     )
     with _auth_ok, _import_ok:
@@ -55,15 +55,15 @@ def test_auto_api_fallback_false_disables_auto_pairing(tmp_path):
     cfg_path = _write(
         tmp_path,
         """
-auto_api_fallback: false
+auto_transport_fallback: false
 models:
-  - openai/gpt-5.4
+  - openai/gpt-5.4/cli
 """,
     )
     with _auth_ok, _import_ok:
         cfg = load_config(cfg_path)
 
-    assert cfg.auto_api_fallback is False
+    assert cfg.auto_transport_fallback is False
     assert cfg.dev_profile.api_fallback is None
 
 
@@ -72,8 +72,8 @@ def test_explicit_provider_fallback_wins_over_auto_pairing(tmp_path):
         tmp_path,
         """
 models:
-  - openai/gpt-5.4
-provider_fallbacks:
+  - openai/gpt-5.4/cli
+transport_fallback:
   openai:
     model: o4-mini
 """,
@@ -91,8 +91,8 @@ def test_multiple_cli_models_same_provider_do_not_cross_wire_auto_fallbacks(tmp_
         tmp_path,
         """
 models:
-  - openai/gpt-5.4
-  - openai/gpt-5.4-mini
+  - openai/gpt-5.4/cli
+  - openai/gpt-5.4-mini/cli
 """,
     )
     with _auth_ok, _import_ok:
@@ -109,7 +109,7 @@ def test_plan_cli_model_receives_auto_api_fallback(tmp_path):
         tmp_path,
         """
 models:
-  - openai/gpt-5.4
+  - openai/gpt-5.4/cli
 plan:
   enabled: true
   cli: codex
@@ -130,7 +130,7 @@ def test_legacy_plan_agent_review_cli_receives_auto_api_fallback(tmp_path):
         tmp_path,
         """
 models:
-  - openai/gpt-5.4
+  - openai/gpt-5.4/cli
 plan:
   enabled: true
   cli: claude
@@ -163,7 +163,7 @@ def test_sprint_warning_mentions_tracked_api_fallback(tmp_path):
         tmp_path,
         """
 models:
-  - gemini-cli/gemini-2.5-pro
+  - google/gemini-2.5-pro/cli
 plan:
   enabled: true
   cli: gemini
@@ -192,7 +192,7 @@ def test_sprint_warning_omits_codex_now_that_usage_is_measured(tmp_path):
         tmp_path,
         """
 models:
-  - openai/gpt-5.4
+  - openai/gpt-5.4/cli
 plan:
   enabled: true
   cli: codex

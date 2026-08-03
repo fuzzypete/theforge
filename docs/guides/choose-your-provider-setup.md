@@ -151,12 +151,17 @@ air-gapped environments). Uses Ollama for fully local inference.
 - Quality: lower (local models lag cloud frontier)
 - Privacy: all inference stays on your machine
 
+A local model is an ordinary **API transport** pointed at a local endpoint —
+there is no `local` provider and no `local` transport kind. The equivalent
+canonical `models:` declaration is in
+[Local Models](local-models.md#registry-shorthand).
+
 ```yaml
 profiles:
   dev:
-    provider: openai
+    provider: openai              # API transport…
     model: qwen2.5-coder:32b      # strong local coding model
-    base_url: http://localhost:11434/v1
+    base_url: http://localhost:11434/v1   # …pointed at a local endpoint
     budget_usd: 0                  # no cost tracking for local
     timeout_seconds: 1800          # local models are slower — increase timeout
     allowed_tools: [Read, Edit, Write, Bash, Glob, Grep]

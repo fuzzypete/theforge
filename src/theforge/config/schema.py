@@ -14,7 +14,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from .types import ApiFallbackConfig
+from .types import TransportFallbackConfig
 
 if TYPE_CHECKING:
     from .models import TransportSpec
@@ -24,11 +24,10 @@ if TYPE_CHECKING:
 class ModelRef:
     """Transport/model atom — reusable core of every phase config.
 
-    Dispatch reads the embedded TransportSpec. ``cli`` and ``provider`` remain
-    as identity fields (provider keys auth and pricing; cli identifies the
-    binary for CLI dispatch). The XOR constraint between them is no longer
-    enforced — TransportSpec.kind is the single source of truth for how a
-    ref is executed, and is auto-populated from cli/provider when omitted.
+    Dispatch reads the embedded TransportSpec, and only that. ``cli`` and
+    ``provider`` are raw-input spellings normalized into a transport once at
+    construction; ``cli`` is then a derived mirror of that transport so the two
+    can never disagree.
 
     Adding a new model-backed phase requires only a new wrapper dataclass that
     embeds a ModelRef — no transport fields are copy-pasted.
@@ -37,7 +36,7 @@ class ModelRef:
     model: str
     budget_usd: float
     timeout_seconds: int
-    # Transport — exactly one of cli/provider should be set
+    # Raw-input transport spelling; normalized into ``transport`` below.
     cli: str | None = None
     provider: str | None = None
     # Optional: preference fallbacks
@@ -51,7 +50,7 @@ class ModelRef:
     base_url: str | None = None  # override provider endpoint (Ollama, etc.)
     max_iterations: int | None = None  # override default agent loop iterations
     max_tool_output_bytes: int = 51200  # cap for tool output (50 KB default)
-    api_fallback: ApiFallbackConfig | None = None  # CLI-only same-provider API fallback
+    api_fallback: TransportFallbackConfig | None = None  # CLI-only same-provider API fallback
     registry_id: str | None = None  # canonical model registry key, when sourced from a registry
     registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     # Explicit TransportSpec — carried through derive_roles → bridge → ModelProfile
@@ -59,12 +58,27 @@ class ModelRef:
     transport: TransportSpec | None = None
 
     def __post_init__(self) -> None:
-        if self.transport is None and (self.cli or self.provider):
-            from .models import infer_transport
+        """Normalize the raw cli/provider spelling into a canonical transport."""
+        from .types import _normalize_transport
 
-            inferred = infer_transport(self.cli, self.provider)
-            if inferred is not None:
-                object.__setattr__(self, "transport", inferred)
+        transport = _normalize_transport(self.cli, self.provider, self.transport)
+        if transport is not self.transport:
+            object.__setattr__(self, "transport", transport)
+        if transport is not None:
+            mirrored = transport.runner if transport.kind == "cli" else None
+            if mirrored != self.cli:
+                object.__setattr__(self, "cli", mirrored)
+
+    @property
+    def provider_family(self) -> str | None:
+        """Provider identity for both transports (see ModelProfile.provider_family)."""
+        if self.provider is not None:
+            return self.provider
+        if self.transport is not None:
+            from .models import provider_for_transport
+
+            return provider_for_transport(self.transport)
+        return None
 
 
 @dataclass(frozen=True)

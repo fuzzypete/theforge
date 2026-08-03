@@ -15,6 +15,12 @@ from theforge.config import (
     TransportSpec,
     resolve_agent_spec,
 )
+from theforge.config.models import (
+    RoutingPolicy,
+    canonical_id_for_spec,
+    is_canonical_model_id,
+    transport_for,
+)
 from theforge.config.role_derivation import derive_roles
 from theforge.runners.cli import _profile_transport_kind
 
@@ -49,28 +55,33 @@ class TestAgentRegistry:
             assert isinstance(spec, AgentSpec), key
             assert isinstance(spec.transport, TransportSpec), key
 
+    def test_every_key_is_a_canonical_identity(self):
+        """Keys are provider/model/transport-kind — never a provider-like prefix."""
+        for key, spec in AGENT_REGISTRY.items():
+            assert is_canonical_model_id(key), key
+            assert key == canonical_id_for_spec(spec), key
+
     def test_cli_backed_models_resolve_to_cli_transport(self):
-        for key in ("claude/sonnet", "claude/opus", "openai/gpt-5.4"):
+        for key in ("anthropic/sonnet/cli", "anthropic/opus/cli", "openai/gpt-5.4/cli"):
             assert AGENT_REGISTRY[key].transport.kind == "cli"
 
     def test_api_backed_models_resolve_to_api_transport(self):
-        for key in ("deepseek/deepseek-reasoner", "deepseek/deepseek-chat"):
+        for key in ("deepseek/deepseek-reasoner/api", "deepseek/deepseek-chat/api"):
             assert AGENT_REGISTRY[key].transport.kind == "api"
 
     def test_openai_api_transport_entries_exist(self):
-        """Operators can explicitly select the OpenAI API transport (not Codex CLI)."""
-        for key in ("openai-api/gpt-5.4", "openai-api/gpt-5.4-mini", "openai-api/gpt-5.4-pro"):
+        """Operators select the OpenAI API transport by transport kind, not a prefix."""
+        for key in ("openai/gpt-5.4/api", "openai/gpt-5.4-mini/api", "openai/gpt-5.4-pro/api"):
             spec = AGENT_REGISTRY[key]
             assert spec.transport.kind == "api"
             assert spec.transport.runner == "openai"
             assert spec.provider == "openai"
 
-    def test_google_entries_default_to_api_transport(self):
-        """Plain google/ entries select the Google API transport."""
+    def test_google_api_and_cli_entries_are_distinct_identities(self):
         for key in (
-            "google/gemini-2.5-pro",
-            "google/gemini-3-flash-preview",
-            "google/gemini-3.1-pro-preview",
+            "google/gemini-2.5-pro/api",
+            "google/gemini-3-flash-preview/api",
+            "google/gemini-3.1-pro-preview/api",
         ):
             spec = AGENT_REGISTRY[key]
             assert spec.transport.kind == "api"
@@ -78,16 +89,32 @@ class TestAgentRegistry:
             assert spec.provider == "google"
 
     def test_gemini_cli_transport_entries_exist(self):
-        """Operators can explicitly opt into Gemini CLI transport."""
+        """Operators opt into the Gemini CLI via transport kind, not a 'gemini-cli/' prefix."""
         for key in (
-            "gemini-cli/gemini-2.5-pro",
-            "gemini-cli/gemini-3-flash-preview",
-            "gemini-cli/gemini-3.1-pro-preview",
+            "google/gemini-2.5-pro/cli",
+            "google/gemini-3-flash-preview/cli",
+            "google/gemini-3.1-pro-preview/cli",
         ):
             spec = AGENT_REGISTRY[key]
             assert spec.transport.kind == "cli"
             assert spec.transport.executable == "gemini"
             assert spec.provider == "google"
+
+    def test_local_models_are_api_transports_with_base_url(self):
+        """AC5: locality is endpoint metadata on an API transport."""
+        for model in ("codestral", "deepseek-coder", "llama3.1", "qwen2.5-coder"):
+            spec = AGENT_REGISTRY[f"openai/{model}/api"]
+            assert spec.transport.kind == "api"
+            assert spec.provider == "openai"
+            assert spec.base_url is not None
+            assert "localhost" in spec.base_url
+
+    def test_no_local_provider_or_transport_kind(self):
+        """AC5: there is no 'local/' provider and no 'local' transport kind."""
+        for key, spec in AGENT_REGISTRY.items():
+            assert not key.startswith("local/"), key
+            assert spec.transport.kind in ("cli", "api"), key
+            assert spec.provider != "local", key
 
     def test_deepseek_openai_google_and_all_cli_models_expressible(self):
         """AC: DeepSeek, OpenAI, Google, and CLI-backed models are all expressible."""
@@ -97,8 +124,18 @@ class TestAgentRegistry:
     def test_model_registry_is_derived_from_agent_registry(self):
         assert set(MODEL_REGISTRY) == set(AGENT_REGISTRY)
 
+    def test_resolve_agent_spec_normalizes_legacy_prefix_aliases(self):
+        """Legacy spellings resolve, and land on the canonical identity."""
+        assert resolve_agent_spec("openai-api/gpt-5.4") is AGENT_REGISTRY["openai/gpt-5.4/api"]
+        assert resolve_agent_spec("openai/gpt-5.4") is AGENT_REGISTRY["openai/gpt-5.4/cli"]
+        assert (
+            resolve_agent_spec("gemini-cli/gemini-2.5-pro")
+            is AGENT_REGISTRY["google/gemini-2.5-pro/cli"]
+        )
+        assert resolve_agent_spec("claude/opus") is AGENT_REGISTRY["anthropic/opus/cli"]
+
     def test_resolve_agent_spec_known(self):
-        spec = resolve_agent_spec("deepseek/deepseek-reasoner")
+        spec = resolve_agent_spec("deepseek/deepseek-reasoner/api")
         assert spec.provider == "deepseek"
         assert spec.transport.kind == "api"
         assert spec.transport.runner == "deepseek"
@@ -118,21 +155,16 @@ class TestAddingNewApiModelIsSingleEntry:
             provider="openai",
             model="fake-api-model",
             transport=TransportSpec(kind="api", runner="openai"),
-            tier="fast",
-            capability=7,
-            cost_rank=1,
+            routing=RoutingPolicy(tier="fast", capability=7, cost_rank=1),
         )
         from theforge.config.models import _spec_to_model_info
 
-        monkeypatch.setitem(AGENT_REGISTRY, "openai/fake-api-model", new_spec)
-        monkeypatch.setitem(
-            MODEL_REGISTRY,
-            "openai/fake-api-model",
-            _spec_to_model_info(new_spec),
-        )
+        key = "openai/fake-api-model/api"
+        monkeypatch.setitem(AGENT_REGISTRY, key, new_spec)
+        monkeypatch.setitem(MODEL_REGISTRY, key, _spec_to_model_info(key, new_spec))
 
         assignment = derive_roles(
-            ["openai/fake-api-model", "claude/opus"],
+            [key, "anthropic/opus/cli"],
             budget_usd=10.0,
         )
         # Dev role picks cheapest (our fake-api-model at cost_rank=1)
@@ -150,7 +182,7 @@ class TestRoleDerivationDoesNotBranchOnCliIdentity:
         # If role derivation branched on CLI identity it might prefer CLI for dev,
         # but it must pick the cheapest — the API-backed deepseek-chat.
         assignment = derive_roles(
-            ["deepseek/deepseek-chat", "claude/opus"],
+            ["deepseek/deepseek-chat/api", "anthropic/opus/cli"],
             budget_usd=10.0,
         )
         assert assignment.dev.ref.model == "deepseek-chat"
@@ -164,13 +196,13 @@ class TestPhaseEligibilityFiltersCandidates:
     def test_pro_model_excluded_from_preflight(self):
         # gpt-5.4-pro is not eligible for preflight; with sonnet present preflight
         # must pick a non-pro candidate.
-        ra = derive_roles(["claude/sonnet", "openai-api/gpt-5.4-pro"], budget_usd=10.0)
+        ra = derive_roles(["anthropic/sonnet/cli", "openai/gpt-5.4-pro/api"], budget_usd=10.0)
         assert ra.preflight.ref.model != "gpt-5.4-pro"
 
     def test_single_ineligible_model_falls_back(self):
         # When the pool is exhausted by eligibility, fall back to the full pool
         # rather than leaving the phase unassigned.
-        ra = derive_roles(["openai-api/gpt-5.4-pro"], budget_usd=10.0)
+        ra = derive_roles(["openai/gpt-5.4-pro/api"], budget_usd=10.0)
         assert ra.preflight.ref.model == "gpt-5.4-pro"
 
 
@@ -181,7 +213,9 @@ class TestTransportPropagatesToProfile:
     def test_api_transport_reaches_profile(self):
         from theforge.config.bridge import role_assignment_to_profiles
 
-        ra = derive_roles(["deepseek/deepseek-reasoner", "claude/opus"], budget_usd=10.0)
+        ra = derive_roles(
+            ["deepseek/deepseek-reasoner/api", "anthropic/opus/cli"], budget_usd=10.0
+        )
         profiles = role_assignment_to_profiles(ra)
         dev_profile = profiles["dev_profile"]
         assert dev_profile.transport is not None
@@ -215,14 +249,12 @@ class TestRunnerDispatchUsesTransportKind:
         p = self._profile(provider="openai", model="gpt-4o")
         assert _profile_transport_kind(p) == "api"
 
-    def test_explicit_transport_spec_wins_over_legacy_inference(self):
-        """When a ModelProfile carries a TransportSpec, dispatch reads its kind
-        directly instead of inferring from cli/provider fields."""
-        # Profile with cli set but transport explicitly api: transport wins.
+    def test_explicit_transport_spec_is_the_dispatch_source_of_truth(self):
+        """A ModelProfile's TransportSpec — not its provider token — decides dispatch."""
         api_transport = TransportSpec(kind="api", runner="openai")
         p = ModelProfile(
             name="t",
-            cli="codex",  # legacy inference would say "cli"
+            cli=None,
             provider=None,
             model="gpt-5.4",
             budget_usd=1.0,
@@ -231,6 +263,19 @@ class TestRunnerDispatchUsesTransportKind:
             transport=api_transport,
         )
         assert _profile_transport_kind(p) == "api"
+        assert p.transport is api_transport
+
+    def test_conflicting_raw_cli_redevives_transport_rather_than_diverging(self):
+        """``replace(profile, cli=...)`` must move the transport, not leave it stale."""
+        from dataclasses import replace
+
+        p = self._profile(cli="claude", model="sonnet")
+        swapped = replace(p, cli="codex", model="gpt-5.4")
+        assert swapped.transport is not None
+        assert swapped.transport.runner == "codex"
+        assert _profile_transport_kind(swapped) == "cli"
+        # cli always mirrors the transport it dispatches through.
+        assert swapped.cli == swapped.transport.runner
 
 
 class TestCheckConfigSeparateColumns:
@@ -239,16 +284,22 @@ class TestCheckConfigSeparateColumns:
     def test_split_provider_transport_cli(self):
         from theforge.cli.check_config import _split_provider_transport
 
-        assert _split_provider_transport("claude", None) == ("anthropic", "cli:claude")
-        assert _split_provider_transport("codex", None) == ("openai", "cli:codex")
-        assert _split_provider_transport("gemini", None) == ("google", "cli:gemini")
+        for provider, runner in (
+            ("anthropic", "claude"),
+            ("openai", "codex"),
+            ("google", "gemini"),
+        ):
+            transport = transport_for(provider, "cli")
+            assert _split_provider_transport(None, transport) == (provider, f"cli:{runner}")
 
     def test_split_provider_transport_api(self):
         from theforge.cli.check_config import _split_provider_transport
 
-        assert _split_provider_transport(None, "deepseek") == ("deepseek", "api")
-        assert _split_provider_transport(None, "openai") == ("openai", "api")
-        assert _split_provider_transport(None, "google") == ("google", "api")
+        for provider in ("deepseek", "openai", "google"):
+            assert _split_provider_transport(provider, transport_for(provider, "api")) == (
+                provider,
+                "api",
+            )
 
 
 class TestNoProviderPrefixGuessingInConfigLoad:

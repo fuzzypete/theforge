@@ -27,7 +27,7 @@ from theforge.assignment import (
     MECHANISM_RUN_SCOPED_RESET,
 )
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile, apply_model_info
-from theforge.config.profiles import _apply_provider_fallback
+from theforge.config.profiles import _apply_transport_fallback
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.plan_finding_classifier import (
     format_provenance,
@@ -746,7 +746,7 @@ def _run_plan_phase(
 
         _fast_profile = config.dev_profile
         if "opus" in config.dev_profile.model.lower():
-            _sonnet_info = MODEL_REGISTRY.get("claude/sonnet")
+            _sonnet_info = MODEL_REGISTRY.get("anthropic/sonnet/cli")
             if _sonnet_info is not None:
                 _fast_profile = apply_model_info(config.dev_profile, _sonnet_info)
         _sv_result = validate_story(
@@ -849,7 +849,7 @@ def _run_plan_phase(
             timeout_seconds=_plan_timeout,
             allowed_tools=config.preflight_profile.allowed_tools,
         )
-        plan_profile = _apply_provider_fallback(plan_profile, config.provider_fallbacks)
+        plan_profile = _apply_transport_fallback(plan_profile, config.transport_fallbacks)
     if state_update_fn is not None:
         state_update_fn(
             {
@@ -1096,7 +1096,7 @@ def _run_plan_agent_review(
         _log(f"  [adaptive] plan_reviewers: {', '.join(p.model for p in par_profiles)}")
     else:
         par_profiles = [
-            _apply_provider_fallback(profile, config.provider_fallbacks)
+            _apply_transport_fallback(profile, config.transport_fallbacks)
             for profile in config.plan_agent_review.profiles
         ]
     _pool_names = [p.name for p in par_profiles]

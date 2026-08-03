@@ -311,14 +311,24 @@ def _normalize_band(complexity: str | None) -> str:
 
 
 def _provider_from_cli(cli: str | None) -> str | None:
-    return {
-        "claude": "anthropic",
-        "codex": "openai",
-        "gemini": "google",
-    }.get((cli or "").strip().lower() or "")
+    """Map a recorded CLI runner name to its provider family.
+
+    Delegates to the config registry so there is one such mapping in the
+    codebase rather than a copy that can drift from it.
+    """
+    from theforge.config.models import provider_for_cli_runner
+
+    return provider_for_cli_runner((cli or "").strip().lower() or None)
 
 
 def _transport_from_identity(provider: str | None, cli: str | None) -> str | None:
+    """Classify a *recorded run's* transport from what the runner reported.
+
+    This reads attempt telemetry, not configuration: by the time an attempt is
+    recorded the dispatch decision has already been made from the profile's
+    TransportSpec, and ``cli`` is that transport's runner name. Nothing here
+    feeds dispatch.
+    """
     if cli:
         return "cli"
     if provider:
@@ -2103,11 +2113,13 @@ def _infer_identity_from_key(model_key: str) -> tuple[str, str] | None:
 
 def _resolve_agent_spec_for_profile_key(model_key: str) -> Any | None:
     try:
-        from theforge.config.models import AGENT_REGISTRY, resolve_agent_spec
+        from theforge.config.models import known_raw_model_key_prefixes, resolve_agent_spec
     except Exception:  # noqa: BLE001
         return None
     candidates = [model_key]
-    prefixes = {key.split("/", 1)[0] for key in AGENT_REGISTRY}
+    # Legacy storage keys are dash-joined raw keys, so the legacy provider-prefix
+    # spellings have to be tried too — resolve_agent_spec normalizes them.
+    prefixes = known_raw_model_key_prefixes()
     for prefix in sorted(prefixes, key=len, reverse=True):
         if model_key.startswith(f"{prefix}-"):
             candidates.append(f"{prefix}/{model_key[len(prefix) + 1 :]}")

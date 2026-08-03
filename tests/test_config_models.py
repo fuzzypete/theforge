@@ -211,7 +211,8 @@ class TestModelsKeyConfig:
         )
         config = load_config(config_path)
         assert config.project == "smart-test"
-        assert config.models == ["claude/sonnet", "claude/opus"]
+        # Legacy spellings normalize to canonical identities at the load boundary.
+        assert config.models == ["anthropic/sonnet/cli", "anthropic/opus/cli"]
         assert config.dev_profile.model == "sonnet"
         assert len(config.review_pool) == 1
         assert config.review_pool[0].model == "opus"
@@ -279,20 +280,24 @@ class TestModelsKeyConfig:
         assert all(p.cli is None for p in profiles)
 
     def test_explicit_gemini_cli_override_routes_via_cli(self):
-        """Regression: gemini-cli/... remains an honest explicit CLI opt-in."""
+        """The CLI transport is selected by transport kind, not a 'gemini-cli/' prefix."""
         from theforge.cli.check_config import _split_provider_transport
 
-        agents = _agents_from_models(["gemini-cli/gemini-3.1-pro-preview"], 50.0)
+        key = "google/gemini-3.1-pro-preview/cli"
+        agents = _agents_from_models([key], 50.0)
         assert len(agents) == 1
         assert agents[0].provider is None
         assert agents[0].cli == "gemini"
 
-        dev, _preflight, _pool, _synthesis = _auto_assign_models(
-            ["gemini-cli/gemini-3.1-pro-preview"], 50.0
+        dev, _preflight, _pool, _synthesis = _auto_assign_models([key], 50.0)
+        assert dev.transport is not None
+        assert dev.transport.kind == "cli"
+        assert dev.transport.runner == "gemini"
+        assert dev.provider_family == "google"
+        assert _split_provider_transport(dev.provider_family, dev.transport) == (
+            "google",
+            "cli:gemini",
         )
-        assert dev.cli == "gemini"
-        assert dev.provider is None
-        assert _split_provider_transport(dev.cli, dev.provider) == ("google", "cli:gemini")
 
     def test_models_with_profile_override(self, tmp_path):
         """Explicit overrides overlay auto-assigned values (v0.8: overrides: key)."""
@@ -482,7 +487,7 @@ class TestModelsKeyReviewPoolOverride:
                 "budget_usd": 50.0,
                 "overrides": {
                     "review_pool": [
-                        {"name": "claude-opus", "budget_usd": 99.0},
+                        {"name": "anthropic-opus-cli", "budget_usd": 99.0},
                     ],
                 },
             },
@@ -501,7 +506,7 @@ class TestModelsKeyReviewPoolOverride:
                 "budget_usd": 50.0,
                 "overrides": {
                     "review_pool": [
-                        {"name": "claude-opus", "timeout_seconds": 600},
+                        {"name": "anthropic-opus-cli", "timeout_seconds": 600},
                     ],
                 },
             },
@@ -722,10 +727,10 @@ class TestLocalModelRegistry:
     """The four local model keys must be present in MODEL_REGISTRY with correct metadata."""
 
     LOCAL_KEYS = [
-        "openai/codestral",
-        "openai/deepseek-coder",
-        "openai/llama3.1",
-        "openai/qwen2.5-coder",
+        "openai/codestral/api",
+        "openai/deepseek-coder/api",
+        "openai/llama3.1/api",
+        "openai/qwen2.5-coder/api",
     ]
 
     def test_all_local_keys_present(self):
@@ -740,10 +745,14 @@ class TestLocalModelRegistry:
         for key in self.LOCAL_KEYS:
             assert MODEL_REGISTRY[key].dev_capable is True, f"{key} should be dev_capable"
 
-    def test_local_models_provider_prefix_is_openai(self):
-        """'openai/' prefix ensures routing through the existing OpenAI adapter."""
+    def test_local_models_are_api_transports_with_localhost_base_url(self):
+        """Locality is endpoint metadata on an API transport, not a prefix or kind."""
         for key in self.LOCAL_KEYS:
-            assert key.startswith("openai/"), f"{key} must use 'openai/' prefix"
+            info = MODEL_REGISTRY[key]
+            assert info.transport is not None
+            assert info.transport.kind == "api"
+            assert info.provider == "openai"
+            assert info.base_url is not None and "localhost" in info.base_url
 
 
 class TestCurrentGenModelRegistry:
@@ -762,7 +771,7 @@ class TestCurrentGenModelRegistry:
         ),
         [
             (
-                "google/gemini-3-flash-preview",
+                "google/gemini-3-flash-preview/api",
                 None,
                 "google",
                 "gemini-3-flash-preview",
@@ -772,7 +781,7 @@ class TestCurrentGenModelRegistry:
                 True,
             ),
             (
-                "google/gemini-3.1-pro-preview",
+                "google/gemini-3.1-pro-preview/api",
                 None,
                 "google",
                 "gemini-3.1-pro-preview",
@@ -782,7 +791,7 @@ class TestCurrentGenModelRegistry:
                 True,
             ),
             (
-                "gemini-cli/gemini-3.1-pro-preview",
+                "google/gemini-3.1-pro-preview/cli",
                 "gemini",
                 None,
                 "gemini-3.1-pro-preview",
@@ -792,7 +801,7 @@ class TestCurrentGenModelRegistry:
                 False,
             ),
             (
-                "deepseek/deepseek-reasoner",
+                "deepseek/deepseek-reasoner/api",
                 None,
                 "deepseek",
                 "deepseek-reasoner",
@@ -802,7 +811,7 @@ class TestCurrentGenModelRegistry:
                 True,
             ),
             (
-                "openai/gpt-5.4-mini",
+                "openai/gpt-5.4-mini/cli",
                 "codex",
                 None,
                 "gpt-5.4-mini",
@@ -812,7 +821,7 @@ class TestCurrentGenModelRegistry:
                 True,
             ),
             (
-                "openai/gpt-5.4-pro",
+                "openai/gpt-5.4-pro/cli",
                 "codex",
                 None,
                 "gpt-5.4-pro",
