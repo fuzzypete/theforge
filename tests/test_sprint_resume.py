@@ -1085,7 +1085,12 @@ class TestResumeSprintIntegration:
         assert by_slug["feature-a"]["cost_usd"] == pytest.approx(3.5)
         assert by_slug["feature-a"]["started_at"] == expected_started_at
         assert by_slug["feature-a"]["finished_at"] == expected_finished_at
-        assert by_slug["feature-a"]["outcome_source"] == "resume_skip_merged"
+        # #2150: the prior generation of *this* sprint ran feature-a to DONE and
+        # paid $3.50 for it. A post-re-exec triage observing the branch as merged
+        # must not relabel that as pre-existing work — the recorded execution is
+        # the authoritative account, so the row keeps DONE and no source tag.
+        assert by_slug["feature-a"]["outcome"] == "DONE"
+        assert by_slug["feature-a"]["outcome_source"] is None
 
     def test_fresh_sprint_persists_progressive_story_state_for_later_reexec(
         self, tmp_path: Path
