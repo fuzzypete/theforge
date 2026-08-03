@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import functools
 import platform
 import re
 import subprocess
 import threading
 import time
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import replace as _dc_replace
 from pathlib import Path
 
@@ -24,8 +25,10 @@ from theforge.sessions import save_sessions
 from theforge.task import (
     ContextAssembler,
     TaskStory,
+    build_batch_dev_prompt,
     build_dev_prompt,
     build_fix_prompt,
+    render_batch_spec_section,
     render_verification_section,
 )
 from theforge.traces import write_trace
@@ -709,6 +712,18 @@ def _resolve_dev_sandbox_capabilities(config: ForgeConfig) -> dict:
         return payload
 
 
+def _dev_prompt_builder(task: TaskStory) -> "Callable[..., str]":
+    """Pick the dev prompt builder for this task.
+
+    A batch-group leader gets the multi-spec builder; every other story keeps
+    the single-story one. Selected by the presence of ``batch_members`` rather
+    than by a flag so an unbatched run cannot accidentally take the batch path.
+    """
+    if task.batch_members:
+        return functools.partial(build_batch_dev_prompt, members=task.batch_members)
+    return build_dev_prompt
+
+
 def _run_dev_phase(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -727,6 +742,12 @@ def _run_dev_phase(
     Mutates state in-place (appends dev_results, updates dev_session_id, etc.).
     """
     _ensure_runners()
+    # Cost-aware batch group (#727): the shared dev pass is told about every
+    # member story, not just the leader whose slug owns the worktree. Everything
+    # downstream of the prompt — validation, review, cost, audit — stays
+    # per-story; only the DEV assignment is shared.
+    if task.batch_members:
+        story_content = render_batch_spec_section(task.batch_members)
     state.pending_dev_transport_retry_count = 0
     state.pending_dev_transport_retry_events = []
     state.pending_dev_verification_requests = []
@@ -964,7 +985,7 @@ def _run_dev_phase(
                 file_list=plan_file_list(state.plan_structured) or None,
             )
             state.context_manifests.append({"phase": "dev", "manifest": dev_context})
-            prompt = build_dev_prompt(
+            prompt = _dev_prompt_builder(task)(
                 task,
                 workspace_path=workspace_path,
                 branch_name=branch_name,
@@ -1011,7 +1032,7 @@ def _run_dev_phase(
                 file_list=plan_file_list(state.plan_structured) or None,
             )
             state.context_manifests.append({"phase": "dev", "manifest": dev_context})
-            prompt = build_dev_prompt(
+            prompt = _dev_prompt_builder(task)(
                 task,
                 workspace_path=workspace_path,
                 branch_name=branch_name,

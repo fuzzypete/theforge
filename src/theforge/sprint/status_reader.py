@@ -23,6 +23,9 @@ class StoryStatusEntry:
     cost_usd: float | None
     blocked_by: list[str] = field(default_factory=list)
     bundle_candidate: bool = False
+    # Cost-aware batch group id (#727), or None. Rendered separately from
+    # conflict bundles — the two primitives mean different things.
+    batch_group: str | None = None
     elapsed_seconds: float | None = None
     stage: str = ""
     detail: str = ""
@@ -799,8 +802,10 @@ def _stage_and_detail_from_completed_story(
 def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
     """Parse a sprint-summary.yaml and return per-story status entries.
 
-    Enriches each entry with ``bundle_candidate`` read from the per-story
-    coordinator audit at ``<sprint-log-dir>/<slug>/audit.yaml``.
+    Enriches each entry with ``bundle_candidate`` and ``batch_group`` read from
+    the per-story coordinator audit at ``<sprint-log-dir>/<slug>/audit.yaml``.
+    The summary entry wins for ``batch_group`` when it carries one; the audit is
+    the fallback for summaries written before the story's group was stamped.
     """
     try:
         with open(summary_path, encoding="utf-8") as f:
@@ -831,6 +836,12 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
         )
 
         bundle_candidate = False
+        _summary_batch_group = story.get("batch_group")
+        batch_group = (
+            _summary_batch_group
+            if isinstance(_summary_batch_group, str) and _summary_batch_group
+            else None
+        )
         complexity = None
         complexity_score: int | None = None
         audit_data: dict | None = None
@@ -844,6 +855,8 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                         preflight = audit_data.get("preflight")
                         if isinstance(preflight, dict):
                             bundle_candidate = bool(preflight.get("bundle_candidate", False))
+                            if batch_group is None:
+                                batch_group = _nonempty_str(preflight.get("batch_group"))
                             complexity = _normalize_complexity(preflight.get("complexity"))
                             complexity_score = _normalize_complexity_score(
                                 preflight.get("complexity_score")
@@ -871,6 +884,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 cost_usd=cost_usd,
                 blocked_by=blocked_by,
                 bundle_candidate=bundle_candidate,
+                batch_group=batch_group,
                 elapsed_seconds=_elapsed_seconds_from_bounds(
                     story.get("started_at"),
                     story.get("finished_at"),
@@ -977,6 +991,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 cost_usd=_story_cost_usd(story),
                 blocked_by=blocked_by_val,
                 bundle_candidate=bool(story.get("bundle_candidate", False)),
+                batch_group=_nonempty_str(story.get("batch_group")),
                 elapsed_seconds=_elapsed_seconds_from_live_story(story),
                 stage=stage,
                 detail=detail,
@@ -1015,6 +1030,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                     cost_usd=_story_cost_usd(story),
                     blocked_by=depends_on,
                     bundle_candidate=False,
+                    batch_group=_nonempty_str(story.get("batch_group")),
                     elapsed_seconds=_elapsed_seconds_from_bounds(
                         story.get("started_at"),
                         story.get("finished_at"),
