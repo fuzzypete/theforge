@@ -93,6 +93,7 @@ MECHANISM_DEV_PROMOTION = "_check_promotion"
 MECHANISM_DEV_RECENCY_RECOVERY = "dev_recency_recovery"
 MECHANISM_POST_PLAN_DEMOTION = "post_plan_checkpoint"
 MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE = "reviewer_completion_rate"
+MECHANISM_REVIEWER_COMPLETION_REINCLUSION = "reviewer_completion_reinclusion"
 MECHANISM_PERSISTENT_P1_DEV_ESCALATION = "persistent_p1_dev_escalation"
 MECHANISM_PLAN_MODEL_ESCALATION = "plan_model_escalation"
 MECHANISM_RUN_SCOPED_RESET = "fresh_run_state_reset"
@@ -172,21 +173,29 @@ ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
         demotion_test_token="recency_recovery",
     ),
     # Reviewer completion-rate deprioritization (#1388): a reviewer with a poor
-    # attempt-completion history is reranked down. The inverse — re-inclusion once
-    # subsequent attempts complete cleanly — is NOT yet landed; catalogued as an
-    # open follow-up (see docs/routing-symmetry-followups.md).
+    # attempt-completion history is reranked down. Its PAIRED return path is the
+    # K-consecutive-clean-attempts re-inclusion rule (#1880): once the newest K
+    # attempt outcomes are all clean (K = the completion sample floor), the
+    # reviewer is restored to normal ranking even while stale failures still drag
+    # the recency-weighted rate under threshold. Recorded — fired or merely
+    # checked — in the nested completion_check.reinclusion_check block (clause 7).
     RoutingSymmetryPair(
         promotion=RoutingMechanism(
             name=MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE,
             symbol="theforge.assignment._reviewer_completion_check",
             audit_label="completion_check",
         ),
-        demotion=None,
+        demotion=RoutingMechanism(
+            name=MECHANISM_REVIEWER_COMPLETION_REINCLUSION,
+            symbol="theforge.assignment._rerank_reviewers_by_completion",
+            audit_label="reinclusion_check",
+        ),
         promotion_tests=("tests/test_assignment_reviewer_completion.py",),
+        demotion_tests=("tests/test_assignment_reviewer_completion.py",),
         # Exercised via assign_models/_select_reviewers, not by calling the
         # audit-block builder directly, so grep for the mechanism token.
         promotion_test_token="completion",
-        open_followup="reviewer-reinclusion",
+        demotion_test_token="reinclusion_check",
     ),
     # In-run persistent-P1 dev escalation (#296): a repeated P1 across
     # consecutive review cycles upgrades the dev model for the current run only.
@@ -802,6 +811,17 @@ def _rerank_reviewers_by_completion(
     is not deprioritized and ordering falls through to the incoming tier/budget/
     cross-provider order. The sort is stable on the original index, so ties (and
     every non-deprioritized reviewer) keep the existing ordering exactly.
+
+    **Re-inclusion (#1880).** The deprioritization is not a one-way ratchet. Its
+    registered inverse is an explicit *K-consecutive-clean-attempts* recovery
+    rule: a below-threshold reviewer whose newest ``K`` attempt outcomes are all
+    clean is restored to normal ranking even while its stale failures still drag
+    the recency-weighted rate under ``threshold``. ``K`` is ``min_runs`` — the
+    same sample floor the deprioritization is gated on — so recovery needs no new
+    config surface and requires exactly as much fresh evidence as the
+    deprioritization required to fire. The recovery check is recorded in ``audit``
+    for *every* consulted reviewer (fired or merely checked), per the
+    routing-symmetry audit-attribution requirement (ADR-0006 clause 7).
     """
     if not model_profiles or not candidates:
         return candidates
@@ -809,6 +829,9 @@ def _rerank_reviewers_by_completion(
 
     rows: list[tuple[int, int, AgentDef]] = []
     deprioritized: list[str] = []
+    reincluded: list[str] = []
+    recovery_checked: dict[str, dict[str, object]] = {}
+    required_clean = max(int(min_runs), 1)
     for idx, agent in enumerate(candidates):
         signal = get_review_signal(
             model_profiles,
@@ -822,22 +845,40 @@ def _rerank_reviewers_by_completion(
         if signals_out is not None:
             signals_out[agent.name] = signal
         rate = signal["rate"]
-        is_low = signal["floor"] == "pass" and rate is not None and rate < threshold
+        recovery = signal.get("recovery") or {}
+        recovered = bool(recovery.get("recovered"))
+        below_threshold = signal["floor"] == "pass" and rate is not None and rate < threshold
+        # Re-inclusion (#1880): K consecutive clean attempts restore a
+        # below-threshold reviewer to normal ranking. Recorded for every
+        # consulted reviewer so the checked-but-didn't-fire path stays visible.
+        recovery_checked[agent.name] = {
+            "clean_streak": recovery.get("clean_streak", 0),
+            "clean_attempts_required": recovery.get("clean_attempts_required", required_clean),
+            "recovered": recovered,
+            "below_threshold": below_threshold,
+        }
+        is_low = below_threshold and not recovered
         if is_low:
             deprioritized.append(agent.name)
+        elif below_threshold:
+            reincluded.append(agent.name)
         rows.append((1 if is_low else 0, idx, agent))
 
     reranked = [row[2] for row in sorted(rows, key=lambda r: (r[0], r[1]))]
     if audit is not None:
         original_order = [a.name for a in candidates]
         final_order = [a.name for a in reranked]
-        audit["mechanism"] = "reviewer_completion_rate"
+        audit["mechanism"] = MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE
         audit["threshold"] = threshold
         audit["min_runs"] = min_runs
         audit["applied"] = original_order != final_order
         audit["deprioritized"] = deprioritized
         audit["original_order"] = original_order
         audit["final_order"] = final_order
+        audit["reinclusion_mechanism"] = MECHANISM_REVIEWER_COMPLETION_REINCLUSION
+        audit["reinclusion_clean_attempts_required"] = required_clean
+        audit["reincluded"] = reincluded
+        audit["reinclusion_checked"] = recovery_checked
     return reranked
 
 
@@ -1732,6 +1773,12 @@ def _reviewer_completion_check(
     sample-floor status, threshold result) for the reviewers it weighed so the
     decision stays reconstructable. Returns an empty dict when no reviewer profile
     was consulted (e.g. static routing / no profiles), which the caller omits.
+
+    The nested ``reinclusion_check`` block is the registered inverse's audit
+    attribution (#1880): whenever reviewer completion profiles were consulted it
+    records the K-consecutive-clean-attempts recovery rule, whether it fired, the
+    reviewers it restored, and the reviewers it merely checked — so the return
+    path is never a silent gap (ADR-0006 clause 7).
     """
     if not signals and not audit:
         return {}
@@ -1745,20 +1792,58 @@ def _reviewer_completion_check(
             "weighted": sig.get("weighted"),
             "rate": sig.get("rate"),
             "floor": sig.get("floor"),
+            "recovery": sig.get("recovery"),
             "selected": name in selected_names,
         }
     block: dict[str, object] = {
-        "mechanism": "reviewer_completion_rate",
+        "mechanism": MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE,
         "fired": fired,
         "threshold": audit.get("threshold") if audit else None,
         "min_runs": audit.get("min_runs") if audit else None,
         "deprioritized": (audit.get("deprioritized") if audit else None) or [],
         "signals": per_candidate,
+        "reinclusion_check": _reviewer_reinclusion_check(signals, audit),
     }
     if fired and audit:
         block["original_order"] = audit.get("original_order")
         block["final_order"] = audit.get("final_order")
     return block
+
+
+def _reviewer_reinclusion_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+) -> dict[str, object]:
+    """Build the reviewer re-inclusion audit sub-block (#1880, ADR-0006 c7).
+
+    The registered inverse of the completion-rate deprioritization. Present on
+    every ``completion_check`` (i.e. whenever reviewer completion profiles were
+    consulted), so an operator can always answer "did a deprioritized reviewer
+    recover this run, and if not, how close was it?" without grepping logs.
+    """
+    checked_meta = (audit or {}).get("reinclusion_checked") or {}
+    if not isinstance(checked_meta, dict):
+        checked_meta = {}
+    reincluded = list((audit or {}).get("reincluded") or [])
+    required = (audit or {}).get("reinclusion_clean_attempts_required")
+    if required is None:
+        required = (audit or {}).get("min_runs")
+    checked = sorted(checked_meta) if checked_meta else sorted(signals or {})
+    if reincluded:
+        reason = f"clean_attempt_streak_met: {', '.join(sorted(reincluded))}"
+    elif not checked:
+        reason = "no_reviewer_completion_signal_consulted"
+    else:
+        reason = "no_below_threshold_reviewer_met_clean_attempt_streak"
+    return {
+        "mechanism": MECHANISM_REVIEWER_COMPLETION_REINCLUSION,
+        "fired": bool(reincluded),
+        "clean_attempts_required": required,
+        "reincluded": sorted(reincluded),
+        "checked": checked,
+        "checked_detail": checked_meta,
+        "reason": reason,
+    }
 
 
 def _reviewer_value_check(
