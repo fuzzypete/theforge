@@ -13,6 +13,12 @@ if TYPE_CHECKING:
 
 SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
 
+# Auto-approve window for a human-in-the-loop gate (4 h). Declared once so the
+# typed default and the loader default (secrets.py) cannot drift apart: a
+# mismatch silently shortens live gate windows for anyone who never writes the
+# key into forge.yaml.
+DEFAULT_HITL_TIMEOUT_SECONDS = 14400
+
 
 def _normalize_transport(
     cli: str | None,
@@ -254,13 +260,6 @@ class SlackConfig:
 
 
 @dataclass(frozen=True)
-class EmailConfig:
-    """Stub for future email notification support (not yet implemented)."""
-
-    pass
-
-
-@dataclass(frozen=True)
 class BackendConfig:
     """Configuration for a single notification backend."""
 
@@ -279,9 +278,8 @@ class NotificationConfig:
     backend: str = "none"  # "none", "ntfy", "slack", "osascript"
     ntfy: NtfyConfig | None = None
     slack: SlackConfig | None = None
-    email: EmailConfig | None = None  # reserved for future use
     script: str | None = None  # path to custom notification script
-    human_review_timeout_seconds: int = 600  # 10 minutes — never block indefinitely
+    human_review_timeout_seconds: int = DEFAULT_HITL_TIMEOUT_SECONDS
     backends: tuple[BackendConfig, ...] = ()  # pluggable backend list
 
 
@@ -498,6 +496,79 @@ class TransportFallbackConfig:
 
 
 @dataclass(frozen=True)
+class ModelRef:
+    """Transport/model atom — reusable core of every model-backed phase config.
+
+    Dispatch reads the embedded TransportSpec, and only that. ``cli`` and
+    ``provider`` are raw-input spellings normalized into a transport once at
+    construction; ``cli`` is then a derived mirror of that transport so the two
+    can never disagree.
+
+    Adding a new model-backed phase requires only a new wrapper dataclass that
+    embeds a ModelRef — no transport fields are copy-pasted. This lives in
+    ``types.py`` rather than ``schema.py`` because both the config-domain role
+    types (``schema.py``) and the coordinator runtime types below compose it;
+    ``schema.py`` re-exports it for the config-domain spelling.
+
+    Note that :class:`TransportFallbackConfig` above deliberately does *not*
+    compose a ModelRef: a ModelRef *contains* one (``api_fallback``), so the
+    composition would be circular. The fallback is the leaf transport atom —
+    provider + model + timeout, no cli and no budget — not a duplicated phase
+    config.
+    """
+
+    model: str
+    budget_usd: float
+    timeout_seconds: int
+    # Raw-input transport spelling; normalized into ``transport`` below.
+    cli: str | None = None
+    provider: str | None = None
+    # Optional: preference fallbacks
+    fallback_models: tuple[str, ...] = ()
+    # Optional: complexity-dependent timeout overrides
+    timeout_medium_seconds: int | None = None
+    timeout_large_seconds: int | None = None
+    # Optional: provider-specific runtime controls
+    reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
+    thinking_budget: int | None = None  # Gemini ThinkingConfig token budget
+    base_url: str | None = None  # override provider endpoint (Ollama, etc.)
+    max_iterations: int | None = None  # override default agent loop iterations
+    max_tool_output_bytes: int = 51200  # cap for tool output (50 KB default)
+    api_fallback: TransportFallbackConfig | None = None  # CLI-only same-provider API fallback
+    registry_id: str | None = None  # canonical model registry key, when sourced from a registry
+    registry_source: str = "builtin"  # "builtin" | "forge.yaml"
+    # Explicit TransportSpec — carried through derive_roles → bridge → ModelProfile
+    # so runtime dispatch reads TransportSpec.kind rather than inferring from cli/provider.
+    transport: TransportSpec | None = None
+
+    def __post_init__(self) -> None:
+        """Normalize the raw cli/provider spelling into a canonical transport."""
+        transport = _normalize_transport(self.cli, self.provider, self.transport)
+        if transport is not self.transport:
+            object.__setattr__(self, "transport", transport)
+        if transport is not None:
+            mirrored = transport.runner if transport.kind == "cli" else None
+            if mirrored != self.cli:
+                object.__setattr__(self, "cli", mirrored)
+
+    @property
+    def mode(self) -> str:
+        """Transport kind for dispatch: 'cli' or 'api'."""
+        return self.transport.kind if self.transport is not None else "cli"
+
+    @property
+    def provider_family(self) -> str | None:
+        """Provider identity for both transports (see ModelProfile.provider_family)."""
+        if self.provider is not None:
+            return self.provider
+        if self.transport is not None:
+            from .models import provider_for_transport
+
+            return provider_for_transport(self.transport)
+        return None
+
+
+@dataclass(frozen=True)
 class DevVerificationCommand:
     """One project-declared verification command the dev agent may request by name.
 
@@ -689,6 +760,11 @@ class RetryPolicy:
     p2_cleanup_max_iterations: int = 0
 
 
+def _default_plan_ref() -> ModelRef:
+    """The PLAN phase's default transport/model atom (claude CLI, sonnet)."""
+    return ModelRef(cli="claude", model="sonnet", budget_usd=0.50, timeout_seconds=600)
+
+
 @dataclass(frozen=True)
 class PlanConfig:
     """Configuration for the PLAN phase (pre-DEV implementation planning).
@@ -696,48 +772,103 @@ class PlanConfig:
     Disabled by default; forge.yaml sets enabled: true to opt in.
     This keeps existing test configurations unaffected.
 
-    Identity and transport follow ModelProfile exactly: ``transport`` is the
-    dispatch source of truth, and the raw ``cli``/``provider`` spelling is
-    normalized into it once at construction.
+    Transport, model identity, budget and timeouts live in the composed
+    :class:`ModelRef` — this type owns only what is *specific to planning*
+    (``enabled``, ``validate_spec``). The scalar accessors below are read-only
+    views onto ``ref``, so there is exactly one place a plan's transport can be
+    written and no way for two copies to disagree. To change transport, replace
+    the ref: ``replace(plan, ref=replace(plan.ref, cli=None, provider="openai"))``.
     """
 
     enabled: bool = False
-    cli: str | None = "claude"  # derived mirror of transport (CLI binary name)
-    model: str = "sonnet"  # model identifier passed to the CLI or API
-    provider: str | None = None  # "anthropic", "openai", … (API transports)
-    budget_usd: float = 0.50
-    timeout: int = 600
-    timeout_medium: int | None = None  # override for medium complexity
-    timeout_large: int | None = None  # override for large complexity
+    ref: ModelRef = field(default_factory=_default_plan_ref)
     validate_spec: bool = True  # whether to run story_validator before planning
-    api_fallback: TransportFallbackConfig | None = None  # CLI→API transport fallback
-    transport: TransportSpec | None = None  # canonical transport; dispatch reads this
 
-    def __post_init__(self) -> None:
-        """Normalize the raw cli/provider spelling into a canonical transport."""
-        transport = _normalize_transport(self.cli, self.provider, self.transport)
-        if transport is not self.transport:
-            object.__setattr__(self, "transport", transport)
-        if transport is not None:
-            mirrored = transport.runner if transport.kind == "cli" else None
-            if mirrored != self.cli:
-                object.__setattr__(self, "cli", mirrored)
+    @classmethod
+    def of(
+        cls,
+        *,
+        enabled: bool = False,
+        cli: str | None = "claude",
+        model: str = "sonnet",
+        provider: str | None = None,
+        budget_usd: float = 0.50,
+        timeout: int = 600,
+        timeout_medium: int | None = None,
+        timeout_large: int | None = None,
+        validate_spec: bool = True,
+        api_fallback: TransportFallbackConfig | None = None,
+        transport: TransportSpec | None = None,
+    ) -> PlanConfig:
+        """Build a PlanConfig from the flat ``plan:`` spelling in forge.yaml.
+
+        forge.yaml declares planning transport as flat scalar keys; this is the
+        one place they are folded into a ModelRef, mirroring how
+        ``_normalize_transport`` folds cli/provider into a TransportSpec.
+        """
+        return cls(
+            enabled=enabled,
+            ref=ModelRef(
+                cli=cli,
+                provider=provider,
+                model=model,
+                budget_usd=budget_usd,
+                timeout_seconds=timeout,
+                timeout_medium_seconds=timeout_medium,
+                timeout_large_seconds=timeout_large,
+                api_fallback=api_fallback,
+                transport=transport,
+            ),
+            validate_spec=validate_spec,
+        )
+
+    @property
+    def cli(self) -> str | None:
+        """Derived mirror of the ref's transport (CLI binary name)."""
+        return self.ref.cli
+
+    @property
+    def model(self) -> str:
+        return self.ref.model
+
+    @property
+    def provider(self) -> str | None:
+        return self.ref.provider
+
+    @property
+    def budget_usd(self) -> float:
+        return self.ref.budget_usd
+
+    @property
+    def timeout(self) -> int:
+        return self.ref.timeout_seconds
+
+    @property
+    def timeout_medium(self) -> int | None:
+        return self.ref.timeout_medium_seconds
+
+    @property
+    def timeout_large(self) -> int | None:
+        return self.ref.timeout_large_seconds
+
+    @property
+    def api_fallback(self) -> TransportFallbackConfig | None:
+        return self.ref.api_fallback
+
+    @property
+    def transport(self) -> TransportSpec | None:
+        """Canonical transport; dispatch reads this."""
+        return self.ref.transport
 
     @property
     def mode(self) -> str:
         """Transport kind for dispatch: 'cli' or 'api'."""
-        return self.transport.kind if self.transport is not None else "cli"
+        return self.ref.mode
 
     @property
     def provider_family(self) -> str | None:
         """Provider identity for both transports (see ModelProfile.provider_family)."""
-        if self.provider is not None:
-            return self.provider
-        if self.transport is not None:
-            from .models import provider_for_transport
-
-            return provider_for_transport(self.transport)
-        return None
+        return self.ref.provider_family
 
 
 @dataclass(frozen=True)
@@ -749,6 +880,11 @@ class PlanReviewConfig:
     timeout_seconds: int = 14400  # advisory: auto-approve after this many seconds (4 h)
 
 
+def _default_plan_review_ref() -> ModelRef:
+    """The plan-agent-review default transport/model atom (claude CLI, sonnet)."""
+    return ModelRef(cli="claude", model="sonnet", budget_usd=0.50, timeout_seconds=300)
+
+
 @dataclass(frozen=True)
 class PlanAgentReviewConfig:
     """Configuration for automated agent review of plans before dev.
@@ -756,48 +892,100 @@ class PlanAgentReviewConfig:
     When enabled, takes precedence over PlanReviewConfig (human review).
     They are mutually exclusive — agent review replaces human review.
 
-    Supports both legacy single-profile format (scalar fields) and a new
-    pool format (list of ModelProfile objects). Use the ``profiles`` property
-    to get the canonical pool regardless of which format was used.
+    Supports both a single-profile format (the composed ``ref``) and a pool
+    format (list of ModelProfile objects). Use the ``profiles`` property to get
+    the canonical pool regardless of which format was used.
+
+    As with :class:`PlanConfig`, the single-profile transport is not duplicated
+    here: it lives in the composed :class:`ModelRef` and the scalar accessors
+    below are read-only views onto it.
     """
 
     enabled: bool = False
-    # Legacy single-profile fields — present only when pool is empty.
-    cli: str | None = "claude"
-    provider: str | None = None
-    model: str = "sonnet"
-    budget_usd: float = 0.50
-    timeout: int = 300
+    # Single-profile transport/model atom — used only when ``pool`` is empty.
+    ref: ModelRef | None = field(default_factory=_default_plan_review_ref)
     # Pool format — populated by load_forge_yaml when pool: key is present.
     pool: list[ModelProfile] = field(default_factory=list)
-    api_fallback: TransportFallbackConfig | None = None  # legacy scalar profile fallback
     min_reviewers: int = 1
+
+    @classmethod
+    def of(
+        cls,
+        *,
+        enabled: bool = False,
+        cli: str | None = "claude",
+        provider: str | None = None,
+        model: str = "sonnet",
+        budget_usd: float = 0.50,
+        timeout: int = 300,
+        pool: list[ModelProfile] | None = None,
+        api_fallback: TransportFallbackConfig | None = None,
+        min_reviewers: int = 1,
+    ) -> PlanAgentReviewConfig:
+        """Build from the flat ``plan_agent_review:`` spelling in forge.yaml."""
+        return cls(
+            enabled=enabled,
+            ref=ModelRef(
+                cli=cli,
+                provider=provider,
+                model=model,
+                budget_usd=budget_usd,
+                timeout_seconds=timeout,
+                api_fallback=api_fallback,
+            ),
+            pool=list(pool) if pool else [],
+            min_reviewers=min_reviewers,
+        )
+
+    @property
+    def cli(self) -> str | None:
+        return self.ref.cli if self.ref is not None else None
+
+    @property
+    def provider(self) -> str | None:
+        return self.ref.provider if self.ref is not None else None
+
+    @property
+    def model(self) -> str:
+        return self.ref.model if self.ref is not None else "sonnet"
+
+    @property
+    def budget_usd(self) -> float:
+        return self.ref.budget_usd if self.ref is not None else 0.50
+
+    @property
+    def timeout(self) -> int:
+        return self.ref.timeout_seconds if self.ref is not None else 300
+
+    @property
+    def api_fallback(self) -> TransportFallbackConfig | None:
+        return self.ref.api_fallback if self.ref is not None else None
 
     @property
     def profiles(self) -> list[ModelProfile]:
-        """Return pool list, or a single-profile pool from legacy scalar fields."""
+        """Return pool list, or a single-profile pool built from ``ref``."""
         if self.pool:
             return self.pool
-        if not self.cli and not self.provider:
+        ref = self.ref
+        if ref is None or (not ref.cli and not ref.provider):
             return []
-        # Legacy single-profile: construct from scalar fields.
         from .defaults import API_PROVIDER_DEFAULT_TOOLS, DEFAULT_PREFLIGHT_PROFILE
 
         allowed_tools = (
             API_PROVIDER_DEFAULT_TOOLS
-            if self.provider and self.provider in SUPPORTED_PROVIDERS
+            if ref.provider and ref.provider in SUPPORTED_PROVIDERS
             else DEFAULT_PREFLIGHT_PROFILE.allowed_tools
         )
         return [
             ModelProfile(
                 name="plan-review",
-                cli=self.cli,
-                provider=self.provider,
-                model=self.model or "sonnet",
-                budget_usd=self.budget_usd,
-                timeout_seconds=self.timeout,
+                cli=ref.cli,
+                provider=ref.provider,
+                model=ref.model or "sonnet",
+                budget_usd=ref.budget_usd,
+                timeout_seconds=ref.timeout_seconds,
                 allowed_tools=allowed_tools,
-                api_fallback=self.api_fallback,
+                api_fallback=ref.api_fallback,
             )
         ]
 

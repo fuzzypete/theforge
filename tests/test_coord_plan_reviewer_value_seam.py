@@ -88,8 +88,8 @@ def _dual_pool_config(tmp_path: Path, *, min_reviewers: int) -> ForgeConfig:
             max_plan_review_parse_retries=0,
             max_plan_review_transport_retries=0,
         ),
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
-        plan_agent_review=PlanAgentReviewConfig(
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
+        plan_agent_review=PlanAgentReviewConfig.of(
             enabled=True, min_reviewers=min_reviewers, pool=[a, b]
         ),
         log=LogConfig(enabled=False),

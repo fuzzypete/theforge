@@ -184,7 +184,7 @@ def _parse_plan_agent_review(
             _parse_profile(e["name"], e, role="review", secrets=secrets) for e in pool_data
         ]
 
-    plan_agent_review_cfg = PlanAgentReviewConfig(
+    plan_agent_review_cfg = PlanAgentReviewConfig.of(
         enabled=par_enabled,
         cli=par_cli,
         provider=par_provider,

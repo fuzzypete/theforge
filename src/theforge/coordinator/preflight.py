@@ -18,6 +18,7 @@ from theforge.config import (
     apply_model_info,
     model_info_view,
 )
+from theforge.config.bridge import model_ref_to_profile
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.review import ReviewFinding
 from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
@@ -1179,7 +1180,9 @@ def _apply_story_allocation(
             config.preflight_profile, budget_usd=scaled["preflight"]
         )
     if scaled.get("plan") != current.get("plan"):
-        replace_kwargs["plan"] = _dc_replace(config.plan, budget_usd=scaled["plan"])
+        replace_kwargs["plan"] = _dc_replace(
+            config.plan, ref=_dc_replace(config.plan.ref, budget_usd=scaled["plan"])
+        )
     if scaled.get("dev") != current.get("dev"):
         replace_kwargs["dev_profile"] = _dc_replace(config.dev_profile, budget_usd=scaled["dev"])
     new_pool = [
@@ -1194,15 +1197,19 @@ def _apply_story_allocation(
             _dc_replace(profile, budget_usd=scaled[f"plan_agent_review[{i}]"])
             for i, profile in enumerate(_plan_reviewers)
         ]
-        # ``profiles`` is a read-only view over ``pool`` (or the legacy scalar
-        # fields). Write back through whichever one the config actually uses.
+        # ``profiles`` is a read-only view over ``pool`` (or the single composed
+        # ``ref``). Write back through whichever one the config actually uses.
         if config.plan_agent_review.pool:
             replace_kwargs["plan_agent_review"] = _dc_replace(
                 config.plan_agent_review, pool=_scaled_plan_reviewers
             )
-        else:
+        elif config.plan_agent_review.ref is not None:
             replace_kwargs["plan_agent_review"] = _dc_replace(
-                config.plan_agent_review, budget_usd=_scaled_plan_reviewers[0].budget_usd
+                config.plan_agent_review,
+                ref=_dc_replace(
+                    config.plan_agent_review.ref,
+                    budget_usd=_scaled_plan_reviewers[0].budget_usd,
+                ),
             )
     if config.synthesis_profile is not None:
         replace_kwargs["synthesis_profile"] = _dc_replace(
@@ -1325,15 +1332,10 @@ def _apply_preflight_config(
         _explicit["code_review"] = _explicit_review_pool[0]
     if not config.plan_model_is_default:
         _explicit_roles.add("planner")
-        _explicit_planner = _ModelProfile(
-            name="plan",
-            cli=config.plan.cli,
-            model=config.plan.model,
-            provider=config.plan.provider,
-            budget_usd=config.plan.budget_usd,
-            timeout_seconds=config.plan.timeout,
+        _explicit_planner = model_ref_to_profile(
+            "plan",
+            config.plan.ref,
             allowed_tools=config.preflight_profile.allowed_tools,
-            api_fallback=config.plan.api_fallback,
             phase="plan",
         )
         _explicit["planner"] = _explicit_planner

@@ -242,7 +242,7 @@ class TestPlanPhase:
             review_pool=[DEFAULT_REVIEW_PROFILE],
             synthesis_profile=None,
             retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-            plan=PlanConfig(enabled=False),
+            plan=PlanConfig.of(enabled=False),
         )
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
