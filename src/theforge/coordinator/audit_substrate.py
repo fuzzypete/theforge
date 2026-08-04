@@ -43,7 +43,7 @@ SUBSTRATE_SCHEMA_VERSION = 4
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 19
+CURRENT_RECORD_SCHEMA_VERSION = 20
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1109,6 +1109,36 @@ def _migrate_v18_to_v19(record: dict) -> dict:
     return {**record, "phase_recovery": None}
 
 
+def _migrate_v19_to_v20(record: dict) -> dict:
+    """Add the per-story budget allocation block under ``cost`` (issue #2169).
+
+    v20 records carry the allocation a story was governed by — derived from the
+    observed cost distribution for its complexity band — alongside what it
+    actually spent, plus any allocation-exhausted condition and per-reviewer
+    share overruns.
+
+    A v19 record was governed by the flat configured ceiling, so there is no
+    band-derived allocation to reconstruct. ``None`` is the honest backfill: it
+    says this run's spend was never measured against a band, which is exactly
+    true. ``reviewer_budget_overruns`` backfills to ``[]`` — a v19 run that went
+    over a reviewer share recorded that as an *exclusion* in
+    ``reviewer_attempts``, not as a retained-verdict overrun, and relabelling it
+    here would assert a decision the run did not make.
+    """
+    cost = record.get("cost")
+    if not isinstance(cost, dict) or "story_allocation" in cost:
+        return record
+    return {
+        **record,
+        "cost": {
+            **cost,
+            "story_allocation": None,
+            "allocation_exhausted": None,
+            "reviewer_budget_overruns": [],
+        },
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1136,6 +1166,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     16: _migrate_v16_to_v17,
     17: _migrate_v17_to_v18,
     18: _migrate_v18_to_v19,
+    19: _migrate_v19_to_v20,
 }
 
 
@@ -1721,6 +1752,68 @@ def _coerce_complexity_score(value: object) -> int | None:
     if isinstance(value, float):
         return int(value)
     return None
+
+
+def derive_cost_samples_by_score(
+    conn: sqlite3.Connection,
+    *,
+    stats: dict | None = None,
+) -> dict[int, list[float]]:
+    """Return ``{complexity_score: [total_cost_usd, ...]}`` over admissible runs.
+
+    The per-story budget allocator (see ``coordinator.story_budget``) needs the
+    observed cost distribution per complexity band. Reads the indexed flat
+    columns directly — no record migration is needed, because both fields are
+    projected into columns at upsert time — and routes admissibility through the
+    same centralized taint gate every other history consumer uses (ADR-0006
+    clause 4): a run that failed its own trust checks does not teach what a
+    story of its kind costs. When ``stats`` is provided its
+    ``"excluded_for_taint"`` key is incremented by the number of rows set aside.
+
+    Rows with a null score, a null cost (cost-unknown runs, which are a lower
+    bound rather than a measurement), or a non-positive cost are skipped: none
+    of them carry a usable spend observation.
+    """
+    from .trust_status import filter_tainted_records  # noqa: PLC0415
+
+    rows = conn.execute(
+        "SELECT complexity_score, total_cost_usd, raw_json FROM audit_records "
+        "WHERE complexity_score IS NOT NULL AND total_cost_usd IS NOT NULL"
+    ).fetchall()
+    candidates: list[dict] = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            score, cost, raw = row["complexity_score"], row["total_cost_usd"], row["raw_json"]
+        else:
+            score, cost, raw = row[0], row[1], row[2]
+        try:
+            cost_value = float(cost)
+        except (TypeError, ValueError):
+            continue
+        if cost_value <= 0.0:
+            continue
+        score_value = _coerce_complexity_score(score)
+        if score_value is None:
+            continue
+        trust: str | None = None
+        try:
+            parsed = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            status = parsed.get("trust_status")
+            trust = status if isinstance(status, str) else None
+        candidates.append(
+            {"complexity_score": score_value, "total_cost_usd": cost_value, "trust_status": trust}
+        )
+
+    admissible, excluded = filter_tainted_records(candidates)
+    if stats is not None:
+        stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
+    out: dict[int, list[float]] = {}
+    for entry in admissible:
+        out.setdefault(int(entry["complexity_score"]), []).append(float(entry["total_cost_usd"]))
+    return out
 
 
 def derive_assignment_history(

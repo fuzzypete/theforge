@@ -167,10 +167,15 @@ class TestCoordinatorBudgetEnforcement:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_review_budget_all_exceeded(
+    def test_review_share_overrun_keeps_verdict(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """All reviewers over budget → ESCALATE (no reviews to synthesize)."""
+        """Every reviewer over its share → verdict retained, run continues (#2169).
+
+        Withdrawing a reviewer that already ran and already answered discards
+        paid-for review signal and can leave the quorum unreachable while sprint
+        headroom remains. The overrun is recorded as telemetry instead.
+        """
         config = self._make_budget_config(tmp_path, dev_budget=2.00, review_budget=0.40)
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
@@ -204,11 +209,13 @@ class TestCoordinatorBudgetEnforcement:
 
         result = run_task(config, task)
 
-        assert result.success is False
-        assert result.phase == Phase.ESCALATE
-        assert "budget" in result.message.lower()
-        assert "review" in result.message
+        assert result.success is True
+        assert result.phase == Phase.DONE
         assert len(result.state.review_agent_results) == 1
+        assert [o["reviewer"] for o in result.state.reviewer_budget_overruns] == ["review"]
+        _overrun = result.state.reviewer_budget_overruns[0]
+        assert _overrun["measured_usd"] == 0.50
+        assert _overrun["share_usd"] == 0.40
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
