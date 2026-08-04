@@ -280,7 +280,7 @@ def _cmd_sprint(args: object) -> int:
     # On the re-exec path, resolve the prior generation's recorded outcomes so the
     # launch guard can distinguish an already-completed worktree from a fresh
     # collision. Mirror the runner's sprint-name resolution (manifest ``name``).
-    prior_outcomes: dict[str, str] | None = None
+    prior_outcomes: dict[str, dict] | None = None
     if reexec:
         try:
             from theforge.sprint.manifest import load_sprint_manifest  # noqa: PLC0415
@@ -414,7 +414,7 @@ def _acquire_launch_locks(
     *,
     allow_drop: bool = False,
     force: bool = False,
-    prior_outcomes: dict[str, str] | None = None,
+    prior_outcomes: dict[str, str | dict] | None = None,
     live_slugs: set[str] | None = None,
     unresolved_slugs: set[str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
@@ -455,29 +455,40 @@ def _resolve_story_liveness(config: object, slugs: list[str]) -> LivenessResolut
         return unresolved_liveness(slugs, reason=f"liveness lookup unavailable: {exc}")
 
 
-def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, str]:
-    """Best-effort map of slug -> prior-generation outcome for the re-exec guard.
+def _resolve_prior_outcomes(config: object, sprint_name: str) -> dict[str, dict]:
+    """Best-effort map of slug -> prior-generation story record for the guard.
 
     Resolves the logical sprint id the same way the runner does (from the
     manifest ``name``) and reads the prior generation's accumulated story
-    outcomes from ``.forge/sprints/<id>/state.yaml``. Returns an empty map on any
+    entries from ``.forge/sprints/<id>/state.yaml``. Returns an empty map on any
     failure so a lookup miss degrades to today's collision behavior — this must
     never fail the launch.
+
+    The whole recorded entry is carried forward, not just its ``outcome``: the
+    guard's reconciliation decision needs the landing evidence recorded beside
+    the outcome (``landing_status`` / ``landing`` / ``merge``), because a
+    coordinator ``DONE`` is persisted before the sprint's landing step runs and
+    on its own says nothing about whether the story actually landed (#2189).
+    The policy that reads those fields lives in
+    :mod:`theforge.sprint.prior_landing`; this is only the data hand-off.
     """
     try:
         from theforge.sprint.audit import (  # noqa: PLC0415
             _get_or_create_sprint_id,
             _load_accumulated_stories,
         )
+        from theforge.sprint.prior_landing import as_prior_record  # noqa: PLC0415
 
         sprint_id = _get_or_create_sprint_id(sprint_name, config.project_root)
-        outcomes: dict[str, str] = {}
+        records: dict[str, dict] = {}
         for story in _load_accumulated_stories(sprint_id, config.project_root):
+            if not isinstance(story, dict):
+                continue
             slug = story.get("slug")
             if not slug:
                 continue
-            outcomes[slug] = str(story.get("outcome") or "").upper()
-        return outcomes
+            records[slug] = as_prior_record(story)
+        return records
     except Exception:
         return {}
 

@@ -1,0 +1,2965 @@
+{
+  "schema_version": 19,
+  "run_id": "37f96ad44eef",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc17",
+  "task": {
+    "name": "Internal migration \u2014 remove duplicated phase transport config",
+    "slug": "issue-751",
+    "story_path": null,
+    "story_text": "## Summary\n\nAfter the loader bridge (#750) is stable, migrate coordinator internals away from phase-specific duplicated transport fields where it is actually worth doing. This is the internal cleanup that follows the public schema reset.\n\nPart of epic: Config simplification (#264). Story 4 of 5. Depends on #750 (loader bridge).\n\n## Acceptance Criteria\n\n1. `PlanConfig`, `PlanAgentReviewConfig`, and `ApiFallbackConfig` no longer carry their own `cli`/`provider`/`model`/`budget_usd`/`timeout` fields \u2014 they compose `ModelRef` or reference `ModelProfile` directly.\n2. Any config field that exists in types but is not parsed by the loader is either wired up or removed (e.g., `PlanConfig.validate_spec`, `RetryPolicy.plan_escalation_threshold`).\n3. `NotificationConfig.human_review_timeout_seconds` default (600) matches the loader default \u2014 no silent mismatch.\n4. Coordinator phase modules updated to use the composed types.\n5. All existing tests pass with the new internal types.\n\n## Notes\n\n- This can land as a fast-follow after v0.8.0 ships (e.g., v0.8.1) if the public schema reset + dogfooding are the release gate.\n- The blast radius is internal \u2014 no user-facing config changes.\n- Guided by existing tests; this is refactoring, not behavioral change.",
+    "github_issue": 751,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": null,
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Internal migration \u2014 remove duplicated phase transport config' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-751",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "6303b66f213228feed437452aa793214271fbeaf4eafd42eabe2bd71e13304b3",
+    "resolved_sha256": "3f42e1e15396d8c6a3a92da6db6765bc692bc954cb81bb011288ad06aee6a189",
+    "source_sha256_at_finish": "6303b66f213228feed437452aa793214271fbeaf4eafd42eabe2bd71e13304b3",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-04T06:49:23.720340+00:00",
+    "finished_at": "2026-08-04T07:13:36.647989+00:00",
+    "duration_seconds": 1452.927649
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-751",
+    "branch": "feat/issue-751",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "gate_runs": 1,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 9.239342499999998,
+        "duration_s": 897.79,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/cli/check_config.py",
+          "src/theforge/cli/shared.py",
+          "src/theforge/config/__init__.py",
+          "src/theforge/config/_loaders.py",
+          "src/theforge/config/bridge.py",
+          "src/theforge/config/load.py",
+          "src/theforge/config/models.py",
+          "src/theforge/config/profiles.py",
+          "src/theforge/config/schema.py",
+          "src/theforge/config/secrets.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/plan_flow.py",
+          "src/theforge/coordinator/preflight.py",
+          "tests/coord_test_helpers.py",
+          "tests/test_assignment_price_tiebreak.py",
+          "tests/test_check_config.py",
+          "tests/test_cli_commands.py",
+          "tests/test_cli_logs.py",
+          "tests/test_cli_pid_cleanup.py",
+          "tests/test_cli_setup.py",
+          "tests/test_cli_sprint_query.py",
+          "tests/test_cli_sprint_shape_gate.py",
+          "tests/test_cli_status.py",
+          "tests/test_cli_status_integration.py",
+          "tests/test_complexity_timeouts.py",
+          "tests/test_config_composed_phase_refs.py",
+          "tests/test_config_role_derivation_complexity.py",
+          "tests/test_coord_adaptive_assignment_runtime.py",
+          "tests/test_coord_adaptive_plan_reviewers.py",
+          "tests/test_coord_hooks.py",
+          "tests/test_coord_model_profiles_seam.py",
+          "tests/test_coord_no_judgment_seam.py",
+          "tests/test_coord_notify_remote.py",
+          "tests/test_coord_plan.py",
+          "tests/test_coord_plan_flow_agent.py",
+          "tests/test_coord_plan_flow_logger_guard.py",
+          "tests/test_coord_plan_flow_review.py",
+          "tests/test_coord_plan_flow_story.py",
+          "tests/test_coord_plan_reviewer_value_seam.py",
+          "tests/test_coord_post_plan_checkpoint_seam.py",
+          "tests/test_coord_preflight_plan.py",
+          "tests/test_empty_model_registry.py",
+          "tests/test_generate_audit_log.py",
+          "tests/test_operator_action_queue.py",
+          "tests/test_preflight_complexity_score.py",
+          "tests/test_preflight_custom_model.py",
+          "tests/test_preflight_work_type.py",
+          "tests/test_profile_transport_mutation.py",
+          "tests/test_ready_queue.py",
+          "tests/test_review_pool_provider_fallback.py",
+          "tests/test_sprint_auth_gate.py",
+          "tests/test_sprint_crash_terminal_status.py",
+          "tests/test_sprint_entry_intake.py",
+          "tests/test_sprint_issues_query.py",
+          "tests/test_sprint_pipeline_smoke.py"
+        ],
+        "files_changed_count": 56,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 5.20251,
+        "duration_s": 178.99
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 108,
+      "profile_avg_iterations": 1.8704,
+      "profile_avg_cost_usd": 10.093013,
+      "profile_raw_dev_max": 2.8056,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 25.2325,
+      "review_history_sample_size": 15,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 108 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-04T06:54:44.024933+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 19.715608449999998,
+    "dev_usd": 9.239342499999998,
+    "review_usd": 5.2025097,
+    "dev_invocations": 1,
+    "review_invocations": 3,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 9.239342499999998,
+        "duration_seconds": 897.7946832499001,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.006797
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 9.232545499999999
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.166739,
+        "duration_seconds": 59.590444958303124,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.166739
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 2.6939055,
+        "duration_seconds": 59.590444958303124,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.6939055
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-sonnet-cli",
+        "cost_usd": 1.3418651999999998,
+        "duration_seconds": 59.590444958303124,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.057504
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.2843612
+          }
+        ],
+        "model_used": "sonnet"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "PlanConfig and PlanAgentReviewConfig in types.py still duplicate cli/provider/model/budget_usd/timeout fields instead of composing ModelRef (already defined in schema.py from the prior public-schema-reset story), and NotificationConfig's default (600) mismatches the loader default (14400) in secrets.py, so AC1 and AC3 are clearly unmet.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 2,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "release_blocking_validation",
+        "signal": "acceptance criteria gate a release: 'gate' near 'release' and 'v0.8.0'",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "refactor",
+    "domains": [
+      "config",
+      "backend"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.3325255,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "f23142230dd2",
+    "cache_snapshot": {
+      "worktree_head": "ac15b03583edd94ce64f77295cf37d2575a74b48",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "ac15b03583edd94ce64f77295cf37d2575a74b48",
+      "story_content_hash": "d5a252f6bc935c494ed734e37579d42e497c2da88fe195f21d9f81ef7d1ac02b"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "ac15b03583edd94ce64f77295cf37d2575a74b48",
+      "current_worktree_head": "ac15b03583edd94ce64f77295cf37d2575a74b48",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "ac15b03583edd94ce64f77295cf37d2575a74b48",
+      "current_evaluation_base_branch_head": "ac15b03583edd94ce64f77295cf37d2575a74b48",
+      "cached_story_content_hash": "d5a252f6bc935c494ed734e37579d42e497c2da88fe195f21d9f81ef7d1ac02b",
+      "current_story_content_hash": "d5a252f6bc935c494ed734e37579d42e497c2da88fe195f21d9f81ef7d1ac02b",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.3325255,
+        "duration_s": 59.04,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "sonnet",
+            "source": "builtin",
+            "canonical_id": "anthropic/sonnet/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 108 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 75.0,
+        "final_total_usd": 75.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "sonnet",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 75.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "budget exceeded",
+          "lines": 17
+        }
+      ]
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-751/iter_1.yaml",
+      "handoff": {
+        "summary": "Migrated PlanConfig and PlanAgentReviewConfig from duplicated transport scalars to a composed ModelRef, with read-only property views preserving the existing read surface across the coordinator, CLI and sprint runner. ModelRef moved from schema.py to types.py (schema.py re-exports) to resolve the schema-to-types import cycle the composition would otherwise create; a single model_ref_to_profile() helper in bridge.py replaced five hand-rolled ModelRef/PlanConfig to ModelProfile projections in load.py, profiles.py, check_config.py, preflight.py and plan_flow.py. Loaders (_loaders.py, load.py) build the composed types through new PlanConfig.of()/PlanAgentReviewConfig.of() factories that fold the flat forge.yaml keys into a ref. The loader-coverage audit fixed three gaps: the NotificationConfig HITL timeout default (600 typed vs 14400 loaded, now one shared DEFAULT_HITL_TIMEOUT_SECONDS constant), RetryPolicy.plan_escalation_threshold (used in plan_flow control flow but never parsed, now wired up and documented), and the dead EmailConfig stub (removed). Added tests/test_config_composed_phase_refs.py covering type shape, loader normalization, timeout default parity, and a coordinator seam test asserting the profile PLAN actually dispatches is projected from config.plan.ref.",
+        "commits": [
+          {
+            "sha": "aeabe57",
+            "message": "refactor(config): compose ModelRef in phase configs instead of duplicating transport"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "PlanConfig, PlanAgentReviewConfig, and ApiFallbackConfig no longer carry their own cli/provider/model/budget_usd/timeout fields \u2014 they compose ModelRef or reference ModelProfile directly.",
+            "status": "MET",
+            "notes": "PlanConfig and PlanAgentReviewConfig now hold only phase-specific fields (enabled, validate_spec, pool, min_reviewers) plus a composed ModelRef; the old scalars are read-only properties over ref. Asserted structurally in TestComposedShape. No class named ApiFallbackConfig exists \u2014 the closest analog is TransportFallbackConfig, which is deliberately unchanged: ModelRef contains a TransportFallbackConfig (api_fallback), so composing the other direction is definitionally circular and would also reintroduce the types-to-schema import cycle. It carries no cli and no budget_usd; its provider/model/timeout_seconds ARE the transport atom, not a duplicated phase config. Documented in the type docstring and asserted in test_transport_fallback_is_the_leaf_atom_a_ref_contains."
+          },
+          {
+            "criterion": "Any config field that exists in types but is not parsed by the loader is either wired up or removed (e.g., PlanConfig.validate_spec, RetryPolicy.plan_escalation_threshold).",
+            "status": "MET",
+            "notes": "Audited every dataclass field in types.py against the whole config package. PlanConfig.validate_spec was already parsed. Three genuine gaps found and fixed: RetryPolicy.plan_escalation_threshold (read at plan_flow.py:1604 but never parsed, so unreachable from forge.yaml \u2014 wired into the retry parser and documented in docs/guides/inputs-reference.md), NotificationConfig.email/EmailConfig (never parsed, never read \u2014 removed), and the notification timeout mismatch covered by AC3. ModelProfile.sandbox_capability_profile is stamped by the coordinator (dev_phase.py:1109) rather than the loader, which is its documented design, so it was left alone."
+          },
+          {
+            "criterion": "NotificationConfig.human_review_timeout_seconds default (600) matches the loader default \u2014 no silent mismatch.",
+            "status": "MET",
+            "notes": "Reconciled toward the loader's 14400, not the typed 600. The loader value is what live HITL gates actually use (remote_gates.py, pending_hitl.py); moving the loader down to 600 would have cut real gate windows from 4h to 10min. Both sites now read one DEFAULT_HITL_TIMEOUT_SECONDS constant in types.py so they cannot drift again, with a parity test asserting the typed default and an unconfigured load agree."
+          },
+          {
+            "criterion": "Coordinator phase modules updated to use the composed types.",
+            "status": "MET",
+            "notes": "plan_flow.py builds the PLAN dispatch profile via model_ref_to_profile(config.plan.ref, ...); preflight.py uses it for the explicit-planner projection and writes budget scaling through the ref for both plan and plan_agent_review; check_config.py and config/profiles.py migrated to the same helper. Covered by a seam test that runs a full task and asserts the profile PLAN dispatches carries the ref's identity, transport, budget and complexity-scaled timeout."
+          },
+          {
+            "criterion": "All existing tests pass with the new internal types.",
+            "status": "MET",
+            "notes": "7170 passed, 38 skipped. 17 failures remain in test_cut_rc_isolation.py, test_sprint_lock.py and test_sprint_reexec_collision.py \u2014 all PermissionError from multiprocessing/synchronize.py (POSIX semaphore creation blocked in the dev sandbox). None of those files reference config code, and they fail identically on the unmodified tree; verified by running them in isolation. Expected to pass under the coordinator's gate, which runs outside this sandbox. Test construction sites were migrated to the new PlanConfig.of()/PlanAgentReviewConfig.of() factories across 41 files \u2014 a sanctioned contract-change update, mechanical and assertion-preserving."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Kept the legacy flat scalars as read-only properties rather than deleting them outright. AC1 is about duplicated storage, and delegating accessors leave exactly one source of truth while avoiding a mechanical rewrite of ~60 read sites across the coordinator, CLI and sprint runner. The plan reviewer's note that config/profiles.py's .profiles property must be preserved over the composed fields points the same direction.",
+          "Added PlanConfig.of() / PlanAgentReviewConfig.of() factories. These are genuine production API \u2014 forge.yaml declares planning transport as flat keys and the loader is their primary caller \u2014 not test-only compat shims; they are the one place the flat spelling folds into a ModelRef, mirroring how _normalize_transport folds cli/provider into a TransportSpec."
+        ],
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "aeabe578a6f5772dbf21fed1a90dcd81fd78b72b",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "aeabe578a6f5772dbf21fed1a90dcd81fd78b72b",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": "WARN"
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-sonnet-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-sonnet-cli"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded",
+        "anthropic-sonnet-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] The implementation satisfies the migration criteria, and the full test suite passes in this worktree. | [google-gemini-3.5-flash-api] Successfully migrated PlanConfig and PlanAgentReviewConfig to compose ModelRef, resolved loader gaps, and aligned HITL timeout defaults. | [anthropic-sonnet-cli] Clean composition refactor: PlanConfig/PlanAgentReviewConfig now wrap a single ModelRef with read-only scalar views; loader gaps (plan_escalation_threshold, HITL timeout default, dead EmailConfig) are fixed and tested; all touched tests pass and the remaining 17 failures are unrelated sandbox multiprocessing issues in files that never reference the changed types.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "PlanConfig, PlanAgentReviewConfig, and ApiFallbackConfig no longer carry their own cli/provider/model/budget_usd/timeout fields \u2014 they compose ModelRef or reference ModelProfile directly.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:498 defines ModelRef as the transport atom, src/theforge/config/types.py:783-785 leaves PlanConfig with enabled/ref/validate_spec, and src/theforge/config/types.py:904-909 leaves PlanAgentReviewConfig with enabled/ref/pool/min_reviewers; tests/test_config_composed_phase_refs.py:93-133 asserts the dataclass field shape and the TransportFallbackConfig leaf-atom exception.; src/theforge/config/types.py:768-872, 888-991. PlanConfig and PlanAgentReviewConfig compose ModelRef. ApiFallbackConfig does not exist; TransportFallbackConfig is deliberately unchanged as the leaf transport atom. Covered by TestComposedShape in tests/test_config_composed_phase_refs.py.; types.py PlanConfig dataclass fields are now only enabled/ref/validate_spec (types.py:772-786) with cli/model/provider/budget_usd/timeout/timeout_medium/ timeout_large/api_fallback/transport exposed as read-only @property views onto self.ref (types.py:830-869). PlanAgentReviewConfig is analogous (types.py:895-970). No ApiFallbackConfig class exists in the codebase; TransportFallbackConfig (the closest analog) is unchanged and does not compose ModelRef, which is correct since ModelRef.api_fallback already contains a TransportFallbackConfig (circular otherwise) \u2014 verified by test_transport_fallback_is_the_leaf_atom_a_ref_contains (tests/test_config_composed_phase_refs.py:104-111) and test_plan_config_carries_no_transport_fields_of_its_own / test_plan_agent_review_carries_no_transport_fields_of_its_own (tests/test_config_composed_phase_refs.py:77-88)."
+        },
+        {
+          "criterion": "Any config field that exists in types but is not parsed by the loader is either wired up or removed (e.g., PlanConfig.validate_spec, RetryPolicy.plan_escalation_threshold).",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/load.py:1257-1271 loads PlanConfig through PlanConfig.of including validate_spec, src/theforge/config/load.py:1200-1202 parses retry.plan_escalation_threshold, and src/theforge/config/types.py:278-282 shows NotificationConfig without the removed email field; tests/test_config_composed_phase_refs.py:164-166 and tests/test_config_composed_phase_refs.py:219-223 cover validate_spec staying on the wrapper and plan_escalation_threshold loading from forge.yaml.; src/theforge/config/load.py:1202. RetryPolicy.plan_escalation_threshold is now parsed. EmailConfig and NotificationConfig.email are removed. Covered by TestLoaderNormalization in tests/test_config_composed_phase_refs.py.; RetryPolicy.plan_escalation_threshold is now parsed at load.py:1202 (int(retry_data.get(\"plan_escalation_threshold\", 2))), consumed at plan_flow.py:1604, documented in docs/guides/inputs-reference.md:506, and covered end-to-end by test_plan_escalation_threshold_is_reachable_from_forge_yaml (tests/test_config_composed_phase_refs.py:219-223) plus test_profile_transport_mutation.py:243. EmailConfig/NotificationConfig.email were dead (never parsed, never read) and are fully removed from types.py and config/__init__.py \u2014 grep confirms zero remaining references."
+        },
+        {
+          "criterion": "NotificationConfig.human_review_timeout_seconds default (600) matches the loader default \u2014 no silent mismatch.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:282 sets the typed default from DEFAULT_HITL_TIMEOUT_SECONDS, src/theforge/config/secrets.py:59-64 uses the same constant for the loader default, and tests/test_config_composed_phase_refs.py:229-245 asserts default parity and explicit override behavior.; src/theforge/config/types.py:16, 282. Both now use DEFAULT_HITL_TIMEOUT_SECONDS (14400). Covered by TestNotificationTimeoutParity in tests/test_config_composed_phase_refs.py.; Both the typed default (types.py:281, now DEFAULT_HITL_TIMEOUT_SECONDS) and the loader default (secrets.py:63) read the single DEFAULT_HITL_TIMEOUT_SECONDS=14400 constant (types.py:19-22), so they cannot diverge again. Reconciling upward (to 14400) rather than down to 600 is a reasonable choice since 14400 is what live HITL gates actually use; the AC only requires parity, which test_typed_default_matches_loader_default (tests/test_config_composed_phase_refs.py:250-259) asserts directly."
+        },
+        {
+          "criterion": "Coordinator phase modules updated to use the composed types.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/bridge.py:24-67 centralizes ModelRef to ModelProfile projection, src/theforge/coordinator/plan_flow.py:860-866 dispatches PLAN from config.plan.ref, and src/theforge/coordinator/preflight.py:1182-1211 and src/theforge/coordinator/preflight.py:1335-1341 write/read planner and plan-review values through the composed ref; tests/test_config_composed_phase_refs.py:281-368 covers the projection and full PLAN dispatch seam.; src/theforge/coordinator/plan_flow.py:860, src/theforge/coordinator/preflight.py:1335. Both use model_ref_to_profile to project the ref. Covered by TestPhaseBoundaryProjection in tests/test_config_composed_phase_refs.py.; plan_flow.py:860-866, preflight.py:1183-1185/1335-1341, check_config.py:659, and config/profiles.py:68-77 all now build ModelProfile via the single model_ref_to_profile() helper (bridge.py) over config.plan.ref / config.plan_agent_review.ref instead of hand-rolled ModelProfile(...) calls reading legacy scalar fields. Covered end-to-end by test_plan_phase_dispatches_the_profile_projected_from_the_ref (tests/test_config_composed_phase_refs.py, seam test running a full run_task() and asserting the dispatched profile's model/cli/transport/budget/ timeout all trace back to a mutated config.plan.ref) \u2014 verified passing locally (14/14 in test_config_composed_phase_refs.py)."
+        },
+        {
+          "criterion": "All existing tests pass with the new internal types.",
+          "status": "VERIFIED",
+          "evidence": "Ran pytest -q in /Users/pwickersham/src/theforge/.forge/worktrees/issue-751; result was 7187 passed, 38 skipped, 6 warnings in 43.29s.; All 7193 tests passed successfully under pytest.; Ran the config/plan-touching suites locally (test_config_composed_phase_refs.py, test_check_config.py, test_coord_plan.py, test_coord_plan_flow_agent.py, test_coord_plan_flow_review.py, test_profile_transport_mutation.py, test_complexity_timeouts.py, test_coord_model_profiles_seam.py): 204+14 passed, 0 failed. The 17 remaining failures (test_cut_rc_isolation.py, test_sprint_lock.py, test_sprint_reexec_collision.py) contain no references to PlanConfig/PlanAgentReviewConfig/ModelRef and fail on multiprocessing.synchronize PermissionError, confirming they are sandbox artifacts unrelated to this diff."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "anthropic-sonnet-cli",
+      "provider": null,
+      "model": "sonnet",
+      "cli": "claude",
+      "canonical_id": "anthropic/sonnet/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [anthropic-opus-cli] Step 2's file list (load.py, bridge.py, role_derivation.py, secrets.py) omits src/theforge/config/_loaders.py, which is where PlanAgentReviewConfig is actually constructed with the scalar kwargs being removed (_loaders.py:187-195 passes cli=, provider=, model=, budget_usd=, timeout=). Removing those fields breaks that call immediately.\n  Suggestion: Add src/theforge/config/_loaders.py to Step 2. Also note the non-construction consumers of the legacy scalars' derived surface: cli/providers.py:45-46, config/profiles.py:80-82, coordinator/audit.py:167 all go through the .profiles property, so they stay stable only if that property is preserved over the composed fields.\n- [P1-impl] [anthropic-opus-cli] Step 1 proposes applying 'the same composed representation' to TransportFallbackConfig, but that type is embedded as api_fallback inside both ModelRef (schema.py:53) and ModelProfile (types.py:365), and schema.py imports it from types.py at module scope \u2014 making it compose ModelRef would create mutual composition plus a types\u2194schema import cycle. It also already lacks cli/budget_usd (it carries only provider/model/timeout_seconds + runtime knobs).\n  Suggestion: Treat TransportFallbackConfig as already satisfying AC1's intent (it is the minimal transport atom, not a duplicated phase config) unless the audit shows otherwise; if it is restructured, resolve the cycle with a TYPE_CHECKING/lazy import as schema.py already does for TransportSpec.\n- [P2] [anthropic-opus-cli] AC3 says the 600 default should match the loader, but the loader default is 14400 (secrets.py:57, matching PlanReviewConfig.timeout_seconds); reconciling in the wrong direction would cut live HITL gate windows from 4h to 10min at remote_gates.py:40/183 and pending_hitl.py:42/123.\n  Suggestion: Plan already says 'align with the loader default' \u2014 make it explicit that types.py:284 moves to 14400 and secrets.py is unchanged.\n- [P2] [anthropic-opus-cli] Step 4 names only tests/. The scalar fields are asserted across at least test_config_load.py, test_config_role_derivation_complexity.py, test_complexity_timeouts.py, and test_config_auto_api_fallback.py.\n  Suggestion: Enumerate those files so the dev agent does not stop at the first failing suite.\n- [P1-impl] [google-gemini-3.5-flash-api] The CLI shared module directly replaces legacy transport fields on the PlanConfig instance (src/theforge/cli/shared.py:485-489). All internal config consumers must be updated to access or mutate transport settings through the new composed ModelProfile or ModelRef structures. Suggestion: Update the CLI shared module to mutate the nested ModelProfile inside PlanConfig instead of direct fields.\n- [P1-impl] [google-gemini-3.5-flash-api] The apply_model_info function overloads for PlanConfig and directly replaces legacy transport fields on it (src/theforge/config/models.py:900-926). Model identity and transport mutation helpers must operate on the new composed structures rather than legacy direct fields. Suggestion: Update apply_model_info to delegate to the nested ModelProfile inside PlanConfig.\n- [P1-impl] [google-gemini-3.5-flash-api] The CLI runner directly accesses legacy transport fields on the TransportFallbackConfig instance (src/theforge/runners/cli.py:230-257). All runtime dispatch and fallback logic must read transport settings from the composed ModelProfile or ModelRef structures. Suggestion: Update _build_api_fallback_profile to read fields from the nested ModelProfile inside TransportFallbackConfig.\n- [P1-impl] [openai-gpt-5.4-cli] Step 2 names src/theforge/config/load.py, bridge.py, role_derivation.py, and secrets.py, but PlanAgentReviewConfig is actually parsed in src/theforge/config/_loaders.py::_parse_plan_agent_review and mixed-shape validation lives in _validate_v0_8_schema. If Step 1 removes the legacy scalar fields from PlanAgentReviewConfig without updating _loaders.py, load_config() will still construct the old shape and the new type contract will not load correctly.\n  Suggestion: Add src/theforge/config/_loaders.py to the loader migration step and explicitly migrate _parse_plan_agent_review plus the v0.8 schema guard logic to the new composed representation.\n- [P1-impl] [openai-gpt-5.4-cli] Step 3's caller list misses src/theforge/config/profiles.py::iter_plan_phase_profiles, which currently projects config.plan.cli/provider/model/budget_usd/timeout into a ModelProfile. That function is used by production config/auth inspection paths, so removing those scalar fields from PlanConfig without migrating this caller will break runtime profile iteration outside the listed files.\n  Suggestion: Expand the consumer-migration step to include src/theforge/config/profiles.py and any other production helpers that project PLAN/PLAN_REVIEW config into ModelProfile objects.",
+    "cost_usd": 4.700419,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash-api",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": 4.015449
+      },
+      {
+        "attempt": 0,
+        "profile": "anthropic-opus-cli",
+        "verdict": "APPROVE",
+        "cost_usd": 0.534308
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash-api",
+        "verdict": "REQUEST_CHANGES",
+        "cost_usd": 0.026957
+      },
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.4-cli",
+        "verdict": "REQUEST_CHANGES",
+        "cost_usd": 0.123705
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "anthropic-opus-cli",
+        "complexity": "large",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 71.79,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash-api",
+        "complexity": "large",
+        "unique_p1_count": 3,
+        "total_p1_count": 3,
+        "latency_s": 246.16,
+        "latency_per_p1_s": 82.05,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "openai-gpt-5.4-cli",
+        "complexity": "large",
+        "unique_p1_count": 2,
+        "total_p1_count": 2,
+        "latency_s": 80.77,
+        "latency_per_p1_s": 40.38,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Step 2's file list (load.py, bridge.py, role_derivation.py, secrets.py) omits src/theforge/config/_loaders.py, which is where PlanAgentReviewConfig is actually constructed with the scalar kwargs being removed (_loaders.py:187-195 passes cli=, provider=, model=, budget_usd=, timeout=). Removing those fields breaks that call immediately.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 1 proposes applying 'the same composed representation' to TransportFallbackConfig, but that type is embedded as api_fallback inside both ModelRef (schema.py:53) and ModelProfile (types.py:365), and schema.py imports it from types.py at module scope \u2014 making it compose ModelRef would create mutual composition plus a types\u2194schema import cycle. It also already lacks cli/budget_usd (it carries only provider/model/timeout_seconds + runtime knobs).",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "AC3 says the 600 default should match the loader, but the loader default is 14400 (secrets.py:57, matching PlanReviewConfig.timeout_seconds); reconciling in the wrong direction would cut live HITL gate windows from 4h to 10min at remote_gates.py:40/183 and pending_hitl.py:42/123.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 4 names only tests/. The scalar fields are asserted across at least test_config_load.py, test_config_role_derivation_complexity.py, test_complexity_timeouts.py, and test_config_auto_api_fallback.py.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The CLI shared module directly replaces legacy transport fields on the PlanConfig instance (src/theforge/cli/shared.py:485-489). All internal config consumers must be updated to access or mutate transport settings through the new composed ModelProfile or ModelRef structures. Suggestion: Update the CLI shared module to mutate the nested ModelProfile inside PlanConfig instead of direct fields.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The apply_model_info function overloads for PlanConfig and directly replaces legacy transport fields on it (src/theforge/config/models.py:900-926). Model identity and transport mutation helpers must operate on the new composed structures rather than legacy direct fields. Suggestion: Update apply_model_info to delegate to the nested ModelProfile inside PlanConfig.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The CLI runner directly accesses legacy transport fields on the TransportFallbackConfig instance (src/theforge/runners/cli.py:230-257). All runtime dispatch and fallback logic must read transport settings from the composed ModelProfile or ModelRef structures. Suggestion: Update _build_api_fallback_profile to read fields from the nested ModelProfile inside TransportFallbackConfig.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2 names src/theforge/config/load.py, bridge.py, role_derivation.py, and secrets.py, but PlanAgentReviewConfig is actually parsed in src/theforge/config/_loaders.py::_parse_plan_agent_review and mixed-shape validation lives in _validate_v0_8_schema. If Step 1 removes the legacy scalar fields from PlanAgentReviewConfig without updating _loaders.py, load_config() will still construct the old shape and the new type contract will not load correctly.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 3's caller list misses src/theforge/config/profiles.py::iter_plan_phase_profiles, which currently projects config.plan.cli/provider/model/budget_usd/timeout into a ModelProfile. That function is used by production config/auth inspection paths, so removing those scalar fields from PlanConfig without migrating this caller will break runtime profile iteration outside the listed files.",
+        "severity": "P1-impl",
+        "original_severity": "P1",
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against\n  finding[5]: UNMATCHED \u2014 no prior findings to match against\n  finding[6]: UNMATCHED \u2014 no prior findings to match against\n  finding[7]: UNMATCHED \u2014 no prior findings to match against\n  finding[8]: UNMATCHED \u2014 no prior findings to match against"
+    ],
+    "parse_retries": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash-api",
+        "retry": 1,
+        "errors": [
+          "findings[0].description must be non-empty",
+          "findings[1].description must be non-empty",
+          "findings[2].description must be non-empty"
+        ],
+        "repair": true
+      }
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2194",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-751",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2194",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2194",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-04T07:13:36.647989+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "WARN",
+    "cost_usd": 0.13371,
+    "duration_s": 27.270629833918065,
+    "findings": [
+      {
+        "category": "requirement",
+        "description": "Notes state this story is pure refactoring with no behavioral change ('this is refactoring, not behavioral change', 'no user-facing config changes'), but AC3 requires changing NotificationConfig.human_review_timeout_seconds's default to fix a silent mismatch with the loader default \u2014 that is a behavioral/default-value change, not a type-shape refactor, and contradicts the stated non-behavioral scope.",
+        "split_suggestion": null
+      }
+    ]
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3778 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 701 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/explain.py",
+      "detail": "src/theforge/cli/explain.py has 639 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1417 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1211 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1769 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 1336 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/profiles.py",
+      "detail": "src/theforge/config/profiles.py has 667 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 1273 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1147 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2541 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1683 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1507 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1810 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 2046 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1752 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1192 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2130 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1182 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1191 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1245 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1287 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 657 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2813 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/process_group.py",
+      "detail": "src/theforge/process_group.py has 788 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 762 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 846 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1130 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1527 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/batch_report.py",
+      "detail": "src/theforge/sprint/batch_report.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1908 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 6366 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1081 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 603 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1571 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1232 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1282 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_models.py",
+      "detail": "tests/test_config_models.py has 1012 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1159 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2790 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1021 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1341 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1226 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1978 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_reexec_reconcile.py",
+      "detail": "tests/test_sprint_reexec_reconcile.py has 1123 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1827 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 5,
+            "completed": 4,
+            "raw": 0.8,
+            "weighted": 0.8,
+            "rate": 0.8,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 11,
+            "completed": 11,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8611,
+              "weighted": 0.8185,
+              "runs": 108,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.8185
+            },
+            "domain": {
+              "domains": [
+                "config",
+                "backend"
+              ],
+              "raw": 0.9221,
+              "weighted": 0.95,
+              "runs": 77,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.95,
+              "by_domain": {
+                "config": {
+                  "runs": 16,
+                  "raw": 0.9375,
+                  "weighted": 0.9375,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 61,
+                  "raw": 0.918,
+                  "weighted": 0.95,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "config",
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "config",
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "anthropic-opus-cli",
+        "domain_head": "anthropic-opus-cli",
+        "selected_model_slice": {
+          "domains": [
+            "config",
+            "backend"
+          ],
+          "raw": 0.9221,
+          "weighted": 0.95,
+          "runs": 77,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.95,
+          "by_domain": {
+            "config": {
+              "runs": 16,
+              "raw": 0.9375,
+              "weighted": 0.9375,
+              "tainted_runs": 0
+            },
+            "backend": {
+              "runs": 61,
+              "raw": 0.918,
+              "weighted": 0.95,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "anthropic-opus-cli",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8611,
+        "weighted_success_rate": 0.8185,
+        "sample_size": 108,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.8185,
+          "threshold": 0.6,
+          "sample_size": 108,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "complexity_not_medium"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+config",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "google-gemini-3.5-flash-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "config"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.82 \u2265 threshold 0.60 over 108 admissible runs \u2014 pre-promotion held) (profile success_rate=0.82 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 118,
+            "completed": 111,
+            "raw": 0.9407,
+            "weighted": 0.9646,
+            "rate": 0.9646,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 76,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 53,
+            "completed": 45,
+            "raw": 0.8491,
+            "weighted": 0.8523,
+            "rate": 0.8523,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 12,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli"
+          ],
+          "checked_detail": {
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 76,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 12,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "runs": 1,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.0,
+              "weighted": 0.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 44.74,
+              "weighted": 44.74,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 3,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.8333,
+              "weighted": 0.8333,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 79.4667,
+              "weighted": 79.4667,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 140,
+            "completed": 139,
+            "raw": 0.9929,
+            "weighted": 0.9895,
+            "rate": 0.9895,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 31,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 118,
+            "completed": 111,
+            "raw": 0.9407,
+            "weighted": 0.9646,
+            "rate": 0.9646,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 76,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 53,
+            "completed": 45,
+            "raw": 0.8491,
+            "weighted": 0.8523,
+            "rate": 0.8523,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 12,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 31,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 76,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 12,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "sonnet"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.332525,
+      "duration_s": 59.04,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": 0.107102,
+      "duration_s": 27.48,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Refactor the internal coordinator config types to route phase transport settings through the existing composed model/profile abstractions, then migrate consumers in config normalization and coordinator phase code together. Keep the public schema unchanged and treat the missing ApiFallbackConfig name as the likely existing TransportFallbackConfig unless code inspection proves otherwise.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Update internal config types to remove duplicated transport fields from planning and fallback configs.",
+            "files": [
+              "src/theforge/config/types.py",
+              "src/theforge/config/schema.py"
+            ],
+            "action": "modify",
+            "details": "Change PlanConfig and PlanAgentReviewConfig so cli/provider/model/budget_usd/timeout are represented by ModelRef or an existing ModelProfile reference instead of duplicated scalar fields. Audit the fallback config named in code, likely TransportFallbackConfig, and apply the same composed representation for provider/model/timeout-style transport settings."
+          },
+          {
+            "id": 2,
+            "description": "Update config loading, bridge, and role derivation to populate the new composed fields.",
+            "files": [
+              "src/theforge/config/load.py",
+              "src/theforge/config/bridge.py",
+              "src/theforge/config/role_derivation.py",
+              "src/theforge/config/secrets.py"
+            ],
+            "action": "modify",
+            "details": "Preserve current public config behavior while constructing the new internal types. Ensure every remaining type field is either parsed from loader input or removed, including a focused audit around PlanConfig.validate_spec and RetryPolicy.plan_escalation_threshold. Align NotificationConfig.human_review_timeout_seconds default with the loader default so typed defaults and loaded defaults cannot diverge silently.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Migrate coordinator and CLI consumers from direct duplicated fields to composed transport/profile access.",
+            "files": [
+              "src/theforge/coordinator/plan_flow.py",
+              "src/theforge/coordinator/preflight.py",
+              "src/theforge/sprint/runner.py",
+              "src/theforge/cli/check_config.py"
+            ],
+            "action": "modify",
+            "details": "Replace direct reads of phase-specific cli/provider/model/budget_usd/timeout fields with the new composed config access. Keep coordinator control flow and audit-visible values behaviorally equivalent.",
+            "depends_on": [
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Update tests around config loading and coordinator phase boundaries.",
+            "files": [
+              "tests/"
+            ],
+            "action": "modify",
+            "details": "Adjust existing tests for the new internal type shape, add focused coverage for loader-to-type normalization, notification timeout default parity, fallback transport config migration, and coordinator phase access across the touched boundaries.",
+            "depends_on": [
+              3
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "PlanConfig, PlanAgentReviewConfig, and ApiFallbackConfig no longer carry their own cli/provider/model/budget_usd/timeout fields \u2014 they compose ModelRef or reference ModelProfile directly.",
+            "steps": [
+              1,
+              2,
+              3
+            ]
+          },
+          {
+            "criterion": "Any config field that exists in types but is not parsed by the loader is either wired up or removed (e.g., PlanConfig.validate_spec, RetryPolicy.plan_escalation_threshold).",
+            "steps": [
+              2,
+              4
+            ]
+          },
+          {
+            "criterion": "NotificationConfig.human_review_timeout_seconds default (600) matches the loader default \u2014 no silent mismatch.",
+            "steps": [
+              2,
+              4
+            ]
+          },
+          {
+            "criterion": "Coordinator phase modules updated to use the composed types.",
+            "steps": [
+              3,
+              4
+            ]
+          },
+          {
+            "criterion": "All existing tests pass with the new internal types.",
+            "steps": [
+              4
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The spec names ApiFallbackConfig, but preflight found no class by that name.",
+            "mitigation": "Treat TransportFallbackConfig as the intended target only after confirming the current code has no ApiFallbackConfig equivalent; document the mapping in the implementation notes or test names."
+          },
+          {
+            "description": "The default mismatch direction is ambiguous because the AC says typed default 600 should match loader default, while preflight reports the loader currently defaults to 14400.",
+            "mitigation": "Choose the existing intended product behavior from nearby tests or config docs, then make both defaults match that value with regression coverage."
+          },
+          {
+            "description": "Changing foundational config types can break indirect consumers outside the obvious coordinator files.",
+            "mitigation": "Use repository-wide references and the full existing test suite to catch stale direct field reads, but keep migration scoped to internal config normalization and coordinator consumers."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": 4.700419,
+      "duration_s": 254.34,
+      "iterations": 4,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash-api",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": 4.015449
+        },
+        {
+          "attempt": 0,
+          "profile": "anthropic-opus-cli",
+          "verdict": "APPROVE",
+          "cost_usd": 0.534308
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash-api",
+          "verdict": "REQUEST_CHANGES",
+          "cost_usd": 0.026957
+        },
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.4-cli",
+          "verdict": "REQUEST_CHANGES",
+          "cost_usd": 0.123705
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 9.239342,
+      "duration_s": 897.79,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 45.95,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 5.20251,
+      "duration_s": 178.77,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 1.166739,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 2.693906,
+          "verdict": "APPROVE"
+        },
+        "anthropic-sonnet-cli": {
+          "cost": 1.341865,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 19.715608,
+    "duration_s": 1463.37,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "778fad893e82",
+  "sprint_name": "issues-2189,751,1587"
+}
