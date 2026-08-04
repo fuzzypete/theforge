@@ -156,6 +156,25 @@ def test_codex_invoked_in_json_event_mode(shape: str, builder) -> None:
     assert "--json" in argv
 
 
+def test_fresh_exec_skips_the_git_repo_trust_gate() -> None:
+    """Forge must ask codex to skip its git-repo trust check (#2164).
+
+    Forge launches agents against the ``git archive | tar -x`` baseline checkout,
+    which has no ``.git`` at all. Without this flag codex refuses to start there
+    ("Not inside a trusted directory…") and exits before reaching the model, so
+    every escalation-advisor / preflight run routed to a Codex model produces no
+    output. Pinned on argv (no binary spawned) so it runs in the default gate; if
+    a future CLI renames the flag the cli_contract test above catches that.
+    """
+    argv = runner_codex.build_argv(
+        profile=_profile(),
+        working_dir=Path("/tmp"),
+        output_file=Path("/tmp/contract-out.txt"),
+        prompt="contract-check",
+    )
+    assert "--skip-git-repo-check" in argv
+
+
 # Codex `turn.completed.usage` fields observed on the real CLI. The parser must
 # accept this shape without depending on any human-readable summary text.
 _OBSERVED_TURN_COMPLETED = {

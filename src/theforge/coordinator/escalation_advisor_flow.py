@@ -194,6 +194,25 @@ def build_evidence_packet(
     )
 
 
+def _classify_advisor_launch_failure(result: object) -> str | None:
+    """Return a one-line launch reason when the advisor never started, else None.
+
+    Reads the runner's own launch signal (``startup_failure`` / a launch
+    ``failure_code``) rather than pattern-matching provider text — classification
+    of what a subprocess did belongs to the runner; the coordinator only decides
+    what the classification means for the escalation.
+    """
+    if not getattr(result, "startup_failure", False):
+        code = str(getattr(result, "failure_code", "") or "").lower()
+        if code != "cli_launch_failure":
+            return None
+    output = str(getattr(result, "output", "") or "")
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    if lines:
+        return lines[-1][:500]
+    return str(getattr(result, "failure_code", "") or "") or "advisor process exited at launch"
+
+
 def run_escalation_advisor(
     state: "CoordinatorState",
     config: "ForgeConfig",
@@ -252,7 +271,22 @@ def run_escalation_advisor(
 
     log_agent_result(result, "ESCALATION_ADVISOR")
     if not getattr(result, "success", False):
-        _log("  ⚠ advisor agent returned failure — preserving escalation")
+        launch_reason = _classify_advisor_launch_failure(result)
+        if launch_reason is not None:
+            # The advisor never reached the model: this is a defect in the
+            # environment forge launched it into, not an investigation that
+            # reached no conclusion. Record it as such (and as a measured $0.00)
+            # so the operator checkpoint can say so and the run can be retried
+            # after the configuration is repaired.
+            state.advisory_launch_failure = True
+            state.advisory_launch_reason = launch_reason
+            _log(
+                "  ⚠ advisor agent FAILED TO LAUNCH — forge configuration/tool-invocation "
+                "defect; the model was never contacted and $0.00 was spent"
+            )
+            _log(f"     launch failure: {launch_reason}")
+        else:
+            _log("  ⚠ advisor agent returned failure — preserving escalation")
         state.advisory_generated = False
         return None
 

@@ -158,6 +158,40 @@ options:
         report = rp.run_escalation_advisor(state, config, task, tmp_path / "ws")
         assert report is None
         assert state.advisory_generated is False
+        # An advisor that RAN and produced nothing usable is not a launch defect.
+        assert state.advisory_launch_failure is False
+
+    def test_launch_failure_recorded_distinctly_from_advisory_unavailable(
+        self, tmp_path, monkeypatch
+    ):
+        """A pre-turn advisor exit is a configuration defect, not "no advice today" (#2164)."""
+        config = _pending_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _escalated_state()
+
+        launch_stderr = (
+            "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n"
+            "Not inside a trusted directory and --skip-git-repo-check was not specified."
+        )
+        monkeypatch.setattr(
+            flow,
+            "run_agent",
+            lambda **k: _make_agent_result(
+                success=False,
+                output=launch_stderr,
+                cost_usd=0.0,
+                profile_name="advisor",
+                startup_failure=True,
+                failure_code="cli_launch_failure",
+            ),
+        )
+        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
+
+        report = rp.run_escalation_advisor(state, config, task, tmp_path / "ws")
+        assert report is None
+        assert state.advisory_generated is False
+        assert state.advisory_launch_failure is True
+        assert "trusted directory" in state.advisory_launch_reason
 
 
 # ── Pending escalate gate: taxonomy options + no auto-reject on timeout ────────
@@ -256,6 +290,55 @@ class TestPendingEscalateGate:
 
         assert _pending.resolve_pending("run-preserve", "redirect", project_root=tmp_path)
         assert yaml.safe_load(pending_file.read_text())["decision"] == "redirect"
+
+    def _write_checkpoint_without_advisory(self, tmp_path, state, run_id: str) -> dict:
+        """Drive the gate with no usable advisory and return the pending payload."""
+        config = _pending_config(tmp_path)
+        task = _make_task(tmp_path)
+        with patch("theforge.pending.poll_pending", return_value=("timeout", None)):
+            with patch("theforge.notify_backends.send_notifications"):
+                _pending_escalate_gate(
+                    state,
+                    task,
+                    config,
+                    state.error,
+                    {"reviewer-a": "REQUEST_CHANGES"},
+                    "PASS",
+                    run_id=run_id,
+                    advisory=None,
+                )
+        path = tmp_path / ".forge" / "pending" / f"{run_id}.yaml"
+        return yaml.safe_load(path.read_text())
+
+    def test_launch_failure_checkpoint_names_the_defect_and_zero_cost(self, tmp_path):
+        """The operator must be able to tell a launch defect from a no-conclusion run."""
+        state = _escalated_state()
+        state.advisory_launch_failure = True
+        state.advisory_launch_reason = (
+            "Not inside a trusted directory and --skip-git-repo-check was not specified."
+        )
+
+        data = self._write_checkpoint_without_advisory(tmp_path, state, "run-launchfail")
+
+        assert data["advisory_launch_failure"] is True
+        assert "trusted directory" in data["advisory_launch_reason"]
+        assert data["advisory_cost_usd"] == 0.0
+        assert "FAILED TO LAUNCH" in data["reason"]
+        assert "$0.00" in data["reason"]
+        # Options are still the full taxonomy — the operator must still choose.
+        assert data["options"] == list(rp.ACTION_TAXONOMY)
+
+    def test_advisory_unavailable_checkpoint_unchanged_without_launch_failure(self, tmp_path):
+        """An advisor that ran and produced nothing keeps the plain unavailable wording."""
+        data = self._write_checkpoint_without_advisory(
+            tmp_path, _escalated_state(), "run-nounavail"
+        )
+
+        assert data["advisory_unavailable"] is True
+        assert "advisory_launch_failure" not in data
+        assert "advisory_cost_usd" not in data
+        assert "FAILED TO LAUNCH" not in data["reason"]
+        assert "advisory report unavailable" in data["reason"]
 
     def test_decision_cleans_up_pending_file(self, tmp_path):
         # The complementary case: when the operator DOES select, the resolved
@@ -378,6 +461,40 @@ class TestRunEscalateGateDispositions:
         assert state.advisory_generated is False
         assert "advisory report was generated" not in result.message
         assert "operator action selection is still" in result.message
+
+    def test_timeout_preserve_message_names_an_advisor_launch_failure(self, tmp_path, monkeypatch):
+        """Preserve message must distinguish "never launched" from "no advisory"."""
+        config = _pending_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _escalated_state()
+
+        def _fake_advisor(*a, **k):
+            state.advisory_generated = False
+            state.advisory_launch_failure = True
+            state.advisory_launch_reason = "Not inside a trusted directory"
+            return None
+
+        monkeypatch.setattr(rp, "run_escalation_advisor", _fake_advisor)
+        monkeypatch.setattr(rp, "_pending_escalate_gate", lambda *a, **k: "timeout")
+        monkeypatch.setattr(rp, "_append_cycle_history", lambda *a, **k: None)
+        monkeypatch.setattr(rp, "_escalate_notify", lambda *a, **k: None)
+
+        result = _run_escalate_gate(
+            state,
+            config,
+            task,
+            tmp_path / "ws",
+            "forge/test",
+            0.0,
+            auto_merge=False,
+            notify=True,
+            logger=None,
+            run_id="run-lf",
+        )
+        assert state.escalate_decision == "advisory_pending"
+        assert "FAILED TO LAUNCH" in result.message
+        assert "Not inside a trusted directory" in result.message
+        assert "advisory report was generated" not in result.message
 
     def test_reject_policy_still_short_circuits_without_advisor(self, tmp_path, monkeypatch):
         # escalate_policy=reject must not even generate an advisory.
