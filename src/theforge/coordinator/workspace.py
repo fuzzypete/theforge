@@ -22,6 +22,7 @@ from .config_snapshot import sync_forge_yaml_into_worktree
 from .gate import _run_gate
 from .git_lock import FETCH_LOCK
 from .run_setup import _rebase_onto_main
+from .worktree_drift import DRIFT_HEADER, classify_rebase_conflict
 
 # Populated lazily on first call to _resolve_merge_conflicts.
 run_agent = None
@@ -1060,11 +1061,24 @@ def _sync_base_before_worktree_use(
 
 
 def _rebase_reused_worktree(workspace_path: Path, base_branch: str) -> str | None:
-    """Rebase a reused worktree onto current base. Returns error message on failure."""
+    """Rebase a reused worktree onto current base. Returns error message on failure.
+
+    A failure here is usually not "git broke" but "the work in this worktree
+    predates commits that changed the same files" — the recurring cost of
+    preserving an escalated story's worktree across an intervening merge
+    (#1993). Classify that condition explicitly; only fall back to relaying the
+    tool failure when drift cannot be established.
+    """
     rebase_ok, rebase_err = _rebase_onto_main(str(workspace_path), base_branch, None)
     if rebase_ok:
         _cu._log(f"  rebased reused worktree onto origin/{base_branch}")
         return None
+    classified = classify_rebase_conflict(workspace_path, base_branch, rebase_err)
+    if classified is not None:
+        _cu._log(f"⚠ WORKSPACE  {DRIFT_HEADER} on {base_branch}")
+        for line in classified.splitlines()[1:]:
+            _cu._log(f"  {line}" if line else "")
+        return classified
     return (
         f"pre-dev rebase onto {base_branch} failed — conflicts must be resolved manually: "
         f"{rebase_err}"
