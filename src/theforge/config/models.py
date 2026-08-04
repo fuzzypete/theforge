@@ -1067,6 +1067,21 @@ def _parse_unit_float(value: Any, *, key: str, default: float) -> float:
     return coerced
 
 
+def _parse_strict_bool(value: Any, *, key: str, default: bool) -> bool:
+    """Validate an opt-in flag at the config integrity boundary.
+
+    Bare ``bool()`` coercion makes every non-empty scalar truthy, so a typo like
+    ``enabled: flase`` or ``enabled: "no"`` silently turns a routing mechanism ON.
+    Config loading is an integrity boundary (ADR-0006 clause 1): a value that is
+    not an actual boolean is a hard error, not a truthiness question.
+    """
+    if value is None:
+        return default
+    if not isinstance(value, bool):
+        raise ValueError(f"{key} must be a boolean, got {value!r}")
+    return value
+
+
 def _parse_positive_int(value: Any, *, key: str, minimum: int, default: int) -> int:
     """Coerce/validate a bounded integer at the config integrity boundary.
 
@@ -1152,20 +1167,42 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
             assignment_raw.get("reviewer_completion_threshold", 0.5)
         ),
         reviewer_completion_min_runs=int(assignment_raw.get("reviewer_completion_min_runs", 5)),
-        reviewer_value_enabled=bool(assignment_raw.get("reviewer_value_enabled", False)),
+        # Both reviewer-value phases validate strictly: these three fields decide
+        # whether a mechanical signal is allowed to reorder reviewers and how much
+        # evidence it needs first, so a malformed scalar must fail loudly rather
+        # than coerce into an active routing setting.
+        reviewer_value_enabled=_parse_strict_bool(
+            assignment_raw.get("reviewer_value_enabled"),
+            key="assignment.reviewer_value_enabled",
+            default=False,
+        ),
         reviewer_value_uniqueness_threshold=_parse_unit_float(
             assignment_raw.get("reviewer_value_uniqueness_threshold"),
             key="assignment.reviewer_value_uniqueness_threshold",
             default=0.34,
         ),
-        reviewer_value_min_runs=int(assignment_raw.get("reviewer_value_min_runs", 5)),
-        code_review_value_enabled=bool(assignment_raw.get("code_review_value_enabled", False)),
+        reviewer_value_min_runs=_parse_positive_int(
+            assignment_raw.get("reviewer_value_min_runs"),
+            key="assignment.reviewer_value_min_runs",
+            minimum=1,
+            default=5,
+        ),
+        code_review_value_enabled=_parse_strict_bool(
+            assignment_raw.get("code_review_value_enabled"),
+            key="assignment.code_review_value_enabled",
+            default=False,
+        ),
         code_review_value_uniqueness_threshold=_parse_unit_float(
             assignment_raw.get("code_review_value_uniqueness_threshold"),
             key="assignment.code_review_value_uniqueness_threshold",
             default=0.34,
         ),
-        code_review_value_min_runs=int(assignment_raw.get("code_review_value_min_runs", 5)),
+        code_review_value_min_runs=_parse_positive_int(
+            assignment_raw.get("code_review_value_min_runs"),
+            key="assignment.code_review_value_min_runs",
+            minimum=1,
+            default=5,
+        ),
         dev_promotion_threshold=_parse_unit_float(
             assignment_raw.get("dev_promotion_threshold"),
             key="assignment.dev_promotion_threshold",

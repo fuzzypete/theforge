@@ -941,3 +941,72 @@ class TestAssignmentDevPromotion:
 
         with pytest.raises(ValueError, match="dev_promotion_min_runs"):
             _parse_assignment({"enabled": True, "dev_promotion_min_runs": 0})
+
+
+class TestAssignmentReviewerValue:
+    """assignment reviewer-value field parsing (#1443 plan review, #2156 code review).
+
+    These three fields per phase decide whether a mechanical signal may reorder
+    reviewers and how much evidence it needs first, so config loading validates
+    them strictly rather than coercing whatever scalar it was handed.
+    """
+
+    def test_omitted_uses_defaults(self):
+        from theforge.config.models import _parse_assignment
+
+        cfg = _parse_assignment({"enabled": True})
+        assert cfg.reviewer_value_enabled is False
+        assert cfg.reviewer_value_uniqueness_threshold == 0.34
+        assert cfg.reviewer_value_min_runs == 5
+        assert cfg.code_review_value_enabled is False
+        assert cfg.code_review_value_uniqueness_threshold == 0.34
+        assert cfg.code_review_value_min_runs == 5
+
+    def test_explicit_values_parsed_per_phase(self):
+        from theforge.config.models import _parse_assignment
+
+        cfg = _parse_assignment(
+            {
+                "enabled": True,
+                "reviewer_value_enabled": True,
+                "reviewer_value_uniqueness_threshold": 0.5,
+                "reviewer_value_min_runs": 9,
+                "code_review_value_enabled": True,
+                "code_review_value_uniqueness_threshold": 0.2,
+                "code_review_value_min_runs": 12,
+            }
+        )
+        # The two phases are tuned independently.
+        assert cfg.reviewer_value_uniqueness_threshold == 0.5
+        assert cfg.reviewer_value_min_runs == 9
+        assert cfg.code_review_value_uniqueness_threshold == 0.2
+        assert cfg.code_review_value_min_runs == 12
+
+    @pytest.mark.parametrize("key", ["reviewer_value_enabled", "code_review_value_enabled"])
+    @pytest.mark.parametrize("bad", ["flase", "no", 1, ""])
+    def test_non_boolean_enablement_is_rejected(self, key, bad):
+        # Bare bool() coercion would turn "flase" into an ON switch silently.
+        from theforge.config.models import _parse_assignment
+
+        with pytest.raises(ValueError, match=key):
+            _parse_assignment({"enabled": True, key: bad})
+
+    @pytest.mark.parametrize(
+        "key",
+        ["reviewer_value_uniqueness_threshold", "code_review_value_uniqueness_threshold"],
+    )
+    def test_out_of_range_threshold_is_rejected(self, key):
+        from theforge.config.models import _parse_assignment
+
+        with pytest.raises(ValueError, match=key):
+            _parse_assignment({"enabled": True, key: 1.5})
+
+    @pytest.mark.parametrize("key", ["reviewer_value_min_runs", "code_review_value_min_runs"])
+    @pytest.mark.parametrize("bad", ["5", 0, True, 2.5])
+    def test_invalid_min_runs_is_rejected(self, key, bad):
+        # A zero floor would let a single sample gate routing; a string or a bool
+        # is not a sample count at all.
+        from theforge.config.models import _parse_assignment
+
+        with pytest.raises(ValueError, match=key):
+            _parse_assignment({"enabled": True, key: bad})
