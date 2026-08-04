@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
+import textwrap
+
+import pytest
+
 from theforge.intake.shape_classify import (
     Classification,
     Confidence,
     DiagnosisState,
+    _looks_like_bug,
     classify,
 )
+from theforge.shape_check.heuristics import is_bug_format_issue
 
 
 def test_classifies_bug_by_label():
@@ -80,6 +86,81 @@ def test_no_signal_returns_unresolved():
     assert proposal.classification is Classification.UNRESOLVED
     assert proposal.confidence is Confidence.LOW
     assert proposal.ambiguity_questions
+    assert "too thin to shape" in proposal.rationale
+
+
+# A bug brief written strictly to docs/guides/authoring.md: no bug label
+# (`--from-brief` supplies none), and a title that names the misbehavior
+# rather than opening with a marker word (#2139).
+DOCUMENTED_FORMAT_BRIEF = textwrap.dedent(
+    """\
+    ## What happened
+
+    Ran `forge sprint --resume` on a sprint where two of three stories had
+    already been merged. The resume run re-entered both at the dev phase.
+
+    ## What was expected
+
+    Resuming a sprint should never repeat work that has already reached a
+    terminal merged state, regardless of the last phase in the audit log.
+    """
+)
+
+
+def test_documented_bug_format_classifies_as_bug_without_label_or_title_token():
+    proposal = classify(
+        title="sprint resume re-runs already-merged stories",
+        body=DOCUMENTED_FORMAT_BRIEF,
+        labels=[],
+    )
+    assert proposal.classification is Classification.BUG
+    assert proposal.confidence is Confidence.HIGH
+    assert proposal.proposed_labels == ("bug",)
+
+
+def test_documented_bug_format_never_reports_no_signal():
+    proposal = classify(
+        title="sprint resume re-runs already-merged stories",
+        body=DOCUMENTED_FORMAT_BRIEF,
+        labels=[],
+    )
+    assert "too thin to shape" not in proposal.rationale
+
+
+def test_substantive_unclassifiable_draft_is_not_called_thin():
+    body = textwrap.dedent(
+        """\
+        ## Background
+
+        A long description of some situation, with measured evidence and a
+        quoted artifact, that nonetheless names no work type anywhere.
+        """
+    )
+    proposal = classify("something about the release process", body, [])
+    assert proposal.classification is Classification.UNRESOLVED
+    assert "too thin to shape" not in proposal.rationale
+    assert "authoring.md" in proposal.rationale
+
+
+BUG_BODY_CASES = [
+    pytest.param(DOCUMENTED_FORMAT_BRIEF, True, id="documented-what-happened-pair"),
+    pytest.param("## Observed\nfoo\n\n## Expected\nbar\n", True, id="corpus-observed-pair"),
+    pytest.param(
+        "## Observed behavior\nfoo\n\n## Expected behavior\nbar\n",
+        True,
+        id="observed-behavior-pair",
+    ),
+    pytest.param("## Steps to reproduce\n1. run it\n", True, id="reproduction-steps"),
+    pytest.param("## Acceptance criteria\n- a thing happens\n", False, id="feature-body"),
+    pytest.param("", False, id="empty"),
+]
+
+
+@pytest.mark.parametrize("body,expected", BUG_BODY_CASES)
+def test_classifier_and_shape_gate_agree_on_bug_bodies(body: str, expected: bool):
+    """The two intake gates must not disagree about what a bug body looks like."""
+    assert _looks_like_bug("", body, set()) is expected
+    assert is_bug_format_issue(body, []) is expected
 
 
 def test_duplicate_detected_by_label():
