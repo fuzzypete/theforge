@@ -18,6 +18,7 @@ from theforge.task import TaskStory
 from theforge.workspace_env import read_venv_base_executable, venv_matches_interpreter
 
 from . import util as _cu
+from .config_snapshot import sync_forge_yaml_into_worktree
 from .gate import _run_gate
 from .git_lock import FETCH_LOCK
 from .run_setup import _rebase_onto_main
@@ -1070,6 +1071,20 @@ def _rebase_reused_worktree(workspace_path: Path, base_branch: str) -> str | Non
     )
 
 
+def _sync_run_forge_yaml(config: ForgeConfig, workspace_path: Path) -> None:
+    """Give a freshly created or reused worktree the run's operative forge.yaml.
+
+    Called on every path out of ``_create_workspace``, before the workspace
+    setup command runs and therefore before any agent or gate reads the
+    worktree. A fresh worktree otherwise carries whatever forge.yaml its base
+    branch happened to hold, so a story dispatched after a config change landed
+    mid-sprint ran against that change while the sprint record still reported
+    the pinned snapshot (#1980). Under a sprint the source is that snapshot;
+    a standalone run reads the project root, as before.
+    """
+    sync_forge_yaml_into_worktree(config.project_root, workspace_path, label="WORKSPACE")
+
+
 def _create_workspace(
     config: ForgeConfig,
     task: TaskStory,
@@ -1130,6 +1145,7 @@ def _create_workspace(
             rebase_err = _rebase_reused_worktree(workspace_path, config.workspace.base_branch)
             if rebase_err is not None:
                 return None, None, rebase_err
+            _sync_run_forge_yaml(config, workspace_path)
             if config.workspace.setup_command:
                 _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
                 ok_s, out_s = _run_setup_split(
@@ -1171,6 +1187,7 @@ def _create_workspace(
                 rebase_err = _rebase_reused_worktree(existing_wt, config.workspace.base_branch)
                 if rebase_err is not None:
                     return None, None, rebase_err
+                _sync_run_forge_yaml(config, existing_wt)
                 if config.workspace.setup_command:
                     _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
                     ok_s, out_s = _run_setup_split(
@@ -1208,6 +1225,7 @@ def _create_workspace(
             rebase_err = _rebase_reused_worktree(workspace_path, config.workspace.base_branch)
             if rebase_err is not None:
                 return None, None, rebase_err
+            _sync_run_forge_yaml(config, workspace_path)
             if config.workspace.setup_command:
                 _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
                 ok_s, out_s = _run_setup_split(
@@ -1239,6 +1257,7 @@ def _create_workspace(
     if not workspace_path.exists():
         return None, None, f"Workspace path does not exist after creation: {workspace_path}"
 
+    _sync_run_forge_yaml(config, workspace_path)
     if config.workspace.setup_command:
         _cu._log(f"Running workspace setup: {config.workspace.setup_command}")
         ok, output = _run_setup_split(

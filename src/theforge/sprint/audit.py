@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from ..advisory_conventions import noteworthy_advisory_entries
+from ..coordinator.config_snapshot import load_audit_record as load_config_snapshot_record
 from ..coordinator.iteration_usage import dev_usage as _dev_usage
 from ..coordinator.landing_record import build_landing_record
 from ..log_util import _log_line
@@ -766,6 +767,11 @@ def _write_sprint_audit(
             if isinstance(getattr(manifest, "baseline_gate", None), dict)
             else None
         ),
+        # Which forge.yaml this sprint ran under, and every point at which the
+        # project-root file moved off it (#1980). Without this, two issues filed
+        # from one sprint can describe its configuration contradictorily and
+        # both be right about the runs their authors read.
+        "config_snapshot": load_config_snapshot_record(project_root, sprint_id),
         # TODO(issue-817): Distinguishing externally closed dependencies from
         # earlier-resume completion would require finer provenance on ResolvedSprint.
         "closed_dependency_slugs": [
