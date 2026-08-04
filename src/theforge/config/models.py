@@ -25,6 +25,8 @@ from .types import (
     ExplorationConfig,
     ModelProfile,
     PlanConfig,
+    ProviderReasoningEffortConfig,
+    ReasoningEffortConfig,
     RecencyConfig,
     TransportFallbackConfig,
 )
@@ -1147,6 +1149,111 @@ def _parse_exploration(exploration_raw: Any) -> ExplorationConfig:
     )
 
 
+def _parse_effort_buckets(raw: Any, *, key: str) -> dict[str, tuple[tuple[int, str], ...]]:
+    """Parse a ``{phase: [{max_score, effort}, ...]}`` override table (#1108).
+
+    Config loading is an integrity boundary: an unknown phase, a non-``low``/
+    ``medium``/``high`` effort, an out-of-range or non-ascending ``max_score``,
+    or a band table that never reaches 10 is a hard error rather than a silently
+    ignored override that would leave the operator's intent unapplied.
+    """
+    from ..routing import REASONING_EFFORT_PHASES, VALID_REASONING_EFFORTS  # noqa: PLC0415
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{key} must be a mapping of phase to bands, got {type(raw).__name__}")
+    parsed: dict[str, tuple[tuple[int, str], ...]] = {}
+    for phase, bands_raw in raw.items():
+        if phase not in REASONING_EFFORT_PHASES:
+            raise ValueError(
+                f"{key} phase must be one of {list(REASONING_EFFORT_PHASES)}, got {phase!r}"
+            )
+        if not isinstance(bands_raw, list) or not bands_raw:
+            raise ValueError(f"{key}.{phase} must be a non-empty list of bands, got {bands_raw!r}")
+        bands: list[tuple[int, str]] = []
+        previous = 0
+        for band in bands_raw:
+            if not isinstance(band, dict):
+                raise ValueError(f"{key}.{phase} band must be a mapping, got {band!r}")
+            max_score = band.get("max_score")
+            effort = band.get("effort")
+            if isinstance(max_score, bool) or not isinstance(max_score, int):
+                raise ValueError(
+                    f"{key}.{phase} band max_score must be an integer, got {max_score!r}"
+                )
+            if not previous < max_score <= 10:
+                raise ValueError(
+                    f"{key}.{phase} band max_score must ascend within 1-10, "
+                    f"got {max_score} after {previous}"
+                )
+            if effort not in VALID_REASONING_EFFORTS:
+                raise ValueError(
+                    f"{key}.{phase} band effort must be one of "
+                    f"{list(VALID_REASONING_EFFORTS)}, got {effort!r}"
+                )
+            bands.append((max_score, effort))
+            previous = max_score
+        if previous != 10:
+            raise ValueError(f"{key}.{phase} bands must cover scores through 10, got {previous}")
+        parsed[phase] = tuple(bands)
+    return parsed
+
+
+def _parse_token_budgets(raw: Any, *, key: str) -> dict[str, int]:
+    """Parse an ``{effort: token_budget}`` override map (#1108)."""
+    from ..routing import VALID_REASONING_EFFORTS  # noqa: PLC0415
+
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(f"{key} must be a mapping of effort to token budget, got {raw!r}")
+    parsed: dict[str, int] = {}
+    for effort, budget in raw.items():
+        if effort not in VALID_REASONING_EFFORTS:
+            raise ValueError(
+                f"{key} effort must be one of {list(VALID_REASONING_EFFORTS)}, got {effort!r}"
+            )
+        if isinstance(budget, bool) or not isinstance(budget, int) or budget < 0:
+            raise ValueError(f"{key}.{effort} must be a non-negative integer, got {budget!r}")
+        parsed[effort] = budget
+    return parsed
+
+
+def _parse_reasoning_effort(raw: Any) -> ReasoningEffortConfig:
+    """Parse and validate ``assignment.reasoning_effort`` (#1108)."""
+    if raw is None:
+        return ReasoningEffortConfig()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            f"assignment.reasoning_effort must be a mapping, got {type(raw).__name__}"
+        )
+    base = "assignment.reasoning_effort"
+    providers_raw = raw.get("providers")
+    providers: dict[str, ProviderReasoningEffortConfig] = {}
+    if providers_raw is not None:
+        if not isinstance(providers_raw, dict):
+            raise ValueError(f"{base}.providers must be a mapping, got {providers_raw!r}")
+        for provider, entry in providers_raw.items():
+            if not isinstance(entry, dict):
+                raise ValueError(f"{base}.providers.{provider} must be a mapping, got {entry!r}")
+            providers[str(provider)] = ProviderReasoningEffortConfig(
+                phase_buckets=_parse_effort_buckets(
+                    entry.get("phases"), key=f"{base}.providers.{provider}.phases"
+                ),
+                token_budgets=_parse_token_budgets(
+                    entry.get("token_budgets"),
+                    key=f"{base}.providers.{provider}.token_budgets",
+                ),
+            )
+    return ReasoningEffortConfig(
+        enabled=bool(raw.get("enabled", True)),
+        phase_buckets=_parse_effort_buckets(raw.get("phases"), key=f"{base}.phases"),
+        token_budgets=_parse_token_budgets(raw.get("token_budgets"), key=f"{base}.token_budgets"),
+        providers=providers,
+    )
+
+
 def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
     """Parse assignment config from raw YAML dict."""
     return AssignmentConfig(
@@ -1215,4 +1322,5 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
             default=5,
         ),
         plan_tier_reduction=bool(assignment_raw.get("plan_tier_reduction", True)),
+        reasoning_effort=_parse_reasoning_effort(assignment_raw.get("reasoning_effort")),
     )
