@@ -382,17 +382,29 @@ def test_score_policy_recorded_for_every_axis(_keys_except_deepseek):
         assert count["rationale"]
 
 
-def test_reasoning_effort_axis_recorded_as_not_score_controlled(_keys_except_deepseek):
-    """reasoning_effort appears in routing_decision, explicitly marked as NOT
-    score-controlled rather than silently omitted (#1019 / P2 plan note)."""
+def test_reasoning_effort_axis_recorded_as_score_controlled_per_phase(_keys_except_deepseek):
+    """reasoning_effort is a score-controlled axis resolved per phase (#1108);
+    the #1019-era 'not score-controlled' recording is retracted."""
     decision = assign_models(_agents(), _cfg(), complexity="HIGH", complexity_score=9)
     axis = decision.routing_decision["reasoning_effort"]
     assert axis["axis"] == "reasoning_effort"
-    assert axis["score_controlled"] is False
-    assert axis["applied"] is False
-    assert axis["output"] is None
-    assert axis["reason"] == "not_score_controlled"
+    assert axis["score_controlled"] is True
     assert axis["rationale"]
+    phases = axis["phases"]
+    assert set(phases) == {"plan", "dev", "review"}
+    for phase_block in phases.values():
+        assert phase_block["bucket"] == "high"
+        assert phase_block["range"] == [7, 10]
+        assert phase_block["thresholds"] == [3, 6, 10]
+        assert phase_block["output"] == "high"
+        # Every seated model records its own provider-support status.
+        assert phase_block["models"]
+        for model in phase_block["models"]:
+            assert model["provider_support"] in {
+                "provider_unsupported",
+                "supported_metered",
+                "supported_unmetered",
+            }
 
 
 def test_score_policy_low_score_routes_to_min_reviewers(_keys_except_deepseek):

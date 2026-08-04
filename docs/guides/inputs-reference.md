@@ -150,6 +150,34 @@ rate actually used, the admissible sample count, the sample-floor result, and an
 taint-excluded count are all recorded per candidate in the `routing_decision` audit
 block so raw-vs-weighted divergence is visible.
 
+### Reasoning effort (`assignment.reasoning_effort`)
+
+The complexity score also selects a **reasoning-effort level per phase** — plan
+`medium`/dev `low`/review `low` for scores 1–3, plan `high`/dev `medium`/review
+`medium` for 4–6, `high` everywhere for 7–10. On transports that express
+thinking as a token count instead, each level resolves to a configurable budget
+(default `low` → 2048, `medium` → 8192, `high` → 24576). Transports with no
+passthrough leave the value unapplied and record `provider_unsupported`.
+
+Everything is overridable sprint-wide or per provider, and validated at load:
+
+```yaml
+assignment:
+  reasoning_effort:
+    enabled: true                # false leaves the axis flat (still recorded)
+    phases:
+      dev:
+        - {max_score: 5, effort: low}
+        - {max_score: 10, effort: high}
+    token_budgets: {low: 2048, medium: 8192, high: 24576}
+    providers:
+      google:
+        token_budgets: {high: 32768}
+```
+
+See [Routing policy](routing-policy.md#reasoning-effort-per-phase) for the full
+table, the provider-support matrix, and the `routing_decision` shape.
+
 ### Story bundling (relational, scheduler-decided)
 
 When a sprint contains two or more eligible stories, the sprint scheduler may

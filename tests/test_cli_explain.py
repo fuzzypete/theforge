@@ -177,11 +177,33 @@ def test_render_excluded_reason_is_scannable() -> None:
 
 def test_render_surfaces_score_policy_per_axis() -> None:
     """The #1019 score-to-routing policy is rendered per role, and the
-    reasoning_effort axis is surfaced as intentionally not score-controlled."""
+    reasoning_effort axis is surfaced per phase (#1108)."""
     from theforge.routing import axis_decision
 
     block = _routing_block()
-    block["reasoning_effort"] = axis_decision("reasoning_effort", 9)
+    dev_axis = dict(axis_decision("reasoning_effort", 9, phase="dev"))
+    dev_axis["models"] = [
+        {
+            "name": "codex",
+            "model": "gpt-5.4",
+            "transport": "codex",
+            "knob": "effort",
+            "output": "high",
+            "provider_support": "supported_metered",
+            "applied": True,
+            "field": "reasoning_effort",
+            "value": "high",
+        }
+    ]
+    dev_axis["provider_support"] = "supported_metered"
+    block["reasoning_effort"] = {
+        "axis": "reasoning_effort",
+        "score": 9,
+        "score_controlled": True,
+        "enabled": True,
+        "applied": True,
+        "phases": {"dev": dev_axis},
+    }
     block["dev"]["score_policy"] = {"dev_tier": axis_decision("dev_tier", 9)}
     block["planner"]["score_policy"] = {"plan_tier": axis_decision("plan_tier", 9)}
     count_axis = dict(axis_decision("reviewer_count", 9))
@@ -198,8 +220,24 @@ def test_render_surfaces_score_policy_per_axis() -> None:
     assert "reviewer_count:" in text
     assert "resolved_count=3" in text
     assert "seated=1" in text
-    # reasoning_effort is surfaced top-level as deliberately excluded.
-    assert "reasoning_effort: not score-controlled" in text
+    # reasoning_effort is surfaced top-level, per phase, straight from the block.
+    assert "reasoning_effort (score=9):" in text
+    assert "dev: bucket=high range=[7, 10] thresholds=[3, 6, 10] output=high" in text
+    assert "supported_metered reasoning_effort=high" in text
+
+
+def test_render_tolerates_pre_1108_reasoning_effort_block() -> None:
+    """Blocks recorded before the axis became score-controlled still render."""
+    from theforge.routing import axis_decision
+
+    block = _routing_block()
+    legacy = dict(axis_decision("reasoning_effort", 9))
+    legacy.update(applied=False, reason="not_score_controlled")
+    legacy.pop("phases", None)
+    block["reasoning_effort"] = legacy
+
+    text = "\n".join(explain.render_routing_decision(block))
+    assert "reasoning_effort: not applied — not_score_controlled" in text
 
 
 def test_tri_state_distinguishes_not_checked_from_did_not_fire() -> None:
