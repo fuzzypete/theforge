@@ -8,6 +8,7 @@ sprint across two configurations.
 
 from __future__ import annotations
 
+import subprocess
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import patch
@@ -23,6 +24,7 @@ from test_sprint_baseline_gate import _init_repo  # noqa: E402
 from theforge.coordinator import config_snapshot as cs
 from theforge.coordinator.run_setup import _setup_resume_entry
 from theforge.coordinator.state import Phase
+from theforge.coordinator.workspace import _create_workspace
 from theforge.sprint.runner import (
     BASELINE_DIAGNOSTIC_MAX_LINES,
     _baseline_failure_diagnostic,
@@ -257,6 +259,176 @@ def test_standalone_run_without_a_pin_still_reads_the_project_root(tmp_path: Pat
     _prepare_story(config, task, workspace)
 
     assert (workspace / "forge.yaml").read_text(encoding="utf-8") == "project: live\n"
+
+
+# --------------------------------------------------------------------------
+# 4. Seam: fresh workspace creation, over real git
+#
+# A resumed story is only half the sprint. A story dispatched fresh gets its
+# worktree from the base branch, so once a config-contract change has *landed*
+# the checkout itself carries it — the case the sprint pin exists for.
+# --------------------------------------------------------------------------
+
+
+def _git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=str(cwd), capture_output=True, text=True, check=True
+    ).stdout
+
+
+def _init_project(tmp_path: Path, forge_yaml: str) -> Path:
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    _git(project_root, "init", "--initial-branch=main")
+    _git(project_root, "config", "user.email", "test@example.com")
+    _git(project_root, "config", "user.name", "Test")
+    (project_root / "forge.yaml").write_text(forge_yaml, encoding="utf-8")
+    (project_root / "shared.txt").write_text("base\n", encoding="utf-8")
+    _git(project_root, "add", ".")
+    _git(project_root, "commit", "-m", "initial")
+    return project_root
+
+
+def _real_config(project_root: Path, slug: str):
+    from theforge.config import (
+        DEFAULT_DEV_PROFILE,
+        DEFAULT_PREFLIGHT_PROFILE,
+        DEFAULT_REVIEW_PROFILE,
+        DEFAULT_VALIDATION,
+        ForgeConfig,
+        LogConfig,
+        RetryPolicy,
+        WorkspaceConfig,
+    )
+
+    return ForgeConfig(
+        project="test",
+        project_root=project_root,
+        workspace=WorkspaceConfig(
+            create_command="git worktree add {slug} -b feat/{slug} {base_branch}",
+            path_pattern="{slug}",
+            branch_pattern=f"feat/{slug}",
+            base_branch="main",
+            setup_command=None,
+        ),
+        validation=DEFAULT_VALIDATION,
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        preflight_fallback_profile=None,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
+        log=LogConfig(enabled=False),
+    )
+
+
+def _real_task(project_root: Path, slug: str):
+    from theforge.task import TaskStory
+
+    spec = project_root / f"{slug}.md"
+    spec.write_text("# task\n", encoding="utf-8")
+    return TaskStory(name="task", story_path=spec, slug=slug)
+
+
+def test_fresh_story_worktree_uses_the_pin_after_a_config_change_lands(tmp_path: Path) -> None:
+    """A story dispatched after the change merged still runs under the pin.
+
+    This is the reported failure shape: the checkout the worktree is created
+    from already carries the new forge.yaml, so nothing about the story's own
+    setup would have noticed the sprint had moved off its recorded config.
+    """
+    project_root = _init_project(tmp_path, "project: sprint-entry\n")
+    snap = cs.capture_or_load(project_root, "sprint-a")
+    cs.activate(snap)
+
+    # Story A is dispatched fresh at sprint entry.
+    path_a, _branch_a, err_a = _create_workspace(
+        _real_config(project_root, "story-a"), _real_task(project_root, "story-a"), no_pull=True
+    )
+    assert err_a is None
+
+    # Story A lands a config-contract change: it is now committed on main *and*
+    # present in the project-root working tree.
+    (project_root / "forge.yaml").write_text("project: changed-by-landing\n", encoding="utf-8")
+    _git(project_root, "commit", "-am", "land config change")
+    drift = cs.check_drift(snap, story="story-b")
+
+    # Story B is dispatched fresh afterwards.
+    path_b, _branch_b, err_b = _create_workspace(
+        _real_config(project_root, "story-b"), _real_task(project_root, "story-b"), no_pull=True
+    )
+    assert err_b is None
+
+    assert (path_a / "forge.yaml").read_text(encoding="utf-8") == "project: sprint-entry\n"
+    assert (path_b / "forge.yaml").read_text(encoding="utf-8") == "project: sprint-entry\n"
+    # The pinned content is invisible to git, so it cannot land in a story
+    # commit (#1627) — even though it now differs from the branch's version.
+    assert _git(path_b, "status", "--porcelain").strip() == ""
+    # And the boundary is on the record.
+    assert drift is not None
+    assert cs.load_audit_record(project_root, "sprint-a")["drift_events"][0]["story"] == "story-b"
+
+
+def test_reused_story_worktree_is_resynced_to_the_pin(tmp_path: Path) -> None:
+    """A reused worktree is rebased onto the changed base, then put back on the pin."""
+    project_root = _init_project(tmp_path, "project: sprint-entry\n")
+    snap = cs.capture_or_load(project_root, "sprint-a")
+    cs.activate(snap)
+
+    config = _real_config(project_root, "story-a")
+    task = _real_task(project_root, "story-a")
+    path, _branch, err = _create_workspace(config, task, no_pull=True)
+    assert err is None
+
+    (project_root / "forge.yaml").write_text("project: changed-by-landing\n", encoding="utf-8")
+    _git(project_root, "commit", "-am", "land config change")
+
+    # Same story dispatched again (resume / second sprint generation): the
+    # worktree is reused and rebased onto a base that now carries the change.
+    path_again, _branch_again, err_again = _create_workspace(config, task, no_pull=True)
+
+    assert err_again is None
+    assert path_again == path
+    assert (path_again / "forge.yaml").read_text(encoding="utf-8") == "project: sprint-entry\n"
+
+
+def test_fresh_worktree_without_a_pin_takes_the_live_project_root(tmp_path: Path) -> None:
+    """Standalone runs keep reading the operator's working-tree forge.yaml."""
+    project_root = _init_project(tmp_path, "project: committed\n")
+    (project_root / "forge.yaml").write_text("project: uncommitted-edit\n", encoding="utf-8")
+
+    path, _branch, err = _create_workspace(
+        _real_config(project_root, "story-a"), _real_task(project_root, "story-a"), no_pull=True
+    )
+
+    assert err is None
+    assert (path / "forge.yaml").read_text(encoding="utf-8") == "project: uncommitted-edit\n"
+    assert _git(path, "status", "--porcelain").strip() == ""
+
+
+def test_untracked_forge_yaml_is_not_left_in_the_worktree(tmp_path: Path) -> None:
+    """A repo that does not track forge.yaml keeps its worktree free of it.
+
+    skip-worktree cannot be set on an untracked path, and leaving the copy
+    behind would let a dev-phase commit sweep operator config into the story.
+    """
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    _git(project_root, "init", "--initial-branch=main")
+    _git(project_root, "config", "user.email", "test@example.com")
+    _git(project_root, "config", "user.name", "Test")
+    (project_root / "shared.txt").write_text("base\n", encoding="utf-8")
+    _git(project_root, "add", ".")
+    _git(project_root, "commit", "-m", "initial")
+    (project_root / "forge.yaml").write_text("project: untracked\n", encoding="utf-8")
+
+    path, _branch, err = _create_workspace(
+        _real_config(project_root, "story-a"), _real_task(project_root, "story-a"), no_pull=True
+    )
+
+    assert err is None
+    assert not (path / "forge.yaml").exists()
+    assert _git(path, "status", "--porcelain").strip() == ""
 
 
 def test_sprint_audit_records_the_config_snapshot(tmp_path: Path) -> None:

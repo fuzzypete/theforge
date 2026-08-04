@@ -287,3 +287,65 @@ def pinned_forge_yaml() -> Path | None:
     except OSError:
         return None
     return path
+
+
+def sync_forge_yaml_into_worktree(
+    project_root: Path,
+    workspace_path: Path,
+    *,
+    label: str,
+) -> None:
+    """Place the run's operative forge.yaml in ``workspace_path``.
+
+    The source is the sprint's pinned snapshot when one is active and the
+    project root otherwise, so every story of a sprint is prepared from one
+    configuration while a standalone run keeps reading the operator's live
+    file. Every path that hands a worktree to setup, dev, or a gate goes
+    through here — a worktree prepared without it runs against whatever
+    forge.yaml its base branch happened to carry, which is the divergence this
+    pin exists to remove (#1980).
+
+    Either source may hold uncommitted operator edits, so the synced file is
+    flagged ``skip-worktree``: the content is available to the run, the
+    worktree never reads as dirty, and operator config cannot be swept into a
+    story commit (#1627). When that flag cannot be set on a worktree that does
+    not track forge.yaml, the copy is withdrawn rather than left behind as an
+    untracked file a dev-phase commit could absorb.
+
+    Best effort throughout: a run that cannot be given its config still runs
+    against the worktree's own file, exactly as it did before this existed.
+    """
+    from . import util as _cu  # noqa: PLC0415 - avoids an import cycle at module load
+
+    source = pinned_forge_yaml() or (Path(project_root) / "forge.yaml")
+    destination = Path(workspace_path) / "forge.yaml"
+    if not source.exists():
+        return
+
+    origin = "sprint-pinned snapshot" if pinned_forge_yaml() else "project root"
+    existed = destination.exists()
+    try:
+        shutil.copy2(source, destination)
+    except OSError as exc:
+        _cu._log(f"  ⚠ {label}   could not sync forge.yaml from {source}: {exc}")
+        return
+
+    skip_ok, skip_out = _cu._run_shell(
+        "git update-index --skip-worktree forge.yaml", workspace_path
+    )
+    if not skip_ok:
+        tracked_ok, _tracked_out = _cu._run_shell(
+            "git ls-files --error-unmatch forge.yaml", workspace_path
+        )
+        if not tracked_ok and not existed:
+            try:
+                destination.unlink()
+            except OSError:
+                pass
+            _cu._log(
+                f"  ⚠ {label}   worktree does not track forge.yaml — left unsynced so no "
+                "story commit can absorb operator config"
+            )
+            return
+        _cu._log(f"  ⚠ {label}   could not skip-worktree forge.yaml: {skip_out.strip()}")
+    _cu._log(f"  ↺ {label}   synced forge.yaml from {origin} {source}")
