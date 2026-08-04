@@ -498,8 +498,17 @@ Key modules:
 make fmt        # ruff format + ruff check --fix (auto-fix)
 make lint       # ruff check + ruff format --check (no auto-fix)
 make test       # pytest tests/ -v
-make gate       # lint + format check + tests (exit code only, no file written)
+make gate       # forge index + check-story-config + lint + format check +
+                # tests, under a scrubbed env (exit code only, no file written)
 ```
+
+`make gate` is the single standard: it is what `validation.gate_command` runs
+for a story and what the required merge check runs in CI
+(`.github/workflows/ci.yml`). The one deliberate difference between the two is
+platform — stories are gated on the macOS development host, CI on
+`ubuntu-latest` — kept on purpose to catch host-specific assumptions. Do not
+add a second, independently composed command list to either side; a merge check
+that is not a superset of the story gate is not a gate (#1945).
 
 ### Language and toolchain agnosticism
 TheForge is a generic orchestrator — it must work for Python, Node, Go, Java, Rust,

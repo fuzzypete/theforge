@@ -29,10 +29,24 @@ jobs:
         # the provider SDKs absent, so config load raised on any profile naming
         # an API provider and CI rejected work the story gate had passed — the
         # extras half of #1945.
-        run: pip install -e ".[all,dev]"
+        #
+        # Install into ./.venv rather than the runner interpreter: `make gate`
+        # invokes .venv/bin/forge and pins PATH=".venv/bin:$PATH", so the
+        # checkout under test — not an ambient release — is what gets gated.
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --upgrade pip
+          .venv/bin/pip install -e ".[all,dev]"
 
-      - name: Lint
-        run: make lint
-
-      - name: Test
-        run: make test
+      - name: Gate
+        # Run the *same* target the story gate runs (forge.yaml
+        # validation.gate_command -> `make gate`), not an independently
+        # composed lint+test pair. `make gate` adds `forge index` and
+        # `forge check-story-config` ahead of ruff/pytest and runs the suite
+        # under a scrubbed `env -i`. Splitting these two standards let a commit
+        # that breaks the project's own config contract pass CI while every
+        # sprint's baseline gate failed — the command half of #1945. The only
+        # deliberate remaining difference between the two is platform
+        # (macOS development host vs ubuntu-latest here), which is kept on
+        # purpose to catch host-specific assumptions.
+        run: make gate
