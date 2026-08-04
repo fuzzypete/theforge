@@ -74,6 +74,7 @@ def run_gate_full(
     iter_num: int | None = None,
     *,
     output_digest: list[str] | None = None,
+    full_output: list[str] | None = None,
     label: GateLabel | None = None,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
@@ -93,6 +94,16 @@ def run_gate_full(
     returning a record — would churn all of them to carry one scalar that only
     one caller reads. A caller-supplied list keeps it explicit and per-call, so
     parallel story workers cannot share it.
+
+    ``full_output``, when given, receives the **full** raw output as a single
+    element. It exists for callers whose gate runs in a workspace that will not
+    survive the call — the baseline gate runs in a temporary worktree, so the
+    ``iter_num`` trace above (written *into* that workspace) is destroyed with
+    it. Such a caller needs the bytes in hand to persist them somewhere durable;
+    only the caller knows where that is. Same out-parameter shape, and for the
+    same reason, as ``output_digest``. It is populated on every path the gate
+    command actually ran, including timeout and infrastructure error, since
+    those are exactly the outcomes whose evidence is hardest to recover.
 
     ``label``, when given, names the gate's purpose and target in the "Running
     gate" log line so semantically different gates that resolve to the same
@@ -131,6 +142,9 @@ def run_gate_full(
 
     if output_digest is not None:
         output_digest.append(hashlib.sha256(output.encode("utf-8", errors="replace")).hexdigest())
+
+    if full_output is not None:
+        full_output.append(output)
 
     tail_chars = config.validation.gate_output_tail_chars
     output_tail = output[-tail_chars:]
