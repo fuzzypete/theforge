@@ -20,7 +20,9 @@ from theforge.intake.clarification import ClarificationQuestion, for_situation
 from theforge.shape_check.parsing import (
     extract_ac_section,
     extract_section,
+    has_bug_body_headings,
     has_heading,
+    iter_headings,
 )
 
 # Back-compat alias so existing call sites that imported AmbiguityQuestion
@@ -109,9 +111,9 @@ def _looks_like_bug(title: str, body: str, labels: set[str]) -> bool:
         return True
     if _has_any(title, _BUG_TITLE_TOKENS):
         return True
-    if has_heading(body, r"observed|actual behaviou?r|steps to reproduce"):
-        return True
-    return False
+    # Same heading definition the shape gate uses, so a body cannot be shaped
+    # as unclassifiable here and accepted as a bug there (#2139).
+    return has_bug_body_headings(body)
 
 
 def _looks_like_enhancement(title: str, body: str, labels: set[str]) -> bool:
@@ -176,6 +178,28 @@ def _looks_like_duplicate_or_stale(title: str, body: str, labels: set[str]) -> b
     return False
 
 
+_THIN_BODY_CHARS = 200
+
+
+def _no_signal_rationale(body: str) -> str:
+    """Rationale for the no-match branch, phrased for the draft actually seen.
+
+    "Too thin to shape" is a claim about substance. Applied to a sectioned,
+    evidenced body it misdirects the author toward adding material when what
+    is missing is a type signal, so a substantive draft gets told what would
+    resolve it instead (#2139).
+    """
+    substantive = bool(iter_headings(body)) or len(body.strip()) >= _THIN_BODY_CHARS
+    if substantive:
+        return (
+            "No classifying signal in title, body, or labels — the draft has substance "
+            "but nothing identifies its work type. Add a type label, a marker word in "
+            "the title, or the section headings for its type (see "
+            "docs/guides/authoring.md)."
+        )
+    return "No classifying signal in title, body, or labels — the draft is too thin to shape."
+
+
 def _slugify(text: str, max_len: int = 60) -> str:
     text = text.strip().lower()
     text = re.sub(r"[^a-z0-9]+", "-", text)
@@ -229,9 +253,7 @@ def classify(title: str, body: str, labels: list[str]) -> ShapeProposal:
             classification=Classification.UNRESOLVED,
             confidence=Confidence.LOW,
             ambiguity_questions=for_situation("no_signal"),
-            rationale=(
-                "No classifying signal in title, body, or labels — the draft is too thin to shape."
-            ),
+            rationale=_no_signal_rationale(body),
         )
 
     # Disambiguation rules: enhancement vs operator-action is the most common
