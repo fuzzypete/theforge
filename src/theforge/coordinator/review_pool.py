@@ -33,6 +33,7 @@ from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 from theforge.traces import write_trace
 
+from . import story_budget as _story_budget
 from . import util as _cu
 from .log_tee import _write_log_artifact
 from .review_context import (
@@ -275,7 +276,7 @@ def _record_reviewer_attempts(
     *,
     cycle_num: int,
     parsed_by_name: dict[str, bool] | None = None,
-    budget_excluded: set[str] | None = None,
+    budget_overruns: set[str] | None = None,
 ) -> None:
     """Append the final attempt record per invoked reviewer (#1388).
 
@@ -286,18 +287,22 @@ def _record_reviewer_attempts(
     reviewer that timed out / crashed / returned unparseable output evaporated
     from the profile. ``parsed_by_name`` maps reviewer name → whether its initial
     output was a parseable verdict (from the parse step). When a reviewer is absent
-    from that map — a budget-excluded reviewer or an early escalation return that
-    never reached the parse step — parseability is established by parsing the
-    output directly (:func:`_result_is_parseable`), NEVER proxied from transport
-    success. Counting transport success as a parseable verdict is the recurring
-    corruption this guards against.
+    from that map — an early escalation return that never reached the parse step —
+    parseability is established by parsing the output directly
+    (:func:`_result_is_parseable`), NEVER proxied from transport success. Counting
+    transport success as a parseable verdict is the recurring corruption this
+    guards against.
+
+    ``budget_overruns`` names reviewers whose measured cost exceeded their derived
+    share. Since #2169 that is telemetry, not an exclusion: the attempt records a
+    ``budget_overrun`` outcome and the reviewer's verdict still counts.
 
     This records the FINAL result per reviewer. Superseded transient-failure
     invocations (a fail that a later retry replaced) are recorded separately, as
     they happen, inside :func:`_retry_transient_review_failures` — so a
     fail→retry→success reviewer contributes both a failed and a completed attempt.
     """
-    budget_excluded = budget_excluded or set()
+    budget_overruns = budget_overruns or set()
     by_name: dict[str, Any] = {}
     for r in results:
         by_name.setdefault(r.profile_name, r)
@@ -307,14 +312,14 @@ def _record_reviewer_attempts(
             continue  # not invoked this cycle (e.g. demoted before running)
         # Parseability is established, never proxied from transport success. Use
         # the explicit parse result from the parse step when we have it; otherwise
-        # parse the output here (a pure function) — a budget-excluded or
-        # escalation-path reviewer that returned unparseable output must record
-        # completed=False even though its transport succeeded (#1388).
+        # parse the output here (a pure function) — an escalation-path reviewer
+        # that returned unparseable output must record completed=False even though
+        # its transport succeeded (#1388).
         if parsed_by_name is not None and profile.name in parsed_by_name:
             parseable = parsed_by_name[profile.name]
         else:
             parseable = _result_is_parseable(result)
-        if profile.name in budget_excluded:
+        if profile.name in budget_overruns:
             _append_reviewer_attempt(
                 state,
                 config,
@@ -322,8 +327,8 @@ def _record_reviewer_attempts(
                 result,
                 parseable=parseable,
                 cycle_num=cycle_num,
-                outcome_override="budget_excluded",
-                reason_override="excluded from cycle: over per-reviewer budget",
+                outcome_override="budget_overrun",
+                reason_override="ran over its derived share; verdict retained",
             )
         else:
             _append_reviewer_attempt(
@@ -606,6 +611,28 @@ def _run_review_pool(
 
     pool_size = len(pool)
 
+    # ── Story-allocation funding check (#2169) ────────────────────────────────
+    # Decided BEFORE the pool runs, against the panel the run planned to seat.
+    # If the allocation cannot fund every planned reviewer, the run says so —
+    # it does not quietly seat a smaller panel and then discover the quorum is
+    # out of reach. The check is skipped when spend is unmeasured (a lower
+    # bound is not a number to refuse work on).
+    if enforce_budgets and state.story_allocation:
+        _shortfall = _story_budget.phase_funding_shortfall(
+            state.story_allocation,
+            state.total_cost_measured,
+            phase="review",
+            participants=[p.name for p in pool],
+            planned_usd=sum(float(p.budget_usd) for p in pool),
+        )
+        if _shortfall is not None:
+            state.allocation_exhausted = _shortfall
+            state.phase = Phase.ESCALATE
+            state.error = _story_budget.format_shortfall(_shortfall, story=task.slug)
+            state.error_type = "allocation_exhausted"
+            _log(f"  ⚠ {state.error}")
+            return [], [], None, [], []
+
     # ── Reviewer tree-currency trust check (#1851) ────────────────────────────
     # Promote the coordinator-computed handoff-vs-git reconciliation (#1826) into
     # a structured pass/fail trust-check entry BEFORE the reviewers run, so the
@@ -811,9 +838,13 @@ def _run_review_pool(
     # reviewers later dropped for going over budget.
     _all_pool_results = list(pool_results)
 
-    # Per-profile budget enforcement BEFORE synthesis — exclude over-budget
-    # reviewers from this cycle's results rather than killing the whole run.
-    _budget_excluded: set[str] = set()
+    # Per-profile budget accounting BEFORE synthesis. A reviewer that ran over
+    # its derived share is RECORDED, not removed: it already spent the money and
+    # already produced a verdict, so dropping it discards paid-for review signal
+    # and can push the quorum out of reach while sprint headroom remains
+    # (#2169). Under-funding is reported as a condition against the story
+    # allocation; it never silently shrinks the panel the run planned.
+    _budget_overruns: set[str] = set()
     if enforce_budgets:
         for profile in pool:
             profile_cost = sum(
@@ -823,29 +854,20 @@ def _run_review_pool(
             )
             if profile_cost > profile.budget_usd:
                 _log(
-                    f"  ⚠ {profile.name} over budget: "
+                    f"  ⚠ {profile.name} over its derived share: "
                     f"${profile_cost:.4f} > ${profile.budget_usd:.4f} — "
-                    f"excluding from this cycle"
+                    f"verdict retained, overrun recorded"
                 )
-                _budget_excluded.add(profile.name)
-
-    if _budget_excluded:
-        pool_results = [r for r in pool_results if r.profile_name not in _budget_excluded]
-        if not pool_results:
-            # All reviewers excluded — escalate. Still record the attempts: every
-            # reviewer was invoked (#1388), the budget cap is a spend decision.
-            _record_reviewer_attempts(
-                state,
-                config,
-                pool,
-                _all_pool_results,
-                cycle_num=_cycle_num,
-                budget_excluded=_budget_excluded,
-            )
-            state.phase = Phase.ESCALATE
-            _excluded = ", ".join(sorted(_budget_excluded))
-            state.error = f"All reviewers over budget ({_excluded}) — no reviews to synthesize"
-            return [], [], None, [], []
+                _budget_overruns.add(profile.name)
+                state.reviewer_budget_overruns.append(
+                    {
+                        "reviewer": profile.name,
+                        "cycle": _cycle_num,
+                        "measured_usd": round(profile_cost, 6),
+                        "share_usd": round(float(profile.budget_usd), 6),
+                        "overrun_usd": round(profile_cost - float(profile.budget_usd), 6),
+                    }
+                )
 
     successful = [r for r in pool_results if r.success]
     failed_results = [r for r in pool_results if not r.success]
@@ -863,12 +885,11 @@ def _run_review_pool(
     }
 
     # Quorum is measured against the reviewers that could actually answer this
-    # cycle, not the nominal pool: a budget-excluded reviewer was withdrawn as a
-    # spend decision, so counting it in the denominator can make the threshold
-    # unreachable before any verdict is weighed (#2154). Same collapse rule the
-    # nominal pool already gets — a threshold of 2 over a single eligible seat
-    # is a demand no run could satisfy, not a stricter standard.
-    eligible_pool_size = pool_size - len(_budget_excluded)
+    # cycle. Since #2169 a spend overrun no longer withdraws a reviewer — every
+    # seat that was planned still counts and still votes — so the eligible pool
+    # is the nominal pool. The collapse rule remains: a threshold larger than
+    # the pool is a demand no run could satisfy, not a stricter standard.
+    eligible_pool_size = pool_size
     quorum_threshold = min(config.retry.review_quorum_threshold, eligible_pool_size)
     if quorum_threshold < 1:
         quorum_threshold = 1
@@ -899,12 +920,12 @@ def _run_review_pool(
                 f"on surviving verdict(s) after non-verdict reviewer failure(s): "
                 f"{failed_desc}"
             )
-            if _budget_excluded:
-                # Same attribution rule as the escalation path: an excluded
-                # reviewer is a spend decision, not a failure to degrade past.
+            if _budget_overruns:
+                # Reported, not subtracted: these reviewers ran over their
+                # derived share and their verdicts still counted (#2169).
                 warning += (
-                    "; budget-excluded (ran, verdict not counted): "
-                    f"{', '.join(sorted(_budget_excluded))}"
+                    "; over derived share (verdict counted): "
+                    f"{', '.join(sorted(_budget_overruns))}"
                 )
             meta.degraded_quorum = True
             meta.degraded_quorum_warning = warning
@@ -919,7 +940,7 @@ def _run_review_pool(
                     quorum_threshold=quorum_threshold,
                     pool_size=pool_size,
                     eligible_pool_size=eligible_pool_size,
-                    budget_excluded=sorted(_budget_excluded),
+                    budget_overruns=sorted(_budget_overruns),
                     warning=warning,
                 )
         else:
@@ -932,19 +953,18 @@ def _run_review_pool(
                 pool,
                 _all_pool_results,
                 cycle_num=_cycle_num,
-                budget_excluded=_budget_excluded,
+                budget_overruns=_budget_overruns,
             )
             state.phase = Phase.ESCALATE
-            # A reviewer withdrawn over budget did not fail — its verdict was
-            # dropped as a spend decision. Naming the two causes separately is
-            # what makes the shortfall diagnosable; the original #2154 report
-            # read "Quorum unmet: 1/5 succeeded < threshold 2; failed:" with an
-            # empty list, because the missing four had been excluded, not failed.
+            # Since #2169 a spend overrun cannot cause a shortfall — the seat
+            # still votes — so a quorum collapse here is a failure story only.
+            # The overruns are still named, because a collapse alongside a
+            # blown share is a different diagnosis from a clean one.
             _shortfall = f"failed: {failed_desc}"
-            if _budget_excluded:
+            if _budget_overruns:
                 _shortfall += (
-                    "; budget-excluded (ran, verdict not counted): "
-                    f"{', '.join(sorted(_budget_excluded))}"
+                    "; over derived share (verdict counted): "
+                    f"{', '.join(sorted(_budget_overruns))}"
                 )
             state.error = (
                 f"Quorum unmet: {len(successful)}/{eligible_pool_size} succeeded "
@@ -1137,7 +1157,7 @@ def _run_review_pool(
         _all_pool_results,
         cycle_num=_cycle_num,
         parsed_by_name=_initial_parseable,
-        budget_excluded=_budget_excluded,
+        budget_overruns=_budget_overruns,
     )
 
     # ── Merge ─────────────────────────────────────────────────────────

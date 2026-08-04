@@ -3826,6 +3826,41 @@ def run_sprint(
             list(accumulated_by_ref.values()),
         )
 
+    def _story_allocation_entry(state, story_cost: float | None) -> dict | None:
+        """Join this story's allocation with the sprint ceiling for reporting.
+
+        The coordinator derives and enforces the per-story allocation but has no
+        view of the sprint ceiling — budget governance at that level lives here.
+        Joining the two on the story row is what makes "the story ran out of its
+        own allocation while the sprint still had $74 left" readable as one fact
+        rather than two disconnected ones (#2169).
+        """
+        from theforge.coordinator import story_budget as _story_budget
+
+        block = _story_budget.evaluate_allocation_dict(
+            getattr(state, "story_allocation", None),
+            state.total_cost_measured,
+        )
+        exhausted = getattr(state, "allocation_exhausted", None)
+        if block is None and not exhausted:
+            return None
+        block = block or {}
+        with cost_lock:
+            _spent = accumulated_cost + prior_cost
+        _remaining = round(resolved.budget_usd - _spent, 4)
+        block["reported_cost_usd"] = story_cost
+        block["sprint_budget_usd"] = resolved.budget_usd
+        block["sprint_spent_usd"] = round(_spent, 4)
+        block["sprint_remaining_usd"] = _remaining
+        # A lower-bound sprint total cannot certify headroom; say so rather
+        # than asserting a number the sprint does not actually have (#1992).
+        block["sprint_cost_measured"] = not unmeasured_spend
+        block["sprint_headroom_remained"] = None if unmeasured_spend else _remaining > 0
+        if exhausted:
+            block["allocation_exhausted"] = exhausted
+            block["status"] = "allocation_exhausted"
+        return block
+
     def _persist_current_story_result(
         slug: str,
         result: CoordinatorResult,
@@ -3858,13 +3893,19 @@ def run_sprint(
             if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE"
             else None
         )
+        _story_cost = _story_reported_cost(result.state, story_cost_adjustments.get(slug, 0.0))
         current_story_entries_by_ref[canonical_ref] = {
             "path": display_key,
             "slug": slug,
             "outcome": outcome,
             "outcome_source": outcome_source,
             "verdict": None,
-            "cost_usd": _story_reported_cost(result.state, story_cost_adjustments.get(slug, 0.0)),
+            "cost_usd": _story_cost,
+            # Spend against BOTH governors (#2169): the story's own band-derived
+            # allocation and the sprint ceiling. An allocation shortfall that
+            # happened while sprint headroom remained is only visible as such
+            # when both numbers sit on the same row.
+            "story_allocation": _story_allocation_entry(result.state, _story_cost),
             "story_run_id": run_id,
             "preflight": preflight,
             "preflight_original_verdict": getattr(

@@ -227,14 +227,15 @@ class TestParseRetryAttemptTelemetry:
         assert all(a["outcome"] == "parse_failure" for a in attempts)
 
 
-class TestBudgetExcludedAttemptTelemetry:
-    """A budget-excluded reviewer's completion must reflect its ACTUAL output.
+class TestBudgetOverrunAttemptTelemetry:
+    """A share-overrun reviewer's completion must reflect its ACTUAL output.
 
-    #1388: budget exclusion happens before the parse step, so completion cannot be
-    proxied from transport success. An excluded reviewer with unparseable output is
-    NOT a completed verdict; one with a valid verdict IS (the exclusion is a spend
-    decision, not a completion failure). Parseability is established by parsing,
-    never assumed from transport success.
+    #1388: completion cannot be proxied from transport success. A reviewer with
+    unparseable output is NOT a completed verdict; one with a valid verdict IS.
+    Parseability is established by parsing, never assumed from transport success.
+
+    #2169: running over the derived share is telemetry, not an exclusion — the
+    reviewer's verdict is retained and still counts toward the cycle.
     """
 
     def _config(self, tmp_path, over, keep):
@@ -248,7 +249,7 @@ class TestBudgetExcludedAttemptTelemetry:
 
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    def test_budget_excluded_unparseable_records_not_completed(
+    def test_budget_overrun_unparseable_records_not_completed(
         self, mock_pool, _mock_log, tmp_path
     ):
         over = _make_review_profile("over")
@@ -259,8 +260,9 @@ class TestBudgetExcludedAttemptTelemetry:
         workspace.mkdir()
         state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
 
-        # `over` returns UNPARSEABLE output and is over budget (cost 5.0 > 1.0),
-        # so it is excluded before parsing. It must NOT record as completed.
+        # `over` returns UNPARSEABLE output and is over its share (cost 5.0 > 1.0).
+        # The overrun is recorded; the unparseable output is what decides
+        # completion, so it must NOT record as completed.
         mock_pool.return_value = [
             _make_agent_result(
                 success=True, output=PARSE_ERROR_OUTPUT, profile_name="over", cost_usd=5.0
@@ -285,12 +287,12 @@ class TestBudgetExcludedAttemptTelemetry:
         assert merged is not None
         by_name = {a["name"]: a for a in state.reviewer_attempts}
         assert by_name["over"]["completed_parseable_verdict"] is False
-        assert by_name["over"]["outcome"] == "budget_excluded"
+        assert by_name["over"]["outcome"] == "budget_overrun"
         assert by_name["keep"]["completed_parseable_verdict"] is True
 
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    def test_budget_excluded_parseable_records_completed(self, mock_pool, _mock_log, tmp_path):
+    def test_budget_overrun_parseable_records_completed(self, mock_pool, _mock_log, tmp_path):
         over = _make_review_profile("over")
         keep = _make_review_profile("keep")
         config = self._config(tmp_path, over, keep)
@@ -299,8 +301,8 @@ class TestBudgetExcludedAttemptTelemetry:
         workspace.mkdir()
         state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
 
-        # `over` returns a VALID verdict but is over budget: it DID complete a
-        # parseable verdict; the exclusion is a spend decision, so completed=True.
+        # `over` returns a VALID verdict and is over its share: it DID complete a
+        # parseable verdict, and since #2169 the verdict is retained as well.
         mock_pool.return_value = [
             _make_agent_result(
                 success=True, output=APPROVE_REVIEW, profile_name="over", cost_usd=5.0
@@ -310,21 +312,36 @@ class TestBudgetExcludedAttemptTelemetry:
             ),
         ]
 
-        _run_review_pool(
+        meta = _meta()
+        successful, _failed, _merged, _individual, named = _run_review_pool(
             state,
             config,
             task,
             "story",
             workspace,
             "branch",
-            _meta(),
+            meta,
             notify=False,
             enforce_budgets=True,
         )
 
         by_name = {a["name"]: a for a in state.reviewer_attempts}
         assert by_name["over"]["completed_parseable_verdict"] is True
-        assert by_name["over"]["outcome"] == "budget_excluded"
+        assert by_name["over"]["outcome"] == "budget_overrun"
+        # #2169: the overrun is telemetry only — the reviewer that already ran
+        # and already produced a verdict is still counted, not withdrawn.
+        assert "over" in [r.profile_name for r in successful]
+        assert "over" in meta.successful
+        assert "over" in [name for name, _result in named]
+        assert state.reviewer_budget_overruns == [
+            {
+                "reviewer": "over",
+                "cycle": 1,
+                "measured_usd": 5.0,
+                "share_usd": 1.0,
+                "overrun_usd": 4.0,
+            }
+        ]
 
 
 class TestReviewerDemotion:

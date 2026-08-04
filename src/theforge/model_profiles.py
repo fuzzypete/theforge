@@ -105,7 +105,7 @@ class ReviewerAttempt:
     reviewer up by, so a reviewer's completion history and its findings/cost
     history live in one profile entry. ``outcome`` is a coarse category
     (``completed`` / ``transport_failure`` / ``timeout`` / ``parse_failure`` /
-    ``crash`` / ``non_verdict`` / ``budget_excluded``) kept for audit legibility;
+    ``crash`` / ``non_verdict`` / ``budget_overrun``) kept for audit legibility;
     only ``completed_parseable_verdict`` carries routing weight.
     """
 

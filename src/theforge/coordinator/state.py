@@ -857,6 +857,22 @@ class CoordinatorState:
     _adaptive_decision: object | None = None  # AssignmentDecision, set after preflight
     _explicit_roles: set = field(default_factory=set)  # roles with explicit forge.yaml config
     complexity_routing_audit: dict | None = None  # set by _apply_complexity_adaptation
+    # Per-story dollar allocation derived from the complexity band's observed
+    # cost distribution (#2169). Set by _apply_story_allocation right after
+    # preflight, before any runtime phase spends. Carries the basis
+    # (substrate_band / configured_fallback), the band's median/p90/max and
+    # sample count, and the rescaled per-role shares — so an overrun can be
+    # reported against what a story of this kind normally costs rather than
+    # against a flat constant. Mirrored into complexity_routing_audit, which is
+    # what resume persistence already carries across a re-entry.
+    story_allocation: dict | None = None
+    # Reviewers whose measured cost exceeded their derived share this run.
+    # Recorded as telemetry — never as an exclusion: dropping a planned
+    # reviewer after it already spent is the silent work reduction #2169 exists
+    # to remove.
+    reviewer_budget_overruns: list = field(default_factory=list)
+    # Set when a phase could not be funded from the story allocation.
+    allocation_exhausted: dict | None = None
     # Per-role routing explainability block (#1391). Set from the assignment
     # decision at the preflight assign_models call site; persisted as a top-level
     # routing_decision key in the native per-run audit record.
