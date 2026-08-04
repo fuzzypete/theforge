@@ -17,6 +17,11 @@ from theforge.sprint.preflight import (
     drop_conflicting_running_stories,
     warn_for_running_stories,
 )
+from theforge.sprint.prior_landing import (
+    PRIOR_SUCCEEDED_OUTCOMES,
+    as_prior_record,
+    reconcilable_prior_success,
+)
 
 # Reason codes used as the value in the ``dropped_slugs`` mapping.  These are
 # consumed by the sprint runner for audit visibility and by tests.
@@ -45,10 +50,14 @@ REASON_IN_FLIGHT = "in-flight-current-sprint"
 # remediation is to delete the worktree (#2079).
 REASON_IN_FLIGHT_UNRESOLVED = "in-flight-liveness-unresolved"
 
-# Prior-generation outcome strings (upper-cased) that mean the story succeeded
-# and its worktree should be reconciled/preserved rather than treated as a fresh
-# collision.
-_PRIOR_SUCCEEDED_OUTCOMES = frozenset({"DONE", "ALREADY_DONE"})
+# Prior-generation outcome strings (upper-cased) that *claim* the story
+# succeeded. Claiming it is not sufficient: a succeeded outcome is only
+# reconcilable when the record also shows its landing obligation resolved (see
+# ``prior_landing.reconcilable_prior_success``). A coordinator ``DONE`` is
+# persisted the moment review approves, before the sprint's landing step runs,
+# so a re-exec in that window leaves a DONE behind for a story still sitting
+# unmerged on a branch (#2189).
+_PRIOR_SUCCEEDED_OUTCOMES = PRIOR_SUCCEEDED_OUTCOMES
 
 
 def acquire_launch_story_locks(
@@ -58,7 +67,7 @@ def acquire_launch_story_locks(
     resume: bool,
     allow_drop: bool = False,
     force: bool = False,
-    prior_outcomes: dict[str, str] | None = None,
+    prior_outcomes: dict[str, str | dict] | None = None,
     live_slugs: set[str] | None = None,
     unresolved_slugs: set[str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
@@ -209,8 +218,11 @@ def acquire_launch_story_locks(
     # collision after a re-exec: the *prior generation* may have already
     # finished this story (DONE) or left it partially complete (stranded).
     # Classify each active worktree against the prior generation's recorded
-    # outcomes (``prior_outcomes``, slug -> upper-cased outcome) so a completed
-    # story is reconciled instead of being flattened into a launch collision.
+    # outcomes (``prior_outcomes``, slug -> recorded story entry, or a bare
+    # upper-cased outcome string) so a completed story is reconciled instead of
+    # being flattened into a launch collision. A succeeded outcome whose landing
+    # was owed and never completed is NOT a completed story: it is reported as
+    # stranded, so a later generation can resume it to actual landing (#2189).
     prior_outcomes = prior_outcomes or {}
     active_worktrees = check_active_worktrees(
         [s for s in schedulable if s not in in_flight_slugs],
@@ -226,12 +238,14 @@ def acquire_launch_story_locks(
             # Already classified (escalated), or live work of this same run. A
             # later, coarser classification must never overwrite either.
             continue
-        prior_outcome = prior_outcomes.get(slug)
-        if prior_outcome in _PRIOR_SUCCEEDED_OUTCOMES:
+        prior_raw = prior_outcomes.get(slug)
+        prior_outcome = as_prior_record(prior_raw)["outcome"]
+        if reconcilable_prior_success(prior_raw):
             dropped[slug] = REASON_RECONCILE_PRIOR_DONE
             reconciled_slugs.append(slug)
         elif prior_outcome:
-            # A prior-generation record exists but the story did not succeed —
+            # A prior-generation record exists but the story did not succeed, or
+            # claimed success while its landing was still owed and unresolved —
             # recoverable stranded sprint state, not a fresh collision.
             dropped[slug] = REASON_STRANDED_WORKTREE
             stranded_slugs.append(slug)

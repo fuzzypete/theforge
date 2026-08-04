@@ -419,7 +419,14 @@ def _story_row(story: dict) -> str:
     """`#NNNN  $cost  elapsed  <title>` for a landed/failed row."""
     ref = _story_ref(story)
     cost = story.get("cost_usd")
-    cost_str = f"${cost:.2f}" if isinstance(cost, (int, float)) and cost else "—"
+    # A measured $0.00 is a number, not a missing value. Rendering it as the
+    # absent marker collapsed three distinct states — "cost was zero", "cost is
+    # unknown", and "no cost recorded" — into one dash, which is how a story
+    # whose real spend was overwritten with 0.0 read as having no cost at all
+    # (#2189). Only None / a missing key renders as absent.
+    cost_str = (
+        f"${cost:.2f}" if isinstance(cost, (int, float)) and not isinstance(cost, bool) else "—"
+    )
     elapsed = _elapsed_seconds_from_bounds(story.get("started_at"), story.get("finished_at"))
     elapsed_str = f"{int(elapsed // 60)}m" if isinstance(elapsed, (int, float)) else "—"
     title = str(story.get("path") or story.get("slug") or "")

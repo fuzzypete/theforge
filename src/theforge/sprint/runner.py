@@ -35,6 +35,7 @@ from ..coordinator.agent_failure import (
 from ..coordinator.config_snapshot import SprintConfigSnapshot, capture_or_load
 from ..coordinator.engine import run_from_dev, run_from_review, run_review_only, run_task
 from ..coordinator.gate import run_gate_full
+from ..coordinator.landing_record import build_landing_record
 from ..coordinator.log_tee import _make_story_log_dir, set_worker_slug
 from ..coordinator.logging import StructuredLogger
 from ..coordinator.notify import _notify
@@ -109,6 +110,7 @@ from .manifest import (
     _build_task_from_story,
     resolve_from_manifest,
 )
+from .prior_landing import landing_settled
 from .query import NormalizedDependencyPlan, normalize_dependency_plan
 from .sources import StorySource
 from .state_writer import (
@@ -3698,13 +3700,28 @@ def run_sprint(
         accumulated entry itself. DONE is the only succeeded outcome that means
         "a generation of this sprint ran the story"; ALREADY_DONE means the
         opposite, so it is deliberately not accepted here.
+
+        A recorded DONE is accepted only when the same record shows its landing
+        obligation resolved. The coordinator reaches Phase.DONE when review
+        approves — before the sprint's landing step runs — so a DONE persisted by
+        a generation that then re-exec'd describes a story that was approved and
+        never landed. Reading that as a completed story is what reported #1108 as
+        landed while its issue stayed open with unmerged commits (#2189). The
+        dict record is preferred where one exists, because only it carries the
+        landing fields; the canonical entry is consulted for the in-run case,
+        where a confirmed landing is marked with ``landed``.
         """
-        entry = _story_state.get(slug)
-        if entry is not None and entry.outcome is StoryOutcome.DONE:
-            return True
         ref = canonical_ref or slug_to_context.get(slug, (None, None, None))[2]
-        prior = recovered_prior_entries_by_ref.get(ref) if ref else None
-        return isinstance(prior, dict) and str(prior.get("outcome") or "").upper() == "DONE"
+        record = current_story_entries_by_ref.get(ref) if ref else None
+        if record is None:
+            _prior = recovered_prior_entries_by_ref.get(ref) if ref else None
+            record = _prior if isinstance(_prior, dict) else None
+        if record is not None:
+            return str(record.get("outcome") or "").upper() == "DONE" and landing_settled(record)
+        entry = _story_state.get(slug)
+        if entry is None or entry.outcome is not StoryOutcome.DONE:
+            return False
+        return landing_settled(dict(entry.extras))
 
     def _skip_merged_outcome(slug: str, canonical_ref: str) -> tuple[StoryOutcome, str | None]:
         """Outcome and ``outcome_source`` to record for a ``skip_merged`` triage.
@@ -3861,6 +3878,44 @@ def run_sprint(
             block["status"] = "allocation_exhausted"
         return block
 
+    def _landing_evidence_fields(result: CoordinatorResult) -> dict:
+        """The accumulated entry's account of this story's landing.
+
+        ``landing_status`` is the coordinator/scheduler's own three-state answer
+        (``None`` = no landing owed, ``pending_integration`` = owed and not yet
+        resolved, ``landed`` / ``failed`` = resolved), and ``landing`` carries the
+        structured record once a landing attempt actually happened. Together they
+        are what lets a later generation tell a completed story from one that
+        merely reached Phase.DONE before its landing step ran (#2189).
+        """
+        _merge = result.merge if isinstance(result.merge, dict) else None
+        return {
+            "landing_status": getattr(result, "landing_status", None),
+            "landing": build_landing_record(_merge),
+            "merge": bool(_merge and _merge.get("merged", False)),
+        }
+
+    def _persist_story_landing(slug: str, result: CoordinatorResult) -> None:
+        """Re-persist a dispatched story's landing evidence once it resolves.
+
+        ``_persist_current_story_result`` runs before the landing step, so the
+        entry it writes records the landing as *owed*. Every site that later
+        resolves a landing — immediate integration, the pending-integration
+        sweep, queued-PR polling, sprint wrap-up — calls this so the durable
+        record matches reality before the next re-exec can read it. Without it a
+        story that genuinely landed would stay recorded as landing-owed and be
+        stranded on the next generation instead of reconciled.
+        """
+        task_ctx = slug_to_context.get(slug)
+        if task_ctx is None:
+            return
+        canonical_ref = task_ctx[2]
+        entry = current_story_entries_by_ref.get(canonical_ref)
+        if entry is None:
+            return
+        entry.update(_landing_evidence_fields(result))
+        _persist_accumulated_story_entries()
+
     def _persist_current_story_result(
         slug: str,
         result: CoordinatorResult,
@@ -3915,7 +3970,15 @@ def run_sprint(
             "error": result.state.error,
             "error_type": result.state.error_type,
             "outcome_code": result.state.error_type or outcome.lower(),
-            "merge": result.merge is not None and result.merge.get("merged", False),
+            # Landing evidence recorded beside the phase, because the phase alone
+            # cannot say whether the story landed: this entry is written the
+            # moment the coordinator returns, and for an approved story that is
+            # BEFORE _attempt_integration runs. A re-exec in that window used to
+            # leave a bare ``outcome: DONE`` that the next generation read as
+            # proof of completion for a story still unmerged on its branch
+            # (#2189). ``landing_status`` names the obligation and its state;
+            # _persist_story_landing rewrites these once landing resolves.
+            **_landing_evidence_fields(result),
             "batch_group": getattr(result.state, "preflight_batch_group", None),
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -4459,6 +4522,57 @@ def run_sprint(
             return StoryOutcome.DONE
         return StoryOutcome.ALREADY_DONE
 
+    def _prior_generation_record(slug: str) -> dict | None:
+        """The prior generation's accumulated entry for ``slug``, if recovered."""
+        ref = slug_to_context.get(slug, (None, None, None))[2]
+        prior = recovered_prior_entries_by_ref.get(ref) if ref else None
+        return prior if isinstance(prior, dict) else None
+
+    def _reconcilable_prior_record(slug: str) -> bool:
+        """True when the prior generation's record is a *settled* success.
+
+        The launch guard already applies this test, but the runner must not take
+        the drop reason on faith: the guard classifies from whatever prior-outcome
+        map the CLI managed to resolve, and a record that claims DONE while its
+        landing was owed and unresolved has no completed outcome to preserve. A
+        story reconciled on that basis is reported as landed, its DAG node marked
+        complete, and it is dropped from dispatch on every subsequent re-exec —
+        with approved work still sitting unmerged on its branch (#2189). Absence
+        of any record is not treated as a demotion: an ALREADY_DONE reconciled
+        with no surviving record stays reconcilable, as before.
+        """
+        record = _prior_generation_record(slug)
+        if record is None:
+            return True
+        outcome = str(record.get("outcome") or "").upper()
+        if outcome not in {"DONE", "ALREADY_DONE"}:
+            return True
+        return landing_settled(record)
+
+    def _measured_recorded_cost(slug: str) -> float | None:
+        """Cost already measured for a story whose row this generation rewrites.
+
+        A reconciled or stranded story is recorded without a coordinator result,
+        and defaulting its row to ``0.0`` overwrites the spend the generation that
+        actually ran it recorded — dropping it from the run total and rendering a
+        known amount as absent (#2189). The prior accumulated entry is preferred;
+        its ``None`` (cost-unknown) is a real value and is carried through as-is.
+        Returns ``0.0`` only when no record of spend exists at all.
+        """
+        record = _prior_generation_record(slug)
+        if record is not None and "cost_usd" in record:
+            raw = record.get("cost_usd")
+            if raw is None:
+                return None
+            try:
+                return float(raw)
+            except (TypeError, ValueError):
+                return None
+        entry = _story_state.get(slug)
+        if entry is not None:
+            return entry.cost_usd
+        return 0.0
+
     def _record_dropped_story_audit(slug: str, cause_text: str) -> dict:
         """Write the per-run audit record for a story dropped before dispatch.
 
@@ -4514,10 +4628,26 @@ def run_sprint(
             _log(f"WARN {slug}: could not write drop audit record: {exc}")
             return {}
 
-    for slug, reason in _dropped_slugs.items():
+    for slug, reason in list(_dropped_slugs.items()):
         if slug not in slug_to_context:
             continue
         _reclaim_dropped_agents(slug)
+        if reason == REASON_RECONCILE_PRIOR_DONE and not _reconcilable_prior_record(slug):
+            # A prior-generation success whose landing never completed. Rewrite
+            # the reason in place so every downstream reader — the initial live
+            # status rows below, sprint audit, RCA — reports the same recoverable
+            # stranded state, instead of one surface preserving a success the
+            # story never reached (#2189).
+            _recorded_outcome = str(
+                (_prior_generation_record(slug) or {}).get("outcome") or "success"
+            ).upper()
+            _log(
+                f"UNLANDED {slug}: prior generation recorded {_recorded_outcome} before its "
+                "landing completed; treating as stranded prior-generation state, "
+                "not a preserved success"
+            )
+            reason = REASON_STRANDED_WORKTREE
+            _dropped_slugs[slug] = reason
         if reason == "preserved-escalated":
             _log(f"PRESERVED {slug} (escalated worktree held for review)")
             dag.mark_skipped(slug)
@@ -4540,7 +4670,15 @@ def run_sprint(
                 # Only a genuine no-op carries the ALREADY_DONE source tag; a
                 # reconciled DONE must not be tagged as one.
                 _reconcile_extras["outcome_source"] = "reexec_reconcile"
-            _record_current_story_entry(slug, _reconciled.name, extras=_reconcile_extras)
+            # Carry the spend the generation that ran this story measured. The
+            # 0.0 default would overwrite it, dropping real spend from the run
+            # total and rendering a known amount as absent (#2189).
+            _record_current_story_entry(
+                slug,
+                _reconciled.name,
+                cost_usd=_measured_recorded_cost(slug),
+                extras=_reconcile_extras,
+            )
         elif reason == REASON_STRANDED_WORKTREE:
             # A prior-generation worktree exists but the story did not succeed:
             # recoverable stranded sprint state. Keep it DROPPED but retain the
@@ -4549,14 +4687,25 @@ def run_sprint(
             _log(f"DROPPED {slug} (stranded prior-generation sprint state)")
             dag.mark_skipped(slug)
             _stranded_cause = _record_dropped_story_audit(slug, reason)
+            _stranded_cost = _measured_recorded_cost(slug)
+            if _stranded_cost is None:
+                unmeasured_spend.append(f"stranded-unmeasured:{slug}")
             _set_outcome(
-                slug, StoryOutcome.DROPPED, reason=reason, failure_cause=_stranded_cause or None
+                slug,
+                StoryOutcome.DROPPED,
+                reason=reason,
+                cost_usd=_stranded_cost,
+                failure_cause=_stranded_cause or None,
             )
+            # Same reasoning as the reconciled branch: the prior generation's
+            # measured spend is this sprint's spend, whatever outcome the story
+            # ended at. It must not be replaced by the 0.0 default (#2189).
             _record_current_story_entry(
                 slug,
                 "DROPPED",
                 error=reason,
                 error_type="dropped",
+                cost_usd=_stranded_cost,
                 extras={"drop_reason": reason},
                 failure_cause=_stranded_cause or None,
             )
@@ -5082,6 +5231,11 @@ def run_sprint(
                 inherited_dev_residue=bool(merge_info.get("inherited_dev_residue")),
             )
 
+        # The accumulated entry was written before this landing ran and records
+        # the landing as owed. Now that it has resolved either way, rewrite it so
+        # the durable record a later re-exec reads matches what happened (#2189).
+        _persist_story_landing(slug, result)
+
         if merge_info.get("merged"):
             merged_slugs.add(slug)
             dag.mark_complete(slug)
@@ -5535,6 +5689,7 @@ def run_sprint(
                         # while another story occupies the only worker slot. The
                         # marker guarantees this DONE cannot later be clobbered.
                         _set_outcome(_qp_slug, StoryOutcome.DONE, landed=True)
+                        _persist_story_landing(_qp_slug, _qp_result)
                         del queued_prs[_qp_slug]
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _resolve_batch_leader_landing(_qp_slug, "landed")
@@ -5551,6 +5706,7 @@ def run_sprint(
                         _set_outcome(
                             _qp_slug, StoryOutcome.MERGE_FAILED, phase=_qp_result.phase.name
                         )
+                        _persist_story_landing(_qp_slug, _qp_result)
                         del queued_prs[_qp_slug]
                         # Defensive/idempotent: the parent is normally already in
                         # _finished (added when its PR was queued), so its collision
@@ -6053,6 +6209,7 @@ def run_sprint(
                 _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
                 _resolve_batch_leader_landing(slug, "failed")
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
+            _persist_story_landing(slug, result)
             _write_story_audit(config, task, result, sprint_id=_sprint_id)
             del queued_prs[slug]
 
