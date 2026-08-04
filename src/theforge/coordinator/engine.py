@@ -93,6 +93,7 @@ from .workspace import (
     pull_base_branch,
 )
 from .workspace_scrub import _scrub_forge_history
+from .worktree_drift import is_drift_classification
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
 # Populated by _ensure_runners() at entry points.
@@ -951,7 +952,12 @@ def run_task(
                 success=False,
                 phase=state.phase,
                 state=state,
-                message=f"Workspace creation failed: {err}",
+                # A classified condition already says what happened and what to
+                # do about it; wrapping it in "Workspace creation failed" would
+                # re-frame it as a mechanism failure (#1993).
+                message=(
+                    err if is_drift_classification(err) else f"Workspace creation failed: {err}"
+                ),
             )
 
         assert workspace_path is not None
