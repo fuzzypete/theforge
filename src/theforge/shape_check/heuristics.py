@@ -21,6 +21,7 @@ from theforge.shape_check.parsing import (
     extract_section,
     extract_top_level_bullet_blocks,
     fenced_code_blocks,
+    has_bug_body_headings,
     has_heading,
 )
 from theforge.shape_check.placeholders import is_placeholder_only, strip_placeholder_content
@@ -463,10 +464,14 @@ def derive_fix_ready(
 
 
 def is_bug_format_issue(body: str, labels: Iterable[str]) -> bool:
-    """Return true for bug reports, which use observed/expected sections instead of AC."""
+    """Return true for bug reports, which use observed/expected sections instead of AC.
+
+    Heading detection is delegated to :func:`has_bug_body_headings` so this gate
+    and the shape classifier cannot drift apart on what a bug body looks like.
+    """
     if _lower_labels(labels) & _BUG_LABELS:
         return True
-    return has_heading(body, r"what happened") and has_heading(body, r"what was expected")
+    return has_bug_body_headings(body)
 
 
 def check_missing_type(title: str, body: str, labels: Iterable[str]) -> Reason | None:
