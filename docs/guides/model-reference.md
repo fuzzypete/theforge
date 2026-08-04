@@ -31,7 +31,10 @@ Source: Codex recommendation, April 2026.
 **Notes:**
 - `o4-mini` is retired; GPT-5.4 family is the current default line
 - `gpt-5.4-pro` should not be used as a reviewer — cost doesn't justify it for review workloads
-- `reasoning_effort` is a first-class config key in forge.yaml profile definitions
+- `reasoning_effort` is a first-class config key in forge.yaml profile definitions.
+  Left unset, it is now resolved from the story's complexity score per phase — see
+  [Routing policy](routing-policy.md#reasoning-effort-per-phase). An explicit
+  profile value still wins.
 
 ---
 

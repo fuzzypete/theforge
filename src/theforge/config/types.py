@@ -108,6 +108,62 @@ class ExplorationConfig:
 
 
 @dataclass(frozen=True)
+class ProviderReasoningEffortConfig:
+    """Per-provider overrides for the score-driven reasoning-effort axis (#1108).
+
+    Providers differ in how they express and honor reasoning effort, so both the
+    score→effort table and the effort→token-budget map are overridable per
+    provider. Keys are transport runner names (``codex``, ``google``,
+    ``claude``, ``gemini``, ``anthropic``, ``openai``, ``deepseek``, ``ghaw``).
+    An empty mapping means "inherit the sprint-wide table".
+    """
+
+    phase_buckets: dict[str, tuple[tuple[int, str], ...]] = field(default_factory=dict)
+    token_budgets: dict[str, int] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ReasoningEffortConfig:
+    """Score-driven reasoning-effort policy (#1108).
+
+    The default score→effort table lives in :mod:`theforge.routing` (the routing
+    policy SSOT); everything here is operator override. ``phase_buckets`` and
+    ``token_budgets`` are sprint-wide defaults, ``providers`` narrows them per
+    transport. Set ``enabled: false`` to leave the axis flat — the
+    ``routing_decision`` block then records the axis as disabled rather than
+    silently omitting it.
+    """
+
+    enabled: bool = True
+    phase_buckets: dict[str, tuple[tuple[int, str], ...]] = field(default_factory=dict)
+    token_budgets: dict[str, int] = field(default_factory=dict)
+    providers: dict[str, ProviderReasoningEffortConfig] = field(default_factory=dict)
+
+    def buckets_for_provider(self, provider: str | None) -> dict[str, tuple[tuple[int, str], ...]]:
+        """Return the effective per-phase bucket overrides for ``provider``.
+
+        Provider-specific entries win per *phase*, so a provider may override
+        just the dev band and inherit the sprint-wide plan/review bands.
+        """
+        merged = dict(self.phase_buckets)
+        override = self.providers.get(provider or "")
+        if override is not None:
+            merged.update(override.phase_buckets)
+        return merged
+
+    def token_budget_for(self, provider: str | None, effort: str) -> int:
+        """Resolve ``effort`` to a thinking-token budget for ``provider``."""
+        from ..routing import DEFAULT_EFFORT_TOKEN_BUDGETS  # noqa: PLC0415
+
+        override = self.providers.get(provider or "")
+        if override is not None and effort in override.token_budgets:
+            return override.token_budgets[effort]
+        if effort in self.token_budgets:
+            return self.token_budgets[effort]
+        return DEFAULT_EFFORT_TOKEN_BUDGETS[effort]
+
+
+@dataclass(frozen=True)
 class AssignmentConfig:
     """Configuration for adaptive model assignment."""
 
@@ -175,6 +231,9 @@ class AssignmentConfig:
     # preflight-assigned dev tier. Only the dev role is re-evaluated; explicit dev
     # overrides and locked roles always bypass the checkpoint.
     plan_tier_reduction: bool = True
+    # Score-driven reasoning effort (#1108). Defaults come from the routing SSOT;
+    # this block only carries operator overrides.
+    reasoning_effort: ReasoningEffortConfig = field(default_factory=ReasoningEffortConfig)
 
 
 @dataclass(frozen=True)

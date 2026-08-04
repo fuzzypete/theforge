@@ -92,9 +92,12 @@ def _run_gemini(
     """
     cmd: list[str] = build_argv(profile=profile, prompt=prompt, session_id=session_id)
 
-    # NOTE: Gemini CLI has no --config flag for thinking config.
-    # reasoning_effort is silently ignored for gemini until a CLI mechanism exists.
-    # The model uses its default thinking level.
+    # NOTE: Gemini CLI has no --config flag for thinking config, so the model
+    # uses its default thinking level. This is declared to the router as
+    # KNOB_NONE in routing.REASONING_EFFORT_TRANSPORT_SUPPORT, so score-driven
+    # reasoning effort (#1108) is never *set* on a gemini-CLI profile — the
+    # routing_decision records provider_unsupported instead of silently
+    # dropping a value here.
 
     # Gemini CLI has no native sandbox flag. When sandboxing is requested, wrap the
     # command with the platform sandbox (macOS Seatbelt / Linux bwrap). This is the

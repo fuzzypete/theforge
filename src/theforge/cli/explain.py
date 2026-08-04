@@ -347,6 +347,49 @@ def _render_final(role_block: dict, lines: list[str]) -> None:
         lines.append(f"    rationale: {rationale}")
 
 
+def _render_reasoning_effort(reasoning: object, lines: list[str]) -> None:
+    """Render the phase-scoped reasoning-effort axis (#1108).
+
+    Tolerant of blocks written before this axis became score-controlled (no
+    ``phases`` key): those render their recorded reason and stop.
+    """
+    if not isinstance(reasoning, dict) or not reasoning:
+        return
+    phases = reasoning.get("phases")
+    if not isinstance(phases, dict) or not phases:
+        reason = reasoning.get("reason", "")
+        state = "applied" if reasoning.get("applied") else "not applied"
+        lines.append(f"reasoning_effort: {state} — {reason}".rstrip(" —"))
+        return
+    lines.append(f"reasoning_effort (score={reasoning.get('score')}):")
+    for phase, phase_block in phases.items():
+        if not isinstance(phase_block, dict):
+            continue
+        if not phase_block.get("applied") and not phase_block.get("models"):
+            lines.append(f"  {phase}: not applied — {phase_block.get('reason', '')}".rstrip(" —"))
+            continue
+        lines.append(
+            f"  {phase}: bucket={phase_block.get('bucket')} "
+            f"range={phase_block.get('range')} "
+            f"thresholds={phase_block.get('thresholds')} "
+            f"output={phase_block.get('output')} "
+            f"support={phase_block.get('provider_support')}"
+        )
+        for model in phase_block.get("models") or []:
+            if not isinstance(model, dict):
+                continue
+            mark = "✓" if model.get("applied") else "✗"
+            detail = (
+                f"{model.get('field')}={model.get('value')}"
+                if model.get("field") is not None
+                else str(model.get("reason", ""))
+            )
+            lines.append(
+                f"    {mark} {model.get('model')} [{model.get('transport')}]: "
+                f"{model.get('provider_support')} {detail}".rstrip()
+            )
+
+
 def render_routing_decision(block: dict) -> list[str]:
     """Render the routing_decision block to a list of output lines.
 
@@ -362,15 +405,10 @@ def render_routing_decision(block: dict) -> list[str]:
     excluded_for_taint = block.get("excluded_for_taint")
     if isinstance(excluded_for_taint, int) and excluded_for_taint > 0:
         lines.append(f"excluded for taint: {excluded_for_taint} run(s) set aside (not deleted)")
-    # reasoning_effort is a score axis not tied to a role (#1019): recorded
-    # top-level as intentionally NOT score-controlled. Surface it so the operator
-    # sees the axis was considered and deliberately excluded, not overlooked.
-    reasoning = block.get("reasoning_effort")
-    if isinstance(reasoning, dict) and reasoning:
-        lines.append(
-            f"reasoning_effort: not score-controlled — {reasoning.get('reason', '')} "
-            f"({reasoning.get('rationale', '')})".rstrip()
-        )
+    # reasoning_effort is a phase-scoped score axis, not a role-scoped one
+    # (#1108): recorded top-level with one block per phase. Rendered straight
+    # from routing_decision — this feature adds no separate rationale surface.
+    _render_reasoning_effort(block.get("reasoning_effort"), lines)
     for role in _ROLE_ORDER:
         role_block = block.get(role)
         if not isinstance(role_block, dict):
