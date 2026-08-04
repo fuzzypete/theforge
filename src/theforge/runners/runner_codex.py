@@ -79,6 +79,18 @@ def build_argv(
     — so every run was recorded cost-unknown and a multi-story sprint deadlocked
     on the fail-closed budget check (#2019). The ``-o`` last-message file is kept
     for agent text; ``--json`` only changes what stdout carries.
+
+    ``--skip-git-repo-check`` is mandatory, not opportunistic. Codex refuses to
+    run in any working directory it cannot verify as a trusted git repository
+    ("Not inside a trusted directory and --skip-git-repo-check was not
+    specified") and exits before contacting the model. Forge legitimately runs
+    agents against directories with no ``.git`` at all — the preflight /
+    escalation-advisor baseline checkout is built by ``git archive | tar -x``, a
+    plain file tree — so without this flag any role adaptive routing assigns to a
+    Codex CLI model against that baseline fails to launch 100% of the time
+    (#2164). Forge already selects its own containment via ``--sandbox``; the
+    trust gate is the CLI's interactive-user heuristic, not a security boundary
+    forge relies on.
     """
     cmd: list[str] = [
         "npx",
@@ -86,6 +98,7 @@ def build_argv(
         "exec",
         "--json",
         "--full-auto",
+        "--skip-git-repo-check",
         "-m",
         profile.model,
     ]
@@ -375,6 +388,86 @@ def _error_text_from_events(stdout: str) -> str | None:
     if not messages:
         return None
     return "\n".join(messages)
+
+
+# Event types that prove a turn actually began. ``turn.failed`` counts: the model
+# was engaged, so the run is NOT a pre-turn launch failure even though no usage
+# was reported for it.
+_TURN_ACTIVITY_EVENT_TYPES = frozenset(
+    {
+        "turn.started",
+        "turn.completed",
+        "turn.failed",
+        "item.started",
+        "item.updated",
+        "item.completed",
+        "agent_message",
+        "assistant_message",
+    }
+)
+
+# Stable failure identifier for "the CLI exited before any billable turn began".
+LAUNCH_FAILURE_CODE = "cli_launch_failure"
+
+
+def _exited_before_any_turn(stdout: str) -> bool:
+    """True when a codex stdout stream shows no turn ever began.
+
+    Under ``--json`` codex narrates every turn and item as it happens, so the
+    absence of ANY turn/item activity event means the process died before the
+    model was engaged — the trust-gate refusal, a bad flag, a config error. That
+    is a genuinely free run, distinct from a run that executed and whose usage
+    could not be parsed.
+
+    Deliberately fails closed on anything it cannot read: a stdout line that is
+    not a parseable event object means the process emitted output this parser
+    does not understand, so "nothing happened" is no longer an established fact
+    and the run keeps its cost-unknown classification. Only a stream that is
+    entirely pre-turn events (or empty) proves a zero.
+    """
+    for raw in stdout.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if not line.startswith("{"):
+            return False
+        try:
+            event = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            return False
+        if not isinstance(event, dict) or event.get("type") in _TURN_ACTIVITY_EVENT_TYPES:
+            return False
+    return True
+
+
+def _launch_failure_reason(stderr: str, stdout: str, returncode: int) -> str:
+    """Distil the CLI's own explanation for a pre-turn exit into one line.
+
+    Codex prefixes deprecation notices and progress chatter before the real
+    refusal, so ``warning:``/``Reading additional input`` lines are dropped and
+    the last substantive line wins.
+    """
+    for stream in (stderr, stdout):
+        lines = [ln.strip() for ln in (stream or "").splitlines() if ln.strip()]
+        substantive = [
+            ln
+            for ln in lines
+            if not ln.lower().startswith(("warning:", "reading additional input"))
+            and not ln.startswith("{")
+        ]
+        candidates = substantive or lines
+        if candidates:
+            return candidates[-1][:500]
+    return f"codex exited {returncode} before starting a turn (no output)"
+
+
+def _classify_codex_launch_failure(*, returncode: int, stdout: str, stderr: str) -> str | None:
+    """Return a launch-failure reason, or None when this was not a pre-turn exit."""
+    if returncode == 0:
+        return None
+    if not _exited_before_any_turn(stdout):
+        return None
+    return _launch_failure_reason(stderr, stdout, returncode)
 
 
 def _looks_like_codex_events(stdout: str) -> bool:
@@ -690,13 +783,32 @@ def _run_codex(
         # picking up a sibling invocation's entry from the global index.
         extracted_sid = None if is_pool else _get_codex_session_id(min_mtime=start_wall)
 
-        # Best-effort real cost from codex output. Unrecoverable → cost-unknown
-        # (None), surfaced loudly, never a fabricated $0.00.
-        cost_usd, model_usage = _extract_codex_cost(
-            profile=profile,
-            result_json=result_json,
+        # A pre-turn exit (trust gate, bad flag, config error) spent nothing —
+        # that is a MEASURED $0.00, not the cost-unknown a completed-but-
+        # unparseable run gets. Classify it before pricing so the cost-unmeasured
+        # warning is not emitted for a process that never reached the model.
+        launch_reason = _classify_codex_launch_failure(
+            returncode=proc.returncode,
             stdout=proc.stdout or "",
+            stderr=proc.stderr or "",
         )
+        if launch_reason is not None:
+            cost_usd: float | None = 0.0
+            model_usage: tuple[ModelUsage, ...] = ()
+            _log(
+                f"  {label} FAILED TO LAUNCH (exit {proc.returncode}, no turn began): "
+                f"{launch_reason} — recording measured $0.00, not cost-unknown."
+            )
+        else:
+            # Best-effort real cost from codex output. Unrecoverable → cost-unknown
+            # (None), surfaced loudly, never a fabricated $0.00.
+            cost_usd, model_usage = _extract_codex_cost(
+                profile=profile,
+                result_json=result_json,
+                stdout=proc.stdout or "",
+            )
+        _startup_failure = launch_reason is not None
+        _failure_code = LAUNCH_FAILURE_CODE if launch_reason is not None else None
 
         if result_json:
             _json_output = result_json.get("result", output_text)
@@ -710,6 +822,8 @@ def _run_codex(
                 profile_name=profile.name,
                 model_usage=model_usage,
                 dev_handoff=_try_parse_handoff(_json_output),
+                startup_failure=_startup_failure,
+                failure_code=_failure_code,
             )
 
         return AgentResult(
@@ -722,6 +836,8 @@ def _run_codex(
             profile_name=profile.name,
             model_usage=model_usage,
             dev_handoff=_try_parse_handoff(output_text),
+            startup_failure=_startup_failure,
+            failure_code=_failure_code,
         )
     finally:
         try:

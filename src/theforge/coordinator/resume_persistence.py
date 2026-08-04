@@ -170,7 +170,11 @@ def _plan_review_block(state: "CoordinatorState") -> dict[str, Any] | None:
 
 def _escalation_block(state: "CoordinatorState") -> dict[str, Any] | None:
     """The escalate-gate decision and its advisory, or None when none was made."""
-    if state.escalate_decision is None and not state.advisory_generated:
+    if (
+        state.escalate_decision is None
+        and not state.advisory_generated
+        and not state.advisory_launch_failure
+    ):
         return None
     return {
         "decision": state.escalate_decision,
@@ -178,6 +182,8 @@ def _escalation_block(state: "CoordinatorState") -> dict[str, Any] | None:
         "reason": state.escalate_reason,
         "advisory_generated": bool(state.advisory_generated),
         "advisory_report": _jsonable(state.advisory_report),
+        "advisory_launch_failure": bool(state.advisory_launch_failure),
+        "advisory_launch_reason": state.advisory_launch_reason,
         "waited_seconds": state.human_review_waited_seconds,
     }
 
@@ -428,6 +434,13 @@ def _apply_escalation(state: "CoordinatorState", block: dict[str, Any]) -> bool:
     if block.get("advisory_generated") and not state.advisory_generated:
         state.advisory_generated = True
         applied = True
+    if block.get("advisory_launch_failure") and not state.advisory_launch_failure:
+        state.advisory_launch_failure = True
+        applied = True
+    applied = (
+        _set_if_unset(state, "advisory_launch_reason", block.get("advisory_launch_reason"))
+        or applied
+    )
     return applied
 
 
