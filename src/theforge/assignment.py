@@ -2165,25 +2165,31 @@ def _apply_effort_to_profile(
     """Apply the resolved effort to one selected profile.
 
     Returns the (possibly replaced) profile and the per-model audit entry. The
-    resolved level is recorded per model because a reviewer phase seats a pool
-    that can span providers, so one phase-level support status would be
-    under-specified.
+    whole policy view — bucket, covering range, thresholds, output — is recorded
+    per model, not just the support status: a per-provider bucket override
+    changes the *effective table*, so a phase-level view alone would report the
+    sprint-wide bands while the profile ran on the provider's. A reviewer phase
+    can also seat a pool spanning providers, where no single view is correct.
     """
     runner = profile.transport.runner if profile.transport is not None else None
     knob = effort_knob_for(runner)
-    effort = str(
-        axis_decision(
-            "reasoning_effort",
-            score,
-            phase=phase,
-            overrides=cfg.buckets_for_provider(runner),
-        )["output"]
+    resolved = axis_decision(
+        "reasoning_effort",
+        score,
+        phase=phase,
+        overrides=cfg.buckets_for_provider(runner),
     )
+    effort = str(resolved["output"])
     entry: dict[str, object] = {
         "name": profile.name,
         "model": profile.model,
         "transport": runner,
         "knob": knob.kind,
+        # The bands actually in force for THIS model, after any per-provider
+        # override — the numbers an operator needs to reconstruct the choice.
+        "bucket": resolved["bucket"],
+        "range": resolved["range"],
+        "thresholds": resolved["thresholds"],
         "output": effort,
         "provider_support": provider_support_status(
             knob, cost_captured=_thinking_spend_captured(profile, knob)
@@ -2222,6 +2228,40 @@ def _phase_support_summary(entries: list[dict[str, object]]) -> str | None:
     if not statuses:
         return None
     return statuses.pop() if len(statuses) == 1 else "mixed"
+
+
+def _apply_phase_policy_view(
+    phase_block: dict[str, object], entries: list[dict[str, object]]
+) -> None:
+    """Reconcile the phase-level policy view with the bands actually applied.
+
+    ``phase_block`` starts as the sprint-wide table's view. When every seated
+    model resolved through the same effective table (the common case, and always
+    true for the single-model plan/dev phases) the phase view is rewritten to
+    that table, so a per-provider bucket override is never reported as the
+    default. When the seated models disagree — a reviewer pool spanning
+    providers with different overrides — the sprint-wide view is kept and
+    ``varies_by_provider`` marks it as a summary, with the per-model entries
+    carrying the authoritative bands.
+    """
+    if not entries:
+        phase_block["varies_by_provider"] = False
+        return
+    views = {
+        (
+            str(e["bucket"]),
+            tuple(e["range"] or ()),  # type: ignore[arg-type]
+            tuple(e["thresholds"] or ()),  # type: ignore[arg-type]
+            str(e["output"]),
+        )
+        for e in entries
+    }
+    phase_block["varies_by_provider"] = len(views) > 1
+    if len(views) > 1:
+        return
+    first = entries[0]
+    for key in ("bucket", "range", "thresholds", "output"):
+        phase_block[key] = first[key]
 
 
 def resolve_reasoning_effort(
@@ -2283,6 +2323,7 @@ def resolve_reasoning_effort(
         phase_block["models"] = entries
         phase_block["applied"] = any(bool(e["applied"]) for e in entries)
         phase_block["provider_support"] = _phase_support_summary(entries)
+        _apply_phase_policy_view(phase_block, entries)
         phases[phase] = phase_block
         if phase == "plan":
             updated["planner"] = applied_profiles[0]

@@ -45,6 +45,7 @@ Notes:
   complexity-band tables (`LOW`/`MEDIUM`/`HIGH`). The `routing_decision` block
   still records each axis with `applied: false` and the reason, so the fallback
   is never silent.
+
 ## Reasoning effort (per phase)
 
 > **Retraction.** Earlier versions of this guide (and of `routing.py`) described
@@ -165,11 +166,15 @@ support status would be under-specified):
       "output": "high",          // the resolved effort level
       "applied": true,
       "provider_support": "supported_metered",
+      "varies_by_provider": false,
       "models": [
         {
           "model": "gpt-5.4",
           "transport": "codex",
           "knob": "effort",
+          "bucket": "high",          // the bands in force for THIS model,
+          "range": [7, 10],          // after any per-provider override
+          "thresholds": [3, 6, 10],
           "output": "high",
           "provider_support": "supported_metered",
           "applied": true,
@@ -181,6 +186,16 @@ support status would be under-specified):
   }
 }
 ```
+
+**Per-provider overrides and the phase view.** A per-provider bucket override
+changes the *effective table*, so every model entry carries its own `bucket`,
+`range`, and `thresholds`. The phase-level view is rewritten to that effective
+table whenever every seated model resolved through the same one — always true
+for the single-model `plan` and `dev` phases. When a reviewer pool spans
+providers whose tables differ, `varies_by_provider` is `true`, the phase line
+falls back to the sprint-wide table as a summary, and the per-model entries are
+authoritative. The phase view never reports the default bands while a profile
+ran on an override.
 
 This block is the only operator-facing surface for the axis — the feature adds
 no separate rationale or audit structure, and `forge explain` renders straight

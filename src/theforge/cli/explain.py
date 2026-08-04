@@ -368,12 +368,17 @@ def _render_reasoning_effort(reasoning: object, lines: list[str]) -> None:
         if not phase_block.get("applied") and not phase_block.get("models"):
             lines.append(f"  {phase}: not applied — {phase_block.get('reason', '')}".rstrip(" —"))
             continue
+        # ``varies_by_provider`` means the seated models resolved through
+        # different effective tables (per-provider bucket overrides), so the
+        # phase line is a summary and the per-model bands below are authoritative.
+        varies = bool(phase_block.get("varies_by_provider"))
         lines.append(
             f"  {phase}: bucket={phase_block.get('bucket')} "
             f"range={phase_block.get('range')} "
             f"thresholds={phase_block.get('thresholds')} "
             f"output={phase_block.get('output')} "
             f"support={phase_block.get('provider_support')}"
+            + (" (varies by provider — see per-model bands)" if varies else "")
         )
         for model in phase_block.get("models") or []:
             if not isinstance(model, dict):
@@ -384,9 +389,15 @@ def _render_reasoning_effort(reasoning: object, lines: list[str]) -> None:
                 if model.get("field") is not None
                 else str(model.get("reason", ""))
             )
+            bands = (
+                f" [bucket={model.get('bucket')} range={model.get('range')} "
+                f"thresholds={model.get('thresholds')}]"
+                if varies
+                else ""
+            )
             lines.append(
                 f"    {mark} {model.get('model')} [{model.get('transport')}]: "
-                f"{model.get('provider_support')} {detail}".rstrip()
+                f"{model.get('provider_support')} {detail}{bands}".rstrip()
             )
 
 

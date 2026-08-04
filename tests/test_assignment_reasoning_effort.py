@@ -168,6 +168,76 @@ def test_sprint_wide_bucket_override_applies_to_every_provider():
     assert updated.dev.reasoning_effort == "high"
 
 
+def test_phase_block_reports_the_bands_actually_applied_under_an_override():
+    """The audit must not report the default table while the profile ran on the
+    provider's — bucket, range, and thresholds all follow the effective table."""
+    cfg = ReasoningEffortConfig(
+        providers={
+            "codex": ProviderReasoningEffortConfig(
+                phase_buckets={"dev": ((5, "medium"), (10, "high"))}
+            ),
+        }
+    )
+    updated, block = _resolve(_decision(), 1, cfg)
+    dev_block = block["phases"]["dev"]
+
+    assert updated.dev.reasoning_effort == "medium"
+    assert dev_block["output"] == "medium"
+    assert dev_block["bucket"] == "medium"
+    assert dev_block["range"] == [1, 5]
+    assert dev_block["thresholds"] == [5, 10]
+    assert dev_block["varies_by_provider"] is False
+    # The per-model entry carries the same effective bands.
+    entry = dev_block["models"][0]
+    assert (entry["bucket"], entry["range"], entry["thresholds"]) == ("medium", [1, 5], [5, 10])
+    # A phase with no override still reports the default table.
+    assert block["phases"]["plan"]["thresholds"] == [3, 6, 10]
+
+
+def test_phase_block_marks_variance_when_seated_models_use_different_tables():
+    """A reviewer pool can span providers with different overrides; no single
+    phase-level band is correct then, so the summary says so explicitly."""
+    cfg = ReasoningEffortConfig(
+        providers={
+            "google": ProviderReasoningEffortConfig(phase_buckets={"review": ((10, "high"),)}),
+        }
+    )
+    decision = _decision(plan_reviewers=[_google(), _codex()], code_reviewers=[])
+    updated, block = _resolve(decision, 1, cfg)
+    review_block = block["phases"]["review"]
+
+    assert review_block["varies_by_provider"] is True
+    # Phase view falls back to the sprint-wide table; per-model entries are truth.
+    assert review_block["thresholds"] == [3, 6, 10]
+    google_entry, codex_entry = review_block["models"]
+    assert (google_entry["output"], google_entry["thresholds"]) == ("high", [10])
+    assert (codex_entry["output"], codex_entry["thresholds"]) == ("low", [3, 6, 10])
+    assert updated.plan_reviewers[0].thinking_budget == 24576
+    assert updated.plan_reviewers[1].reasoning_effort == "low"
+
+
+def test_explain_renders_the_effective_bands():
+    """Operator-facing output reads from routing_decision — including the
+    per-model bands when a provider override makes the phase view a summary."""
+    from theforge.cli import explain
+
+    cfg = ReasoningEffortConfig(
+        providers={
+            "google": ProviderReasoningEffortConfig(phase_buckets={"review": ((10, "high"),)}),
+        }
+    )
+    decision = _decision(plan_reviewers=[_google(), _codex()], code_reviewers=[])
+    _, block = _resolve(decision, 1, cfg)
+
+    lines: list[str] = []
+    explain._render_reasoning_effort(block, lines)
+    text = "\n".join(lines)
+
+    assert "varies by provider" in text
+    assert "bucket=high range=[1, 10] thresholds=[10]" in text
+    assert "thresholds=[3, 6, 10]" in text
+
+
 # ── Provider support statuses ─────────────────────────────────────────
 
 

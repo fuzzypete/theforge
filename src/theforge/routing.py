@@ -217,22 +217,11 @@ def score_to_reviewer_target(score: int) -> str:
     return _bucket_for(REVIEWER_SCORE_COUNT_BUCKETS, score)
 
 
-def score_to_reasoning_effort(
-    phase: str,
-    score: int,
-    *,
-    phase_buckets: Mapping[str, tuple[tuple[int, str], ...]] | None = None,
-) -> str:
-    """Return the reasoning-effort level for ``phase`` at a 1-10 score.
-
-    ``phase_buckets`` lets the config layer supply an operator override table;
-    a phase absent from it falls back to the default in
-    :data:`REASONING_EFFORT_PHASE_BUCKETS`.
-    """
-    buckets = (phase_buckets or {}).get(phase) or REASONING_EFFORT_PHASE_BUCKETS.get(
-        phase, DEV_EFFORT_BUCKETS
-    )
-    return _bucket_for(buckets, score)
+# NOTE: there is deliberately no ``score_to_reasoning_effort`` sibling of the
+# helpers above. That axis is phase-aware and override-aware, and assignment
+# needs the bucket/range/thresholds alongside the output to record the decision,
+# so :func:`axis_decision` is its single entry point. A convenience wrapper would
+# be a second resolution path nothing calls.
 
 
 # ── Canonical policy metadata (drives instrumentation + docs) ──────────

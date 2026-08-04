@@ -24,7 +24,6 @@ from theforge.routing import (
     provider_support_status,
     score_to_dev_tier,
     score_to_plan_tier,
-    score_to_reasoning_effort,
     score_to_reviewer_target,
 )
 
@@ -113,9 +112,9 @@ def test_reasoning_effort_default_table_is_per_phase():
         7: ("high", "high", "high"),
         10: ("high", "high", "high"),
     }.items():
-        assert score_to_reasoning_effort("plan", score) == plan
-        assert score_to_reasoning_effort("dev", score) == dev
-        assert score_to_reasoning_effort("review", score) == review
+        assert axis_decision("reasoning_effort", score, phase="plan")["output"] == plan
+        assert axis_decision("reasoning_effort", score, phase="dev")["output"] == dev
+        assert axis_decision("reasoning_effort", score, phase="review")["output"] == review
         # Plan is never *below* dev at the same score.
         assert VALID_REASONING_EFFORTS.index(plan) >= VALID_REASONING_EFFORTS.index(dev)
 
