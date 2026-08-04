@@ -589,6 +589,37 @@ class TestCheckConfigAgentsSection:
         out = capsys.readouterr().out
         assert "Per-story routing cost target: $20.00/story" in out
 
+    def test_unset_per_story_cap_reported_in_header_and_settings(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Adaptive routing with no per-story cap says so in both places it appears."""
+        assignment = AssignmentConfig(
+            enabled=True,
+            min_reviewers=1,
+            max_reviewers=3,
+            max_cost_per_story_usd=None,
+        )
+        config = _make_forge_config(tmp_path, assignment=assignment)
+        with (
+            patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.check_config.load_config", return_value=config),
+            patch(
+                "theforge.cli.check_config.check_agent_auth",
+                return_value=(True, ""),
+            ),
+        ):
+            cmd_check_config(_make_args())
+        out = capsys.readouterr().out
+        assert (
+            "Per-story routing cost target: unset "
+            "(adaptive routes by complexity; only budget_usd enforces spend)" in out
+        )
+        assert (
+            "assignment:    enabled  (min=1, max=3, "
+            "no per-story routing cost target configured)" in out
+        )
+        assert "/story" not in out
+
     def test_no_budget_header_when_assignment_disabled(self, tmp_path: Path, capsys) -> None:
         config = _make_forge_config(tmp_path)  # assignment disabled
         with (
