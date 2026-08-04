@@ -1042,6 +1042,193 @@ def _emit_cap_downgrade_warning(
     log(f"    after target:         downgraded roles={sorted(downgraded_roles)}{final_total_str}")
 
 
+def _plan_review_profiles(config: ForgeConfig) -> list[ModelProfile]:
+    """Return the plan-review profiles that will actually run, else empty.
+
+    ``PlanAgentReviewConfig.profiles`` synthesizes a legacy single profile even
+    when the role is disabled, so a disabled role would otherwise claim a share
+    of the allocation no phase ever spends.
+    """
+    if not config.plan_agent_review.enabled:
+        return []
+    return list(config.plan_agent_review.profiles or [])
+
+
+def _configured_story_budget(config: ForgeConfig) -> float:
+    """Return the configured per-story budget the allocation falls back to.
+
+    The v0.8 ``models:`` path records the operator's per-story number directly
+    in ``models_budget_usd``. The legacy explicit-profiles path has no single
+    number, so the equivalent is the sum of the configured role budgets — the
+    total the run was authorized to spend before any derivation.
+    """
+    if config.models_budget_usd is not None:
+        return float(config.models_budget_usd)
+    total = (
+        float(config.dev_profile.budget_usd)
+        + float(config.preflight_profile.budget_usd)
+        + float(config.plan.budget_usd)
+        + sum(float(p.budget_usd) for p in config.review_pool)
+        + sum(float(p.budget_usd) for p in _plan_review_profiles(config))
+    )
+    if config.synthesis_profile is not None:
+        total += float(config.synthesis_profile.budget_usd)
+    return total
+
+
+def _role_budget_map(config: ForgeConfig) -> dict[str, float]:
+    """Return the runtime per-role budget map keyed by stable role labels."""
+    budgets: dict[str, float] = {
+        "preflight": float(config.preflight_profile.budget_usd),
+        "plan": float(config.plan.budget_usd),
+        "dev": float(config.dev_profile.budget_usd),
+    }
+    for index, profile in enumerate(config.review_pool):
+        budgets[f"review_pool[{index}]"] = float(profile.budget_usd)
+    for index, profile in enumerate(_plan_review_profiles(config)):
+        budgets[f"plan_agent_review[{index}]"] = float(profile.budget_usd)
+    if config.synthesis_profile is not None:
+        budgets["synthesis"] = float(config.synthesis_profile.budget_usd)
+    return budgets
+
+
+def _locked_role_labels(config: ForgeConfig, explicit_roles: set) -> set[str]:
+    """Return the role labels whose budgets an explicit override pins in place."""
+    locked: set[str] = set()
+    if "dev" in explicit_roles:
+        locked.add("dev")
+    if "preflight" in explicit_roles:
+        locked.add("preflight")
+    if "planner" in explicit_roles:
+        locked.add("plan")
+    if "review_pool" in explicit_roles:
+        locked.update(f"review_pool[{i}]" for i in range(len(config.review_pool)))
+    if "plan_agent_review" in explicit_roles:
+        locked.update(f"plan_agent_review[{i}]" for i in range(len(_plan_review_profiles(config))))
+    return locked
+
+
+def _carried_story_allocation(state: "CoordinatorState") -> dict | None:
+    """Return the allocation already on state when it still applies, else None.
+
+    Reuse is conditional on the band being the same one it was derived for. A
+    resumed attempt whose preflight lands on a different complexity score is a
+    different story-shape than the record describes, so its allocation is
+    re-derived rather than inherited — carrying it forward would judge this
+    attempt's spend against another band's distribution.
+    """
+    carried = state.story_allocation
+    if not isinstance(carried, dict) or not carried:
+        return None
+    try:
+        float(carried["allocation_usd"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if carried.get("complexity_score") != state.preflight_complexity_score:
+        return None
+    return carried
+
+
+def _apply_story_allocation(
+    config: ForgeConfig,
+    state: "CoordinatorState",
+    *,
+    log_verbose: Callable[[str], None],
+) -> ForgeConfig:
+    """Derive this story's allocation from its complexity band and install it.
+
+    Runs after the complexity score is known and after the runtime profiles are
+    resolved, so the rescaled shares govern exactly the models that will run.
+    The derivation is pure arithmetic over recorded costs (see
+    :mod:`theforge.coordinator.story_budget`); no model is consulted.
+
+    An allocation already on state — restored from the resume record, or set by
+    an earlier call this run (routing recovery re-enters here) — is REUSED
+    rather than re-derived, provided it was derived for the same complexity
+    score. The substrate grows between attempts, so re-deriving would silently
+    change the number a resumed story is judged against mid-story: the spend
+    already on the clock was incurred under the first attempt's allocation. The
+    per-role shares are always recomputed, because ``config`` is resolved fresh
+    on every entry and the carried record's shares may not match its roles.
+    """
+    from .story_budget import derive_story_allocation, scale_role_budgets  # noqa: PLC0415
+
+    carried = _carried_story_allocation(state)
+    if carried is not None:
+        record = dict(carried)
+        allocation_usd = float(record["allocation_usd"])
+    else:
+        # Read the configured fallback only on the deriving path: on a re-entry
+        # the profiles have already been rescaled, so their sum is the previous
+        # allocation rather than the operator's configured per-story budget.
+        allocation = derive_story_allocation(
+            config.project_root,
+            complexity_score=state.preflight_complexity_score,
+            configured_usd=_configured_story_budget(config),
+        )
+        record = allocation.as_dict()
+        allocation_usd = allocation.allocation_usd
+
+    current = _role_budget_map(config)
+    locked = _locked_role_labels(config, set(state._explicit_roles or set()))
+    scaled = scale_role_budgets(current, allocation_usd, locked=locked)
+
+    replace_kwargs: dict[str, object] = {}
+    if scaled.get("preflight") != current.get("preflight"):
+        replace_kwargs["preflight_profile"] = _dc_replace(
+            config.preflight_profile, budget_usd=scaled["preflight"]
+        )
+    if scaled.get("plan") != current.get("plan"):
+        replace_kwargs["plan"] = _dc_replace(config.plan, budget_usd=scaled["plan"])
+    if scaled.get("dev") != current.get("dev"):
+        replace_kwargs["dev_profile"] = _dc_replace(config.dev_profile, budget_usd=scaled["dev"])
+    new_pool = [
+        _dc_replace(profile, budget_usd=scaled[f"review_pool[{i}]"])
+        for i, profile in enumerate(config.review_pool)
+    ]
+    if new_pool:
+        replace_kwargs["review_pool"] = new_pool
+    _plan_reviewers = _plan_review_profiles(config)
+    if _plan_reviewers:
+        _scaled_plan_reviewers = [
+            _dc_replace(profile, budget_usd=scaled[f"plan_agent_review[{i}]"])
+            for i, profile in enumerate(_plan_reviewers)
+        ]
+        # ``profiles`` is a read-only view over ``pool`` (or the legacy scalar
+        # fields). Write back through whichever one the config actually uses.
+        if config.plan_agent_review.pool:
+            replace_kwargs["plan_agent_review"] = _dc_replace(
+                config.plan_agent_review, pool=_scaled_plan_reviewers
+            )
+        else:
+            replace_kwargs["plan_agent_review"] = _dc_replace(
+                config.plan_agent_review, budget_usd=_scaled_plan_reviewers[0].budget_usd
+            )
+    if config.synthesis_profile is not None:
+        replace_kwargs["synthesis_profile"] = _dc_replace(
+            config.synthesis_profile, budget_usd=scaled["synthesis"]
+        )
+    if replace_kwargs:
+        config = _dc_replace(config, **replace_kwargs)
+
+    record["scaled_profiles"] = {name: round(value, 4) for name, value in scaled.items()}
+    if carried is not None:
+        # Convention 6: a carried allocation must be traceable as one. Without
+        # this an operator reading the audit cannot tell an allocation this
+        # attempt derived from one it inherited.
+        record["carried"] = True
+    state.story_allocation = record
+    routing_audit = dict(state.complexity_routing_audit or {})
+    routing_audit["story_allocation"] = state.story_allocation
+    state.complexity_routing_audit = routing_audit
+    log_verbose(
+        f"[adaptive] story_allocation: ${allocation_usd:.2f} "
+        f"basis={record.get('basis')} "
+        f"({'carried from prior attempt' if carried is not None else 'derived this attempt'})"
+    )
+    return config
+
+
 def _apply_preflight_config(
     config: ForgeConfig,
     state: "CoordinatorState",
@@ -1080,7 +1267,7 @@ def _apply_preflight_config(
             )
 
     if not (config.assignment.enabled and config.agents):
-        return config
+        return _apply_story_allocation(config, state, log_verbose=_log_verbose)
 
     from theforge.assignment import (  # noqa: I001, PLC0415
         _normalize_complexity as _norm_complexity,
@@ -1396,7 +1583,7 @@ def _apply_preflight_config(
     for _phase, _rsn in _decision.rationale.items():
         _log_verbose(f"[adaptive] {_phase}: {_rsn}")
 
-    return config
+    return _apply_story_allocation(config, state, log_verbose=_log_verbose)
 
 
 def persist_routing_decision(

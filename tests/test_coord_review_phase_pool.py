@@ -424,14 +424,13 @@ class TestCoordinatorMultiModelReview:
     @patch("theforge.coordinator.preflight_flow.run_agent")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_per_profile_budget_excludes_reviewer(
+    def test_per_profile_budget_overrun_keeps_reviewer(
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
     ):
-        """One pool profile over budget → excluded, run continues with rest."""
+        """One pool profile over its share → verdict retained, run continues (#2169)."""
         tight_profile = _make_review_profile("tight", budget_usd=0.10)
         normal_profile = _make_review_profile("normal", budget_usd=5.00)
         config = _make_pool_config(tmp_path, [tight_profile, normal_profile], SYNTHESIS_PROFILE)
-        # Threshold=1 so the remaining reviewer meets quorum after budget exclusion.
         config = config.__class__(
             **{**config.__dict__, "retry": RetryPolicy(review_quorum_threshold=1)}
         )
@@ -440,10 +439,12 @@ class TestCoordinatorMultiModelReview:
         workspace.mkdir()
 
         mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
-        # tight profile costs $0.50 which exceeds its $0.10 budget;
-        # normal profile's review is synthesised into APPROVE.
+        # tight profile costs $0.50 which exceeds its $0.10 share. It delivered a
+        # verdict for that money, so the verdict is kept and the overrun recorded.
         pool_approve = [
-            _make_agent_result(success=True, output="R1", profile_name="tight", cost_usd=0.50),
+            _make_agent_result(
+                success=True, output=APPROVE_REVIEW, profile_name="tight", cost_usd=0.50
+            ),
             _make_agent_result(
                 success=True, output=APPROVE_REVIEW, profile_name="normal", cost_usd=0.10
             ),
@@ -460,9 +461,13 @@ class TestCoordinatorMultiModelReview:
 
         result = run_task(config, task)
 
-        # Run should succeed — over-budget reviewer excluded, not escalated
+        # Run should succeed, and the over-share reviewer stays seated: it ran
+        # and its verdict counts. The overrun is recorded as telemetry (#2169).
         assert result.success is True
         assert result.phase == Phase.DONE
+        assert [o["reviewer"] for o in result.state.reviewer_budget_overruns] == ["tight"]
+        _attempts = {a["name"]: a for a in result.state.reviewer_attempts}
+        assert _attempts["tight"]["outcome"] == "budget_overrun"
 
 
 class TestReviewParseRetry:

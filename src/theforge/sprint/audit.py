@@ -44,6 +44,39 @@ def _state_reported_cost(state: object) -> float | None:
     return _optional_cost(getattr(state, "total_cost", None))
 
 
+def _story_allocation_summary(
+    state: object, result: "SprintResult", reported_cost: float | None
+) -> dict | None:
+    """Return the story's allocation block joined with the sprint ceiling (#2169).
+
+    The coordinator derives the allocation and knows only its own spend; the
+    sprint owns the ceiling. Reporting both on the story row is what makes an
+    allocation shortfall that occurred *while sprint headroom remained* visible
+    as such, instead of as an unexplained escalation. Returns ``None`` for a run
+    that carried no allocation (pre-#2169 records, or a run that never reached
+    preflight).
+    """
+    from theforge.coordinator import story_budget as _story_budget
+
+    allocation = getattr(state, "story_allocation", None)
+    exhausted = getattr(state, "allocation_exhausted", None)
+    block = _story_budget.evaluate_allocation_dict(allocation, _state_reported_cost(state))
+    if block is None and not exhausted:
+        return None
+    block = block or {}
+    remaining = round(result.budget_usd - result.total_cost_usd, 4)
+    block["reported_cost_usd"] = reported_cost
+    block["sprint_budget_usd"] = result.budget_usd
+    block["sprint_spent_usd"] = round(result.total_cost_usd, 4)
+    block["sprint_remaining_usd"] = remaining
+    block["sprint_cost_measured"] = bool(result.cost_complete)
+    block["sprint_headroom_remained"] = remaining > 0 if result.cost_complete else None
+    if exhausted:
+        block["allocation_exhausted"] = exhausted
+        block["status"] = "allocation_exhausted"
+    return block
+
+
 def _review_usage(state: object) -> tuple[int, int | None, bool]:
     """Return ``(cycles_spent, cycle_cap, budget_exhausted)`` for a story's review budget.
 
@@ -987,6 +1020,12 @@ def _write_sprint_summary(
                     },
                 },
             }
+            # Per-story allocation joined against the sprint ceiling (#2169), so
+            # a shortfall that happened while sprint headroom remained reads as
+            # one fact on one row.
+            _allocation_entry = _story_allocation_summary(res.state, result, _entry_cost)
+            if _allocation_entry is not None:
+                entry["story_allocation"] = _allocation_entry
             if slug in story_times:
                 entry["started_at"] = story_times[slug][0].strftime("%Y-%m-%dT%H:%M:%SZ")
                 entry["finished_at"] = story_times[slug][1].strftime("%Y-%m-%dT%H:%M:%SZ")

@@ -796,7 +796,44 @@ def _stage_and_detail_from_completed_story(
         else:
             detail = outcome
 
+    allocation_note = _allocation_detail(story.get("story_allocation"))
+    if allocation_note:
+        detail = f"{detail} — {allocation_note}" if detail else allocation_note
+
     return stage, detail, complexity
+
+
+def _allocation_detail(allocation: object) -> str:
+    """Render the per-story allocation condition for a status row (#2169).
+
+    Only an abnormal condition is rendered: a story that stayed inside its band
+    allocation needs no annotation, and adding one to every row would bury the
+    ones that mean something. An exceeded allocation is stated with the band's
+    expected range so the row says WHY $8 is anomalous, and an exhausted one is
+    stated with the sprint headroom that remained.
+    """
+    if not isinstance(allocation, dict):
+        return ""
+    status = allocation.get("status")
+    if status not in {"allocation_exceeded", "allocation_exhausted"}:
+        return ""
+    observed = allocation.get("observed_usd")
+    cap = allocation.get("allocation_usd")
+    parts: list[str] = []
+    if isinstance(observed, (int, float)) and isinstance(cap, (int, float)):
+        label = "exhausted" if status == "allocation_exhausted" else "over"
+        parts.append(f"allocation {label}: ${float(observed):.2f} of ${float(cap):.2f}")
+    else:
+        parts.append(f"allocation {status}")
+    median = allocation.get("median_usd")
+    p90 = allocation.get("p90_usd")
+    score = allocation.get("complexity_score")
+    if isinstance(median, (int, float)) and isinstance(p90, (int, float)):
+        parts.append(f"score {score} band median ${float(median):.2f} / p90 ${float(p90):.2f}")
+    remaining = allocation.get("sprint_remaining_usd")
+    if isinstance(remaining, (int, float)):
+        parts.append(f"sprint remaining ${float(remaining):.2f}")
+    return "; ".join(parts)
 
 
 def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:

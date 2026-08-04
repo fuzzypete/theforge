@@ -466,6 +466,12 @@ def apply_resume_record_to_state(state: "CoordinatorState", record: dict[str, An
     routing_audit = record.get("complexity_routing_audit")
     if isinstance(routing_audit, dict) and routing_audit and not state.complexity_routing_audit:
         state.complexity_routing_audit = routing_audit
+        # The story allocation rides inside the routing audit (#2169) so a
+        # resumed attempt reports spend against the same basis the first
+        # attempt derived, instead of re-deriving against a moved distribution.
+        allocation = routing_audit.get("story_allocation")
+        if isinstance(allocation, dict) and allocation and not state.story_allocation:
+            state.story_allocation = allocation
 
     plan_review = record.get("plan_review")
     if isinstance(plan_review, dict) and _apply_plan_review(state, plan_review):

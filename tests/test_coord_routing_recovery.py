@@ -396,16 +396,21 @@ def _run_pool(tmp_path: Path, config) -> tuple[CoordinatorState, ReviewCycleMeta
     return state, meta, merged
 
 
-class TestQuorumCountsEligibleSeats:
-    """Quorum describes the seats that can answer, not the nominal pool."""
+class TestQuorumCountsPlannedSeats:
+    """Quorum describes the seats the run planned, and spend never removes one.
+
+    #2154 shrank the denominator when a reviewer blew its share, because the
+    reviewer was withdrawn. #2169 removes the withdrawal itself: a seat that ran
+    and answered is counted, and its overrun is reported instead of subtracted.
+    """
 
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    def test_budget_excluded_reviewers_leave_the_denominator(
+    def test_share_overrun_keeps_the_seat_in_the_denominator(
         self, mock_pool, _mock_log, tmp_path: Path
     ) -> None:
-        # Two of three reviewers blow their budget share this cycle: they are
-        # withdrawn as a spend decision, so only one seat can answer.
+        # Two of three reviewers blow their share this cycle. All three ran and
+        # all three answered, so all three count — and the money is reported.
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_YAML, profile_name="a", cost_usd=0.10),
             _make_agent_result(success=True, output=APPROVE_YAML, profile_name="b", cost_usd=5.00),
@@ -414,25 +419,47 @@ class TestQuorumCountsEligibleSeats:
 
         state, meta, merged = _run_pool(tmp_path, _three_reviewer_config(tmp_path))
 
-        # Threshold 2 against a nominal pool of 3 was unreachable with one
-        # eligible seat; measured against the eligible seat it is met.
-        assert meta.quorum_threshold == 1
+        assert meta.quorum_threshold == 2
         assert meta.quorum_met is True
+        assert sorted(meta.successful) == ["a", "b", "c"]
         assert merged is not None
         assert state.phase != Phase.ESCALATE
+        assert sorted(o["reviewer"] for o in state.reviewer_budget_overruns) == ["b", "c"]
 
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
-    def test_shortfall_names_exclusions_apart_from_failures(
+    def test_overrun_alone_never_causes_a_shortfall(
         self, mock_pool, _mock_log, tmp_path: Path
     ) -> None:
-        """A reviewer withdrawn over budget did not fail. The escalation reason
-        has to say which reviewers ran and lost, and which were withheld — the
-        #2154 report's 'failed:' list was empty because the missing reviewers
-        were excluded, and the message gave the operator no way to see that."""
+        """The exact #2154 shape: two reviewers over share, one hard failure.
+
+        Previously the two over-share reviewers were withdrawn, leaving 0/1
+        against the threshold and an escalation whose ``failed:`` list was
+        empty. Their verdicts now stand, so the cycle clears quorum on the work
+        that was actually paid for.
+        """
         mock_pool.return_value = [
             _make_agent_result(success=True, output=APPROVE_YAML, profile_name="a", cost_usd=5.00),
             _make_agent_result(success=True, output=APPROVE_YAML, profile_name="b", cost_usd=5.00),
+            _make_agent_result(success=False, output="boom", profile_name="c", cost_usd=0.10),
+        ]
+
+        state, meta, merged = _run_pool(tmp_path, _three_reviewer_config(tmp_path))
+
+        assert merged is not None
+        assert meta.quorum_met is True
+        assert state.phase != Phase.ESCALATE
+        assert sorted(o["reviewer"] for o in state.reviewer_budget_overruns) == ["a", "b"]
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_real_quorum_collapse_still_names_the_overruns(
+        self, mock_pool, _mock_log, tmp_path: Path
+    ) -> None:
+        """A genuine collapse (every reviewer failed) reports failures AND spend."""
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="boom", profile_name="a", cost_usd=5.00),
+            _make_agent_result(success=False, output="boom", profile_name="b", cost_usd=0.10),
             _make_agent_result(success=False, output="boom", profile_name="c", cost_usd=0.10),
         ]
 
@@ -440,6 +467,6 @@ class TestQuorumCountsEligibleSeats:
 
         assert merged is None
         assert state.phase == Phase.ESCALATE
-        assert "Quorum unmet: 0/1 succeeded < threshold 1" in state.error
-        assert "failed: c (exit=1)" in state.error
-        assert "budget-excluded (ran, verdict not counted): a, b" in state.error
+        assert "Quorum unmet: 0/3 succeeded < threshold 2" in state.error
+        assert "failed: a (exit=1), b (exit=1), c (exit=1)" in state.error
+        assert "over derived share (verdict counted): a" in state.error
