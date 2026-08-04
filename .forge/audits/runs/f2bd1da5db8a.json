@@ -1,0 +1,2023 @@
+{
+  "schema_version": 19,
+  "run_id": "f2bd1da5db8a",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc17",
+  "task": {
+    "name": "Extend mechanical reviewer-value signals to code-review selection",
+    "slug": "issue-2156",
+    "story_path": null,
+    "story_text": "## Observed / motivation\n\n`reviewer_value.py` computes mechanical per-reviewer value signals \u2014 P1\nuniqueness (\"did this reviewer surface blocking findings no peer did?\") and\nlatency-per-P1 \u2014 with ADR-0006 clause-2 admissibility gating, recency weighting\nvia #1392, and taint exclusion via #1852. It is deterministic anchor-overlap over\nstructured findings the coordinator already merges: no LLM, no prose scoring.\n\nIt is wired into plan-review selection only. `_select_reviewers` is called twice\nin `assignment.py`: the plan-review call at :3065 passes `value_enabled`,\n`value_uniqueness_threshold`, `value_min_runs`, `value_complexity`,\n`value_signals_out` and `value_audit`; the code-review call at :3128 passes the\ncompletion-rate arguments and none of the value arguments. The persisted section\nis named `plan_review_value`.\n\nCode-review reviewer selection is therefore governed by\n`reviewer_completion_rate` alone, which measures whether a reviewer returned a\nparseable verdict. Measured across 703 story audits in this repository:\n\n| Reviewer | Spend | Runs | Findings | P1 | Findings/run |\n|---|---|---|---|---|---|\n| openai-gpt-5.4 | $1.86 | 28 | 36 | 29 | 1.29 |\n| openai-gpt-5.5 | $43.38 | 248 | 168 | 159 | 0.68 |\n| claude-sonnet | $205.28 | 135 | 150 | 28 | 1.11 |\n| claude-opus | $84.92 | 99 | 98 | 8 | 0.99 |\n| google-gemini-3.5-flash | $50.03 | 129 | 8 | 1 | 0.06 |\n\nThe completion signal recorded for the lowest-yield reviewer in that table, taken\nfrom story #2030's routing decision in run `675e2792fa1b`, is `attempted 90,\ncompleted 83, weighted 0.9411, floor pass, selected true`. It is selected because\nit answers reliably. Over 129 runs it produced eight findings and one blocking\nfinding. The signal governing code-review selection cannot distinguish a reviewer\nthat contributes from one that merely responds.\n\n## Why\n\nCode review is where the reviewer spend is concentrated and where blocking\nfindings are raised, so it is the phase where reviewer selection has the most\nleverage \u2014 and it is the one phase with no value signal. Extending the existing\nmechanism closes the gap without inventing a new one: the aggregation, gating,\nrecency and taint handling are already built and tested for plan review.\n\n## Acceptance criteria\n\n- Code-review reviewer selection consumes a per-reviewer value signal derived\n  from blocking-finding uniqueness, on the same admissibility gating, recency\n  weighting and taint exclusion as the plan-review signal.\n- The signal is persisted per reviewer and per complexity band, in its own\n  section, so plan-review and code-review value remain separately queryable.\n- A reviewer below the uniqueness threshold over at least the sample floor is\n  deprioritized for code review, and the routing decision records that the check\n  fired or was evaluated and did not fire.\n- A deprioritized reviewer has a recovery path, consistent with the\n  routing-symmetry invariant (#1389); the pairing is registered in\n  `ROUTING_SYMMETRY_REGISTRY` with tests exercising both directions.\n- Selection falls through to existing behaviour when the signal is below its\n  sample floor, so a newly enabled reviewer is not deprioritized for absence of\n  history.\n- Tests cover a reviewer that completes reliably while contributing no unique\n  blocking findings, and a reviewer whose contribution recovers.\n\n## Example\n\nGiven a five-model roster where one reviewer has 129 admissible runs, a\ncompletion rate of 0.94 and one blocking finding, and a peer has 28 runs and 29\nblocking findings, code-review selection seats the peer and deprioritizes the\nfirst, recording the uniqueness figures and the sample count that justified it.\nToday both are seated and only the completion rate is consulted.\n\nFollow-up to #1443 (plan-review value signals). Companion to #1388 (reviewer\ncompletion profiles) and #1880 (reviewer re-inclusion).\n",
+    "github_issue": 2156,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": {
+    "status": "recovered",
+    "reason": "story_content_match",
+    "recovered_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "source_run_id": "b007518710a1",
+    "recorded_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ]
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Extend mechanical reviewer-value signals to code-review selection' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2156",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "6303b66f213228feed437452aa793214271fbeaf4eafd42eabe2bd71e13304b3",
+    "resolved_sha256": "289b4bd525eda4e126ed815b28502b22275c7786e7c62fd77f1ca58e924499b9",
+    "source_sha256_at_finish": "6303b66f213228feed437452aa793214271fbeaf4eafd42eabe2bd71e13304b3",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-04T04:22:09.008933+00:00",
+    "finished_at": "2026-08-04T04:46:19.171389+00:00",
+    "duration_seconds": 1450.162456
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2156",
+    "branch": "feat/issue-2156",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 9.402020000000004,
+        "duration_s": 835.04,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/routing-symmetry-followups.md",
+          "src/theforge/assignment.py",
+          "src/theforge/cli/explain.py",
+          "src/theforge/config/models.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/model_profiles_bridge.py",
+          "src/theforge/coordinator/review_pool.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/model_profiles.py",
+          "src/theforge/reviewer_value.py",
+          "tests/test_assignment_code_review_value.py",
+          "tests/test_coord_code_reviewer_value_capture.py"
+        ],
+        "files_changed_count": 13,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 4.0991244999999985,
+        "duration_s": 196.06,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/config/models.py",
+          "tests/test_config_models.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 3.252477,
+        "duration_s": 206.13
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 3.022489,
+        "duration_s": 106.43
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 6,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 6,
+      "base_review": 5,
+      "profile_history_runs": 186,
+      "profile_avg_iterations": 1.5699,
+      "profile_avg_cost_usd": 4.70567,
+      "profile_raw_dev_max": 2.3548,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.4113,
+      "review_history_sample_size": 28,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 186 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-04T04:22:09.974192+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-08-04T04:40:18.109834+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 20.140902000000004,
+    "dev_usd": 13.501144500000002,
+    "review_usd": 6.274966,
+    "dev_invocations": 2,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 9.402020000000004,
+        "duration_seconds": 835.0402049580589,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.006745
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 9.395275000000005
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 4.0991244999999985,
+        "duration_seconds": 196.05783104198053,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 4.0991244999999985
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.3223880000000001,
+        "duration_seconds": 102.97990124998614,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.3223880000000001
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.930089,
+        "duration_seconds": 102.97990124998614,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 1.930089
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.949441,
+        "duration_seconds": 53.12136368744541,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.949441
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 2.073048,
+        "duration_seconds": 53.12136368744541,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 2.073048
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "assignment.py:3130-3144 confirms the code-review call to _select_reviewers omits all value_* args (unlike the plan-review call at :3067-3087), and reviewer_value.py is scoped entirely to plan_review_value (SECTION = \"plan_review_value\", function names prefixed plan_). This is real unfinished work extending an existing, tested mechanism to a second call site.",
+    "complexity": "medium",
+    "complexity_score": 6,
+    "implementation_complexity_score": 6,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 6",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "feature",
+    "domains": [
+      "backend"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.3647915,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "69892930e156",
+    "cache_snapshot": {
+      "worktree_head": "ef4b59556c8408687e1cb15570e30b67b40a41bc",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "ef4b59556c8408687e1cb15570e30b67b40a41bc",
+      "story_content_hash": "4da3b9348fb1bba650add70a639ee08cbc5c613583c2b0f52f8e5f933a66c082"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "ef4b59556c8408687e1cb15570e30b67b40a41bc",
+      "current_worktree_head": "ef4b59556c8408687e1cb15570e30b67b40a41bc",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "ef4b59556c8408687e1cb15570e30b67b40a41bc",
+      "current_evaluation_base_branch_head": "ef4b59556c8408687e1cb15570e30b67b40a41bc",
+      "cached_story_content_hash": "4da3b9348fb1bba650add70a639ee08cbc5c613583c2b0f52f8e5f933a66c082",
+      "current_story_content_hash": "4da3b9348fb1bba650add70a639ee08cbc5c613583c2b0f52f8e5f933a66c082",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.3647915,
+        "duration_s": 61.67,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 6,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.84 \u2265 threshold 0.60 over 63 admissible runs \u2014 pre-promotion held) (profile success_rate=0.84 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend (promotion/dethrone off the static-tier pick); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 6,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "opus",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2156/iter_1.yaml",
+      "handoff": {
+        "summary": "Generalised the plan-review mechanical value machinery in reviewer_value.py to be phase-aware (plan_review_value / code_review_value sections, phase-parameterised fold and signal reader, pluggable anchor-text extractor) while keeping the old symbols as aliases so existing profile data resolves without migration. Built the missing producer chain for code review: review_pool.py computes per-reviewer blocking-finding uniqueness (anchor overlap over observed+evidence) at pool completion into a new state.code_reviewer_value field, model_profiles_bridge lifts it into ReviewerValueSample, and apply_run folds it into the separate code_review_value profile section under the same taint gate. Wired the consumer: the code-review _select_reviewers call now passes value_enabled/threshold/min_runs/complexity/signals_out/audit plus value_phase='code_review', gated by three new opt-in AssignmentConfig fields parsed with the same strict validation as the plan-review ones. Registered the deprioritization with its paired passive recency recovery in ROUTING_SYMMETRY_REGISTRY, exposed as a nested value_check.recovery_check audit block, rendered in forge explain, and catalogued in docs/routing-symmetry-followups.md. Added 15 tests across a seam-level routing suite and a coordinator capture suite.",
+        "commits": [
+          {
+            "sha": "21991be",
+            "message": "feat(routing): extend mechanical reviewer-value signals to code review"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Code-review reviewer selection consumes a per-reviewer value signal derived from blocking-finding uniqueness, on the same admissibility gating, recency weighting and taint exclusion as the plan-review signal.",
+            "status": "MET",
+            "notes": "Same compute_reviewer_uniqueness, same _fold_bucket/_bucket_signal recency rings, same tainted_runs gate; only the anchor-text extractor and persisted section differ by phase."
+          },
+          {
+            "criterion": "The signal is persisted per reviewer and per complexity band, in its own section, so plan-review and code-review value remain separately queryable.",
+            "status": "MET",
+            "notes": "code_review_value section with by_complexity buckets; test_fold_writes_code_section_and_leaves_plan_section_untouched and test_run_outcome_folds_code_reviewer_values_separately_from_plan assert independence in both directions."
+          },
+          {
+            "criterion": "A reviewer below the uniqueness threshold over at least the sample floor is deprioritized for code review, and the routing decision records that the check fired or was evaluated and did not fire.",
+            "status": "MET",
+            "notes": "routing_decision['code_review']['value_check'] carries phase/fired/threshold/min_runs/complexity/deprioritized/per-reviewer signals; the human-readable rationale distinguishes fired, evaluated-below-floor, and evaluated-didn't-fire."
+          },
+          {
+            "criterion": "A deprioritized reviewer has a recovery path, consistent with the routing-symmetry invariant (#1389); the pairing is registered in ROUTING_SYMMETRY_REGISTRY with tests exercising both directions.",
+            "status": "MET",
+            "notes": "MECHANISM_REVIEWER_VALUE_DEPRIORITIZE paired with MECHANISM_REVIEWER_VALUE_RECOVERY (passive recency recovery \u2014 the consulted rate is the weighted one). recovery_check block present whether or not it fired. test_symmetry_registry_pairs_value_deprioritization_with_recovery also asserts recovery cannot exist without the exclusion side."
+          },
+          {
+            "criterion": "Selection falls through to existing behaviour when the signal is below its sample floor, so a newly enabled reviewer is not deprioritized for absence of history.",
+            "status": "MET",
+            "notes": "test_below_sample_floor_falls_through_to_completion_behaviour: 3 zero-uniqueness samples under a floor of 5 leaves floor='fail', rate=None, ordering driven by completion rate."
+          },
+          {
+            "criterion": "Tests cover a reviewer that completes reliably while contributing no unique blocking findings, and a reviewer whose contribution recovers.",
+            "status": "MET",
+            "notes": "test_reliable_completer_with_no_unique_findings_is_deprioritized (9/10 completion, 0.0 uniqueness over 8 samples \u2192 deprioritized) and test_recovered_reviewer_is_not_deprioritized_and_recovery_is_recorded (lifetime 0.2857, recency-weighted back above 0.34)."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The plan review's P1-impl note claimed ReviewFinding has no `description` field. It does \u2014 a property aliasing `observed` \u2014 so the existing function would not have raised. I added a dedicated code_review_anchor_text extractor anyway (observed + evidence), because evidence is where code-review symbol anchors actually live and dropping it would badly under-detect corroboration.",
+          "Step 2 left the config-field decision open. I committed to three parallel explicit fields (code_review_value_enabled=False, _uniqueness_threshold=0.34, _min_runs=5) parsed exactly like the assignment.reviewer_value_* fields, per the plan reviewer's P2 suggestion \u2014 there is no inheritance pattern in config to match.",
+          "Added two files beyond the plan's list that the producer chain required: coordinator/review_pool.py (capture site) and coordinator/audit.py (per_reviewer_value rows on the review block, per convention 6)."
+        ],
+        "deferred_items": [
+          "extract_anchors does not match leading-underscore identifiers (its regexes start with \\b[a-z]), so a code-review finding anchored only on a private symbol like _select_reviewers reads as uncorroborated and counts as unique. This is pre-existing plan-review behaviour, not introduced here, but it biases code-review uniqueness upward more than plan-review because code reviews name private helpers constantly. Worth its own issue against plan_finding_classifier.",
+          "Latency for code-review samples uses the pool-wide _per_agent_dur (elapsed / pool size), the same approximation review_durations already uses, rather than true per-reviewer wall-clock. plan_flow has real per-reviewer durations; matching that would need run_agent_pool to report per-agent timings.",
+          "17 tests fail in this sandbox (test_cut_rc_isolation.py, test_sprint_lock.py, test_sprint_reexec_collision.py) with PermissionError on multiprocessing semaphores and denied git tag operations. Pre-existing and unrelated \u2014 verified the failure mode is environmental, not assertion failures."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2156/iter_2.yaml",
+      "handoff": {
+        "summary": "Iteration 2 advisory cleanup on top of the iteration-1 feature commit. Addressed the carried P2 on config/models.py:1162 by adding _parse_strict_bool and routing the reviewer-value enablement and sample-floor fields through strict validation instead of bare bool()/int() coercion. Applied to BOTH phases (reviewer_value_* and code_review_value_*) rather than only the cited new fields, since they are one mechanism parameterised by phase and a permissive plan-review pair beside a strict code-review pair would read as an accident. min_runs now goes through the existing _parse_positive_int (rejects bools, non-ints, and values below 1); enablement rejects any non-boolean, closing the case where a typo like 'flase' or 'no' silently switches a routing mechanism ON. Added a TestAssignmentReviewerValue class covering defaults, independent per-phase tuning, and parameterised rejection of malformed values for both phases. No behavioural change to the routing mechanism itself; the iteration-1 implementation is untouched.",
+        "commits": [
+          {
+            "sha": "21991be",
+            "message": "feat(routing): extend mechanical reviewer-value signals to code review"
+          },
+          {
+            "sha": "ba21767",
+            "message": "fix(config): address review findings (iter 2)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Code-review reviewer selection consumes a per-reviewer value signal derived from blocking-finding uniqueness, on the same admissibility gating, recency weighting and taint exclusion as the plan-review signal.",
+            "status": "MET",
+            "notes": "Same compute_reviewer_uniqueness, same _fold_bucket/_bucket_signal recency rings, same tainted_runs gate; only the anchor-text extractor and persisted section differ by phase. Unchanged this iteration."
+          },
+          {
+            "criterion": "The signal is persisted per reviewer and per complexity band, in its own section, so plan-review and code-review value remain separately queryable.",
+            "status": "MET",
+            "notes": "code_review_value section with by_complexity buckets; test_fold_writes_code_section_and_leaves_plan_section_untouched and test_run_outcome_folds_code_reviewer_values_separately_from_plan assert independence in both directions. Unchanged this iteration."
+          },
+          {
+            "criterion": "A reviewer below the uniqueness threshold over at least the sample floor is deprioritized for code review, and the routing decision records that the check fired or was evaluated and did not fire.",
+            "status": "MET",
+            "notes": "routing_decision['code_review']['value_check'] carries phase/fired/threshold/min_runs/complexity/deprioritized/per-reviewer signals; the rationale string distinguishes fired, evaluated-below-floor, and evaluated-didn't-fire. Unchanged this iteration."
+          },
+          {
+            "criterion": "A deprioritized reviewer has a recovery path, consistent with the routing-symmetry invariant (#1389); the pairing is registered in ROUTING_SYMMETRY_REGISTRY with tests exercising both directions.",
+            "status": "MET",
+            "notes": "MECHANISM_REVIEWER_VALUE_DEPRIORITIZE paired with MECHANISM_REVIEWER_VALUE_RECOVERY; recovery_check block present whether or not it fired; test_symmetry_registry_pairs_value_deprioritization_with_recovery asserts recovery cannot exist without the exclusion side. Unchanged this iteration."
+          },
+          {
+            "criterion": "Selection falls through to existing behaviour when the signal is below its sample floor, so a newly enabled reviewer is not deprioritized for absence of history.",
+            "status": "MET",
+            "notes": "test_below_sample_floor_falls_through_to_completion_behaviour. The iter-2 config change strengthens this: min_runs can no longer be parsed as 0, so the floor cannot be configured away by a malformed value."
+          },
+          {
+            "criterion": "Tests cover a reviewer that completes reliably while contributing no unique blocking findings, and a reviewer whose contribution recovers.",
+            "status": "MET",
+            "notes": "test_reliable_completer_with_no_unique_findings_is_deprioritized and test_recovered_reviewer_is_not_deprioritized_and_recovery_is_recorded. Unchanged this iteration."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Iter 2: widened the P2 fix beyond the cited line to the sibling plan-review fields (reviewer_value_enabled / reviewer_value_min_runs). Same pattern, same mechanism, and per the pattern-bug instruction. reviewer_completion_* and the older assignment flags (enabled, min_reviewers, prefer_cross_provider, escalation_memory, adaptive_enabled, plan_tier_reduction) still use bare coercion \u2014 deliberately left alone as unrelated refactoring.",
+          "Iter 1: the plan review's P1-impl note claimed ReviewFinding has no `description` field. It does \u2014 a property aliasing `observed`. I added a dedicated code_review_anchor_text extractor (observed + evidence) anyway, because evidence is where code-review symbol anchors live.",
+          "Iter 1: committed to three parallel explicit config fields rather than inheriting plan-review values, per the plan reviewer's P2 suggestion \u2014 there is no inheritance pattern in config to match.",
+          "Iter 1: added two files beyond the plan's list that the producer chain required: coordinator/review_pool.py (capture site) and coordinator/audit.py (per_reviewer_value rows on the review block, per convention 6)."
+        ],
+        "deferred_items": [
+          "forge.yaml is outside this worktree's sparse-checkout, so its edits cannot be staged here. Two operator actions are needed in the root checkout: (1) the comment on reviewer_value_enabled still says 'Code-review selection does not consume this yet \u2014 tracked in #2156', which is false once this lands; (2) code_review_value_enabled is not set. Enabling it immediately is a no-op \u2014 the code_review_value section starts empty, so every reviewer is below the sample floor until enough code-review pools have folded. Wait until `forge explain` shows code-review reviewers with runs >= 5.",
+          "extract_anchors does not match leading-underscore identifiers (its regexes start with \\b[a-z]), so a code-review finding anchored only on a private symbol reads as uncorroborated and counts as unique. Pre-existing plan-review behaviour, not introduced here, but it biases code-review uniqueness upward more because code reviews name private helpers constantly. Worth its own issue against plan_finding_classifier.",
+          "Latency for code-review samples uses the pool-wide _per_agent_dur (elapsed / pool size), the same approximation review_durations already uses, rather than true per-reviewer wall-clock. Matching plan_flow's real per-reviewer durations would need run_agent_pool to report per-agent timings.",
+          "17 tests fail in this sandbox (test_cut_rc_isolation.py, test_sprint_lock.py, test_sprint_reexec_collision.py) with PermissionError on multiprocessing semaphores and denied git tag operations. Pre-existing and unrelated \u2014 same set before and after both iterations."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "21991be6faf5e7bdb9bfbb482e13221949150c58",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "21991be6faf5e7bdb9bfbb482e13221949150c58",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] No blocking issues found; focused routing, capture, reviewer-value, explain, and symmetry tests passed, with one non-blocking config-boundary concern. | [google-gemini-3.5-flash-api] Successfully extended mechanical reviewer-value signals to code-review selection with separate persistence, routing-symmetry recovery, and comprehensive test coverage.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "src/theforge/config/models.py",
+          "line": 1162,
+          "description": "When the new code-review value opt-in or sample-floor settings are supplied with malformed scalar values, the assignment parser can coerce them into active routing settings instead of rejecting the bad configuration.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Code-review reviewer selection consumes a per-reviewer value signal derived from blocking-finding uniqueness, on the same admissibility gating, recency weighting and taint exclusion as the plan-review signal.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_pool.py:1096 computes code-review uniqueness from structured findings; src/theforge/coordinator/model_profiles_bridge.py:110 and src/theforge/model_profiles.py:1095 thread samples into profile folding; src/theforge/reviewer_value.py:309 and src/theforge/reviewer_value.py:406 share fold/read logic with phase selection, recency rings, sample floors, and taint accounting. Covered by tests/test_coord_code_reviewer_value_capture.py:67, tests/test_assignment_code_review_value.py:384, and tests/test_assignment_code_review_value.py:438.; Implemented in src/theforge/assignment.py:3288-3309 where _select_reviewers is called with code-review value parameters, and src/theforge/reviewer_value.py:406-483 where get_reviewer_value_signal reads the code_review_value section. Tested in tests/test_assignment_code_review_value.py:test_reliable_completer_with_no_unique_findings_is_deprioritized."
+        },
+        {
+          "criterion": "The signal is persisted per reviewer and per complexity band, in its own section, so plan-review and code-review value remain separately queryable.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/reviewer_value.py:60 defines code_review_value separately from plan_review_value; src/theforge/reviewer_value.py:335 writes phase-selected by_complexity buckets; src/theforge/reviewer_value.py:437 reads the requested phase. Covered by tests/test_assignment_code_review_value.py:361, tests/test_assignment_code_review_value.py:399, and tests/test_coord_code_reviewer_value_capture.py:161.; Implemented in src/theforge/reviewer_value.py:309-351 where fold_reviewer_value writes to code_review_value section, and src/theforge/model_profiles.py:1093-1106 where apply_run folds code_reviewer_values. Tested in tests/test_assignment_code_review_value.py:test_fold_writes_code_section_and_leaves_plan_section_untouched."
+        },
+        {
+          "criterion": "A reviewer below the uniqueness threshold over at least the sample floor is deprioritized for code review, and the routing decision records that the check fired or was evaluated and did not fire.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:1017 flags below-threshold above-floor value signals, src/theforge/assignment.py:1037 reranks, src/theforge/assignment.py:1958 builds the value_check block, and src/theforge/assignment.py:3302 wires the code-review call. Covered by tests/test_assignment_code_review_value.py:133 and tests/test_assignment_code_review_value.py:173.; Implemented in src/theforge/assignment.py:952-1053 where _rerank_reviewers_by_value performs the stable sort-after and records the value_check block. Tested in tests/test_assignment_code_review_value.py:test_reliable_completer_with_no_unique_findings_is_deprioritized and test_evaluated_but_not_fired_is_recorded."
+        },
+        {
+          "criterion": "A deprioritized reviewer has a recovery path, consistent with the routing-symmetry invariant (#1389); the pairing is registered in ROUTING_SYMMETRY_REGISTRY with tests exercising both directions.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:204 registers reviewer_value with reviewer_value_recency_recovery, src/theforge/assignment.py:1022 records recovered reviewers, and src/theforge/assignment.py:2017 emits the recovery_check block. Covered by tests/test_assignment_code_review_value.py:274, tests/test_assignment_code_review_value.py:312, tests/test_assignment_code_review_value.py:333, and tests/test_routing_symmetry_invariant.py passed locally."
+        },
+        {
+          "criterion": "Selection falls through to existing behaviour when the signal is below its sample floor, so a newly enabled reviewer is not deprioritized for absence of history.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/reviewer_value.py:395 gates rate exposure on runs >= min_runs and src/theforge/assignment.py:1017 only deprioritizes when the floor passes. Covered by tests/test_assignment_code_review_value.py:198.; Implemented in src/theforge/assignment.py:1016-1035 where is_low is only True when floor_ok is True. Tested in tests/test_assignment_code_review_value.py:test_below_sample_floor_falls_through_to_completion_behaviour."
+        },
+        {
+          "criterion": "Tests cover a reviewer that completes reliably while contributing no unique blocking findings, and a reviewer whose contribution recovers.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_assignment_code_review_value.py:133 covers the reliable completer with zero unique findings being deprioritized, and tests/test_assignment_code_review_value.py:274 covers recency-weighted recovery restoring the reviewer.; Tested in tests/test_assignment_code_review_value.py:test_reliable_completer_with_no_unique_findings_is_deprioritized and test_recovered_reviewer_is_not_deprioritized_and_recovery_is_recorded."
+        },
+        {
+          "criterion": "A deprioritized reviewer has a recovery path, consistent with the routing-symmetry invariant (#1389); the pairing is registered in `ROUTING_SYMMETRY_REGISTRY` with tests exercising both directions.",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/assignment.py:201-229 where the RoutingSymmetryPair is registered in ROUTING_SYMMETRY_REGISTRY. Tested in tests/test_assignment_code_review_value.py:test_recovered_reviewer_is_not_deprioritized_and_recovery_is_recorded and test_symmetry_registry_pairs_value_deprioritization_with_recovery."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "ba21767096d7a2135f7867df920bfadcc1cdcd51",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "ba21767096d7a2135f7867df920bfadcc1cdcd51",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] No P1 regressions found; focused routing, capture, and config tests pass with 107 passed. | [google-gemini-3.5-flash-api] The implementation of extending mechanical reviewer-value signals to code-review selection is clean, robust, and fully verified.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Code-review reviewer selection consumes a per-reviewer value signal derived from blocking-finding uniqueness, on the same admissibility gating, recency weighting and taint exclusion as the plan-review signal.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:3290 passes code-review value settings into _select_reviewers with value_phase=\"code_review\"; src/theforge/assignment.py:1000 calls get_reviewer_value_signal with that phase; src/theforge/reviewer_value.py:309 folds reviewer value samples through the shared bucket/ring logic and taint gate; tests/test_assignment_code_review_value.py:143 verifies a reliable low-uniqueness completer is deprioritized, and tests/test_assignment_code_review_value.py:384 verifies tainted code-review samples stay out of aggregates.; src/theforge/assignment.py:3302-3309 and tests/test_assignment_code_review_value.py:82-125"
+        },
+        {
+          "criterion": "The signal is persisted per reviewer and per complexity band, in its own section, so plan-review and code-review value remain separately queryable.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:154 adds code_review_value configuration fields; src/theforge/reviewer_value.py:61 defines CODE_SECTION as code_review_value; src/theforge/reviewer_value.py:336 selects the section by phase and stores by_complexity buckets; src/theforge/model_profiles.py:1095 folds RunOutcome code_reviewer_values into CODE_PHASE; tests/test_assignment_code_review_value.py:361 verifies code folds do not touch plan_review_value, and tests/test_assignment_code_review_value.py:399 verifies signal reads resolve each phase separately.; src/theforge/reviewer_value.py:51-53 and tests/test_assignment_code_review_value.py:385-411"
+        },
+        {
+          "criterion": "A reviewer below the uniqueness threshold over at least the sample floor is deprioritized for code review, and the routing decision records that the check fired or was evaluated and did not fire.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:1016 applies the floor and threshold before sorting low-value reviewers after peers; src/theforge/assignment.py:1998 builds the routing value_check with fired, phase, threshold, min_runs, complexity, deprioritized reviewers, and per-reviewer signals; tests/test_assignment_code_review_value.py:143 verifies the fired/deprioritized path, and tests/test_assignment_code_review_value.py:173 verifies the evaluated-but-not-fired path.; src/theforge/assignment.py:959-1053 and tests/test_assignment_code_review_value.py:82-148"
+        },
+        {
+          "criterion": "A deprioritized reviewer has a recovery path, consistent with the routing-symmetry invariant (#1389); the pairing is registered in ROUTING_SYMMETRY_REGISTRY with tests exercising both directions.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:99 defines the value deprioritization and recency recovery mechanisms; src/theforge/assignment.py:201 registers them as a RoutingSymmetryPair; src/theforge/assignment.py:1022 records recency recovery when lifetime uniqueness is below threshold but weighted uniqueness has recovered; src/theforge/assignment.py:2017 emits the recovery_check block; tests/test_assignment_code_review_value.py:274 verifies recovered reviewers are not deprioritized and tests/test_assignment_code_review_value.py:333 verifies the registry pairing.; src/theforge/assignment.py:205-229 and tests/test_assignment_code_review_value.py:261-331"
+        },
+        {
+          "criterion": "Selection falls through to existing behaviour when the signal is below its sample floor, so a newly enabled reviewer is not deprioritized for absence of history.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/reviewer_value.py:395 marks value signals below min_runs as floor fail and returns no routing rate; src/theforge/assignment.py:1017 only deprioritizes when the floor passes and the rate is below threshold; tests/test_assignment_code_review_value.py:216 verifies below-floor code-review histories keep completion-based selection, and tests/test_config_models.py:1004 verifies malformed or zero min_runs values are rejected.; src/theforge/assignment.py:1009 and tests/test_assignment_code_review_value.py:151-201"
+        },
+        {
+          "criterion": "Tests cover a reviewer that completes reliably while contributing no unique blocking findings, and a reviewer whose contribution recovers.",
+          "status": "VERIFIED",
+          "evidence": "tests/test_assignment_code_review_value.py:143 covers the reliable completer with no unique findings being deprioritized in code-review selection, and tests/test_assignment_code_review_value.py:274 covers a reviewer whose recent unique findings recover the recency-weighted signal and stop the deprioritization. Focused verification command passed: pytest tests/test_assignment_code_review_value.py tests/test_coord_code_reviewer_value_capture.py tests/test_config_models.py -q.; tests/test_assignment_code_review_value.py:82-125 and tests/test_assignment_code_review_value.py:261-304"
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [anthropic-opus-cli] Missing write/producer path. The plan-review signal is produced by a four-hop chain the plan does not touch: coordinator/plan_flow.py:1316-1345 computes per-reviewer uniqueness at pool completion and appends to state.plan_reviewer_value (CoordinatorState field at coordinator/state.py:688); coordinator/model_profiles_bridge.py:82 _extract_plan_reviewer_values turns that into PlanReviewerValueSample objects and passes them as plan_reviewer_values at :291; model_profiles.py:1075-1086 folds them via fold_plan_reviewer_value. The plan's file list is reviewer_value.py, config/types.py, config/models.py, assignment.py, tests \u2014 none of the four producer sites. With Steps 1-5 as written, the code_review_value section is never written, get_reviewer_value_signal always returns runs=0, the floor gate fails, and code-review selection behaves exactly as it does today. Acceptance criteria 1, 2 and 3 would be unimplementable at runtime and only demonstrable by hand-seeding profile fixtures.\n  Suggestion: Add explicit steps for the producer chain: (a) capture per-code-reviewer unique/total blocking findings and latency at code-review pool completion (coordinator/review_phase.py / review_pool.py, mirroring plan_flow.py:1316-1345) into a new CoordinatorState field (e.g. code_reviewer_value alongside state.py:688 plan_reviewer_value); (b) extract those into value samples in coordinator/model_profiles_bridge.py and add a code_reviewer_values field to the outcome dataclass at model_profiles.py:223; (c) fold them under the new section in model_profiles.py:1075-1086 with the same dev_tainted gate. Include an end-to-end test that a completed code-review pool populates code_review_value.\n- [P1-impl] [anthropic-opus-cli] Finding-type mismatch. Step 1 states the code-review path reuses 'the same ... anchor-overlap uniqueness ... already used for plan review', but compute_plan_reviewer_uniqueness (reviewer_value.py:118-183) is typed over PlanReviewFinding and reads f.description via extract_anchors(strip_reviewer_prefix(f.description)). Code-review findings are review.ReviewFinding (review.py:58-80), which has no description field at all \u2014 it carries observed / expected / evidence / file / line, and its severity vocabulary includes P1-impl (review.py:748). Passing code-review findings to the existing function raises AttributeError, and _P1_SEVERITIES = {P0, P1} silently mis-buckets the code-review severity set.\n  Suggestion: Make the uniqueness computation take an explicit anchor-text extractor (or a normalized (reviewer, severity, text) tuple) so both PlanReviewFinding and ReviewFinding feed it, and state in the plan which ReviewFinding fields form the anchor text (e.g. observed + evidence, which is where file/symbol anchors live) and how P1-impl is treated relative to the blocking set.\n- [P2] [anthropic-opus-cli] Step 2 leaves the config-field decision open ('Default these fields conservatively to existing plan-review value settings only if that matches current config defaulting patterns'). The existing fields are flat defaults at config/types.py:144-146 and config/models.py:1155-1161 with no inheritance pattern to match.\n  Suggestion: Commit to parallel explicit fields (e.g. code_review_value_enabled: bool = False, code_review_value_uniqueness_threshold: float = 0.34, code_review_value_min_runs: int = 5) parsed the same way as assignment.reviewer_value_* at config/models.py:1155.\n- [P1-impl] [anthropic-opus-cli] Step 1's rename of module-global SECTION/ring-key constants to phase-aware helpers touches the reader at assignment.py:913-918 and the writer at model_profiles.py:1076, and must not orphan model_profiles.yaml entries already carrying a plan_review_value section.\n  Suggestion: Keep plan_review_value as the literal persisted key for the plan phase and add the phase parameter with a plan-review default, so existing profile data continues to resolve without migration.",
+    "cost_usd": 0,
+    "plan_finding_registry": [],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2181",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2156",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2181",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2181",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-04T04:46:19.171389+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_models.py",
+      "detail": "tests/test_config_models.py has 1012 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "b7b2607ca8b84938",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/config/models.py",
+      "line": 1162,
+      "severity": "P2",
+      "description": "When the new code-review value opt-in or sample-floor settings are supplied with malformed scalar values, the assignment parser can coerce them into active routing settings instead of rejecting the bad configuration.",
+      "reporter": "openai-gpt-5.5-cli",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 6,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 5,
+            "completed": 4,
+            "raw": 0.8,
+            "weighted": 0.8,
+            "rate": 0.8,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 11,
+            "completed": 11,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 6,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4-cli",
+        "domain_head": "openai-gpt-5.4-cli",
+        "selected_model_slice": null,
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4-cli",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8254,
+        "weighted_success_rate": 0.8387,
+        "sample_size": 63,
+        "tainted_runs": 4,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.8387,
+          "threshold": 0.6,
+          "sample_size": 63,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "google-gemini-3.5-flash-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.84 \u2265 threshold 0.60 over 63 admissible runs \u2014 pre-promotion held) (profile success_rate=0.84 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend (promotion/dethrone off the static-tier pick); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 111,
+            "completed": 104,
+            "raw": 0.9369,
+            "weighted": 0.96,
+            "rate": 0.96,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 50,
+            "completed": 42,
+            "raw": 0.84,
+            "weighted": 0.8397,
+            "rate": 0.8397,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 9,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli"
+          ],
+          "checked_detail": {
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 9,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 48.8038,
+              "weighted": 48.8038,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 133,
+            "completed": 132,
+            "raw": 0.9925,
+            "weighted": 0.9883,
+            "rate": 0.9883,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 24,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 111,
+            "completed": 104,
+            "raw": 0.9369,
+            "weighted": 0.96,
+            "rate": 0.96,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 50,
+            "completed": 42,
+            "raw": 0.84,
+            "weighted": 0.8397,
+            "rate": 0.8397,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 9,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 24,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 9,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.364791,
+      "duration_s": 61.67,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": {
+      "cost_usd": 0,
+      "duration_s": 287.58,
+      "iterations": 0,
+      "outcome": "approve"
+    },
+    "dev": {
+      "cost_usd": 13.501145,
+      "duration_s": 1031.1,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 94.94,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 6.274966,
+      "duration_s": 312.2,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 2.271829,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 4.003137,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 20.140902,
+    "duration_s": 1787.5,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "5d94f855bf98",
+  "sprint_name": "issues-2164,2160,2139,1993,1980,1945,2169,2156,1108"
+}
