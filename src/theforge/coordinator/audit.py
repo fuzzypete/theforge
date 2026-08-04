@@ -13,6 +13,7 @@ from theforge.config.sandbox_capabilities import resolve_capabilities
 from theforge.review import parse_plan_review_output
 from theforge.task import TaskStory
 
+from . import story_budget as _story_budget
 from .agent_failure import NO_JUDGMENT
 from .audit_render import build_agent_entries, build_reviews
 from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
@@ -774,6 +775,19 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "dev_invocations": len(state.dev_results),
             "review_invocations": len(state.review_agent_results),
             "agents": agents,
+            # Per-story allocation derived from the complexity band (#2169).
+            # Carries the basis and the band's expected range next to what the
+            # story actually spent, so "cost $8" can be read as ordinary or
+            # anomalous without the reader reconstructing the distribution.
+            "story_allocation": (
+                _story_budget.evaluate_allocation_dict(
+                    state.story_allocation, state.total_cost_measured
+                )
+                if state.story_allocation
+                else None
+            ),
+            "allocation_exhausted": state.allocation_exhausted,
+            "reviewer_budget_overruns": list(state.reviewer_budget_overruns),
         },
         "preflight": (
             {
