@@ -242,6 +242,54 @@ def test_preflight_records_assignment_rationale_in_audit_state(tmp_path, monkeyp
     assert "target_usd" in audit["per_story_routing_cost_target"]
 
 
+def test_preflight_audit_records_forge_yaml_registry_source(tmp_path, monkeypatch):
+    """Seam: a forge.yaml-declared model's registry source reaches the routing audit."""
+    monkeypatch.setenv("OPENAI_API_KEY", "k")
+
+    from theforge.coordinator import preflight as _pf
+
+    config = replace(
+        _make_config(tmp_path),
+        agents=[
+            AgentDef(
+                name="gpt-5.5",
+                provider="openai",
+                model="gpt-5.5",
+                budget_usd=10.0,
+                timeout_seconds=300,
+                tier="strong",
+                cli=None,
+                registry_id="openai/gpt-5.5/api",
+                registry_source="forge.yaml",
+            )
+        ],
+        assignment=AssignmentConfig(
+            enabled=True,
+            escalation_memory=False,
+            max_cost_per_story_usd=100.0,
+            min_reviewers=1,
+            max_reviewers=1,
+        ),
+    )
+
+    state = CoordinatorState()
+    state.preflight_complexity = "medium"
+    state.preflight_complexity_score = 7
+
+    _pf._apply_preflight_config(config, state)
+
+    audit = state.complexity_routing_audit
+    assert audit is not None
+    assert audit["assignments"]["dev"]["model"] == "gpt-5.5"
+    assert audit["assignments"]["dev"]["source"] == "forge.yaml"
+    assert audit["assignments"]["preflight"]["source"] == "forge.yaml"
+    assert [entry["source"] for entry in audit["assignments"]["plan_reviewers"]] == ["forge.yaml"]
+    assert audit["role_sources"]["dev"] == "adaptive"
+    # The planner is an explicit override in this config and keeps its own
+    # (builtin) source — the audit records per-role provenance, not one value.
+    assert audit["assignments"]["planner"]["source"] == "builtin"
+
+
 def test_preflight_audit_keeps_strong_planner_when_strong_dev_forces_budget_pressure(
     tmp_path, monkeypatch
 ):
