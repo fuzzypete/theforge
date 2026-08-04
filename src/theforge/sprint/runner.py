@@ -23,6 +23,7 @@ import yaml
 from ..advisory_conventions import AdvisoryArtifactError
 from ..config import ForgeConfig, ModelProfile
 from ..config.auth import check_agent_auth
+from ..coordinator import config_snapshot as config_snapshot_mod
 from ..coordinator import workspace as coordinator_workspace
 from ..coordinator.agent_failure import (
     CATEGORY_AUTH,
@@ -31,6 +32,7 @@ from ..coordinator.agent_failure import (
     is_infrastructure_abort,
     mark_infrastructure_abort,
 )
+from ..coordinator.config_snapshot import SprintConfigSnapshot, capture_or_load
 from ..coordinator.engine import run_from_dev, run_from_review, run_review_only, run_task
 from ..coordinator.gate import run_gate_full
 from ..coordinator.log_tee import _make_story_log_dir, set_worker_slug
@@ -1074,6 +1076,32 @@ def _publish_reuse_gate_end(run_id: str | None, project_root: Path, label: GateL
     )
 
 
+#: Bound on the gate excerpt carried inside the broken-baseline message. The
+#: full tail stays available under the result's ``output_tail`` and in the run
+#: log; this is only what has to travel with the verdict itself.
+BASELINE_DIAGNOSTIC_MAX_LINES = 12
+BASELINE_DIAGNOSTIC_MAX_CHARS = 1200
+
+
+def _baseline_failure_diagnostic(output_tail: object) -> str:
+    """Render the gate's own output as a bounded excerpt for the failure message.
+
+    Returns "" when the gate captured nothing, so the caller's message is
+    unchanged rather than gaining an empty section.
+    """
+    tail = (output_tail or "").strip() if isinstance(output_tail, str) else ""
+    if not tail:
+        return ""
+    lines = tail.splitlines()
+    truncated = len(lines) > BASELINE_DIAGNOSTIC_MAX_LINES
+    excerpt = "\n".join(lines[-BASELINE_DIAGNOSTIC_MAX_LINES:])
+    if len(excerpt) > BASELINE_DIAGNOSTIC_MAX_CHARS:
+        excerpt = excerpt[-BASELINE_DIAGNOSTIC_MAX_CHARS:]
+        truncated = True
+    header = "Gate output (last lines, truncated):" if truncated else "Gate output:"
+    return f"{header}\n{excerpt}"
+
+
 def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[str, object]:
     """Run the configured gate on the sprint merge base before any agent work starts."""
 
@@ -1276,6 +1304,15 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
                 f" (local {base_branch} is at {local_sha[:12]}, origin is at {origin_sha[:12]}; "
                 f"local branch may be stale; run `git pull` on {base_branch} or omit --no-pull)"
             )
+        # The sha names where the gate ran; only the gate's own output names what
+        # must change. ``run_gate_full`` leaves ``error`` None for a plain nonzero
+        # exit, so without this the operator is handed a commit to investigate
+        # when the remedy is one key in one file (#1980). Appended last, after the
+        # sha and the stale-branch hint, and bounded so the same string stays
+        # usable as a log line and as the raised RuntimeError text.
+        _diagnostic = _baseline_failure_diagnostic(output_tail)
+        if _diagnostic:
+            message += f"\n{_diagnostic}"
         return {
             "status": "fail",
             "passed": False,
@@ -1767,6 +1804,17 @@ def _run_single_story(
     started_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug(task.slug)
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
+
+    # Whether the project-root forge.yaml still matches what this sprint pinned.
+    # The story runs under the pin either way; what changes is that the boundary
+    # between stories that ran under different project-root content is recorded
+    # instead of being reconstructed later from what the runs happened to log
+    # (#1980).
+    _drift = config_snapshot_mod.check_drift(
+        config_snapshot_mod.active_snapshot(), story=task.slug
+    )
+    if _drift is not None:
+        _log(f"⚠ {config_snapshot_mod.describe_drift(_drift)}")
 
     if state_update_fn is not None:
         state_update_fn({"spec": task.slug, "phase": "STARTING"})
@@ -3073,6 +3121,37 @@ def run_sprint(
         _sprint_id = _get_or_create_sprint_id(resolved.name, config.project_root)
     except Exception:
         pass
+
+    # Pin the configuration this sprint runs under (#1980). Captured once, on
+    # first entry, and reloaded on every re-entry — --resume, and the re-exec
+    # that follows a source update, which is the path that first exposed this:
+    # a story landing a config-contract change made the sprint's own forge.yaml
+    # invalid, and the next re-entry read the changed file. A project root that
+    # has since moved off the pin is reported as drift, never silently adopted.
+    _config_snapshot: "SprintConfigSnapshot | None" = None
+    if _sprint_id:
+        try:
+            _config_snapshot = capture_or_load(config.project_root, _sprint_id)
+        except Exception:  # pragma: no cover - snapshotting must never abort a sprint
+            _config_snapshot = None
+    config_snapshot_mod.activate(_config_snapshot)
+    if _config_snapshot is not None and _config_snapshot.present:
+        _log(
+            f"Sprint config pinned: forge.yaml {(_config_snapshot.digest or '')[:12]} "
+            f"captured {_config_snapshot.captured_at}"
+            + (" (reused from earlier entry)" if _config_snapshot.reused else "")
+        )
+        _sprint_logger.emit(
+            "sprint_config_pinned",
+            digest=_config_snapshot.digest,
+            captured_at=_config_snapshot.captured_at,
+            source=_config_snapshot.source,
+            reused=_config_snapshot.reused,
+        )
+        _entry_drift = config_snapshot_mod.check_drift(_config_snapshot, story=None)
+        if _entry_drift is not None:
+            _log(f"⚠ {config_snapshot_mod.describe_drift(_entry_drift)}")
+            _sprint_logger.emit("sprint_config_drift", **_entry_drift)
 
     # Failure causes already on disk for this sprint, by canonical ref. Read
     # unconditionally — not just when resuming — because every generation

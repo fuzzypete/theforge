@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime
 import logging
-import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -21,6 +20,7 @@ from theforge.sessions import load_sessions
 from theforge.task import TaskStory, load_story
 
 from . import util as _cu
+from .config_snapshot import sync_forge_yaml_into_worktree
 from .git_lock import FETCH_LOCK
 from .logging import StructuredLogger
 from .notify import _escalate_notify
@@ -515,26 +515,9 @@ def _setup_resume_entry(
     # plan-derived policy signal degrades to a zero/empty default (issue #1135).
     load_plan_state(workspace_path, state)
 
-    # Sync forge.yaml from project root into the worktree so the run executes
-    # with current settings. The source is the operator's live working-tree
-    # file, which may carry uncommitted edits; syncing it onto the worktree's
-    # tracked forge.yaml would otherwise make the worktree dirty and let the
-    # dev-phase auto-commit sweep that operator state into the story's commits
-    # and PR (issue #1627). Flag the synced file skip-worktree so git ignores
-    # its working-tree modifications: the content stays available to the run,
-    # but it never appears as dirty and never lands in a story commit. An
-    # operator config change reaches main only when the operator commits it
-    # deliberately from the project root.
-    _forge_yaml_src = config.project_root / "forge.yaml"
-    _forge_yaml_dst = workspace_path / "forge.yaml"
-    if _forge_yaml_src.exists():
-        shutil.copy2(_forge_yaml_src, _forge_yaml_dst)
-        _skip_ok, _skip_out = _cu._run_shell(
-            "git update-index --skip-worktree forge.yaml", workspace_path
-        )
-        if not _skip_ok:
-            _cu._log(f"  ⚠ RESUME   could not skip-worktree forge.yaml: {_skip_out.strip()}")
-        _cu._log(f"  ↺ RESUME   synced forge.yaml from {_forge_yaml_src}")
+    # Give the resumed run its operative forge.yaml: the sprint's pinned
+    # snapshot when one is active, the project root otherwise (#1980, #1627).
+    sync_forge_yaml_into_worktree(config.project_root, workspace_path, label="RESUME")
 
     # Restore session IDs from prior run if available
     _sessions = load_sessions(workspace_path)
