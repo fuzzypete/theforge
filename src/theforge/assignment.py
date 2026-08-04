@@ -94,6 +94,10 @@ MECHANISM_DEV_RECENCY_RECOVERY = "dev_recency_recovery"
 MECHANISM_POST_PLAN_DEMOTION = "post_plan_checkpoint"
 MECHANISM_REVIEWER_COMPLETION_DEPRIORITIZE = "reviewer_completion_rate"
 MECHANISM_REVIEWER_COMPLETION_REINCLUSION = "reviewer_completion_reinclusion"
+# Reviewer mechanical-value deprioritization (#1443 plan review, #2156 code
+# review) and its paired passive return path.
+MECHANISM_REVIEWER_VALUE_DEPRIORITIZE = "reviewer_value"
+MECHANISM_REVIEWER_VALUE_RECOVERY = "reviewer_value_recency_recovery"
 MECHANISM_PERSISTENT_P1_DEV_ESCALATION = "persistent_p1_dev_escalation"
 MECHANISM_PLAN_MODEL_ESCALATION = "plan_model_escalation"
 MECHANISM_RUN_SCOPED_RESET = "fresh_run_state_reset"
@@ -196,6 +200,34 @@ ROUTING_SYMMETRY_REGISTRY: tuple[RoutingSymmetryPair, ...] = (
         # audit-block builder directly, so grep for the mechanism token.
         promotion_test_token="completion",
         demotion_test_token="reinclusion_check",
+    ),
+    # Code-review reviewer mechanical-value deprioritization (#2156): a reviewer
+    # whose recency-weighted blocking-finding uniqueness at the story's complexity
+    # band is below threshold — over at least the sample floor of admissible,
+    # non-tainted, P1-bearing code-review samples — is reranked down. Its PAIRED
+    # return path is the passive recency recovery (ADR-0006 clause 2.4/5): the
+    # consulted rate IS the recency-weighted one, so as fresh unique blocking
+    # findings enter the ring a deprioritized reviewer climbs back above threshold
+    # and the deprioritization stops firing — no operator action, no separate
+    # config surface. Recorded — fired or merely checked — in the nested
+    # value_check.recovery_check block (clause 7).
+    RoutingSymmetryPair(
+        promotion=RoutingMechanism(
+            name=MECHANISM_REVIEWER_VALUE_DEPRIORITIZE,
+            symbol="theforge.assignment._reviewer_value_check",
+            audit_label="value_check",
+        ),
+        demotion=RoutingMechanism(
+            name=MECHANISM_REVIEWER_VALUE_RECOVERY,
+            symbol="theforge.assignment._reviewer_value_recovery_check",
+            audit_label="recovery_check",
+        ),
+        promotion_tests=("tests/test_assignment_code_review_value.py",),
+        demotion_tests=("tests/test_assignment_code_review_value.py",),
+        # Exercised via assign_models/_select_reviewers, not by calling the
+        # audit-block builder directly, so grep for the mechanism token.
+        promotion_test_token="value_check",
+        demotion_test_token="recovery_check",
     ),
     # In-run persistent-P1 dev escalation (#296): a repeated P1 across
     # consecutive review cycles upgrades the dev model for the current run only.
@@ -720,6 +752,41 @@ def _promote_tier(tier: str) -> str:
     return _TIER_ORDER[min(idx + 1, len(_TIER_ORDER) - 1)]
 
 
+def _reviewer_value_rationale(
+    enabled: bool,
+    signals: dict[str, dict],
+    audit: dict[str, object],
+) -> str:
+    """Return a rationale suffix describing how the value check shaped selection.
+
+    Three outcomes must be distinguishable at a glance in the human-readable
+    rationale, not only in the structured audit block (#2156): the mechanism was
+    off, it was evaluated but every candidate was below its sample floor (so
+    ordering fell through untouched), or it fired and deprioritized reviewers.
+    """
+    if not enabled:
+        return ""
+    if not signals:
+        return " [value check: enabled, no reviewer value history consulted]"
+    above_floor = [
+        name
+        for name, sig in signals.items()
+        if ((sig.get("uniqueness_rate") or {}).get("floor")) == "pass"
+    ]
+    if not above_floor:
+        return (
+            f" [value check: evaluated {len(signals)} reviewer(s), all below the "
+            f"{audit.get('min_runs')}-sample floor — ordering unchanged]"
+        )
+    depri = list(audit.get("deprioritized") or [])
+    if depri:
+        return f" [value check: deprioritized {', '.join(depri)} on P1-uniqueness]"
+    return (
+        f" [value check: evaluated {len(above_floor)} reviewer(s) above the sample "
+        f"floor, none below the uniqueness threshold]"
+    )
+
+
 def _reviewer_health_rationale(
     agents: list[AgentDef],
     selected: list[AgentDef],
@@ -892,21 +959,34 @@ def _rerank_reviewers_by_value(
     recency: object | None = None,
     signals_out: dict[str, dict] | None = None,
     audit: dict[str, object] | None = None,
+    phase: str = "plan_review",
 ) -> list[AgentDef]:
-    """Stable sort-after plan reviewers below the P1-uniqueness floor (#1443).
+    """Stable sort-after reviewers below the P1-uniqueness floor (#1443, #2156).
 
-    The value analog of :func:`_rerank_reviewers_by_completion`. A plan reviewer
-    whose recency-weighted P1-uniqueness rate at the story's complexity band is
-    below ``uniqueness_threshold`` — *and only once it has accumulated ``min_runs``
-    admissible (non-tainted, P1-bearing) samples* — is sorted **after** every
-    higher-uniqueness candidate. This is a sort-after, not a filter-out: a
-    redundant reviewer stays in the pool and is still selected when no better
-    candidate is available, so it is never permanently locked out.
+    The value analog of :func:`_rerank_reviewers_by_completion`. A reviewer whose
+    recency-weighted blocking-finding uniqueness rate at the story's complexity
+    band is below ``uniqueness_threshold`` — *and only once it has accumulated
+    ``min_runs`` admissible (non-tainted, P1-bearing) samples* — is sorted
+    **after** every higher-uniqueness candidate. This is a sort-after, not a
+    filter-out: a redundant reviewer stays in the pool and is still selected when
+    no better candidate is available, so it is never permanently locked out.
+
+    ``phase`` selects which persisted value history is consulted
+    (``plan_review`` / ``code_review``), so a reviewer's plan-review record never
+    deprioritizes it for code review or vice versa.
 
     Below the sample floor a reviewer's signal is ``floor="fail"`` (cold start), so
     it is not deprioritized and ordering falls through unchanged. The sort is
     stable on the incoming index, so every non-deprioritized reviewer keeps the
     ordering it arrived with (i.e. the completion/tier/health order).
+
+    Recovery (ADR-0006 clause 2.4/5, the registered inverse): the rate consulted is
+    the *recency-weighted* one, so as fresh unique blocking findings enter the ring
+    a previously deprioritized reviewer climbs back above threshold and the
+    deprioritization stops firing — with no new config surface and no operator
+    action. That passive return path is recorded for every consulted reviewer
+    (fired or merely checked) in ``recovery_checked``, per the routing-symmetry
+    audit-attribution requirement (ADR-0006 clause 7).
     """
     if not model_profiles or not candidates:
         return candidates
@@ -914,6 +994,8 @@ def _rerank_reviewers_by_value(
 
     rows: list[tuple[int, int, AgentDef]] = []
     deprioritized: list[str] = []
+    recovered_names: list[str] = []
+    recovery_checked: dict[str, dict[str, object]] = {}
     for idx, agent in enumerate(candidates):
         signal = get_reviewer_value_signal(
             model_profiles,
@@ -924,12 +1006,30 @@ def _rerank_reviewers_by_value(
             provider=agent.provider,
             cli=agent.cli,
             recency=recency,
+            phase=phase,
         )
         if signals_out is not None:
             signals_out[agent.name] = signal
         uniq = signal["uniqueness_rate"]
         rate = uniq["rate"]
-        is_low = uniq["floor"] == "pass" and rate is not None and rate < uniqueness_threshold
+        raw = uniq["raw"]
+        floor_ok = uniq["floor"] == "pass"
+        is_low = floor_ok and rate is not None and rate < uniqueness_threshold
+        # Recovery: the lifetime-average uniqueness is still below threshold, but
+        # the recency-weighted rate the router actually consults is not — this
+        # reviewer's recent contribution has come back, so the deprioritization it
+        # would otherwise attract does not fire.
+        lifetime_low = floor_ok and raw is not None and raw < uniqueness_threshold
+        recovered = lifetime_low and not is_low
+        recovery_checked[agent.name] = {
+            "raw": raw,
+            "weighted": uniq["weighted"],
+            "runs": uniq["runs"],
+            "below_threshold_lifetime": lifetime_low,
+            "recovered": recovered,
+        }
+        if recovered:
+            recovered_names.append(agent.name)
         if is_low:
             deprioritized.append(agent.name)
         rows.append((1 if is_low else 0, idx, agent))
@@ -938,7 +1038,8 @@ def _rerank_reviewers_by_value(
     if audit is not None:
         original_order = [a.name for a in candidates]
         final_order = [a.name for a in reranked]
-        audit["mechanism"] = "reviewer_value"
+        audit["mechanism"] = MECHANISM_REVIEWER_VALUE_DEPRIORITIZE
+        audit["phase"] = phase
         audit["uniqueness_threshold"] = uniqueness_threshold
         audit["min_runs"] = min_runs
         audit["complexity"] = complexity
@@ -946,6 +1047,9 @@ def _rerank_reviewers_by_value(
         audit["deprioritized"] = deprioritized
         audit["original_order"] = original_order
         audit["final_order"] = final_order
+        audit["recovery_mechanism"] = MECHANISM_REVIEWER_VALUE_RECOVERY
+        audit["recovered"] = recovered_names
+        audit["recovery_checked"] = recovery_checked
     return reranked
 
 
@@ -970,6 +1074,7 @@ def _select_reviewers(
     value_complexity: str | None = None,
     value_signals_out: dict[str, dict] | None = None,
     value_audit: dict[str, object] | None = None,
+    value_phase: str = "plan_review",
 ) -> list[AgentDef]:
     """Select n reviewer agents from the pool.
 
@@ -1056,10 +1161,11 @@ def _select_reviewers(
         audit=completion_audit,
     )
 
-    # Plan-reviewer value rerank (#1443): opt-in, runs on top of the completion
-    # rerank. A reviewer whose admissible P1-uniqueness is below the floor is
-    # sorted after higher-value candidates within the same eligible pool. Only
-    # fires when the operator enabled it; explicit profile pins never reach here.
+    # Reviewer value rerank (#1443 plan review, #2156 code review): opt-in, runs
+    # on top of the completion rerank. A reviewer whose admissible
+    # blocking-finding uniqueness is below the floor is sorted after higher-value
+    # candidates within the same eligible pool. Only fires when the operator
+    # enabled it for THIS phase; explicit profile pins never reach here.
     if value_enabled:
         candidates = _rerank_reviewers_by_value(
             candidates,
@@ -1070,6 +1176,7 @@ def _select_reviewers(
             recency=recency,
             signals_out=value_signals_out,
             audit=value_audit,
+            phase=value_phase,
         )
 
     if not prefer_cross_provider:
@@ -1853,10 +1960,10 @@ def _reviewer_value_check(
     audit: dict[str, object] | None,
     selected_names: set[str],
 ) -> dict[str, object]:
-    """Build the plan-reviewer value_check block (#1443, ADR-0006 clause 7).
+    """Build the reviewer value_check block (#1443/#2156, ADR-0006 clause 7).
 
     Records the P1-uniqueness rerank so the routing_decision explains when (and
-    how) mechanical reviewer-value history shaped the plan-reviewer ordering. For
+    how) mechanical reviewer-value history shaped this role's reviewer ordering. For
     every reviewer weighed it surfaces the consulted uniqueness rate and
     latency-per-P1 (raw + recency-weighted), the sample count, the sample-floor
     status, and the taint-excluded count — enough for an operator to answer "is
@@ -1889,18 +1996,59 @@ def _reviewer_value_check(
             "selected": name in selected_names,
         }
     block: dict[str, object] = {
-        "mechanism": "reviewer_value",
+        "mechanism": MECHANISM_REVIEWER_VALUE_DEPRIORITIZE,
+        # Which reviewer phase's value history was consulted (#2156), so the two
+        # value_check blocks in one routing_decision are never confusable.
+        "phase": (audit.get("phase") if audit else None) or "plan_review",
         "fired": fired,
         "uniqueness_threshold": audit.get("uniqueness_threshold") if audit else None,
         "min_runs": audit.get("min_runs") if audit else None,
         "complexity": audit.get("complexity") if audit else None,
         "deprioritized": (audit.get("deprioritized") if audit else None) or [],
         "signals": per_candidate,
+        "recovery_check": _reviewer_value_recovery_check(signals, audit),
     }
     if fired and audit:
         block["original_order"] = audit.get("original_order")
         block["final_order"] = audit.get("final_order")
     return block
+
+
+def _reviewer_value_recovery_check(
+    signals: dict[str, dict] | None,
+    audit: dict[str, object] | None,
+) -> dict[str, object]:
+    """Build the reviewer-value recovery sub-block (#2156, ADR-0006 c7).
+
+    The registered inverse of the value deprioritization: the passive recency
+    recovery (ADR-0006 clause 2.4/5). Because the rate the router consults is the
+    recency-weighted one, a reviewer whose lifetime uniqueness sits below threshold
+    climbs back out as fresh unique blocking findings enter the ring — the
+    deprioritization simply stops firing, with no operator action and no separate
+    config surface. Present on every ``value_check`` (i.e. whenever reviewer value
+    profiles were consulted), so an operator can always answer "did a deprioritized
+    reviewer recover this run, and if not, how close was it?" without grepping logs.
+    """
+    checked_meta = (audit or {}).get("recovery_checked") or {}
+    if not isinstance(checked_meta, dict):
+        checked_meta = {}
+    recovered = list((audit or {}).get("recovered") or [])
+    checked = sorted(checked_meta) if checked_meta else sorted(signals or {})
+    if recovered:
+        reason = f"recency_weighted_uniqueness_recovered: {', '.join(sorted(recovered))}"
+    elif not checked:
+        reason = "no_reviewer_value_signal_consulted"
+    else:
+        reason = "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+    return {
+        "mechanism": MECHANISM_REVIEWER_VALUE_RECOVERY,
+        "fired": bool(recovered),
+        "uniqueness_threshold": (audit or {}).get("uniqueness_threshold"),
+        "recovered": sorted(recovered),
+        "checked": checked,
+        "checked_detail": checked_meta,
+        "reason": reason,
+    }
 
 
 def _role_reliability_check(
@@ -2002,6 +2150,8 @@ def _build_routing_decision(
     cr_completion_audit: dict[str, object] | None = None,
     pr_value_signals: dict[str, dict] | None = None,
     pr_value_audit: dict[str, object] | None = None,
+    cr_value_signals: dict[str, dict] | None = None,
+    cr_value_audit: dict[str, object] | None = None,
     preflight_reliability_signals: dict[str, dict] | None = None,
     preflight_reliability_audit: dict[str, object] | None = None,
     planner_reliability_signals: dict[str, dict] | None = None,
@@ -2086,9 +2236,12 @@ def _build_routing_decision(
     cr_completion_block = _reviewer_completion_check(
         cr_completion_signals, cr_completion_audit, cr_selected
     )
-    # Plan-reviewer value rerank (#1443) explanation. Only the plan-review role has
-    # a value signal (this story is plan-review-specific).
+    # Reviewer value rerank explanation, per reviewer role: plan review (#1443)
+    # and code review (#2156). Each reads its own persisted value section, so the
+    # two blocks are independently populated and independently omitted when their
+    # phase's mechanism was not consulted.
     pr_value_block = _reviewer_value_check(pr_value_signals, pr_value_audit, pr_selected)
+    cr_value_block = _reviewer_value_check(cr_value_signals, cr_value_audit, cr_selected)
 
     # Non-dev single-model reliability rerank (#1489) explanation for the preflight
     # and planner roles. Empty (and omitted) when the mechanism was not consulted
@@ -2254,6 +2407,7 @@ def _build_routing_decision(
                 cr_fired, cr_depri, cr_fellback, unhealthy_models
             ),
             **({"completion_check": cr_completion_block} if cr_completion_block else {}),
+            **({"value_check": cr_value_block} if cr_value_block else {}),
             "exploration": dict(exploration),
             "final": {
                 "models": [p.model for p in decision.code_reviewers],
@@ -2732,6 +2886,10 @@ def assign_models(
     # uniqueness / latency-per-P1 signals and the ranking effect.
     _pr_value_signals: dict[str, dict] = {}
     _pr_value_audit: dict[str, object] = {}
+    # Code-review counterparts (#2156), read from the separate code_review_value
+    # profile section so the two phases' value histories never mix.
+    _cr_value_signals: dict[str, dict] = {}
+    _cr_value_audit: dict[str, object] = {}
     # Non-dev single-model reliability rerank accumulators (#1489), per role.
     # Populated by _pick_agent when preflight/planner selection consults role
     # reliability history and consumed by _build_routing_decision so the block
@@ -3141,6 +3299,13 @@ def assign_models(
             recency=effective_recency,
             completion_signals_out=_cr_completion_signals,
             completion_audit=_cr_completion_audit,
+            value_enabled=assignment_config.code_review_value_enabled,
+            value_uniqueness_threshold=(assignment_config.code_review_value_uniqueness_threshold),
+            value_min_runs=assignment_config.code_review_value_min_runs,
+            value_complexity=norm_complexity,
+            value_signals_out=_cr_value_signals,
+            value_audit=_cr_value_audit,
+            value_phase="code_review",
         )
         code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
         providers = [a.effective_provider for a in selected]
@@ -3154,9 +3319,12 @@ def assign_models(
         health_note = _reviewer_health_rationale(
             agents, selected, tier, exclude_model=dev_model, unhealthy_models=unhealthy_models
         )
+        value_note = _reviewer_value_rationale(
+            assignment_config.code_review_value_enabled, _cr_value_signals, _cr_value_audit
+        )
         rationale["code_review"] = (
             f"{len(code_reviewers)} reviewer(s), tier {tier}, "
-            f"providers {providers}{score_note}{shortfall_note}{health_note}"
+            f"providers {providers}{score_note}{shortfall_note}{health_note}{value_note}"
         )
 
     decision = AssignmentDecision(
@@ -3205,6 +3373,8 @@ def assign_models(
             cr_completion_audit=_cr_completion_audit,
             pr_value_signals=_pr_value_signals,
             pr_value_audit=_pr_value_audit,
+            cr_value_signals=_cr_value_signals,
+            cr_value_audit=_cr_value_audit,
             preflight_reliability_signals=_preflight_reliability_signals,
             preflight_reliability_audit=_preflight_reliability_audit,
             planner_reliability_signals=_planner_reliability_signals,
