@@ -145,11 +145,37 @@ def _pending_escalate_gate(
         # operator decision — surface the taxonomy plus the raw escalation context.
         options = list(ACTION_TAXONOMY)
         extra = {"decision_required": True, "advisory_unavailable": True}
+        launch_failed = bool(getattr(state, "advisory_launch_failure", False))
+        if launch_failed:
+            # An advisor that never started is a defect in forge's own
+            # configuration, not an investigation that reached no conclusion. Say
+            # which one happened, why, and that it cost nothing — the operator is
+            # choosing unaided either way, but only one of the two is worth
+            # repairing and retrying (#2164).
+            launch_reason = (
+                getattr(state, "advisory_launch_reason", None)
+                or "the advisor process exited before contacting the model"
+            )
+            extra["advisory_launch_failure"] = True
+            extra["advisory_launch_reason"] = launch_reason
+            extra["advisory_cost_usd"] = 0.0
+            headline = [
+                "ESCALATION — the advisory agent FAILED TO LAUNCH; select an action.",
+                (
+                    "This is a forge configuration / tool-invocation defect, NOT an "
+                    "advisor that ran and reached no conclusion: the model was never "
+                    "contacted and $0.00 was spent. Repairing the launch defect and "
+                    "re-running the escalation can still produce advice."
+                ),
+                f"launch failure: {launch_reason}",
+            ]
+        else:
+            headline = ["ESCALATION — advisory report unavailable; select an action."]
         reason = "\n".join(
             filter(
                 None,
                 [
-                    "ESCALATION — advisory report unavailable; select an action.",
+                    *headline,
                     verdict_line,
                     gate_line,
                     escalate_reason[:200],

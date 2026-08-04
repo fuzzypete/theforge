@@ -29,6 +29,14 @@ Codex (FAKE_CODEX_MODE):
                   v0.142.x human summary (a bare `tokens used` total, no split)
                   to stdout, so tests can assert it is recorded cost-unknown
                   rather than fabricating a cost from a total alone
+  git_trust_gate — mimic the real CLI's trust gate: refuse with codex's own
+                  "Not inside a trusted directory" stderr and exit 1 UNLESS
+                  --skip-git-repo-check was passed; with the flag, behave like
+                  json_usage. Proves forge can run codex in the .git-less
+                  git-archive baseline checkout (#2164).
+  launch_refusal — always refuse at launch (deprecation warning + trust-gate
+                  stderr, exit 1, no JSONL events at all), so the pre-turn
+                  launch-failure classification can be exercised
   grandchild_hang
                 — spawn a long-sleeping grandchild in the same process group
                   (mirroring npm→node→codex), write its PID to
@@ -112,6 +120,23 @@ if "@openai/codex" in args:
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
             time.sleep(0.1)
+        sys.exit(0)
+    if mode in ("git_trust_gate", "launch_refusal"):
+        # The real refusal, verbatim from Codex CLI v0.14x, preceded by the
+        # deprecation notice it emits first (see #2164's captured stderr).
+        if mode == "launch_refusal" or "--skip-git-repo-check" not in args:
+            sys.stderr.write(
+                "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n"
+            )
+            sys.stderr.write("Reading additional input from stdin...\n")
+            sys.stderr.write(
+                "Not inside a trusted directory and --skip-git-repo-check was not specified.\n"
+            )
+            sys.exit(1)
+        if output_file:
+            with open(output_file, "w") as fh:
+                fh.write("Task complete.\n")
+        _emit_events(turns=1)
         sys.exit(0)
     if mode == "usage":
         blob = {

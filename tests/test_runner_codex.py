@@ -14,11 +14,13 @@ import pytest
 from theforge.config import ModelProfile
 from theforge.runners.runner_codex import (
     _agent_text_from_events,
+    _classify_codex_launch_failure,
     _CodexUsage,
     _error_text_from_events,
     _price_codex_usage,
     _run_codex,
     _usage_from_events,
+    build_argv,
 )
 
 # Spawn seam patched by the argv-construction tests below.
@@ -285,6 +287,93 @@ class TestCodexEventUsageParsing:
     def test_error_text_reads_nested_message(self) -> None:
         stream = '{"type":"turn.failed","error":{"message":"usage limit reached"}}\n'
         assert _error_text_from_events(stream) == "usage limit reached"
+
+
+class TestCodexGitRepoTrustGate:
+    """Forge runs codex against directories that are not git repos (#2164).
+
+    The preflight / escalation-advisor baseline checkout is built with
+    ``git archive | tar -x`` — a plain file tree with no ``.git``. Codex's trust
+    gate refuses such a directory unless ``--skip-git-repo-check`` is passed, and
+    exits before contacting the model.
+    """
+
+    def test_fresh_run_skips_the_git_repo_check(self, tmp_path: Path) -> None:
+        profile = _make_profile(sandbox_mode="workspace-write")
+        mock_proc = _make_subprocess_mock()
+        with patch("theforge.runners.runner_codex._get_codex_session_id", return_value=None):
+            with patch(_RUN_TARGET, return_value=mock_proc) as mock_run:
+                _run_codex(prompt="advise", profile=profile, working_dir=tmp_path)
+        cmd = _extract_codex_cmd(mock_run)
+        assert "--skip-git-repo-check" in cmd
+        # Must apply to the `exec` subcommand, not sit before it.
+        assert cmd.index("--skip-git-repo-check") > cmd.index("exec")
+
+    def test_build_argv_carries_the_flag_directly(self, tmp_path: Path) -> None:
+        argv = build_argv(
+            profile=_make_profile(sandbox_mode="none"),
+            working_dir=tmp_path,
+            output_file=tmp_path / "out.txt",
+            prompt="advise",
+        )
+        assert "--skip-git-repo-check" in argv
+
+
+class TestCodexLaunchFailureClassification:
+    """A pre-turn exit is a measured $0.00, not cost-unknown (#2164)."""
+
+    _TRUST_GATE_STDERR = (
+        "warning: `--full-auto` is deprecated; use `--sandbox workspace-write` instead.\n"
+        "Reading additional input from stdin...\n"
+        "Not inside a trusted directory and --skip-git-repo-check was not specified.\n"
+    )
+
+    def test_no_events_and_nonzero_exit_is_a_launch_failure(self) -> None:
+        reason = _classify_codex_launch_failure(
+            returncode=1, stdout="", stderr=self._TRUST_GATE_STDERR
+        )
+        assert (
+            reason == "Not inside a trusted directory and --skip-git-repo-check was not specified."
+        )
+
+    def test_deprecation_noise_is_not_mistaken_for_the_reason(self) -> None:
+        reason = _classify_codex_launch_failure(
+            returncode=1, stdout="", stderr="warning: `--full-auto` is deprecated;\n"
+        )
+        # No substantive line → falls back to the raw last line rather than None.
+        assert reason is not None
+        assert "deprecated" in reason
+
+    def test_zero_exit_is_never_a_launch_failure(self) -> None:
+        assert _classify_codex_launch_failure(returncode=0, stdout="", stderr="noise") is None
+
+    def test_turn_activity_rules_out_a_launch_failure(self) -> None:
+        stdout = (
+            '{"type":"thread.started","thread_id":"t1"}\n'
+            '{"type":"item.completed","item":{"type":"agent_message","text":"hi"}}\n'
+        )
+        assert _classify_codex_launch_failure(returncode=1, stdout=stdout, stderr="boom") is None
+
+    def test_turn_failed_counts_as_a_started_turn(self) -> None:
+        """The model was engaged: unmeasurable, not free."""
+        stdout = '{"type":"turn.failed","error":{"message":"upstream 500"}}\n'
+        assert _classify_codex_launch_failure(returncode=1, stdout=stdout, stderr="") is None
+
+    def test_thread_started_alone_still_counts_as_pre_turn(self) -> None:
+        stdout = '{"type":"thread.started","thread_id":"t1"}\n'
+        reason = _classify_codex_launch_failure(returncode=2, stdout=stdout, stderr="bad flag")
+        assert reason == "bad flag"
+
+    def test_unreadable_stdout_fails_closed_to_cost_unknown(self) -> None:
+        """Prose on stdout means something ran that this parser cannot account for.
+
+        Claiming $0.00 there would fabricate a zero — exactly what the
+        cost-unknown contract exists to prevent. Only an all-pre-turn (or empty)
+        event stream proves a free run.
+        """
+        assert (
+            _classify_codex_launch_failure(returncode=1, stdout="partial work", stderr="") is None
+        )
 
 
 class TestCodexCachedTokenPricing:
@@ -561,6 +650,56 @@ class TestCodexLifecycle:
         assert result.success is False
         assert result.cost_usd is None
         assert result.model_usage == ()
+
+    def test_runs_in_a_directory_with_no_git_repo(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Codex must start in the .git-less git-archive baseline checkout (#2164).
+
+        The fake CLI reproduces codex's trust gate: it refuses unless
+        ``--skip-git-repo-check`` is passed. ``tmp_path`` has no ``.git``, exactly
+        like the preflight/escalation-advisor baseline dir.
+        """
+        assert not (tmp_path / ".git").exists()
+        self._patch_env(monkeypatch, "git_trust_gate")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="advise", profile=profile, working_dir=tmp_path)
+
+        assert result.success is True, result.output
+        assert "trusted directory" not in result.output
+        assert result.cost_usd is not None
+
+    def test_pre_turn_exit_is_measured_zero_cost_launch_failure(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A process that dies before any turn spent nothing — $0.00, not unknown.
+
+        Distinct from ``test_real_total_only_summary_is_cost_unknown_not_fabricated``:
+        there the run executed and its usage could not be parsed (cost-unknown is
+        the honest answer); here no turn ever began, so zero is measured fact.
+        """
+        self._patch_env(monkeypatch, "launch_refusal")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="advise", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.cost_usd == 0.0
+        assert result.model_usage == ()
+        assert result.startup_failure is True
+        assert result.failure_code == "cli_launch_failure"
+        assert "trusted directory" in result.output
+
+    def test_completed_run_with_unparseable_usage_stays_cost_unknown(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The launch-failure path must not swallow the cost-unknown contract."""
+        self._patch_env(monkeypatch, "total_only")
+        profile = _make_profile(sandbox_mode="none")
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.cost_usd is None
+        assert result.startup_failure is False
+        assert result.failure_code is None
 
     def test_real_total_only_summary_is_cost_unknown_not_fabricated(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
