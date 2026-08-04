@@ -1,11 +1,17 @@
-"""Mechanical reviewer-value signals for adaptive plan-review routing (#1443).
+"""Mechanical reviewer-value signals for adaptive reviewer routing (#1443, #2156).
 
-Records and aggregates *coordinator-computable* per-plan-reviewer value signals —
+Records and aggregates *coordinator-computable* per-reviewer value signals —
 P1 uniqueness (did this reviewer surface blocking findings no peer did?) and
 latency-per-P1 (wall-clock cost per blocking finding raised) — then exposes them
 as routing-safe aggregate signals only after ADR-0006 clause-2 admissibility
 gating: a sample floor, recency weighting via the shared #1392 mechanism, and
 taint exclusion via #1852.
+
+The same machinery serves both reviewer phases. ``phase`` selects which persisted
+section a fold writes and a signal read consults — ``plan_review_value`` for the
+plan-review pool (#1443) and ``code_review_value`` for the code-review pool
+(#2156) — so the two histories stay separately queryable and a reviewer that is
+redundant in one phase is not penalised in the other.
 
 This module stays on the routing-safe side of the ADR-0006 boundary: it never
 judges review "quality", "goodness", or "helpfulness". Uniqueness is computed by
@@ -15,12 +21,12 @@ prose scoring. Latency and P1 counts are mechanical.
 
 Data flow:
 
-- Per-run signals are computed at plan-review pool completion
-  (``coordinator/plan_flow.py``) via :func:`compute_plan_reviewer_uniqueness`,
-  persisted in the native audit record, and folded into ``model_profiles.yaml``'s
-  ``plan_review_value`` section by :func:`fold_plan_reviewer_value` — reusing the
-  exact taint gate and recency-ring mechanism the #1388 reviewer-completion
-  signal uses.
+- Per-run signals are computed at reviewer-pool completion —
+  ``coordinator/plan_flow.py`` for plan review, ``coordinator/review_pool.py``
+  for code review — via :func:`compute_reviewer_uniqueness`, persisted in the
+  native audit record, and folded into the matching ``model_profiles.yaml``
+  section by :func:`fold_reviewer_value` — reusing the exact taint gate and
+  recency-ring mechanism the #1388 reviewer-completion signal uses.
 - At routing time :func:`get_reviewer_value_signal` reads that folded section and
   returns raw / recency-weighted / sample-floor-gated values, mirroring
   :func:`model_profiles.get_review_signal`.
@@ -33,16 +39,29 @@ functions that need them so this module composes without an import cycle.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from theforge.review import PlanReviewFinding
+    from theforge.review import PlanReviewFinding, ReviewFinding
+
+# ── Reviewer phases ─────────────────────────────────────────────────────────
+# The two reviewer pools that produce structured blocking findings. Each folds
+# into its OWN persisted section so plan-review and code-review value histories
+# stay separately queryable (#2156) — a reviewer that is redundant when judging
+# plans is not thereby judged redundant when judging diffs.
+PLAN_PHASE = "plan_review"
+CODE_PHASE = "code_review"
 
 # ── Persisted section / ring key names ──────────────────────────────────────
-# One place owns the ``plan_review_value`` schema; the fold writer and the signal
-# reader both key off these constants so they can never drift apart.
+# One place owns the value-section schema; the fold writer and the signal reader
+# both key off these constants so they can never drift apart. ``SECTION`` stays
+# the literal plan-review key so profile data written before #2156 continues to
+# resolve without migration.
 SECTION = "plan_review_value"
+CODE_SECTION = "code_review_value"
+_SECTION_BY_PHASE = {PLAN_PHASE: SECTION, CODE_PHASE: CODE_SECTION}
 BY_COMPLEXITY = "by_complexity"
 UNIQUENESS_RING = "_uniqueness_recent"
 LATENCY_RING = "_latency_per_p1_recent"
@@ -56,17 +75,33 @@ VALUE_RECENCY_WINDOW = 200
 # samples the aggregate is not routing-safe and falls through to tier ordering.
 DEFAULT_VALUE_MIN_RUNS = 5
 
-# Severities that count as a blocking ("P1") plan finding — the same set the plan
-# review pool treats as blocking (review.py / plan_flow.py use ``in ("P0","P1")``).
+# Severities that count as a blocking ("P1") finding — the same set both reviewer
+# pools treat as blocking (review.py / plan_flow.py / review_phase.py all use
+# ``in ("P0", "P1")``). Deliberately excludes the plan-review ``P1-impl``
+# severity, which is the *downgraded*, non-blocking outcome of corroboration.
 _P1_SEVERITIES = frozenset({"P0", "P1"})
+
+
+def section_for_phase(phase: str = PLAN_PHASE) -> str:
+    """Return the persisted profile section a reviewer phase folds into.
+
+    Raises on an unknown phase rather than silently defaulting: a typo must not
+    quietly route one phase's value history into the other's section.
+    """
+    try:
+        return _SECTION_BY_PHASE[phase]
+    except KeyError:
+        raise ValueError(
+            f"unknown reviewer value phase {phase!r}; expected one of {sorted(_SECTION_BY_PHASE)}"
+        ) from None
 
 
 # ── Per-run sample carrier ──────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
-class PlanReviewerValueSample:
-    """One plan reviewer's mechanical value signals for one pool attempt.
+class ReviewerValueSample:
+    """One reviewer's mechanical value signals for one pool attempt.
 
     ``unique_p1`` / ``total_p1`` and ``latency_s`` are the raw mechanical
     measurements recorded verbatim in the audit trail. The aggregate routing
@@ -97,6 +132,11 @@ class PlanReviewerValueSample:
         return self.latency_s / self.total_p1
 
 
+# Historical name, kept so the plan-review producer chain reads unchanged. The
+# carrier was never plan-specific in content — only in naming.
+PlanReviewerValueSample = ReviewerValueSample
+
+
 # ── Deterministic uniqueness computation (Step 2) ───────────────────────────
 
 
@@ -121,8 +161,29 @@ class _UnionFind:
             self._parent[max(ra, rb)] = min(ra, rb)
 
 
-def compute_plan_reviewer_uniqueness(
-    named_findings: list[tuple[str, list["PlanReviewFinding"]]],
+def plan_review_anchor_text(finding: "PlanReviewFinding") -> str:
+    """Anchor text for a plan-review finding: its issue description."""
+    return finding.description
+
+
+def code_review_anchor_text(finding: "ReviewFinding") -> str:
+    """Anchor text for a code-review finding: observed behaviour plus evidence.
+
+    A :class:`review.ReviewFinding` splits what a plan finding carries in one
+    prose blob across ``observed`` (behaviour-only, by construction free of
+    symbol detail) and ``evidence`` (the file/line/symbol anchor). Corroboration
+    between two reviewers who spotted the same defect lives mostly in the latter,
+    so both feed the anchor extractor. ``file`` is deliberately NOT concatenated:
+    file-path anchors are dropped below anyway (two reviewers naming the same
+    file have not thereby raised the same issue).
+    """
+    return " ".join(part for part in (finding.observed, finding.evidence) if part)
+
+
+def compute_reviewer_uniqueness(
+    named_findings: list[tuple[str, list[Any]]],
+    *,
+    anchor_text: Callable[[Any], str] | None = None,
 ) -> dict[str, tuple[int, int]]:
     """Compute each reviewer's (unique_p1_count, total_p1_count) over a pool.
 
@@ -137,11 +198,19 @@ def compute_plan_reviewer_uniqueness(
     its own singleton group and counts as unique (novel-by-default), matching how
     corroboration treats an uncorroborated single-reviewer finding.
 
+    ``anchor_text`` maps one finding to the prose the anchor extractor reads,
+    which is the only phase-specific part of this computation: plan findings carry
+    a single description, code-review findings split behaviour and evidence across
+    two fields (see :func:`code_review_anchor_text`). Defaults to the plan-review
+    extractor.
+
     Returns a mapping for every reviewer name passed in (including reviewers that
     raised zero P1s, which map to ``(0, 0)``), so the caller can record a row per
     reviewer regardless of outcome.
     """
     from theforge.plan_finding_classifier import extract_anchors, strip_reviewer_prefix
+
+    to_text = anchor_text or plan_review_anchor_text
 
     # Collect one item per P1 finding: (reviewer_name, non_file_anchor_values).
     item_reviewer: list[str] = []
@@ -153,7 +222,7 @@ def compute_plan_reviewer_uniqueness(
             if f.severity not in _P1_SEVERITIES:
                 continue
             totals[name] = totals.get(name, 0) + 1
-            anchors = extract_anchors(strip_reviewer_prefix(f.description))
+            anchors = extract_anchors(strip_reviewer_prefix(to_text(f)))
             non_file = frozenset(a.value for a in anchors if a.kind != "file_path")
             item_reviewer.append(name)
             item_anchors.append(non_file)
@@ -181,6 +250,13 @@ def compute_plan_reviewer_uniqueness(
             uniques[item_reviewer[i]] = uniques.get(item_reviewer[i], 0) + 1
 
     return {name: (uniques.get(name, 0), totals.get(name, 0)) for name, _ in named_findings}
+
+
+def compute_plan_reviewer_uniqueness(
+    named_findings: list[tuple[str, list["PlanReviewFinding"]]],
+) -> dict[str, tuple[int, int]]:
+    """Plan-review-phase alias for :func:`compute_reviewer_uniqueness` (#1443)."""
+    return compute_reviewer_uniqueness(named_findings, anchor_text=plan_review_anchor_text)
 
 
 # ── Fold (Step 3, write side) ───────────────────────────────────────────────
@@ -230,13 +306,17 @@ def _fold_bucket(bucket: dict[str, Any], uniq: float, latency_per_p1: float | No
             bucket["avg_latency_per_p1"] = round(l_sum / measured, 4)
 
 
-def fold_plan_reviewer_value(
+def fold_reviewer_value(
     entry: dict[str, Any],
-    sample: PlanReviewerValueSample,
+    sample: ReviewerValueSample,
     *,
+    phase: str = PLAN_PHASE,
     tainted: bool = False,
 ) -> None:
-    """Fold one plan-reviewer value sample into a model profile entry.
+    """Fold one reviewer value sample into a model profile entry.
+
+    ``phase`` selects the persisted section (``plan_review_value`` /
+    ``code_review_value``) so the two reviewer phases accumulate independently.
 
     Mirrors :func:`model_profiles._update_review_completion`: keeps running
     counters and a bounded recency ring so the routing-admissible signal is
@@ -253,7 +333,7 @@ def fold_plan_reviewer_value(
     from theforge.model_profiles import _normalize_band  # noqa: PLC0415
 
     band = _normalize_band(sample.complexity)
-    section = entry.setdefault(SECTION, {})
+    section = entry.setdefault(section_for_phase(phase), {})
     section.setdefault("runs", 0)
     section.setdefault("tainted_runs", 0)
     band_bucket = section.setdefault(BY_COMPLEXITY, {}).setdefault(band, _empty_value_bucket())
@@ -268,6 +348,16 @@ def fold_plan_reviewer_value(
     lpp = sample.latency_per_p1()
     for bucket in (section, band_bucket):
         _fold_bucket(bucket, uniq, lpp)
+
+
+def fold_plan_reviewer_value(
+    entry: dict[str, Any],
+    sample: ReviewerValueSample,
+    *,
+    tainted: bool = False,
+) -> None:
+    """Plan-review-phase alias for :func:`fold_reviewer_value` (#1443)."""
+    fold_reviewer_value(entry, sample, phase=PLAN_PHASE, tainted=tainted)
 
 
 # ── Signal reader (Step 3, read side) ───────────────────────────────────────
@@ -323,13 +413,15 @@ def get_reviewer_value_signal(
     provider: str | None = None,
     cli: str | None = None,
     recency: Any | None = None,
+    phase: str = PLAN_PHASE,
 ) -> dict:
-    """Return a structured plan-reviewer *value* routing signal (#1443).
+    """Return a structured reviewer *value* routing signal (#1443, #2156).
 
-    The plan-review analog of :func:`model_profiles.get_review_signal`, over the
-    ``plan_review_value`` section this module folds. Reads only the in-memory
-    ``profiles`` dict (no disk, no LLM). Both sub-signals share the raw / weighted
-    / floor / rate contract so the explain renderer surfaces them uniformly:
+    The reviewer analog of :func:`model_profiles.get_review_signal`, over the
+    section this module folds for ``phase`` (``plan_review_value`` /
+    ``code_review_value``). Reads only the in-memory ``profiles`` dict (no disk,
+    no LLM). Both sub-signals share the raw / weighted / floor / rate contract so
+    the explain renderer surfaces them uniformly:
 
     - ``uniqueness_rate``: the ``min_runs``-gated recency-weighted fraction of this
       reviewer's P1s that no peer corroborated. ``rate`` is ``None`` below the
@@ -342,6 +434,7 @@ def get_reviewer_value_signal(
     """
     from theforge.model_profiles import _matching_profile_entries, _normalize_band  # noqa: PLC0415
 
+    section_key = section_for_phase(phase)
     matching = _matching_profile_entries(
         profiles, model, actual_model=actual_model, provider=provider, cli=cli
     )
@@ -358,7 +451,7 @@ def get_reviewer_value_signal(
         LATENCY_RING: [],
     }
     for _, entry in matching:
-        section = entry.get(SECTION)
+        section = entry.get(section_key)
         if not isinstance(section, dict):
             continue
         if band is None:

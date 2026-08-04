@@ -28,6 +28,7 @@ from theforge.review import (
     parse_review_json,
     parse_review_output,
 )
+from theforge.reviewer_value import code_review_anchor_text, compute_reviewer_uniqueness
 from theforge.sessions import save_sessions
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 from theforge.traces import write_trace
@@ -1091,6 +1092,37 @@ def _run_review_pool(
     # data was extracted; callers that use this for PR review attribution will
     # post a COMMENT with potentially empty findings/summary for those reviewers.
     named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
+
+    # ── Per-code-reviewer mechanical value telemetry (#2156) ──────────────
+    # The code-review counterpart of the plan-review capture in plan_flow.py:
+    # deterministic, coordinator-computed, over the structured findings from THIS
+    # completed pool (no LLM judgment). Uniqueness compares each reviewer's
+    # blocking findings against every peer's via anchor overlap over the
+    # observed+evidence text; latency is the per-reviewer pool wall-clock measured
+    # above. Recorded for every reviewer regardless of outcome so the audit can
+    # answer "is this reviewer earning its wall-clock cost?" — reviewers whose
+    # output failed to parse are excluded from the uniqueness *comparison* (their
+    # findings list is not what they judged), matching plan_flow.
+    _profiles_by_name = {p.name: p for p in pool}
+    _uniq_inputs = [(n, p.findings) for n, p in named_parsed if not p.parse_errors]
+    _uniqueness = compute_reviewer_uniqueness(_uniq_inputs, anchor_text=code_review_anchor_text)
+    for _name, _parsed_r in named_parsed:
+        _unique_p1, _total_p1 = _uniqueness.get(_name, (0, 0))
+        _prof = _profiles_by_name.get(_name)
+        state.code_reviewer_value.append(
+            {
+                "cycle": _cycle_num,
+                "reviewer": _name,
+                "complexity": state.preflight_complexity or "medium",
+                "unique_p1_count": _unique_p1,
+                "total_p1_count": _total_p1,
+                "latency_s": round(_per_agent_dur, 2),
+                "parse_error_count": len(_parsed_r.parse_errors),
+                "actual_model": getattr(_prof, "model", None),
+                "provider": getattr(_prof, "provider", None),
+                "cli": getattr(_prof, "cli", None),
+            }
+        )
 
     # Attempt-completion telemetry (#1388): record the INITIAL (pool /
     # transient-final) invocation for every reviewer, classified on its own first

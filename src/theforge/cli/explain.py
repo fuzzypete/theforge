@@ -281,18 +281,23 @@ def _fmt_value_signal(signal: dict) -> str:
 
 
 def _render_reviewer_value_check(value: dict, lines: list[str]) -> None:
-    """Render the plan-reviewer value_check (#1443): P1-uniqueness + wall-clock cost.
+    """Render a reviewer value_check (#1443/#2156): P1-uniqueness + wall-clock cost.
 
     Surfaces, per consulted reviewer, the uniqueness rate and latency-per-P1 so an
     operator can answer "is this reviewer earning its wall-clock cost?" directly
     from the explain view. Absent block → mechanism not checked (opt-in/disabled).
+    Rendered per reviewer role, so a plan-review and a code-review value check both
+    appear under their own role, each labelled with the phase it consulted.
     """
     if not value:
         # Omitted when the mechanism was not consulted (opt-in disabled / no
         # profiles), mirroring how completion_check is only added when present.
         return
     depri = value.get("deprioritized") or []
-    detail = f"threshold={value.get('uniqueness_threshold')} band={value.get('complexity')}"
+    detail = (
+        f"phase={value.get('phase', '?')} threshold={value.get('uniqueness_threshold')} "
+        f"band={value.get('complexity')}"
+    )
     if depri:
         detail += f" — deprioritized: {', '.join(depri)}"
     _render_mechanism(
@@ -301,6 +306,16 @@ def _render_reviewer_value_check(value: dict, lines: list[str]) -> None:
         detail,
         lines,
     )
+    # The registered inverse (ADR-0006 clause 7): always present when the value
+    # mechanism was consulted, so the return path is never a silent gap.
+    recovery = value.get("recovery_check") or {}
+    if recovery:
+        _render_mechanism(
+            f"value recovery ({recovery.get('mechanism', '?')})",
+            _mechanism_state(checked=True, fired=bool(recovery.get("fired"))),
+            str(recovery.get("reason", "")),
+            lines,
+        )
     for name, sig in (value.get("signals") or {}).items():
         if not isinstance(sig, dict):
             continue
