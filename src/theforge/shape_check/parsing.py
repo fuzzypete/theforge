@@ -173,6 +173,28 @@ def extract_ac_section(body: str) -> str | None:
     return extract_section(body, r"acceptance criteria|done criteria|checklist")
 
 
+# The bug-report shape is a symptom heading paired with an expectation heading.
+# `docs/guides/authoring.md` mandates the spelling "What happened" / "What was
+# expected"; the corpus overwhelmingly writes "Observed" / "Expected". Both are
+# the same contract, so both are recognised here — and recognised in exactly one
+# place, because intake decides "is this a bug body?" in more than one gate and
+# a body admitted by one gate must not be refused by another (#2139).
+_BUG_SYMPTOM_HEADING = r"what happened|observed|actual behaviou?r"
+_BUG_EXPECTATION_HEADING = r"what was expected|expected"
+_BUG_REPRODUCTION_HEADING = r"steps to reproduce"
+
+
+def has_bug_body_headings(body: str) -> bool:
+    """True when ``body`` carries the heading structure of a bug report.
+
+    Either a symptom/expectation heading pair (in any of its accepted
+    spellings), or a reproduction-steps heading, which only a bug report has.
+    """
+    if has_heading(body, _BUG_REPRODUCTION_HEADING):
+        return True
+    return has_heading(body, _BUG_SYMPTOM_HEADING) and has_heading(body, _BUG_EXPECTATION_HEADING)
+
+
 def is_example_heading(title: str) -> bool:
     normalized = re.sub(r"\s+", " ", title.strip().rstrip(":")).lower()
     return _EXAMPLE_HEADING_RE.fullmatch(normalized) is not None
