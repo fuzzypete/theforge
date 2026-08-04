@@ -1108,6 +1108,27 @@ def _locked_role_labels(config: ForgeConfig, explicit_roles: set) -> set[str]:
     return locked
 
 
+def _carried_story_allocation(state: "CoordinatorState") -> dict | None:
+    """Return the allocation already on state when it still applies, else None.
+
+    Reuse is conditional on the band being the same one it was derived for. A
+    resumed attempt whose preflight lands on a different complexity score is a
+    different story-shape than the record describes, so its allocation is
+    re-derived rather than inherited — carrying it forward would judge this
+    attempt's spend against another band's distribution.
+    """
+    carried = state.story_allocation
+    if not isinstance(carried, dict) or not carried:
+        return None
+    try:
+        float(carried["allocation_usd"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    if carried.get("complexity_score") != state.preflight_complexity_score:
+        return None
+    return carried
+
+
 def _apply_story_allocation(
     config: ForgeConfig,
     state: "CoordinatorState",
@@ -1120,19 +1141,37 @@ def _apply_story_allocation(
     resolved, so the rescaled shares govern exactly the models that will run.
     The derivation is pure arithmetic over recorded costs (see
     :mod:`theforge.coordinator.story_budget`); no model is consulted.
+
+    An allocation already on state — restored from the resume record, or set by
+    an earlier call this run (routing recovery re-enters here) — is REUSED
+    rather than re-derived, provided it was derived for the same complexity
+    score. The substrate grows between attempts, so re-deriving would silently
+    change the number a resumed story is judged against mid-story: the spend
+    already on the clock was incurred under the first attempt's allocation. The
+    per-role shares are always recomputed, because ``config`` is resolved fresh
+    on every entry and the carried record's shares may not match its roles.
     """
     from .story_budget import derive_story_allocation, scale_role_budgets  # noqa: PLC0415
 
-    configured = _configured_story_budget(config)
-    allocation = derive_story_allocation(
-        config.project_root,
-        complexity_score=state.preflight_complexity_score,
-        configured_usd=configured,
-    )
+    carried = _carried_story_allocation(state)
+    if carried is not None:
+        record = dict(carried)
+        allocation_usd = float(record["allocation_usd"])
+    else:
+        # Read the configured fallback only on the deriving path: on a re-entry
+        # the profiles have already been rescaled, so their sum is the previous
+        # allocation rather than the operator's configured per-story budget.
+        allocation = derive_story_allocation(
+            config.project_root,
+            complexity_score=state.preflight_complexity_score,
+            configured_usd=_configured_story_budget(config),
+        )
+        record = allocation.as_dict()
+        allocation_usd = allocation.allocation_usd
 
     current = _role_budget_map(config)
     locked = _locked_role_labels(config, set(state._explicit_roles or set()))
-    scaled = scale_role_budgets(current, allocation.allocation_usd, locked=locked)
+    scaled = scale_role_budgets(current, allocation_usd, locked=locked)
 
     replace_kwargs: dict[str, object] = {}
     if scaled.get("preflight") != current.get("preflight"):
@@ -1172,19 +1211,20 @@ def _apply_story_allocation(
     if replace_kwargs:
         config = _dc_replace(config, **replace_kwargs)
 
-    from dataclasses import replace as _replace  # noqa: PLC0415
-
-    allocation = _replace(
-        allocation,
-        scaled_profiles={name: round(value, 4) for name, value in scaled.items()},
-    )
-    state.story_allocation = allocation.as_dict()
+    record["scaled_profiles"] = {name: round(value, 4) for name, value in scaled.items()}
+    if carried is not None:
+        # Convention 6: a carried allocation must be traceable as one. Without
+        # this an operator reading the audit cannot tell an allocation this
+        # attempt derived from one it inherited.
+        record["carried"] = True
+    state.story_allocation = record
     routing_audit = dict(state.complexity_routing_audit or {})
     routing_audit["story_allocation"] = state.story_allocation
     state.complexity_routing_audit = routing_audit
     log_verbose(
-        f"[adaptive] story_allocation: ${allocation.allocation_usd:.2f} "
-        f"basis={allocation.basis} ({allocation.expected_range_text()})"
+        f"[adaptive] story_allocation: ${allocation_usd:.2f} "
+        f"basis={record.get('basis')} "
+        f"({'carried from prior attempt' if carried is not None else 'derived this attempt'})"
     )
     return config
 

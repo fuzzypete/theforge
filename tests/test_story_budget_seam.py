@@ -408,3 +408,67 @@ class TestResumeCarriesTheAllocation:
         apply_resume_record_to_state(state, record)
 
         assert state.story_allocation == allocation
+
+    def test_resumed_preflight_reuses_the_restored_allocation(self, tmp_path: Path) -> None:
+        """The restored allocation survives the resumed run's preflight re-run.
+
+        ``--resume`` re-enters PREFLIGHT, which re-invokes
+        ``_apply_preflight_config``. Re-deriving there would judge the spend
+        already on this story's clock against a distribution that has moved
+        since the first attempt. Seeded here with a band whose current
+        distribution would derive a DIFFERENT number, so a re-derivation is
+        visible rather than coincidentally equal.
+        """
+        _seed_band(tmp_path, 2, _SCORE_9_COSTS)  # score-2 band now looks expensive
+        config = _config(tmp_path)
+
+        state = CoordinatorState()
+        state.preflight_complexity = "small"
+        state.preflight_complexity_score = 2
+        restored = sb.allocation_from_samples(2, _SCORE_2_COSTS, configured_usd=50.0).as_dict()
+        state.story_allocation = dict(restored)
+
+        updated = _apply_preflight_config(config, state)
+
+        assert state.story_allocation["allocation_usd"] == 1.69
+        assert state.story_allocation["carried"] is True
+        # The carried number governs the shares this attempt actually runs under.
+        assert _runtime_total(updated) == pytest.approx(1.69, abs=0.05)
+
+    def test_a_different_band_on_resume_is_re_derived_not_inherited(self, tmp_path: Path) -> None:
+        """An allocation is only carried for the band it was derived for."""
+        _seed_band(tmp_path, 9, _SCORE_9_COSTS)
+        config = _config(tmp_path)
+
+        state = CoordinatorState()
+        state.preflight_complexity = "large"
+        state.preflight_complexity_score = 9
+        # Restored from an attempt that scored the story a 2.
+        state.story_allocation = sb.allocation_from_samples(
+            2, _SCORE_2_COSTS, configured_usd=50.0
+        ).as_dict()
+
+        _apply_preflight_config(config, state)
+
+        assert state.story_allocation["complexity_score"] == 9
+        assert state.story_allocation["allocation_usd"] == round(40.64 * 1.25, 2)
+        assert "carried" not in state.story_allocation
+
+    def test_re_entry_within_one_run_does_not_redraw_the_allocation(self, tmp_path: Path) -> None:
+        """Routing recovery re-enters _apply_preflight_config on the same state.
+
+        The second pass must not re-read the substrate (whose fallback would
+        now be the already-rescaled profile sum, not the configured budget).
+        """
+        config = _config(tmp_path)  # no substrate → configured fallback of $50
+        state = CoordinatorState()
+        state.preflight_complexity = "medium"
+        state.preflight_complexity_score = 5
+
+        once = _apply_preflight_config(config, state)
+        first = dict(state.story_allocation)
+        twice = _apply_preflight_config(once, state)
+
+        assert state.story_allocation["allocation_usd"] == first["allocation_usd"]
+        assert state.story_allocation["fallback_configured_usd"] == 50.0
+        assert _runtime_total(twice) == pytest.approx(_runtime_total(once), abs=0.05)
