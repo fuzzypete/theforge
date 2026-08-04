@@ -540,7 +540,7 @@ class TestPhasesBlock:
         """Agent plan review emits attempt-tagged per_reviewer outcomes in the phase summary."""
         config = dataclasses.replace(
             _make_config(tmp_path),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 pool=[
                     ModelProfile(

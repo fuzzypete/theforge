@@ -342,7 +342,7 @@ def _all_api_config(tmp_path: Path, **overrides) -> ForgeConfig:
 def test_gate_covers_a_claude_planner_when_nothing_else_is_claude(tmp_path: Path) -> None:
     """PLAN dispatches and spends; a revoked planner credential must abort too."""
     path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
-    config = _all_api_config(tmp_path, plan=PlanConfig(enabled=True, cli="claude"))
+    config = _all_api_config(tmp_path, plan=PlanConfig.of(enabled=True, cli="claude"))
 
     with patch("theforge.config.auth.claude_credentials_path", return_value=path):
         failures = check_sprint_auth_readiness(config)
@@ -357,7 +357,7 @@ def test_gate_covers_a_claude_plan_reviewer_when_nothing_else_is_claude(
     path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
     config = _all_api_config(
         tmp_path,
-        plan_agent_review=PlanAgentReviewConfig(enabled=True, cli="claude"),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=True, cli="claude"),
     )
 
     with patch("theforge.config.auth.claude_credentials_path", return_value=path):
@@ -371,7 +371,7 @@ def test_gate_covers_a_claude_plan_review_pool(tmp_path: Path) -> None:
     path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
     config = _all_api_config(
         tmp_path,
-        plan_agent_review=PlanAgentReviewConfig(
+        plan_agent_review=PlanAgentReviewConfig.of(
             enabled=True,
             pool=[replace(DEFAULT_REVIEW_PROFILE, name="plan-reviewer-1")],
         ),
@@ -388,8 +388,8 @@ def test_gate_ignores_a_disabled_claude_planner(tmp_path: Path) -> None:
     path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
     config = _all_api_config(
         tmp_path,
-        plan=PlanConfig(enabled=False, cli="claude"),
-        plan_agent_review=PlanAgentReviewConfig(enabled=False, cli="claude"),
+        plan=PlanConfig.of(enabled=False, cli="claude"),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=False, cli="claude"),
     )
 
     with patch("theforge.config.auth.claude_credentials_path", return_value=path):
@@ -399,7 +399,7 @@ def test_gate_ignores_a_disabled_claude_planner(tmp_path: Path) -> None:
 def test_claude_planner_aborts_the_sprint_before_dispatch(tmp_path: Path) -> None:
     """Seam test: the planner-only case reaches the same launch abort."""
     path = _write_credentials(tmp_path, _REVOKED_CREDENTIAL)
-    config = _all_api_config(tmp_path, plan=PlanConfig(enabled=True, cli="claude"))
+    config = _all_api_config(tmp_path, plan=PlanConfig.of(enabled=True, cli="claude"))
     resolved = _make_resolved(tmp_path, ("story-a",))
 
     with (

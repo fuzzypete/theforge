@@ -103,8 +103,8 @@ def _make_forge_config(
         review_pool=review_pool,
         synthesis_profile=synthesis_profile,
         retry=RetryPolicy(),
-        plan=plan or PlanConfig(enabled=False),
-        plan_agent_review=plan_agent_review or PlanAgentReviewConfig(enabled=False),
+        plan=plan or PlanConfig.of(enabled=False),
+        plan_agent_review=plan_agent_review or PlanAgentReviewConfig.of(enabled=False),
         log=LogConfig(enabled=False),
         agents=agents or [],
         assignment=assignment or AssignmentConfig(enabled=False),
@@ -608,7 +608,7 @@ class TestCheckConfigAgentsSection:
 class TestCheckConfigPlanReviewers:
     def test_plan_reviewers_section_when_enabled(self, tmp_path: Path, capsys) -> None:
         plan_reviewer = _api_profile("codex-plan-reviewer", provider="openai", model="gpt-4")
-        plan_agent_review = PlanAgentReviewConfig(
+        plan_agent_review = PlanAgentReviewConfig.of(
             enabled=True,
             pool=[plan_reviewer],
         )
@@ -643,7 +643,7 @@ class TestCheckConfigPlanReviewers:
 
 class TestCheckConfigPlanPhase:
     def test_plan_phase_shown_when_enabled(self, tmp_path: Path, capsys) -> None:
-        plan = PlanConfig(enabled=True, cli="claude", model="opus", budget_usd=3.0, timeout=600)
+        plan = PlanConfig.of(enabled=True, cli="claude", model="opus", budget_usd=3.0, timeout=600)
         config = _make_forge_config(tmp_path, plan=plan)
         with (
             patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
@@ -729,7 +729,7 @@ class TestCheckConfigPhaseAuth:
         assert "✗" in out
 
     def test_exit_1_plan_auth_failure(self, tmp_path: Path, capsys) -> None:
-        plan = PlanConfig(
+        plan = PlanConfig.of(
             enabled=True, provider="anthropic", cli=None, model="claude-opus-4-6", budget_usd=1.0
         )
         config = _make_forge_config(tmp_path, plan=plan)
@@ -754,12 +754,12 @@ class TestCheckConfigPhaseAuth:
         self, tmp_path: Path, capsys
     ) -> None:
         """Regression: a plan reviewer named 'plan' must not mask plan-phase auth failure."""
-        plan = PlanConfig(
+        plan = PlanConfig.of(
             enabled=True, provider="anthropic", cli=None, model="claude-opus-4-6", budget_usd=1.0
         )
         # Plan reviewer also named "plan" — would collide if keyed by name only
         plan_reviewer = _api_profile("plan", provider="openai", model="gpt-4")
-        plan_agent_review = PlanAgentReviewConfig(enabled=True, pool=[plan_reviewer])
+        plan_agent_review = PlanAgentReviewConfig.of(enabled=True, pool=[plan_reviewer])
         config = _make_forge_config(tmp_path, plan=plan, plan_agent_review=plan_agent_review)
 
         def _mock_auth(profile, secrets=None):
@@ -963,7 +963,7 @@ class TestComplexityAwareDisplay:
             ],
             synthesis_profile=None,
             retry=RetryPolicy(),
-            plan=PlanConfig(enabled=True),
+            plan=PlanConfig.of(enabled=True),
             log=LogConfig(enabled=False),
             models=["anthropic/sonnet/cli", "anthropic/opus/cli"],
             models_budget_usd=50.0,
@@ -1146,7 +1146,7 @@ class TestComplexityAwareDisplay:
             ],
             synthesis_profile=None,
             retry=RetryPolicy(),
-            plan=PlanConfig(enabled=False),
+            plan=PlanConfig.of(enabled=False),
             log=LogConfig(enabled=False),
             models=["anthropic/sonnet/cli", "anthropic/opus/cli"],
             models_budget_usd=50.0,

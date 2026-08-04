@@ -7,78 +7,26 @@ when using the new simplified model list. They are separate from the runtime typ
 New phases requiring model-backed agents compose ModelRef instead of duplicating
 transport fields (cli, provider, model, budget_usd, timeout_seconds, etc.).
 Use bridge.py (role_assignment_to_profiles) to convert to ModelProfile instances.
+
+ModelRef itself is defined in types.py — the coordinator runtime types there
+(PlanConfig, PlanAgentReviewConfig) compose it too, and types.py is the
+lower-dependency module — and re-exported here for the config-domain spelling.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
 
-from .types import TransportFallbackConfig
+from .types import ModelRef
 
-if TYPE_CHECKING:
-    from .models import TransportSpec
-
-
-@dataclass(frozen=True)
-class ModelRef:
-    """Transport/model atom — reusable core of every phase config.
-
-    Dispatch reads the embedded TransportSpec, and only that. ``cli`` and
-    ``provider`` are raw-input spellings normalized into a transport once at
-    construction; ``cli`` is then a derived mirror of that transport so the two
-    can never disagree.
-
-    Adding a new model-backed phase requires only a new wrapper dataclass that
-    embeds a ModelRef — no transport fields are copy-pasted.
-    """
-
-    model: str
-    budget_usd: float
-    timeout_seconds: int
-    # Raw-input transport spelling; normalized into ``transport`` below.
-    cli: str | None = None
-    provider: str | None = None
-    # Optional: preference fallbacks
-    fallback_models: tuple[str, ...] = ()
-    # Optional: complexity-dependent timeout overrides
-    timeout_medium_seconds: int | None = None
-    timeout_large_seconds: int | None = None
-    # Optional: provider-specific runtime controls
-    reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
-    thinking_budget: int | None = None  # Gemini ThinkingConfig token budget
-    base_url: str | None = None  # override provider endpoint (Ollama, etc.)
-    max_iterations: int | None = None  # override default agent loop iterations
-    max_tool_output_bytes: int = 51200  # cap for tool output (50 KB default)
-    api_fallback: TransportFallbackConfig | None = None  # CLI-only same-provider API fallback
-    registry_id: str | None = None  # canonical model registry key, when sourced from a registry
-    registry_source: str = "builtin"  # "builtin" | "forge.yaml"
-    # Explicit TransportSpec — carried through derive_roles → bridge → ModelProfile
-    # so runtime dispatch reads TransportSpec.kind rather than inferring from cli/provider.
-    transport: TransportSpec | None = None
-
-    def __post_init__(self) -> None:
-        """Normalize the raw cli/provider spelling into a canonical transport."""
-        from .types import _normalize_transport
-
-        transport = _normalize_transport(self.cli, self.provider, self.transport)
-        if transport is not self.transport:
-            object.__setattr__(self, "transport", transport)
-        if transport is not None:
-            mirrored = transport.runner if transport.kind == "cli" else None
-            if mirrored != self.cli:
-                object.__setattr__(self, "cli", mirrored)
-
-    @property
-    def provider_family(self) -> str | None:
-        """Provider identity for both transports (see ModelProfile.provider_family)."""
-        if self.provider is not None:
-            return self.provider
-        if self.transport is not None:
-            from .models import provider_for_transport
-
-            return provider_for_transport(self.transport)
-        return None
+__all__ = [
+    "DevRoleConfig",
+    "ModelRef",
+    "PlanRoleConfig",
+    "PreflightRoleConfig",
+    "ReviewRoleConfig",
+    "RoleAssignment",
+]
 
 
 @dataclass(frozen=True)

@@ -67,7 +67,7 @@ def _make_plan_review_config(
         review_pool=[DEFAULT_REVIEW_PROFILE],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300),
         plan_review=PlanReviewConfig(enabled=enabled, mode=mode, timeout_seconds=timeout_seconds),
         log=LogConfig(enabled=False),
     )

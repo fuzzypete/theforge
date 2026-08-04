@@ -68,7 +68,7 @@ def _make_ntfy_plan_review_cfg(
             backend="ntfy",
             ntfy=NtfyConfig(url="https://ntfy.sh/test-topic", priority="default"),
         ),
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300),
         plan_review=PlanReviewConfig(enabled=True, mode=mode, timeout_seconds=timeout_seconds),
         log=LogConfig(enabled=False),
     )

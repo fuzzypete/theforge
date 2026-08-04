@@ -95,8 +95,8 @@ def _config(
         retry=retry or RetryPolicy(max_dev_iterations=2, max_review_cycles=3),
         log=LogConfig(enabled=False),
         models=models,
-        plan=plan or PlanConfig(enabled=True),
-        plan_agent_review=plan_agent_review or PlanAgentReviewConfig(enabled=False),
+        plan=plan or PlanConfig.of(enabled=True),
+        plan_agent_review=plan_agent_review or PlanAgentReviewConfig.of(enabled=False),
         review_pool_is_default=True,
         plan_model_is_default=True,
         dev_profile_is_default=True,
@@ -171,7 +171,7 @@ def test_preflight_complexity_adaptation_plan_uses_target_transport_fields(
         tmp_path,
         dev_profile=_profile_from("anthropic/sonnet/cli"),
         models=["anthropic/sonnet/cli", "openai/gpt-5.4-pro/api"],
-        plan=PlanConfig(enabled=True, cli="claude", provider=None, model="sonnet"),
+        plan=PlanConfig.of(enabled=True, cli="claude", provider=None, model="sonnet"),
     )
 
     updated = _apply_complexity_adaptation(config, "medium")
@@ -241,7 +241,7 @@ def test_plan_review_escalation_cli_to_api_updates_regen_profile(
         dev_profile=_profile_from("anthropic/sonnet/cli"),
         models=["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=3, plan_escalation_threshold=1),
-        plan_agent_review=PlanAgentReviewConfig(
+        plan_agent_review=PlanAgentReviewConfig.of(
             enabled=True,
             pool=[plan_reviewer_a, plan_reviewer_b],
             min_reviewers=2,

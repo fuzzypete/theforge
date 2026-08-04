@@ -503,6 +503,8 @@ retry:
                              # YAML. The retry re-serializes the completed
                              # investigation; it does NOT re-investigate. 0 disables.
   max_plan_regen_attempts: 3 # plan review reject → regeneration cycles
+  plan_escalation_threshold: 2 # consecutive plan rejections before the planner
+                             # model is escalated to a stronger one
 
 # ── Classic manual profiles (LEGACY — mutually exclusive with models:) ─────
 # This path predates first-class transport: it spells dispatch as a pair of

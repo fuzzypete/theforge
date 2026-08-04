@@ -100,7 +100,7 @@ def _make_forge_config(
         timeout_seconds=300,
         allowed_tools=(),
     )
-    plan = PlanConfig(cli=plan_cli, model=plan_model, budget_usd=0.5, timeout=600)
+    plan = PlanConfig.of(cli=plan_cli, model=plan_model, budget_usd=0.5, timeout=600)
 
     return ForgeConfig(
         project="test",

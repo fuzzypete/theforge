@@ -16,6 +16,7 @@ from theforge.config import (
     resolve_agent_spec,
 )
 from theforge.config.auth import check_agent_auth
+from theforge.config.bridge import model_ref_to_profile
 from theforge.config.models import provider_for_transport, transport_from_raw_fields
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.config.role_derivation import derive_roles
@@ -655,15 +656,7 @@ def cmd_check_config(args: object) -> int:
             )
 
     if config.plan.enabled:
-        plan_profile = ModelProfile(
-            name="plan",
-            cli=config.plan.cli,
-            provider=config.plan.provider,
-            model=config.plan.model,
-            budget_usd=config.plan.budget_usd,
-            timeout_seconds=config.plan.timeout,
-            allowed_tools=(),
-        )
+        plan_profile = model_ref_to_profile("plan", config.plan.ref)
         plan_profile = _apply_transport_fallback(plan_profile, config.transport_fallbacks)
         _run_auth(plan_profile, "phase", auth_results, config.secrets)
 
