@@ -430,6 +430,17 @@ def _run_escalate_gate_inner(
                 "Escalation preserved: an advisory report was generated and an "
                 "operator action selection is still required (no auto-reject)."
             )
+        elif state.advisory_launch_failure:
+            # Distinct from "no advisory": the advisor never started, so the
+            # missing advice is a repairable forge configuration defect that cost
+            # nothing — not evidence that the escalation resists analysis (#2164).
+            preserve_message = (
+                "Escalation preserved: the escalation advisor FAILED TO LAUNCH "
+                f"({state.advisory_launch_reason or 'no reason captured'}) — a forge "
+                "configuration/tool-invocation defect that spent $0.00 and never "
+                "reached the model. An operator action selection is still required "
+                "(no auto-reject)."
+            )
         else:
             preserve_message = (
                 "Escalation preserved: an operator action selection is still "

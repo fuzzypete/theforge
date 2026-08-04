@@ -763,6 +763,13 @@ class CoordinatorState:
     advisory_generated: bool = False  # True when a valid advisory report was produced
     advisory_packet: dict | None = None  # serialized EvidencePacket fed to the advisor
     advisory_report: dict | None = None  # serialized AdvisoryReport the advisor produced
+    # Set when the advisor process exited before it ever reached the model (a
+    # forge configuration / tool-invocation defect, e.g. a CLI refusing to start
+    # in the baseline checkout). Kept distinct from advisory_generated=False so
+    # the operator checkpoint can tell "the advisor never ran, and nothing was
+    # spent" apart from "the advisor ran and produced nothing usable" (#2164).
+    advisory_launch_failure: bool = False
+    advisory_launch_reason: str | None = None  # the tool's own explanation, one line
     # Structured escalation kind: "hygiene" (workspace mutation by a non-DEV phase),
     # "content" (review or gate found a real problem), or None when there is no
     # active escalation. Distinct from escalate_reason so resume can tell the two
