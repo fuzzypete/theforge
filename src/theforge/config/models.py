@@ -1159,6 +1159,13 @@ def _parse_assignment(assignment_raw: dict[str, Any]) -> AssignmentConfig:
             default=0.34,
         ),
         reviewer_value_min_runs=int(assignment_raw.get("reviewer_value_min_runs", 5)),
+        code_review_value_enabled=bool(assignment_raw.get("code_review_value_enabled", False)),
+        code_review_value_uniqueness_threshold=_parse_unit_float(
+            assignment_raw.get("code_review_value_uniqueness_threshold"),
+            key="assignment.code_review_value_uniqueness_threshold",
+            default=0.34,
+        ),
+        code_review_value_min_runs=int(assignment_raw.get("code_review_value_min_runs", 5)),
         dev_promotion_threshold=_parse_unit_float(
             assignment_raw.get("dev_promotion_threshold"),
             key="assignment.dev_promotion_threshold",

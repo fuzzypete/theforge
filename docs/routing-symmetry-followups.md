@@ -58,6 +58,34 @@ names this as its `demotion` (audit label `reinclusion_check`) instead of
 `open_followup="reviewer-reinclusion"`. **Tests:** both directions in
 `tests/test_assignment_reviewer_completion.py`.
 
+### Reviewer-value recovery path (inverse of the #1443/#2156 value deprioritization) — RESOLVED (#2156)
+
+The mechanical reviewer-value deprioritization
+(`assignment.py:_rerank_reviewers_by_value`, surfaced by `_reviewer_value_check`)
+landed for plan review in #1443 and was extended to code-review reviewer selection
+in #2156. Its paired return path is the **passive recency recovery** (ADR-0006
+clause 2.4/5, `MECHANISM_REVIEWER_VALUE_RECOVERY =
+"reviewer_value_recency_recovery"`): the rate the router consults *is* the
+recency-weighted uniqueness rate, so a reviewer whose lifetime uniqueness sits
+below `assignment.{code_,}review_value_uniqueness_threshold` climbs back above it
+as fresh unique blocking findings enter the `_uniqueness_recent` ring, and the
+deprioritization simply stops firing. No new config surface, no operator action,
+and no permanent lock-out — the deprioritization is a sort-after, so a
+deprioritized reviewer is still seated whenever no better candidate exists and
+therefore keeps accumulating the samples its own recovery depends on.
+
+**Audit attribution.** Every `routing_decision[<reviewer role>].value_check`
+carries a nested `recovery_check` block whenever reviewer value profiles were
+consulted — `mechanism`, `fired`, `uniqueness_threshold`, `recovered`, `checked`,
+`checked_detail` (per-reviewer raw vs recency-weighted rate, sample count and
+below-lifetime-threshold state) and a `reason` distinguishing fired from
+checked-but-didn't-fire (ADR-0006 clause 7). The block's `phase` field records
+which value history was consulted, so the plan-review and code-review checks are
+never confusable. **Registry:** the reviewer-value pair in
+`ROUTING_SYMMETRY_REGISTRY` names this as its `demotion` (audit label
+`recovery_check`). **Tests:** both directions in
+`tests/test_assignment_code_review_value.py`.
+
 ### Escalation-history decay for dev-tier promotion — RESOLVED (#158)
 
 The dev-tier promotion no longer counts `ESCALATE` outcomes over a fixed last-10

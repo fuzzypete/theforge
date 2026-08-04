@@ -221,6 +221,12 @@ class RunOutcome:
     # gate as every other capability aggregate. Typed as ``list`` to avoid an
     # import cycle; :func:`apply_run` reads each sample's attributes.
     plan_reviewer_values: list = field(default_factory=list)
+    # Per-code-reviewer mechanical value samples for this run (#2156): one
+    # :class:`theforge.reviewer_value.ReviewerValueSample` per (reviewer, review
+    # cycle) that raised ≥1 blocking finding. Folded into the SEPARATE
+    # ``code_review_value`` profile section, under the same taint gate, so the two
+    # reviewer phases never share a history.
+    code_reviewer_values: list = field(default_factory=list)
     # Domain tags for this run (issue #155), from the fixed taxonomy recorded by
     # preflight. The dev outcome is folded into a per-domain slice for each tag so
     # per-domain success rate can be aggregated deterministically. Empty = the run
@@ -1084,6 +1090,20 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
                 cli=sample.cli,
             )
             fold_plan_reviewer_value(rev_entry, sample, tainted=outcome.dev_tainted)
+    # Code-reviewer mechanical value telemetry (#2156): identical fold, into the
+    # ``code_review_value`` section, under the same run-level taint marker.
+    if outcome.code_reviewer_values:
+        from theforge.reviewer_value import CODE_PHASE, fold_reviewer_value  # noqa: PLC0415
+
+        for sample in outcome.code_reviewer_values:
+            rev_entry = _ensure_model(
+                data,
+                sample.name,
+                actual_model=sample.actual_model,
+                provider=sample.provider,
+                cli=sample.cli,
+            )
+            fold_reviewer_value(rev_entry, sample, phase=CODE_PHASE, tainted=outcome.dev_tainted)
     return data
 
 

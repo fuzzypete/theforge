@@ -144,6 +144,16 @@ class AssignmentConfig:
     reviewer_value_enabled: bool = False
     reviewer_value_uniqueness_threshold: float = 0.34
     reviewer_value_min_runs: int = 5
+    # Code-reviewer mechanical value routing (#2156). The same mechanism as the
+    # plan-review fields above, over the independently accumulated
+    # ``code_review_value`` profile section, with its OWN enablement/threshold/
+    # floor so the two phases can be tuned (and turned on) separately: code review
+    # is where reviewer spend concentrates and where blocking findings are raised,
+    # so its uniqueness distribution is not the plan-review one. Same defaults as
+    # the plan-review fields — opt-in, and no reordering below the sample floor.
+    code_review_value_enabled: bool = False
+    code_review_value_uniqueness_threshold: float = 0.34
+    code_review_value_min_runs: int = 5
     # Dev pre-promotion from cross-run capability profiles (#158, ADR-0006
     # clauses 1/2.3/2.4/4/5/7). Before the first iteration the router reads the
     # selected dev model's **recency-weighted** success rate at the story's
