@@ -1,0 +1,2723 @@
+{
+  "schema_version": 19,
+  "run_id": "0a1bf1592dc7",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc17",
+  "task": {
+    "name": "A story reconciled from a prior generation inherits DONE even when that generation left it in flight",
+    "slug": "issue-2189",
+    "story_path": null,
+    "story_text": "## What happened\n\nIn sprint `issues-2164,2160,2139,1993,1980,1945,2169,2156,1108` (run\n`5499f7eac830`, 2026-08-03, forge 0.13.0rc17), `forge status` reported\n`LANDED (9 of 9)`. Story #1108 did not land. It is still open, has no pull\nrequest, and none of its work is on `release/v0.13`.\n\nThe sprint's own records disagree with each other about it.\n\nSprint summary (`run-5499f7eac830-summary.yaml`):\n\n```json\n{\"slug\": \"issue-1108\", \"outcome\": \"DONE\", \"cost_usd\": 0.0, \"merge\": false, \"error\": null}\n```\n\nThe story's own audit (`issue-1108/audit.yaml`):\n\n```yaml\noutcome:\n  final_phase: REVIEW\n  success: false\n  message: \"story in flight (phase REVIEW)\"\ncost:\n  total_usd: 20.556040100000004\n  dev_usd: 14.595979000000003\n  review_usd: 5.6119268\nlanding: null\n```\n\nThe story ran a full plan, plan review, one dev iteration and two review cycles.\nReview cycle 2 synthesized `verdict: APPROVE` from three approving reviewers, so\nthe work is sound; it simply never advanced from an approved review to landing.\nTwo commits sit on `feat/issue-1108`, pushed, unmerged.\n\nThe run log records how the outcome was reached:\n\n```\n21:16:01  Worker timeout issue-1108: 3600s (base default; no preflight state)\n21:16:01  DONE issue-1108 (reconciled from prior generation)\n21:54:38  RECONCILED issue-1108: prior generation already completed these stories;\n          preserving their outcome instead of re-running.\n21:54:38  Running reuse gate for issue-1108 on feat/issue-1108 4eddb35: make gate\n21:55:27  issue-1108   REVIEW (worktree exists, gate passes (2 commits ahead))\n21:56:12  DONE issue-1108 (reconciled from prior generation)\n```\n\nTriage observed the story at `REVIEW` with two unlanded commits at 21:55:27, and\nrecorded it `DONE` forty-five seconds later on the ground that a prior generation\nhad completed it. The prior generation's recorded state was the same in-flight\nREVIEW shown above; no generation of this story ever reached a terminal success.\n\nThe consequences compound. The story is counted in `LANDED (9 of 9)`. Its $20.56\nis absent from the sprint total, which reports $75.04 against an actual $95.60.\nIts cost is rendered as `\u2014` rather than as a number or as unknown. An operator\nreading the summary has no indication that an issue remains open with approved,\nunlanded work on a branch.\n\nThe drop is classified `REASON_RECONCILE_PRIOR_DONE`\n(`src/theforge/sprint/runner.py:4526`), whose comment states the premise\ndirectly: \"The prior generation already completed this story; its worktree\ncollision is a reconcilable success, not a fresh drop.\"\n\n## What was expected\n\nAn outcome carried forward from an earlier attempt should be the outcome that\nattempt actually recorded. Reconciliation exists to avoid repeating completed\nwork, so it applies to work that completed; a story whose prior generation ended\nin a non-terminal phase has no completed outcome to preserve, and inheriting one\nasserts a success that never occurred anywhere.\n\nWhere a story's records disagree about whether it finished, the phase and landing\nthe story itself recorded are the account of what happened, and a summary that\ncontradicts them should be treated as the thing in error. A story counted as\nlanded should have landed: an operator distinguishes finished work from\nunfinished work through that count, and no other signal in the summary corrects\nit.\n\nCost already measured for a story belongs in the run's total whatever outcome the\nstory reached. A run that reports a total excluding spend it recorded understates\nwhat it cost, and rendering a known amount as absent is a third state distinct\nfrom both a number and an acknowledged unknown.\n\n## Diagnosis\n\n**Baseline:** `ac15b03583edd94ce64f77295cf37d2575a74b48` captured at `2026-08-04T06:25:44.000780+00:00`\n\n**Inspected files:**\n\n- `src/theforge/sprint/runner.py` \u2014 `sha256:3aeba141064fd3f3c2be7be9b7dbeefae58c6757a3dc6599c22fc3e2d5bcf927`\n- `src/theforge/sprint/launch_guard.py` \u2014 `sha256:3d48829b3e6852513c21d599fc1028c0d8e605e56d031929224296cce46bcdab`\n- `src/theforge/cli/sprint.py` \u2014 `sha256:b46c2a4b60ca13bcafbe6bd9541d5aecde0d486e4ea5ee85ddcd3965947e54de`\n- `src/theforge/cli/sprint_digest.py` \u2014 `sha256:e8f9293c98062d48a3d468f6dd02017011e62bd3ad3f6e7a6a662a1da4ff82ee`\n- `.forge/logs/issues-2164,2160,2139,1993,1980,1945,2169,2156,110/run-5499f7eac830.log` \u2014 `sha256:11d5dd7700a08f60f30d3b697f060091f1dbe24bad0e533f1f9a639fbcc7dc4f`\n- `.forge/logs/issues-2164,2160,2139,1993,1980,1945,2169,2156,1108/run-5499f7eac830-summary.yaml` \u2014 `sha256:0993da50602ad40452994b310626068dbc43f8c38ec0025263239f89ad99b81f`\n- `.forge/logs/issues-2164,2160,2139,1993,1980,1945,2169,2156,1108/issue-1108/audit.yaml` \u2014 `sha256:d3e55ea669db5821f35c16685e13c16e9a5f28c60b4cb31a60933e72747c8236`\n\n### Observed symptom\n\nA story (#1108) whose prior generation left it in an in-flight, non-terminal\nstate (REVIEW, unlanded, two commits ahead on its branch) is reported as\nDONE/landed by a later generation of the same sprint run purely because a\nre-exec-time reconciliation step trusted a previously *persisted* \"DONE\"\noutcome that was itself written before landing was attempted. The sprint\nsummary counts it in \"LANDED (9 of 9)\", its real $20.56 spend is dropped\nfrom the run total, and its cost is rendered as \"\u2014\" instead of a number or\nan explicit \"unmeasured\" marker.\n\n### Reproduction / evidence\n\nRun log .forge/logs/issues-2164,2160,2139,1993,1980,1945,2169,2156,110/run-5499f7eac830.log:\n  - 20:49:05.732  [issue-1108] REVIEW APPROVE -> \"\u2713 DONE total=$24.26 29m 0s\"\n    (coordinator reached Phase.DONE \u2014 review approved \u2014 but no PR/landing\n    lines follow, unlike every other story in the same log, e.g. issue-1980\n    at 20:46:44 which is immediately followed by \"\u2713 PR created\" / \"\u2713 PR\n    queued for auto-merge\").\n  - 20:49:09.195  \"[issue-1993] Source updated after pull \u2014 re-execing to\n    load new code\" \u2014 a mid-sprint os.execv happens in the window right\n    after issue-1108's coordinator returned DONE but before its landing\n    step ran.\n  - 20:49:16ish  \"[forge] RECONCILED issue-1108: prior generation already\n    completed these stories; preserving their outcome instead of\n    re-running.\" \u2014 the re-exec'd generation's launch guard reads the\n    just-persisted accumulated outcome \"DONE\" for issue-1108 and reconciles\n    the worktree collision as already-succeeded.\n  - This repeats twice more (RECONCILED at 20:55:27-ish window and again\n    21:56:12, each preceded by \"Worker timeout issue-1108\" and followed by\n    \"DONE issue-1108 (reconciled from prior generation)\") \u2014 each re-exec\n    re-confirms the same stale DONE, and the story's genuinely-in-flight\n    REVIEW state (visible via triage at 20:51:30: \"issue-1108  REVIEW\n    (worktree exists, gate passes (2 commits ahead))\") is never allowed to\n    re-enter dispatch to actually land.\nPer-story audit (.forge/logs/.../issue-1108/audit.yaml): final_phase REVIEW,\nsuccess false, landing null, total_usd 20.556040100000004 \u2014 the honest\nrecord, contradicted by run-5499f7eac830-summary.yaml's\n{\"slug\": \"issue-1108\", \"outcome\": \"DONE\", \"cost_usd\": 0.0, \"merge\": false}.\n`gh pr list --head feat/issue-1108 --state all` returns only PR #2192,\nwhich is a *later*, separate, already-merged story (Score-driven reasoning\neffort) reusing the same branch name after remediation \u2014 not evidence\n#1108 ever landed.\n\n### Hypotheses tested\n\n- **[confirmed]** The coordinator's phase machine reaches Phase.DONE as soon as review approves, and the sprint runner persists that phase name as the accumulated story's terminal outcome (`_persist_current_story_result`, runner.py:3890) before the separate landing/PR step runs. A re-exec landing in that window leaves 'DONE' durably on disk with no landing ever attempted.\n  - Evidence: runner.py:3864-3941 `_persist_current_story_result` sets outcome = result.phase.name and is called at runner.py:5925-5930, strictly before `_attempt_integration` is invoked at runner.py:5946-5947. The log shows exactly this ordering for issue-1108: DONE logged at 20:49:05, no PR-creation lines follow (contrast issue-1980's immediate PR creation), then a re-exec at 20:49:09 before landing could run.\n- **[confirmed]** The re-exec launch guard's reconciliation classifies any worktree collision whose prior-generation accumulated outcome is DONE or ALREADY_DONE as a completed story to preserve, without checking landing status.\n  - Evidence: launch_guard.py:51 `_PRIOR_SUCCEEDED_OUTCOMES = frozenset({\"DONE\", \"ALREADY_DONE\"})`; launch_guard.py:229-232 marks REASON_RECONCILE_PRIOR_DONE whenever `prior_outcome in _PRIOR_SUCCEEDED_OUTCOMES` \u2014 no landing/merge field is consulted. `_resolve_prior_outcomes` (cli/sprint.py:458-482) sources `prior_outcomes` straight from the accumulated state.yaml `outcome` field written by the mechanism above.\n- **[confirmed]** The runner's own dropped-slug handler re-derives the same DONE via `_recorded_prior_done`, which also treats any accumulated entry with outcome DONE (this run's own state or a recovered prior entry) as sufficient, cementing the error every subsequent re-exec.\n  - Evidence: runner.py:3693-3707 `_recorded_prior_done` returns True from `_story_state.get(slug).outcome is StoryOutcome.DONE` or a recovered prior entry's outcome string == 'DONE', with no landing check. This is exactly why the RECONCILED->DONE cycle repeated at 20:49, ~20:55, and 21:56 in the log \u2014 each re-exec's launch guard fed a stale DONE back in, and the handler confirmed it again (runner.py:4531-4543).\n- **[ruled out]** The story simply failed to reach REVIEW approval at all, and the DONE label is a straightforward misreport of a failed run.\n  - Evidence: The story's own audit.yaml records a synthesized APPROVE verdict from three reviewers in review cycle 2, and two commits are pushed to feat/issue-1108 \u2014 the work is real and approved; only landing never happened.\n\n### Confirmed cause\n\n`_persist_current_story_result` (src/theforge/sprint/runner.py:3864-3941,\ninvoked at runner.py:5925) writes the accumulated per-sprint story outcome\nas `result.phase.name` the moment the coordinator's phase machine reaches\nPhase.DONE (i.e. review approved) \u2014 before the separate landing/integration\nstep (`_attempt_integration`, invoked afterward at runner.py:5946-5947) has\neven been attempted. If the sprint process re-execs (os.execv, e.g. the\n\"source updated after pull\" self-restart) in that window, this premature\n\"DONE\" is left durably persisted in `.forge/sprints/<id>/state.yaml` with no\nlanding ever having occurred.\n\nOn the next generation, `_resolve_prior_outcomes` (src/theforge/cli/sprint.py:458-482)\nreads that accumulated outcome verbatim, and\n`acquire_launch_story_locks`'s re-exec collision path\n(src/theforge/sprint/launch_guard.py:224-232, gated by\n`_PRIOR_SUCCEEDED_OUTCOMES = frozenset({\"DONE\", \"ALREADY_DONE\"})` at line 51)\ntreats any prior_outcome of \"DONE\" as proof the story already completed \u2014\nwith no check of landing status \u2014 and classifies the worktree collision as\n`REASON_RECONCILE_PRIOR_DONE`. The sprint runner's dropped-slug handler\n(`_reconciled_prior_outcome`/`_recorded_prior_done`, runner.py:3693-3707 and\n4438-4543) then re-confirms DONE from that same unlanded record, marks the\nDAG node complete, and reports the story as landed \u2014 permanently dropping it\nfrom dispatch on every subsequent re-exec (observed three times in this\nrun) without the story's actual landing step ever running.\n\nThe same reconciliation call also records the story's cost as the default\n0.0 rather than its real measured spend: `_record_current_story_entry`\n(runner.py:4009-4067, called at 4543 for the reconciled case) has\n`cost_usd: float | None = 0.0` and the reconcile call site passes no\n`cost_usd`, so the accumulated/summary entry gets `cost_usd: 0.0` instead of\nthe story's real $20.56 \u2014 which both drops the spend from the run total and,\nvia `src/theforge/cli/sprint_digest.py:422`\n(`cost_str = f\"${cost:.2f}\" if isinstance(cost, (int, float)) and cost else \"\u2014\"`,\nfalsy on 0.0), renders as \"\u2014\" rather than a number or an explicit unknown.\n\n### Affected code path\n\n- src/theforge/sprint/runner.py:3864-3941 (`_persist_current_story_result`,\n  outcome = result.phase.name persisted before landing)\n- src/theforge/sprint/runner.py:5925-5947 (persist-then-integrate ordering)\n- src/theforge/sprint/launch_guard.py:48-51, 224-232\n  (`_PRIOR_SUCCEEDED_OUTCOMES`, REASON_RECONCILE_PRIOR_DONE classification)\n- src/theforge/cli/sprint.py:458-482 (`_resolve_prior_outcomes`)\n- src/theforge/sprint/runner.py:3693-3707 (`_recorded_prior_done`)\n- src/theforge/sprint/runner.py:4438-4460 (`_reconciled_prior_outcome`)\n- src/theforge/sprint/runner.py:4531-4543 (REASON_RECONCILE_PRIOR_DONE\n  handling, cost_usd defaulted to 0.0)\n- src/theforge/cli/sprint_digest.py:418-422 (`_story_row`, falsy-cost -> \"\u2014\")\n\n### Fix-success criterion\n\nGiven a story whose accumulated/prior-generation record shows coordinator\nphase DONE (review approved) but no completed landing (landing_status not\n\"landed\", or no fresh/queued PR recorded), a subsequent re-exec's launch\nguard must NOT classify its worktree collision as\nREASON_RECONCILE_PRIOR_DONE / reconcile it to StoryOutcome.DONE. Instead it\nshould be treated as recoverable in-flight/stranded state (comparable to\nREASON_STRANDED_WORKTREE) so a later generation can resume it to actual\nlanding. A sprint summary must never report a story as landed/DONE unless\nits own audit/landing record shows a completed landing, and any real,\nalready-measured cost for such a story must appear as a number (or an\nexplicit \"unmeasured/unknown\" marker) in both the per-story entry and the\nrun's cost total \u2014 never silently rendered as \"\u2014\" while contributing $0 to\nthe total.\n\n### Related findings (out of scope)\n\n> These are adjacent problems noticed during investigation. They are **not** the cause of this issue's symptom and are **out of scope for this fix** \u2014 triage them separately under the linked issue. Do not implement them as part of this issue.\n\n- The launch guard re-exec collision loop can fire (and re-log RECONCILED) three separate times within a single overall `forge sprint` invocation for the same story, suggesting mid-sprint self re-exec ('source updated after pull') is happening repeatedly rather than once per genuine code change \u2014 worth checking why the re-exec trigger fired three times in this one run rather than settling after the first.\n- `REASON_STRANDED_WORKTREE` already exists as the correct classification for a prior-generation record that exists but did not succeed (launch_guard.py:233-237); it currently only fires when prior_outcome is a non-empty string outside _PRIOR_SUCCEEDED_OUTCOMES, so a landing-incomplete 'DONE' never reaches it. Fixing this issue may be as simple as routing landing-incomplete DONE through this existing path rather than inventing a new one.\n\n### Notes\n\nI did not exhaustively trace every one of the three RECONCILED/DONE cycles\nline-by-line (budget-limited); the first cycle (20:49:05 DONE -> 20:49:09\nre-exec -> 20:49:16 RECONCILED) is fully evidenced in the log and matches\nthe code path exactly, and the repeat pattern at ~20:55 and 21:56 is\nconsistent with the same accumulated \"DONE\" being re-read and re-confirmed\non each subsequent re-exec (a self-reinforcing loop once the first false\nDONE is persisted). I did not locate where, if anywhere, `landing_status`\nor `merge` gets corrected back onto the *accumulated* entry after a\nsuccessful late landing for other stories \u2014 worth checking that a proper\nfix doesn't have to also handle the case where the story *did* eventually\nland in a generation that itself then re-exec'd before its own landing\nconfirmation was persisted.\n",
+    "github_issue": 2189,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": null,
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'A story reconciled from a prior generation inherits DONE even when that generation left it in flight' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-2189",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "6303b66f213228feed437452aa793214271fbeaf4eafd42eabe2bd71e13304b3",
+    "resolved_sha256": "3f42e1e15396d8c6a3a92da6db6765bc692bc954cb81bb011288ad06aee6a189",
+    "source_sha256_at_finish": "6303b66f213228feed437452aa793214271fbeaf4eafd42eabe2bd71e13304b3",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-04T07:36:36.808752+00:00",
+    "finished_at": "2026-08-04T08:02:34.467740+00:00",
+    "duration_seconds": 1557.658988
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2189",
+    "branch": "feat/issue-2189",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "gate_runs": 1,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 10.902575500000003,
+        "duration_s": 1024.92,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/cli/sprint.py",
+          "src/theforge/cli/sprint_digest.py",
+          "src/theforge/sprint/launch_guard.py",
+          "src/theforge/sprint/prior_landing.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_sprint_reexec_unlanded_done.py"
+        ],
+        "files_changed_count": 6,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.692455,
+        "duration_s": 117.51
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 7,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 8.333333333333334,
+      "static_dev_max": 3,
+      "complexity_score_used": 7,
+      "base_review": 5,
+      "profile_history_runs": 189,
+      "profile_avg_iterations": 1.5661,
+      "profile_avg_cost_usd": 4.702377,
+      "profile_raw_dev_max": 2.3491,
+      "estimate_headroom_factor": 2.0,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 2064.04,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 3097,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 3097,
+      "chosen_dev_cost_estimate_usd": 9.4048,
+      "review_history_sample_size": 20,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 189 medium-band profile runs with 1.5x iteration headroom and 2.0x cost-estimate headroom; timeout floored on observed run duration+headroom (3097s). review history stayed within the complexity-derived review base."
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-04T07:42:37.064211+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 17.867722300000004,
+    "dev_usd": 10.902575500000003,
+    "review_usd": 1.6924555,
+    "dev_invocations": 1,
+    "review_invocations": 2,
+    "agents": [
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 10.902575500000003,
+        "duration_seconds": 1024.9245255419519,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.010253
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 10.892322500000004
+          }
+        ],
+        "model_used": "opus"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.934204,
+        "duration_seconds": 58.67881850001868,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.934204
+          }
+        ],
+        "model_used": "gpt-5.5"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 0.7582515,
+        "duration_seconds": 58.67881850001868,
+        "success": true,
+        "exit_code": 0,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": "[REDACTED]",
+            "output_tokens": "[REDACTED]",
+            "cache_read_tokens": "[REDACTED]",
+            "cache_creation_tokens": "[REDACTED]",
+            "cost_usd": 0.7582515
+          }
+        ],
+        "model_used": "gemini-3.5-flash"
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "PROCEED",
+    "reason": "Verified against the current baseline that every cited mechanism (launch_guard._PRIOR_SUCCEEDED_OUTCOMES, _persist_current_story_result persisting outcome before landing, _recorded_prior_done/_reconciled_prior_outcome ignoring landing status, _record_current_story_entry's cost_usd=0.0 default, sprint_digest's falsy-cost rendering) is present unchanged, so the bug is real and unfixed.",
+    "complexity": "medium",
+    "complexity_score": 7,
+    "implementation_complexity_score": 7,
+    "validation_complexity_score": 5,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 7",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "13 operator-visible surfaces enumerated in acceptance criteria: --head, --state, 110/run-5499f7eac830.log, 1108/issue-1108/audit.yaml, 1108/run-5499f7eac830-summary.yaml, and the reconcile call site passes no, audit.yaml, captured at",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "concurrency",
+      "cli"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.5360218,
+    "cached": false,
+    "original_verdict": null,
+    "source_run_id": null,
+    "cache_snapshot": {
+      "worktree_head": "fd83318da2b0c24e8173f4666b378ed35aee81b2",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "fd83318da2b0c24e8173f4666b378ed35aee81b2",
+      "story_content_hash": "99d1b9a4172b3e249da9263d9a4157052e835d99693f76362d067130dd566892"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "bb12a1be5b45e2a28c33ef9d4771126dcd8b9d08",
+      "current_worktree_head": "fd83318da2b0c24e8173f4666b378ed35aee81b2",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "bb12a1be5b45e2a28c33ef9d4771126dcd8b9d08",
+      "current_evaluation_base_branch_head": "fd83318da2b0c24e8173f4666b378ed35aee81b2",
+      "cached_story_content_hash": "99d1b9a4172b3e249da9263d9a4157052e835d99693f76362d067130dd566892",
+      "current_story_content_hash": "99d1b9a4172b3e249da9263d9a4157052e835d99693f76362d067130dd566892",
+      "status": "invalidated",
+      "reason": "worktree_head_changed"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.5360218,
+        "duration_s": 72.81,
+        "success": true,
+        "exit_code": 0,
+        "completed": true
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 7,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 189 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset",
+        "preflight": "tier cheap ($8.33)",
+        "planner": "complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 58.33,
+        "final_total_usd": 58.33,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 8.33
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 8.33
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 8.33
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 8.33
+            }
+          ],
+          "total_usd": 58.33
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 7,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "preflight",
+      "context_budget": 200,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/cli",
+          "lines": 12
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/cli/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/cli",
+          "lines": 18
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2189/iter_1.yaml",
+      "handoff": {
+        "summary": "Gated prior-generation reconciliation on completed landing rather than on a persisted coordinator DONE phase. Added src/theforge/sprint/prior_landing.py \u2014 a stdlib-only module holding the shared predicate (a succeeded outcome is reconcilable only when its landing obligation is settled; landing_status None means no obligation and stays reconcilable, pending_integration/failed without merge/queued-PR evidence does not, and a record with no landing fields keeps prior behaviour). The accumulated story entry now records landing_status and the structured landing record beside the phase via _landing_evidence_fields, and a new _persist_story_landing rewrites them from every site that resolves a landing (_attempt_integration, mid-loop queued-PR polling, sprint wrap-up), so the durable record a re-exec reads matches reality. cli/sprint._resolve_prior_outcomes now hands the whole recorded entry to the launch guard instead of a bare outcome string; acquire_launch_story_locks routes an unlanded prior success to the existing REASON_STRANDED_WORKTREE path; and the runner independently re-checks via _reconcilable_prior_record, rewriting _dropped_slugs in place so audit, RCA and live-status rows all report the same stranded state. Both the reconciled and stranded _record_current_story_entry call sites now carry the prior generation's measured cost (_measured_recorded_cost) instead of the 0.0 default, preserving a recorded None as cost-unknown and flagging unmeasured spend. sprint_digest._story_row renders numeric 0.0 as $0.00, reserving the absent marker for None/missing.\n",
+        "commits": [
+          {
+            "sha": "6321453",
+            "message": "fix(sprint): only inherit a prior generation's DONE when it actually landed"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Given a prior-generation record showing coordinator phase DONE but no completed landing, a re-exec's launch guard must NOT classify its worktree collision as REASON_RECONCILE_PRIOR_DONE / reconcile it to StoryOutcome.DONE; it should be treated as recoverable in-flight/stranded state (comparable to REASON_STRANDED_WORKTREE) so a later generation can resume it to actual landing.",
+            "status": "MET",
+            "notes": "launch_guard now calls prior_landing.reconcilable_prior_success on the full prior record; an unlanded DONE falls through to REASON_STRANDED_WORKTREE. The runner re-checks independently (_reconcilable_prior_record) and rewrites the drop reason in _dropped_slugs, so a stale guard classification cannot settle the story on DONE either. Covered by TestLaunchGuardRejectsUnlandedPriorDone and TestRunnerRefusesUnlandedPriorDone; both fail on the pre-fix code."
+          },
+          {
+            "criterion": "A sprint summary must never report a story as landed/DONE unless its own audit/landing record shows a completed landing.",
+            "status": "MET",
+            "notes": "The unlanded case now reports DROPPED with drop_reason stranded-prior-generation-worktree in both the summary and the accumulated state, and is counted as failed rather than succeeded. The accumulated entry additionally records landing_status/landing so the claim is checkable rather than inferred. Note: a merge-failed story's accumulated `outcome` field still reads DONE (it is result.phase.name) \u2014 landing_status now disambiguates it for reconciliation, and the canonical SprintStoryState the summary projects from is corrected to MERGE_FAILED at those sites, so the summary itself does not report it as landed."
+          },
+          {
+            "criterion": "Any real, already-measured cost for such a story must appear as a number (or an explicit unmeasured/unknown marker) in both the per-story entry and the run's cost total \u2014 never silently rendered as absent while contributing $0 to the total.",
+            "status": "MET",
+            "notes": "_measured_recorded_cost carries the prior entry's cost (falling back to the canonical entry) into both the reconciled and stranded _record_current_story_entry / _set_outcome calls; a recorded None stays None and appends to unmeasured_spend. test_measured_cost_survives_the_reroute asserts every durable write keeps $20.556 (not just the final one, since each intermediate write is what the next re-exec seeds from) and that the run total includes it."
+          },
+          {
+            "criterion": "Rendering: a known cost of 0.0 must not render as the absent marker.",
+            "status": "MET",
+            "notes": "sprint_digest._story_row renders any int/float (excluding bool) as $N.NN, so 0.0 renders $0.00; only None or a missing key renders the em-dash marker. Covered by TestDigestCostRendering."
+          },
+          {
+            "criterion": "Seam-level integration tests cover the touched coordinator/sprint state-handoff boundary (project convention 8).",
+            "status": "MET",
+            "notes": "tests/test_sprint_reexec_unlanded_done.py adds 14 tests across four seams: the prior_landing predicate, launch-guard classification, the runner's drop handling and cost carry driven through real run_sprint, and the persist-then-integrate ordering (capturing every accumulated-state write to assert the pre-landing write is not reconcilable and the post-landing write is). 7 of them fail on the pre-fix baseline."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "Not implemented (explicitly out of scope per the spec's Related findings): why the mid-sprint re-exec trigger fired three times in one run rather than settling after the first.",
+          "Left alone deliberately: _persist_current_story_result still writes outcome = result.phase.name, so a merge-failed story's accumulated entry reads DONE. landing_status now disambiguates it and the canonical story state is corrected, so no surface reports it as landed. Changing that field would alter how the prior-outcome seeding loop maps outcomes across several surfaces \u2014 wider than this issue."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "6321453f5cd55dca67210c8f44d992354f445183",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "6321453f5cd55dca67210c8f44d992354f445183",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": "WARN"
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] The change satisfies the reconciliation, summary, cost, rendering, and seam-test criteria; focused tests pass. | [google-gemini-3.5-flash-api] The implementation successfully gates prior-generation reconciliation on completed landing rather than on a persisted coordinator DONE phase, carries measured costs correctly, and renders 0.0 cost as $0.00.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Given a prior-generation record showing coordinator phase DONE but no completed landing, a re-exec's launch guard must NOT classify its worktree collision as REASON_RECONCILE_PRIOR_DONE / reconcile it to StoryOutcome.DONE; it should be treated as recoverable in-flight/stranded state (comparable to REASON_STRANDED_WORKTREE) so a later generation can resume it to actual landing.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint.py:458-490 now passes full prior records from accumulated state, src/theforge/sprint/launch_guard.py:241-250 calls reconcilable_prior_success and routes unresolved prior successes to REASON_STRANDED_WORKTREE, and src/theforge/sprint/runner.py:4631-4650 independently rewrites stale REASON_RECONCILE_PRIOR_DONE drops to stranded. tests/test_sprint_reexec_unlanded_done.py:55-88 covers the exact pending_integration DONE predicate, lines 132-151 cover launch-guard classification, and lines 324-349 cover runner rerouting from a stale reconciled drop reason.; src/theforge/sprint/launch_guard.py:243 uses reconcilable_prior_success(prior_raw) to check if the prior success is reconcilable. If not, it falls through to REASON_STRANDED_WORKTREE at line 250. src/theforge/sprint/runner.py:4634 also checks _reconcilable_prior_record(slug) and rewrites the drop reason to REASON_STRANDED_WORKTREE. Covered by TestLaunchGuardRejectsUnlandedPriorDone and TestRunnerRefusesUnlandedPriorDone in tests/test_sprint_reexec_unlanded_done.py."
+        },
+        {
+          "criterion": "A sprint summary must never report a story as landed/DONE unless its own audit/landing record shows a completed landing.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:3881-3896 records landing_status, landing, and merge evidence beside the persisted phase; lines 3898-3917 update the accumulated entry after landing resolves; lines 5234-5237, 5691-5692, 5706-5709, and 6212-6213 invoke that persistence from landing-resolution paths. tests/test_sprint_reexec_unlanded_done.py:324-343 asserts an unlanded prior DONE is summarized and accumulated as DROPPED, and lines 420-460 assert the pre-landing durable write is not reconcilable while the post-landing write is.; src/theforge/sprint/runner.py:4634 rewrites the drop reason to REASON_STRANDED_WORKTREE if the prior record is not reconcilable, which prevents it from being recorded as DONE or ALREADY_DONE. Covered by TestRunnerRefusesUnlandedPriorDone.test_unlanded_prior_done_is_not_recorded_as_done_or_landed in tests/test_sprint_reexec_unlanded_done.py."
+        },
+        {
+          "criterion": "Any real, already-measured cost for such a story must appear as a number (or an explicit unmeasured/unknown marker) in both the per-story entry and the run's cost total \u2014 never silently rendered as absent while contributing $0 to the total.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/runner.py:4552-4574 reads measured prior cost from the recovered record, lines 4676-4680 carry it into reconciled entries, and lines 4689-4710 carry it into stranded entries and canonical outcome state; final totals still project from accumulated plus prior cost at lines 6291-6317. tests/test_sprint_reexec_unlanded_done.py:352-371 asserts every durable write preserves 20.556, the summary row keeps that value, and the SprintResult total includes it.; src/theforge/sprint/runner.py:4677 and 4706 use _measured_recorded_cost(slug) to carry the prior generation's measured cost instead of defaulting to 0.0. Covered by TestRunnerRefusesUnlandedPriorDone.test_measured_cost_survives_the_reroute in tests/test_sprint_reexec_unlanded_done.py."
+        },
+        {
+          "criterion": "Rendering: a known cost of 0.0 must not render as the absent marker.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/cli/sprint_digest.py:421-429 renders any non-bool int or float, including 0.0, as currency and reserves the absent marker for None or missing values. tests/test_sprint_reexec_unlanded_done.py:466-474 asserts $0.00, $20.56, None, and missing-key rendering.; src/theforge/cli/sprint_digest.py:428 checks isinstance(cost, (int, float)) and not isinstance(cost, bool) to render numeric 0.0 as $0.00, reserving the em-dash marker for None or missing keys. Covered by TestDigestCostRendering in tests/test_sprint_reexec_unlanded_done.py."
+        },
+        {
+          "criterion": "Seam-level integration tests cover the touched coordinator/sprint state-handoff boundary (project convention 8).",
+          "status": "VERIFIED",
+          "evidence": "tests/test_sprint_reexec_unlanded_done.py:55-460 covers the shared predicate, launch guard classification, runner drop handling and cost carry through run_sprint, and persist-then-integrate state handoff. The focused command pytest -q tests/test_sprint_reexec_unlanded_done.py passed with 14 tests.; tests/test_sprint_reexec_unlanded_done.py contains 14 seam-level integration tests covering the prior_landing predicate, launch-guard classification, runner drop handling, cost carry, and persist-then-integrate ordering."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [anthropic-opus-cli] Steps 2/3 as worded ('a prior DONE is accepted only when the story's recorded landing state confirms it actually landed') would also demote stories that legitimately reach DONE with no landing of their own \u2014 runner.py:3157 documents landing_status is None as the on_approve/no-landing case, and runner.py:2929-2955 already treats that distinctly from 'landed'/'failed'/'pending_integration'.\n  Suggestion: Gate on 'landing was owed but not completed' rather than 'landing_status == landed': treat landing_status None (no landing obligation) and merged/queued-PR records as still reconcilable, and only strand records where a landing was owed and is unresolved.\n- [P1-impl] [anthropic-opus-cli] Step 1 assumes landing evidence is present in the accumulated state entry, but _persist_current_story_result (runner.py:3864-3933) writes only merge: result.merge is not None and merged, which is False both for a never-landed story and for one whose PR is queued for auto-merge; no landing field is written there (unlike audit.py:447/643 which do build a landing record).\n  Suggestion: Have Step 3's persist change also write landing_status/landing onto the accumulated entry so Step 1's guard has an unambiguous signal instead of inferring from the ambiguous boolean merge.\n- [P2] [anthropic-opus-cli] The stranded path (runner.py, REASON_STRANDED_WORKTREE branch) also calls _record_current_story_entry without cost_usd, so it inherits the same 0.0 default; Step 4 mentions reconciliation but not this sibling site, which is exactly where newly-rerouted stories will land after Step 1.\n  Suggestion: Apply the measured-cost lookup to both the reconciled and stranded _record_current_story_entry call sites.\n- [P2] [google-gemini-3.5-flash-api] The runner does not call _persist_current_story_result after _attempt_integration or queued PR polling updates the landing status. Any update to a story's landing status or merge info should be immediately persisted to state.yaml so subsequent generations read the correct landing evidence. Suggestion: Call _persist_current_story_result inside or immediately after _attempt_integration and queued PR polling when landing_status or merge info changes.",
+    "cost_usd": 4.436444,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash-api",
+        "verdict": "PARSE_ERROR",
+        "cost_usd": 3.88213
+      },
+      {
+        "attempt": 0,
+        "profile": "anthropic-opus-cli",
+        "verdict": "APPROVE",
+        "cost_usd": 0.53067
+      },
+      {
+        "attempt": 0,
+        "profile": "google-gemini-3.5-flash-api",
+        "verdict": "APPROVE",
+        "cost_usd": 0.023643
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "anthropic-opus-cli",
+        "complexity": "medium",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 53.34,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash-api",
+        "complexity": "medium",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 207.34,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Steps 2/3 as worded ('a prior DONE is accepted only when the story's recorded landing state confirms it actually landed') would also demote stories that legitimately reach DONE with no landing of their own \u2014 runner.py:3157 documents landing_status is None as the on_approve/no-landing case, and runner.py:2929-2955 already treats that distinctly from 'landed'/'failed'/'pending_integration'.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 1 assumes landing evidence is present in the accumulated state entry, but _persist_current_story_result (runner.py:3864-3933) writes only merge: result.merge is not None and merged, which is False both for a never-landed story and for one whose PR is queued for auto-merge; no landing field is written there (unlike audit.py:447/643 which do build a landing record).",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The stranded path (runner.py, REASON_STRANDED_WORKTREE branch) also calls _record_current_story_entry without cost_usd, so it inherits the same 0.0 default; Step 4 mentions reconciliation but not this sibling site, which is exactly where newly-rerouted stories will land after Step 1.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "The runner does not call _persist_current_story_result after _attempt_integration or queued PR polling updates the landing status. Any update to a story's landing status or merge info should be immediately persisted to state.yaml so subsequent generations read the correct landing evidence. Suggestion: Call _persist_current_story_result inside or immediately after _attempt_integration and queued PR polling when landing_status or merge info changes.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ],
+    "parse_retries": [
+      {
+        "attempt": 0,
+        "reviewer": "google-gemini-3.5-flash-api",
+        "retry": 1,
+        "errors": [
+          "findings[0].description must be non-empty"
+        ],
+        "repair": true
+      }
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2198",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2189",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2198",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2198",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-04T08:02:34.467740+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "WARN",
+    "cost_usd": 0.178764,
+    "duration_s": 29.929630417143926,
+    "findings": [
+      {
+        "category": "requirement",
+        "description": "The 'Related findings (out of scope)' section explicitly tells the implementer not to route landing-incomplete DONE through REASON_STRANDED_WORKTREE ('out of scope for this fix... do not implement as part of this issue'), but the Fix-success criterion requires exactly that behavior: 'treated as recoverable in-flight/stranded state (comparable to REASON_STRANDED_WORKTREE)'. The same code change is simultaneously mandated by the acceptance criterion and disclaimed as out-of-scope, leaving the implementer unable to satisfy both instructions literally.",
+        "split_suggestion": null
+      }
+    ]
+  },
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3778 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 701 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/explain.py",
+      "detail": "src/theforge/cli/explain.py has 639 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1428 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1211 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1769 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 1336 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/profiles.py",
+      "detail": "src/theforge/config/profiles.py has 667 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 1273 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1147 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 2541 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1643 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1683 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1507 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 1810 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 2046 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1752 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1192 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2130 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1182 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1191 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1245 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1287 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 657 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 2813 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/process_group.py",
+      "detail": "src/theforge/process_group.py has 788 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1047 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 762 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1027 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 846 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1130 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1527 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/batch_report.py",
+      "detail": "src/theforge/sprint/batch_report.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 1908 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 6523 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1081 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 603 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1645 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1101 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1263 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1310 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_models.py",
+      "detail": "tests/test_config_models.py has 1012 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1207 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2790 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1021 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1341 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1226 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1182 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1231 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3275 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 1978 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_reexec_reconcile.py",
+      "detail": "tests/test_sprint_reexec_reconcile.py has 1123 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1827 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1225 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 6,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 7,
+      "score_controlled": false,
+      "thresholds": [],
+      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
+      "applied": false,
+      "bucket": null,
+      "range": null,
+      "output": null,
+      "reason": "not_score_controlled"
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 6,
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 5,
+            "completed": 4,
+            "raw": 0.8,
+            "weighted": 0.8,
+            "rate": 0.8,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($8.33)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 13,
+            "completed": 13,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 \u2192 tier strong ($8.33); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 7,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.9312,
+              "weighted": 1.0,
+              "runs": 189,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 1.0
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "concurrency",
+                "cli"
+              ],
+              "raw": 0.9266,
+              "weighted": 0.95,
+              "runs": 109,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.95,
+              "by_domain": {
+                "backend": {
+                  "runs": 62,
+                  "raw": 0.9194,
+                  "weighted": 0.95,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 15,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 32,
+                  "raw": 0.9062,
+                  "weighted": 0.95,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "concurrency",
+                "cli"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "cli": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "concurrency",
+          "cli"
+        ],
+        "influenced": false,
+        "complexity_only_head": "anthropic-opus-cli",
+        "domain_head": "anthropic-opus-cli",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "concurrency",
+            "cli"
+          ],
+          "raw": 0.9266,
+          "weighted": 0.95,
+          "runs": 109,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.95,
+          "by_domain": {
+            "backend": {
+              "runs": 62,
+              "raw": 0.9194,
+              "weighted": 0.95,
+              "tainted_runs": 0
+            },
+            "concurrency": {
+              "runs": 15,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            },
+            "cli": {
+              "runs": 32,
+              "raw": 0.9062,
+              "weighted": 0.95,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "anthropic-opus-cli",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.9312,
+        "weighted_success_rate": 1.0,
+        "sample_size": 189,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 1.0,
+          "threshold": 0.6,
+          "sample_size": 189,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "plan_review_p2_exceeded"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend+cli+concurrency",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "google-gemini-3.5-flash-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "cli",
+          "concurrency"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 1.00 \u2265 threshold 0.60 over 189 admissible runs \u2014 pre-promotion held) (profile success_rate=1.00 @ MEDIUM); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 120,
+            "completed": 113,
+            "raw": 0.9417,
+            "weighted": 0.9658,
+            "rate": 0.9658,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 78,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli"
+          ],
+          "checked_detail": {
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 78,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 48.8038,
+              "weighted": 48.8038,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['anthropic', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 142,
+            "completed": 141,
+            "raw": 0.993,
+            "weighted": 0.9899,
+            "rate": 0.9899,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 33,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 120,
+            "completed": 113,
+            "raw": 0.9417,
+            "weighted": 0.9658,
+            "rate": 0.9658,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 78,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 33,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 78,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 7; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.536022,
+      "duration_s": 72.81,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": 0.121462,
+      "duration_s": 30.24,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Gate reconciliation on completed landing, not merely a persisted coordinator DONE phase, and preserve measured cost when recording any reconciled or stranded prior state. Keep the CLI as orchestration by extending existing prior-outcome data flow rather than adding sprint policy in command handlers.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Thread landing evidence into prior-generation reconciliation inputs",
+            "files": [
+              "src/theforge/cli/sprint.py",
+              "src/theforge/sprint/launch_guard.py"
+            ],
+            "action": "modify",
+            "details": "Extend the existing prior outcome resolution path so each slug's prior record carries the accumulated outcome plus landing evidence already present in state/summary data, such as landing_status, merge, landing, or PR/queued metadata where available. In acquire_launch_story_locks, treat DONE/ALREADY_DONE as reconcilable only when that record proves completed landing; otherwise route it through the existing stranded/in-flight collision handling path instead of REASON_RECONCILE_PRIOR_DONE."
+          },
+          {
+            "id": 2,
+            "description": "Make runner reconciliation reject DONE records without landing",
+            "files": [
+              "src/theforge/sprint/runner.py"
+            ],
+            "action": "modify",
+            "details": "Update _recorded_prior_done and _reconciled_prior_outcome so a prior DONE is accepted only when the story's recorded landing state confirms it actually landed. For a DONE-but-unlanded record, preserve the story as non-terminal/stranded rather than marking the DAG node complete or recording StoryOutcome.DONE.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Avoid persisting pre-landing coordinator DONE as final landed sprint success",
+            "files": [
+              "src/theforge/sprint/runner.py"
+            ],
+            "action": "modify",
+            "details": "Adjust _persist_current_story_result or its call site around the persist-then-integrate ordering so Phase.DONE before _attempt_integration is not enough to create a later-reconcilable landed success. Persist the phase/audit information for recovery, but ensure the accumulated story entry only represents landed success after integration records successful landing.",
+            "depends_on": [
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Preserve measured cost and render zero/unknown distinctly",
+            "files": [
+              "src/theforge/sprint/runner.py",
+              "src/theforge/cli/sprint_digest.py"
+            ],
+            "action": "modify",
+            "details": "Change _record_current_story_entry's default cost handling so reconciliation does not silently write 0.0 when measured story cost exists in audit/state. Update sprint_digest._story_row to render numeric 0.0 as $0.00 and only render the absent marker for None or missing cost."
+          },
+          {
+            "id": 5,
+            "description": "Add regression coverage for re-exec reconciliation and summary cost",
+            "files": [
+              "tests"
+            ],
+            "action": "modify",
+            "details": "Add focused seam-level tests covering a prior-generation record with outcome DONE but no completed landing: launch guard must not return REASON_RECONCILE_PRIOR_DONE, runner must not record the story as DONE/landed, and measured audit cost must be retained in the summary/run total. Add a digest-level assertion that 0.0 renders as $0.00 while missing cost renders as the explicit absent marker.",
+            "depends_on": [
+              1,
+              2,
+              3,
+              4
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "Given a story whose accumulated/prior-generation record shows coordinator phase DONE but no completed landing, a subsequent re-exec's launch guard must NOT classify its worktree collision as REASON_RECONCILE_PRIOR_DONE / reconcile it to StoryOutcome.DONE.",
+            "steps": [
+              1,
+              2,
+              5
+            ]
+          },
+          {
+            "criterion": "Instead it should be treated as recoverable in-flight/stranded state comparable to REASON_STRANDED_WORKTREE so a later generation can resume it to actual landing.",
+            "steps": [
+              1,
+              2,
+              5
+            ]
+          },
+          {
+            "criterion": "A sprint summary must never report a story as landed/DONE unless its own audit/landing record shows a completed landing.",
+            "steps": [
+              2,
+              3,
+              5
+            ]
+          },
+          {
+            "criterion": "Any real, already-measured cost for such a story must appear as a number or explicit unknown marker in both the per-story entry and the run's cost total, never silently rendered as \u2014 while contributing $0 to the total.",
+            "steps": [
+              4,
+              5
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The exact authoritative landing fields may differ between accumulated state, summary entries, and per-story audit records.",
+            "mitigation": "Prefer an existing canonical landing status if present; otherwise centralize the landing-complete predicate in runner/launch_guard shared data flow and fail closed when evidence is missing."
+          },
+          {
+            "description": "Some successfully landed stories may have older records with incomplete landing metadata.",
+            "mitigation": "Write tests for existing successful landing shapes before tightening the predicate, and support all currently persisted success forms that prove PR creation/queueing/landing."
+          },
+          {
+            "description": "Changing pre-landing persistence could weaken crash recovery if phase progress stops being visible.",
+            "mitigation": "Keep phase/audit persistence intact, but separate recoverable coordinator phase from final landed sprint outcome."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": 4.436444,
+      "duration_s": 214.89,
+      "iterations": 3,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash-api",
+          "verdict": "PARSE_ERROR",
+          "cost_usd": 3.88213
+        },
+        {
+          "attempt": 0,
+          "profile": "anthropic-opus-cli",
+          "verdict": "APPROVE",
+          "cost_usd": 0.53067
+        },
+        {
+          "attempt": 0,
+          "profile": "google-gemini-3.5-flash-api",
+          "verdict": "APPROVE",
+          "cost_usd": 0.023643
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 10.902576,
+      "duration_s": 1024.92,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 44.13,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 1.692455,
+      "duration_s": 117.36,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 0.934204,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 0.758251,
+          "verdict": "APPROVE"
+        }
+      }
+    }
+  },
+  "totals": {
+    "cost_usd": 17.867722,
+    "duration_s": 1504.36,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "778fad893e82",
+  "sprint_name": "issues-2189,751,1587"
+}
