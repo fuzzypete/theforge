@@ -1102,8 +1102,145 @@ def _baseline_failure_diagnostic(output_tail: object) -> str:
     return f"{header}\n{excerpt}"
 
 
-def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[str, object]:
-    """Run the configured gate on the sprint merge base before any agent work starts."""
+#: How many preserved baseline worktrees may exist at once. A halting baseline
+#: gate keeps the worktree that produced it, because that worktree is the only
+#: place the failure can be re-run in the environment that produced it. Each one
+#: is a full checkout plus whatever the setup command installed into it, so the
+#: set is bounded: the newest are kept, older ones are reclaimed on the next
+#: baseline run. The durable evidence file outlives all of them.
+BASELINE_WORKTREE_KEEP = 2
+
+#: Directory prefix for the baseline gate's temporary worktree parent.
+BASELINE_TEMP_PREFIX = "forge-baseline-"
+
+
+def _remove_baseline_temp_root(project_root: Path, temp_root: Path) -> None:
+    """Unregister and delete one ``forge-baseline-*`` temp root, best-effort.
+
+    The prune covers the leftovers of a run that died before its own cleanup:
+    ``git worktree remove`` declines a path it no longer knows about, which
+    would leave the admin entry behind after the directory goes.
+    """
+    subprocess.run(
+        ["git", "worktree", "remove", "--force", str(temp_root / "worktree")],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    shutil.rmtree(temp_root, ignore_errors=True)
+    subprocess.run(
+        ["git", "worktree", "prune"],
+        cwd=project_root,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def _prune_preserved_baseline_worktrees(project_root: Path, keep: int) -> None:
+    """Reclaim all but the *keep* newest preserved baseline worktrees.
+
+    Called before a new baseline run creates its own temp root, so that a run
+    which goes on to preserve leaves at most ``BASELINE_WORKTREE_KEEP`` behind.
+    Only ``forge-baseline-*`` directories are touched, and only ones a previous
+    run left: a passing run removes its own.
+
+    Best-effort — pruning old evidence must never be the reason a sprint fails
+    to start.
+    """
+    forge_root = project_root / ".forge"
+    try:
+        candidates = [
+            path
+            for path in forge_root.iterdir()
+            if path.is_dir() and path.name.startswith(BASELINE_TEMP_PREFIX)
+        ]
+    except OSError:
+        return
+    try:
+        candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    except OSError:
+        return
+    for stale in candidates[max(keep, 0) :]:
+        try:
+            _remove_baseline_temp_root(project_root, stale)
+        except Exception as exc:  # noqa: BLE001
+            _log(f"Warning: could not reclaim preserved baseline worktree {stale}: {exc}")
+
+
+def _write_baseline_gate_evidence(
+    *,
+    log_dir: Path,
+    filename: str,
+    header_lines: list[str],
+    full_output: str | None,
+) -> tuple[str | None, str | None]:
+    """Persist the halting baseline gate's raw output outside the temp worktree.
+
+    Returns ``(path, unavailable_reason)`` — exactly one is set. An absent
+    account is written *as* an absent account: when the gate produced no output
+    record the file is still written, saying so, so a reader can tell "nothing
+    was captured" from "nothing went wrong". A reason is returned only when the
+    file itself could not be written, which is the one case no file can state.
+    """
+    if full_output:
+        body = full_output
+    else:
+        body = (
+            "Gate output was not captured: the gate command produced no output "
+            "record for this run.\n"
+        )
+    content = "\n".join([*header_lines, "", body])
+    path = log_dir / filename
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    except Exception as exc:  # noqa: BLE001
+        return None, f"could not write {path}: {exc}"
+    return str(path), None
+
+
+def _baseline_evidence_footer(
+    *,
+    worktree: str | None,
+    evidence_path: str | None,
+    evidence_unavailable: str | None,
+) -> str:
+    """Name, on the verdict itself, where the evidence for it now lives.
+
+    The verdict travels further than the run log — it becomes the RuntimeError
+    text and the audit record's message — so the pointers travel with it rather
+    than sitting in a file the verdict never references. When the full output
+    could not be persisted the message says that, so a missing pointer is never
+    read as "there was nothing to point at".
+    """
+    parts: list[str] = []
+    if evidence_path:
+        parts.append(f"Full gate output: {evidence_path}")
+    elif evidence_unavailable:
+        parts.append(f"Full gate output unavailable: {evidence_unavailable}")
+    if worktree:
+        parts.append(f"Baseline worktree preserved for reproduction: {worktree}")
+    return "\n" + "\n".join(parts) if parts else ""
+
+
+def _run_baseline_gate(
+    config: ForgeConfig,
+    resolved: ResolvedSprint,
+    *,
+    run_id: str | None = None,
+) -> dict[str, object]:
+    """Run the configured gate on the sprint merge base before any agent work starts.
+
+    A halting outcome (the gate failed, or the workspace setup that precedes it
+    failed) keeps two things the run would otherwise destroy at the moment it
+    produces them: the gate's full raw output, written under
+    ``.forge/logs/<sprint>/`` where it outlives the run, and the temporary
+    worktree the gate ran in, which is the only environment the failure can be
+    reproduced in. Cleanup of the worktree happens after that capture, never
+    before, and only on outcomes that did not halt the sprint (#2160).
+    """
 
     base_branch = config.workspace.base_branch
     if not _project_root_is_git_checkout(config.project_root):
@@ -1198,8 +1335,25 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
 
     forge_temp_root = config.project_root / ".forge"
     forge_temp_root.mkdir(parents=True, exist_ok=True)
-    temp_root = Path(tempfile.mkdtemp(prefix="forge-baseline-", dir=forge_temp_root))
+    # Reclaim older preserved worktrees *before* claiming disk for this run's, so
+    # the bound holds across a streak of failing runs.
+    _prune_preserved_baseline_worktrees(config.project_root, BASELINE_WORKTREE_KEEP - 1)
+    temp_root = Path(tempfile.mkdtemp(prefix=BASELINE_TEMP_PREFIX, dir=forge_temp_root))
     baseline_worktree = temp_root / "worktree"
+    sprint_log_dir = config.project_root / ".forge" / "logs" / resolved.name
+    # Run-id-keyed where there is one, matching the rest of the sprint log
+    # directory. Headless invocations have no run id, so the temp root's own
+    # unique suffix names the file instead — a wall-clock stamp would collide
+    # between two runs in the same second and silently overwrite the first
+    # run's evidence with the second's.
+    evidence_filename = (
+        f"run-{run_id}-baseline-gate.txt"
+        if run_id
+        else f"baseline-gate-{temp_root.name.removeprefix(BASELINE_TEMP_PREFIX)}.txt"
+    )
+    # Set to the worktree path by any outcome that halts the sprint; the finally
+    # block reclaims the worktree only while this is None.
+    preserved_worktree: str | None = None
     try:
         add_worktree = subprocess.run(
             ["git", "worktree", "add", "--detach", str(baseline_worktree), merge_base_ref],
@@ -1235,6 +1389,26 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             )
             if not setup_ok:
                 duration = time.monotonic() - started_monotonic
+                preserved_worktree = str(baseline_worktree)
+                setup_message = (
+                    "Broken baseline: workspace setup command failed in the temporary "
+                    f"baseline worktree for merge base {merge_base_ref}: {setup_out}"
+                )
+                evidence_path, evidence_unavailable = _write_baseline_gate_evidence(
+                    log_dir=sprint_log_dir,
+                    filename=evidence_filename,
+                    header_lines=[
+                        f"# baseline workspace setup failed on merge base {merge_base_ref}",
+                        f"# setup command: {config.workspace.setup_command}",
+                        f"# worktree: {baseline_worktree}",
+                    ],
+                    full_output=setup_out,
+                )
+                setup_message += _baseline_evidence_footer(
+                    worktree=preserved_worktree,
+                    evidence_path=evidence_path,
+                    evidence_unavailable=evidence_unavailable,
+                )
                 return {
                     "status": "error",
                     "passed": False,
@@ -1244,15 +1418,20 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
                     "finished_at": datetime.datetime.now(datetime.timezone.utc),
                     "merge_base": merge_base_ref,
                     "command": config.validation.gate_command,
-                    "message": (
-                        "Broken baseline: workspace setup command failed in the temporary "
-                        f"baseline worktree for merge base {merge_base_ref}: {setup_out}"
-                    ),
+                    "worktree": preserved_worktree,
+                    "evidence_path": evidence_path,
+                    "evidence_unavailable": evidence_unavailable,
+                    "message": setup_message,
                 }
 
+        # The gate runs in a worktree that does not survive this function, so
+        # ``run_gate_full``'s own trace (written into that worktree) cannot be the
+        # durable record. The full output is taken out by value instead.
+        gate_full_output: list[str] = []
         decision, error, output_tail, resolved_gate_cmd, gate_exit_code = run_gate_full(
             config,
             baseline_worktree,
+            full_output=gate_full_output,
             label=GateLabel(
                 purpose=BASELINE_GATE_PURPOSE,
                 target="merge base",
@@ -1304,12 +1483,34 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
                 f" (local {base_branch} is at {local_sha[:12]}, origin is at {origin_sha[:12]}; "
                 f"local branch may be stale; run `git pull` on {base_branch} or omit --no-pull)"
             )
+        # Capture before the finally block would have reclaimed the workspace,
+        # and preserve the workspace itself: the excerpt below names which check
+        # failed, the file and the worktree are what let the operator find out
+        # why (#2160).
+        preserved_worktree = str(baseline_worktree)
+        evidence_path, evidence_unavailable = _write_baseline_gate_evidence(
+            log_dir=sprint_log_dir,
+            filename=evidence_filename,
+            header_lines=[
+                f"# baseline gate {decision or 'ERROR'} on merge base {merge_base_ref}",
+                f"# gate command: {resolved_gate_cmd}",
+                f"# exit code: {exit_code}",
+                f"# worktree: {baseline_worktree}",
+            ],
+            full_output=gate_full_output[0] if gate_full_output else None,
+        )
+        message += _baseline_evidence_footer(
+            worktree=preserved_worktree,
+            evidence_path=evidence_path,
+            evidence_unavailable=evidence_unavailable,
+        )
         # The sha names where the gate ran; only the gate's own output names what
         # must change. ``run_gate_full`` leaves ``error`` None for a plain nonzero
         # exit, so without this the operator is handed a commit to investigate
         # when the remedy is one key in one file (#1980). Appended last, after the
-        # sha and the stale-branch hint, and bounded so the same string stays
-        # usable as a log line and as the raised RuntimeError text.
+        # sha, the stale-branch hint and the evidence pointers, and bounded so the
+        # same string stays usable as a log line and as the raised RuntimeError
+        # text — the unbounded record is the evidence file the pointers name.
         _diagnostic = _baseline_failure_diagnostic(output_tail)
         if _diagnostic:
             message += f"\n{_diagnostic}"
@@ -1324,17 +1525,14 @@ def _run_baseline_gate(config: ForgeConfig, resolved: ResolvedSprint) -> dict[st
             "command": resolved_gate_cmd,
             "decision": decision,
             "output_tail": output_tail,
+            "worktree": preserved_worktree,
+            "evidence_path": evidence_path,
+            "evidence_unavailable": evidence_unavailable,
             "message": message,
         }
     finally:
-        subprocess.run(
-            ["git", "worktree", "remove", "--force", str(baseline_worktree)],
-            cwd=config.project_root,
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        shutil.rmtree(temp_root, ignore_errors=True)
+        if preserved_worktree is None:
+            _remove_baseline_temp_root(config.project_root, temp_root)
 
 
 def _continuation_evidence(
@@ -3237,7 +3435,7 @@ def run_sprint(
             started_at=baseline_started_at.isoformat(),
         )
         try:
-            baseline_gate = _run_baseline_gate(config, resolved)
+            baseline_gate = _run_baseline_gate(config, resolved, run_id=run_id)
         finally:
             _publish_sprint_phase(SPRINT_PHASE_STARTING)
     resolved.baseline_gate = baseline_gate
