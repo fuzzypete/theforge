@@ -51,9 +51,9 @@ def iter_plan_phase_profiles(config: "ForgeConfig") -> Iterator[tuple[str, Model
     """Yield ``(role_label, profile)`` for the PLAN / PLAN_REVIEW agents.
 
     These phases dispatch real agents and spend real budget, but their config
-    is not a ModelProfile — ``plan`` is scalar fields the coordinator projects
-    at dispatch time, and ``plan_agent_review`` carries either a pool or legacy
-    scalars. A caller asking "which credentials will this run present?" needs
+    is not a ModelProfile — ``plan`` is a composed ModelRef the coordinator
+    projects at dispatch time, and ``plan_agent_review`` carries either a pool
+    or a single ref. A caller asking "which credentials will this run present?" needs
     them regardless, so this projects both into the same shape
     :func:`iter_config_profiles` yields.
 
@@ -65,15 +65,13 @@ def iter_plan_phase_profiles(config: "ForgeConfig") -> Iterator[tuple[str, Model
     """
     plan = getattr(config, "plan", None)
     if plan is not None and getattr(plan, "enabled", False):
+        from .bridge import model_ref_to_profile
+
         yield (
             "plan",
-            ModelProfile(
-                name="plan",
-                cli=plan.cli,
-                provider=plan.provider,
-                model=plan.model,
-                budget_usd=plan.budget_usd,
-                timeout_seconds=plan.timeout,
+            model_ref_to_profile(
+                "plan",
+                plan.ref,
                 allowed_tools=config.preflight_profile.allowed_tools,
             ),
         )

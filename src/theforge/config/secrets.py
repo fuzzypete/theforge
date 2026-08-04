@@ -6,7 +6,13 @@ import logging
 import os
 from typing import Any
 
-from .types import BackendConfig, NotificationConfig, NtfyConfig, SlackConfig
+from .types import (
+    DEFAULT_HITL_TIMEOUT_SECONDS,
+    BackendConfig,
+    NotificationConfig,
+    NtfyConfig,
+    SlackConfig,
+)
 
 log = logging.getLogger("theforge.config")
 
@@ -54,7 +60,7 @@ def _parse_notifications(
     _hitl_timeout = int(
         notif_data.get(
             "hitl_timeout_seconds",
-            notif_data.get("human_review_timeout_seconds", 14400),
+            notif_data.get("human_review_timeout_seconds", DEFAULT_HITL_TIMEOUT_SECONDS),
         )
     )
 

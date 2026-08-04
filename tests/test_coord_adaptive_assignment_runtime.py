@@ -189,7 +189,7 @@ def _runtime_config(tmp_path: Path, **overrides) -> ForgeConfig:
         review_pool_is_default=True,
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        plan=PlanConfig(
+        plan=PlanConfig.of(
             enabled=True,
             cli="claude",
             model=DEFAULT_PLAN_MODEL,
@@ -381,7 +381,7 @@ def test_run_task_preserves_explicit_plan_config_and_locks_the_block(tmp_path):
     explicit_model = "operator-pinned-plan-model"
     config = _runtime_config(
         tmp_path,
-        plan=PlanConfig(
+        plan=PlanConfig.of(
             enabled=True,
             cli="claude",
             model=explicit_model,
@@ -515,7 +515,7 @@ def test_run_task_preserves_explicit_plan_agent_review_pool(tmp_path):
     )
     config = _runtime_config(
         tmp_path,
-        plan_agent_review=PlanAgentReviewConfig(enabled=True, pool=[pinned]),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=True, pool=[pinned]),
     )
 
     result, captured = _run_story(config, tmp_path)

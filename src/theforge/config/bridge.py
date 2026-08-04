@@ -18,7 +18,53 @@ from .schema import (
     ReviewRoleConfig,
     RoleAssignment,
 )
-from .types import ModelProfile
+from .types import ModelProfile, ModelRef
+
+
+def model_ref_to_profile(
+    name: str,
+    ref: ModelRef,
+    *,
+    allowed_tools: tuple[str, ...] = (),
+    phase: str | None = None,
+    review_role: str | None = None,
+    sandbox_mode: str = "workspace-write",
+    timeout_seconds: int | None = None,
+) -> ModelProfile:
+    """Project a ModelRef onto the runtime ModelProfile the runners dispatch on.
+
+    This is the single ModelRef → ModelProfile projection. Every phase whose
+    config composes a ModelRef (PLAN, PLAN_REVIEW, and the role configs in
+    schema.py) goes through here, so a field added to ModelRef reaches every
+    dispatch site at once instead of being copied into each caller.
+
+    ``timeout_seconds`` overrides the ref's base timeout for callers that have
+    already resolved a complexity-scaled value.
+    """
+    return ModelProfile(
+        name=name,
+        cli=ref.cli,
+        provider=ref.provider,
+        model=ref.model,
+        fallback_models=ref.fallback_models,
+        budget_usd=ref.budget_usd,
+        timeout_seconds=ref.timeout_seconds if timeout_seconds is None else timeout_seconds,
+        timeout_medium_seconds=ref.timeout_medium_seconds,
+        timeout_large_seconds=ref.timeout_large_seconds,
+        allowed_tools=allowed_tools,
+        reasoning_effort=ref.reasoning_effort,
+        thinking_budget=ref.thinking_budget,
+        base_url=ref.base_url,
+        max_iterations=ref.max_iterations,
+        max_tool_output_bytes=ref.max_tool_output_bytes,
+        api_fallback=ref.api_fallback,
+        registry_id=ref.registry_id,
+        registry_source=ref.registry_source,
+        review_role=review_role,
+        phase=phase,
+        sandbox_mode=sandbox_mode,
+        transport=ref.transport,
+    )
 
 
 def _role_config_to_profile(
@@ -35,34 +81,13 @@ def _role_config_to_profile(
     is consistent; the gap in PlanConfig.timeout vs ModelProfile.timeout_seconds
     does not appear here because ModelRef always uses timeout_seconds).
     """
-    ref = role_config.ref
-    allowed_tools: tuple[str, ...] = getattr(role_config, "allowed_tools", ())
-    review_role: str | None = getattr(role_config, "review_role", None)
-    sandbox_mode: str = getattr(role_config, "sandbox_mode", "workspace-write")
-
-    return ModelProfile(
-        name=name,
-        cli=ref.cli,
-        provider=ref.provider,
-        model=ref.model,
-        fallback_models=ref.fallback_models,
-        budget_usd=ref.budget_usd,
-        timeout_seconds=ref.timeout_seconds,
-        timeout_medium_seconds=ref.timeout_medium_seconds,
-        timeout_large_seconds=ref.timeout_large_seconds,
-        allowed_tools=allowed_tools,
-        reasoning_effort=ref.reasoning_effort,
-        thinking_budget=ref.thinking_budget,
-        base_url=ref.base_url,
-        max_iterations=ref.max_iterations,
-        max_tool_output_bytes=ref.max_tool_output_bytes,
-        api_fallback=ref.api_fallback,
-        registry_id=ref.registry_id,
-        registry_source=ref.registry_source,
-        review_role=review_role,
+    return model_ref_to_profile(
+        name,
+        role_config.ref,
+        allowed_tools=getattr(role_config, "allowed_tools", ()),
         phase=phase,
-        sandbox_mode=sandbox_mode,
-        transport=ref.transport,
+        review_role=getattr(role_config, "review_role", None),
+        sandbox_mode=getattr(role_config, "sandbox_mode", "workspace-write"),
     )
 
 

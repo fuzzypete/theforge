@@ -530,7 +530,7 @@ def test_explicit_planner_and_review_pool_threaded_into_assignment(tmp_path, mon
                 cli="claude",
             ),
         ],
-        plan=PlanConfig(
+        plan=PlanConfig.of(
             enabled=True,
             cli="claude",
             model=explicit_planner_model,
@@ -706,7 +706,7 @@ def test_models_path_with_explicit_plan_and_review_pool_preserved(tmp_path, monk
                 cli="claude",
             ),
         ],
-        plan=PlanConfig(
+        plan=PlanConfig.of(
             enabled=True,
             cli="claude",
             model=explicit_plan_model,

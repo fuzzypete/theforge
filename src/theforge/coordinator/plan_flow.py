@@ -27,6 +27,7 @@ from theforge.assignment import (
     MECHANISM_RUN_SCOPED_RESET,
 )
 from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile, apply_model_info
+from theforge.config.bridge import model_ref_to_profile
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.plan_finding_classifier import (
@@ -856,14 +857,11 @@ def _run_plan_phase(
         plan_profile = dataclasses.replace(plan_profile, timeout_seconds=_plan_timeout)
         _log(f"  [adaptive] planner: {plan_profile.model}")
     else:
-        plan_profile = ModelProfile(
-            name="plan",
-            cli=config.plan.cli,
-            model=config.plan.model,
-            provider=config.plan.provider,
-            budget_usd=config.plan.budget_usd,
-            timeout_seconds=_plan_timeout,
+        plan_profile = model_ref_to_profile(
+            "plan",
+            config.plan.ref,
             allowed_tools=config.preflight_profile.allowed_tools,
+            timeout_seconds=_plan_timeout,
         )
         plan_profile = _apply_transport_fallback(plan_profile, config.transport_fallbacks)
     if state_update_fn is not None:

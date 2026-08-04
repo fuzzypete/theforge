@@ -17,6 +17,7 @@ from theforge.root_file_conventions import normalize_root_file_stacks
 
 from ._loaders import _parse_plan_agent_review, _parse_workspace, _validate_v0_8_schema
 from .auth import check_agent_auth
+from .bridge import model_ref_to_profile as _model_ref_to_profile
 from .bridge import role_assignment_to_profiles
 from .defaults import (
     DEFAULT_DEV_PROFILE,
@@ -1198,6 +1199,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         ),
         max_plan_regen_attempts=int(retry_data.get("max_plan_regen_attempts", 3)),
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
+        plan_escalation_threshold=int(retry_data.get("plan_escalation_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),
         auto_model_escalation=bool(retry_data.get("auto_model_escalation", False)),
         adaptive_iterations=bool(retry_data.get("adaptive_iterations", True)),
@@ -1252,7 +1254,7 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     _plan_provider = plan_data.get("provider", _plan_default_provider)
     _plan_cli = plan_data.get("cli", _plan_default_cli) if _plan_provider is None else None
-    plan_cfg = PlanConfig(
+    plan_cfg = PlanConfig.of(
         enabled=bool(plan_data.get("enabled", False)),
         cli=_plan_cli,
         model=str(plan_data.get("model", _plan_default_model)),
@@ -1271,20 +1273,12 @@ def load_config(config_path: Path) -> ForgeConfig:
         else None,
     )
     if plan_cfg.cli is not None:
-        plan_profile = ModelProfile(
-            name="plan",
-            cli=plan_cfg.cli,
-            provider=plan_cfg.provider,
-            model=plan_cfg.model,
-            budget_usd=plan_cfg.budget_usd,
-            timeout_seconds=plan_cfg.timeout,
-            timeout_medium_seconds=plan_cfg.timeout_medium,
-            timeout_large_seconds=plan_cfg.timeout_large,
-            allowed_tools=(),
-            api_fallback=plan_cfg.api_fallback,
-        )
+        plan_profile = _model_ref_to_profile("plan", plan_cfg.ref)
         plan_profile = _apply_transport_fallback(plan_profile, transport_fallbacks)
-        plan_cfg = dataclasses.replace(plan_cfg, api_fallback=plan_profile.api_fallback)
+        plan_cfg = dataclasses.replace(
+            plan_cfg,
+            ref=dataclasses.replace(plan_cfg.ref, api_fallback=plan_profile.api_fallback),
+        )
 
     # ── Load-time validation for plan section ────────────────────────────
     if plan_cfg.enabled:
@@ -1356,7 +1350,10 @@ def load_config(config_path: Path) -> ForgeConfig:
         )
         plan_agent_review_cfg = dataclasses.replace(
             plan_agent_review_cfg,
-            api_fallback=legacy_plan_review_profile.api_fallback,
+            ref=dataclasses.replace(
+                plan_agent_review_cfg.ref,
+                api_fallback=legacy_plan_review_profile.api_fallback,
+            ),
         )
 
     # Logging

@@ -128,8 +128,8 @@ def test_make_gate_covers_mocked_sprint_pipeline_smoke_run(tmp_path: Path) -> No
     manifest_path = _make_manifest(tmp_path, story_path.name)
     config = replace(
         _make_config(tmp_path),
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
-        plan_agent_review=PlanAgentReviewConfig(enabled=True, min_reviewers=1),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=True, min_reviewers=1),
         retry=RetryPolicy(
             max_dev_iterations=2,
             max_review_cycles=2,

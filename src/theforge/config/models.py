@@ -24,6 +24,7 @@ from .types import (
     AssignmentConfig,
     ExplorationConfig,
     ModelProfile,
+    ModelRef,
     PlanConfig,
     ProviderReasoningEffortConfig,
     ReasoningEffortConfig,
@@ -31,7 +32,7 @@ from .types import (
     TransportFallbackConfig,
 )
 
-_ProfileT = TypeVar("_ProfileT", ModelProfile, PlanConfig)
+_ProfileT = TypeVar("_ProfileT", ModelProfile, ModelRef, PlanConfig)
 
 TRANSPORT_KINDS: frozenset[str] = frozenset({"cli", "api"})
 
@@ -897,6 +898,10 @@ def apply_model_info(profile: ModelProfile, info: ModelInfo) -> ModelProfile: ..
 
 
 @overload
+def apply_model_info(profile: ModelRef, info: ModelInfo) -> ModelRef: ...
+
+
+@overload
 def apply_model_info(profile: PlanConfig, info: ModelInfo) -> PlanConfig: ...
 
 
@@ -908,7 +913,12 @@ def apply_model_info(profile: _ProfileT, info: ModelInfo) -> _ProfileT:
     TransportSpec behind while the model name changes is exactly the divergence
     this helper exists to prevent. ``base_url`` travels with the identity so a
     swap onto a locally served model reaches the right endpoint.
+
+    A PlanConfig holds no transport of its own — it composes a ModelRef — so the
+    swap is applied to that ref and the wrapper is rebuilt around it.
     """
+    if isinstance(profile, PlanConfig):
+        return replace(profile, ref=apply_model_info(profile.ref, info))
     profile_fields = {f.name for f in fields(profile)}
     updates: dict[str, object] = {
         "cli": info.cli,

@@ -66,7 +66,7 @@ def _make_config_with_provider_fallbacks(
         timeout_seconds=300,
         allowed_tools=(),
     )
-    plan = PlanConfig(cli="claude", model="sonnet", budget_usd=0.5, timeout=600)
+    plan = PlanConfig.of(cli="claude", model="sonnet", budget_usd=0.5, timeout=600)
 
     return ForgeConfig(
         project="test",
@@ -153,7 +153,7 @@ def test_dev_reroute_across_providers_re_derives_api_fallback(tmp_path):
         allowed_tools=(),
         api_fallback=fallbacks["anthropic"],
     )
-    plan = PlanConfig(cli="claude", model="sonnet", budget_usd=0.5, timeout=600)
+    plan = PlanConfig.of(cli="claude", model="sonnet", budget_usd=0.5, timeout=600)
     config = ForgeConfig(
         project="test",
         project_root=tmp_path,

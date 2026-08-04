@@ -329,8 +329,8 @@ def _plan_review_config(tmp_path, *, min_reviewers: int):
     ]
     return dataclasses.replace(
         base,
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
-        plan_agent_review=PlanAgentReviewConfig(
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
+        plan_agent_review=PlanAgentReviewConfig.of(
             enabled=True,
             pool=reviewers,
             min_reviewers=min_reviewers,

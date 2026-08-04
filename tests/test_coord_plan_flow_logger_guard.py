@@ -21,7 +21,7 @@ from theforge.coordinator.state import CoordinatorState, Phase
 
 def test_run_plan_phase_escalation_with_logger_none_does_not_raise(tmp_path: Path) -> None:
     config = _make_config(tmp_path)
-    config = dataclasses.replace(config, plan=PlanConfig(enabled=True))
+    config = dataclasses.replace(config, plan=PlanConfig.of(enabled=True))
     task = _make_task(tmp_path)
 
     workspace_path = tmp_path / "workspace"
