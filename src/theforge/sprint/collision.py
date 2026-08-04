@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 from ..config import ForgeConfig, SprintBatchConfig
 from ..coordinator.engine import run_task
 from ..coordinator.state import CoordinatorState, Phase
+from ..coordinator.worktree_drift import is_drift_classification
 from ..log_util import _log_line
 from ..task import TaskStory
 
@@ -393,10 +394,23 @@ def run_batch_preflight(
                 continue
 
             if not result.success:
-                _log(
-                    "WARNING: batch preflight returned failure for "
-                    f"{task.slug}: {result.message}; excluding from collision detection"
-                )
+                message = result.message or ""
+                if is_drift_classification(message):
+                    # A classified condition is multi-line and names the files,
+                    # commits, and resolutions — squeezing it into the trailing
+                    # clause of one WARNING line is where it stopped being
+                    # readable (#1993).
+                    _log(
+                        f"WARNING: {task.slug} excluded from collision detection — "
+                        "its preserved worktree cannot be brought current:"
+                    )
+                    for line in message.splitlines():
+                        _log(f"  {line}" if line else "")
+                else:
+                    _log(
+                        "WARNING: batch preflight returned failure for "
+                        f"{task.slug}: {message}; excluding from collision detection"
+                    )
                 states[task.slug] = CoordinatorState(preflight_likely_files=None)
                 continue
 
