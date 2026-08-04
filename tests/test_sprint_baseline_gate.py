@@ -18,7 +18,12 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.sprint.manifest import ResolvedSprint
-from theforge.sprint.runner import _run_baseline_gate, run_sprint
+from theforge.sprint.runner import (
+    BASELINE_TEMP_PREFIX,
+    BASELINE_WORKTREE_KEEP,
+    _run_baseline_gate,
+    run_sprint,
+)
 from theforge.sprint.sources import FileSource
 
 
@@ -141,6 +146,182 @@ def test_baseline_gate_preserves_actual_gate_exit_code(tmp_path: Path) -> None:
     assert baseline["merge_base"] == base_commit
     assert baseline["exit_code"] == 2
     assert "boom" in str(baseline.get("output_tail", ""))
+
+
+def _evidence_files(project_root: Path, sprint_name: str = "Test Sprint") -> list[Path]:
+    log_dir = project_root / ".forge" / "logs" / sprint_name
+    return sorted(log_dir.glob("*baseline-gate*.txt")) if log_dir.exists() else []
+
+
+def _preserved_temp_roots(project_root: Path) -> list[Path]:
+    return sorted(
+        path
+        for path in (project_root / ".forge").iterdir()
+        if path.is_dir() and path.name.startswith(BASELINE_TEMP_PREFIX)
+    )
+
+
+#: Emitted before ~5000 characters of filler, so it cannot survive in the
+#: 2000-character output tail — only a full-output record can carry it.
+_EARLY_MARKER = "EARLY-MARKER-9d2f"
+
+_LONG_FAILING_GATE = (
+    f"python -c \"import sys; print('{_EARLY_MARKER}'); print('x' * 5000); sys.exit(1)\""
+)
+
+
+def test_baseline_gate_failure_persists_full_output_beyond_the_tail(tmp_path: Path) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(config.validation, gate_command=_LONG_FAILING_GATE),
+    )
+
+    baseline = _run_baseline_gate(config, resolved, run_id="abc123")
+
+    assert baseline["passed"] is False
+    # The tail alone cannot answer why: the failure's own first line is outside it.
+    assert _EARLY_MARKER not in str(baseline.get("output_tail", ""))
+
+    evidence_path = baseline["evidence_path"]
+    assert evidence_path is not None
+    assert baseline["evidence_unavailable"] is None
+    assert Path(evidence_path).name == "run-abc123-baseline-gate.txt"
+    evidence = Path(evidence_path).read_text(encoding="utf-8")
+    assert _EARLY_MARKER in evidence
+    assert str(baseline["merge_base"]) in evidence
+    # The verdict itself names where the evidence lives.
+    assert evidence_path in str(baseline["message"])
+
+
+def test_baseline_gate_failure_preserves_the_worktree_that_produced_it(
+    tmp_path: Path,
+) -> None:
+    config, resolved, base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(config.validation, gate_command=_LONG_FAILING_GATE),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    worktree = baseline["worktree"]
+    assert worktree is not None
+    worktree_path = Path(str(worktree))
+    assert worktree_path.is_dir()
+    # Still a usable checkout of the merge base, not a husk: the failure can be
+    # re-run in the environment that produced it.
+    assert _git(worktree_path, "rev-parse", "HEAD") == base_commit
+    assert str(worktree) in _git(tmp_path, "worktree", "list")
+    assert str(worktree) in str(baseline["message"])
+
+
+def test_baseline_gate_evidence_and_worktree_survive_the_sprint_abort(
+    tmp_path: Path,
+) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(config.validation, gate_command=_LONG_FAILING_GATE),
+    )
+
+    with (
+        patch("theforge.sprint.runner.run_batch_preflight") as mock_preflight,
+        patch("theforge.sprint.runner.run_task") as mock_run_task,
+    ):
+        try:
+            run_sprint(config, resolved, no_pull=True, run_id="abc123")
+            raise AssertionError("expected baseline failure")
+        except RuntimeError as exc:
+            message = str(exc)
+
+    assert not mock_preflight.called
+    assert not mock_run_task.called
+    assert "Broken baseline" in message
+
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    audit = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+    baseline_check = audit["baseline_check"]
+    evidence_path = baseline_check["evidence_path"]
+    assert evidence_path is not None
+    # Both artifacts outlive the run that produced them.
+    assert _EARLY_MARKER in Path(evidence_path).read_text(encoding="utf-8")
+    assert Path(str(baseline_check["worktree"])).is_dir()
+    assert evidence_path in message
+
+
+def test_baseline_gate_records_that_output_was_unavailable(tmp_path: Path) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(config.validation, gate_command="exit 4"),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is False
+    evidence = Path(str(baseline["evidence_path"])).read_text(encoding="utf-8")
+    # An absent account, stated as absent — distinguishable from "nothing went wrong".
+    assert "not captured" in evidence
+    assert "exit 4" in evidence
+
+
+def test_preserved_baseline_worktrees_stay_bounded_across_failing_runs(
+    tmp_path: Path,
+) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(config.validation, gate_command=_LONG_FAILING_GATE),
+    )
+
+    evidence_paths = []
+    for _ in range(BASELINE_WORKTREE_KEEP + 2):
+        baseline = _run_baseline_gate(config, resolved)
+        evidence_paths.append(Path(str(baseline["evidence_path"])))
+
+    preserved = _preserved_temp_roots(tmp_path)
+    assert len(preserved) <= BASELINE_WORKTREE_KEEP
+    # Reclaimed worktrees are unregistered too, not left as missing entries.
+    registered = [
+        line
+        for line in _git(tmp_path, "worktree", "list").splitlines()
+        if BASELINE_TEMP_PREFIX in line
+    ]
+    assert len(registered) == len(preserved)
+    # Reclaiming worktrees never reclaims the durable record.
+    assert all(path.exists() for path in evidence_paths)
+    assert len(_evidence_files(tmp_path)) == len(evidence_paths)
+
+
+def test_baseline_gate_pass_leaves_no_preserved_worktree_or_evidence(
+    tmp_path: Path,
+) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline.get("worktree") is None
+    assert _preserved_temp_roots(tmp_path) == []
+    assert _evidence_files(tmp_path) == []
+
+
+def test_baseline_gate_setup_failure_preserves_evidence_and_worktree(
+    tmp_path: Path,
+) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        workspace=replace(config.workspace, setup_command="echo SETUP-BOOM; exit 3"),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["status"] == "error"
+    assert Path(str(baseline["worktree"])).is_dir()
+    evidence = Path(str(baseline["evidence_path"])).read_text(encoding="utf-8")
+    assert "SETUP-BOOM" in evidence
 
 
 def test_baseline_gate_substitutes_test_target_placeholder(tmp_path: Path) -> None:
