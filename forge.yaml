@@ -162,7 +162,7 @@ plan:
 
 diagnose:
   output_destination: body_section
-  budget_usd: 1.50
+  budget_usd: 5.00
   timeout_seconds: 600
   autonomous_default: true
 
