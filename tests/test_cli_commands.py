@@ -71,7 +71,7 @@ def _make_forge_config(
         review_pool=review_pool,
         synthesis_profile=None,
         retry=RetryPolicy(),
-        plan_agent_review=PlanAgentReviewConfig(enabled=False),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
         log=LogConfig(enabled=False),
     )
 

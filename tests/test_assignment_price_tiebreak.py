@@ -219,7 +219,7 @@ def _seam_config(tmp_path: Path, models: list[str]) -> ForgeConfig:
         timeout_seconds=300,
         allowed_tools=(),
     )
-    plan = PlanConfig(cli="claude", model="sonnet", budget_usd=0.5, timeout=600)
+    plan = PlanConfig.of(cli="claude", model="sonnet", budget_usd=0.5, timeout=600)
     return ForgeConfig(
         project="test",
         project_root=tmp_path,

@@ -94,7 +94,7 @@ def _make_forge_config(
         review_pool=review_pool,
         synthesis_profile=None,
         retry=RetryPolicy(),
-        plan_agent_review=PlanAgentReviewConfig(enabled=False),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
         log=LogConfig(enabled=False),
     )
 
@@ -715,7 +715,7 @@ class TestCmdCheckProviders:
             review_pool=[shared],
             synthesis_profile=shared,  # same object → same name → should be deduped
             retry=RetryPolicy(),
-            plan_agent_review=PlanAgentReviewConfig(enabled=False),
+            plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
             log=LogConfig(enabled=False),
         )
         args = _make_args(config=str(tmp_path / "forge.yaml"))
@@ -1243,7 +1243,7 @@ class TestApplyPlanModelOverride:
         # Validation only runs when plan is enabled.
         from dataclasses import replace as _replace
 
-        cfg = _replace(self._base_config(tmp_path), plan=PlanConfig(enabled=True))
+        cfg = _replace(self._base_config(tmp_path), plan=PlanConfig.of(enabled=True))
         with pytest.raises(ValueError, match="Unsupported provider"):
             _apply_plan_model_override(cfg, "bogus/some-model")
 
@@ -1253,7 +1253,7 @@ class TestApplyPlanModelOverride:
         from dataclasses import replace as _replace
 
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-        cfg = _replace(self._base_config(tmp_path), plan=PlanConfig(enabled=True))
+        cfg = _replace(self._base_config(tmp_path), plan=PlanConfig.of(enabled=True))
         with patch("theforge.config.load.importlib.import_module"):
             with pytest.raises(ValueError, match="OPENAI_API_KEY"):
                 _apply_plan_model_override(cfg, "openai/gpt-4o")

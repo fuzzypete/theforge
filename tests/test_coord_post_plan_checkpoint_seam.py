@@ -100,7 +100,7 @@ def _agents() -> list[AgentDef]:
 
 def _make_config(tmp_path: Path, *, plan_tier_reduction: bool = True) -> ForgeConfig:
     """Adaptive config: agents pool + plan_agent_review, medium → mid dev."""
-    par_config = PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet")
+    par_config = PlanAgentReviewConfig.of(enabled=True, cli="claude", model="sonnet")
     return ForgeConfig(
         project="test",
         project_root=tmp_path,
@@ -126,7 +126,7 @@ def _make_config(tmp_path: Path, *, plan_tier_reduction: bool = True) -> ForgeCo
             plan_tier_reduction=plan_tier_reduction,
         ),
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
         plan_agent_review=par_config,
         log=LogConfig(enabled=False),
     )
@@ -245,7 +245,7 @@ def _make_human_config(tmp_path: Path) -> ForgeConfig:
             plan_tier_reduction=True,
         ),
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
         plan_review=PlanReviewConfig(enabled=True, mode="blocking", timeout_seconds=300),
         log=LogConfig(enabled=False),
     )

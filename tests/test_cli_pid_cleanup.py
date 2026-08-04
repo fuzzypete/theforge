@@ -69,7 +69,7 @@ def _make_forge_config(tmp_path: Path) -> ForgeConfig:
         review_pool=[_api_profile("claude-reviewer")],
         synthesis_profile=None,
         retry=RetryPolicy(),
-        plan_agent_review=PlanAgentReviewConfig(enabled=False),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
         log=LogConfig(enabled=False),
     )
 

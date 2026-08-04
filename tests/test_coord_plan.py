@@ -581,9 +581,9 @@ def test_agent_review_escalates_immediately_on_escalate_disposition(tmp_path):
         review_pool=[],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        plan=PlanConfig(enabled=True, budget_usd=0.5, timeout=60),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.5, timeout=60),
         plan_review=PlanReviewConfig(enabled=True, mode="blocking", timeout_seconds=60),
-        plan_agent_review=PlanAgentReviewConfig(enabled=True, pool=[review_profile]),
+        plan_agent_review=PlanAgentReviewConfig.of(enabled=True, pool=[review_profile]),
         log=LogConfig(enabled=False),
     )
 
@@ -718,7 +718,7 @@ def test_human_plan_review_approve_emits_phase_end(tmp_path):
         review_pool=[],
         synthesis_profile=None,
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
-        plan=PlanConfig(enabled=True, budget_usd=0.5, timeout=60),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.5, timeout=60),
         plan_review=PlanReviewConfig(enabled=True, mode="blocking", timeout_seconds=60),
         log=LogConfig(enabled=False),
     )

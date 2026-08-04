@@ -56,9 +56,9 @@ def _make_config(project="test-project", base_branch="main", post_run=None, post
         synthesis_profile=None,
         retry=RetryPolicy(),
         notifications=NotificationConfig(),
-        plan=PlanConfig(),
+        plan=PlanConfig.of(),
         plan_review=PlanReviewConfig(),
-        plan_agent_review=PlanAgentReviewConfig(),
+        plan_agent_review=PlanAgentReviewConfig.of(),
         log=LogConfig(enabled=False),
         hooks=hooks,
     )

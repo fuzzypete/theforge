@@ -94,11 +94,11 @@ def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = Fals
             timeout_seconds=300,
             allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
         )
-        par_config = PlanAgentReviewConfig(
+        par_config = PlanAgentReviewConfig.of(
             enabled=True, min_reviewers=2, pool=[_plan_review_a, _plan_review_b]
         )
     else:
-        par_config = PlanAgentReviewConfig(enabled=True, cli="claude", model="sonnet")
+        par_config = PlanAgentReviewConfig.of(enabled=True, cli="claude", model="sonnet")
     return ForgeConfig(
         project="test",
         project_root=tmp_path,
@@ -120,7 +120,7 @@ def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = Fals
             # parse-retry tests opt in with an explicit positive value.
             max_plan_review_parse_retries=0,
         ),
-        plan=PlanConfig(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
+        plan=PlanConfig.of(enabled=True, budget_usd=0.50, timeout=300, validate_spec=False),
         plan_agent_review=par_config,
         log=LogConfig(enabled=False),
     )
@@ -979,7 +979,7 @@ findings:
         """Pool: P0 from one reviewer + APPROVE from another -> merged REJECT."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 min_reviewers=1,
                 pool=[
@@ -1073,7 +1073,7 @@ findings:
             retry=RetryPolicy(
                 max_dev_iterations=2, max_review_cycles=2, max_plan_regen_attempts=1
             ),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 pool=[
                     ModelProfile(
@@ -1146,7 +1146,7 @@ findings:
         """Pool: P1s from multiple reviewers block — regen triggered, findings attributed."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 pool=[
                     ModelProfile(
@@ -1493,7 +1493,7 @@ class TestPlanReviewerFailureAudit:
                 max_plan_regen_attempts=0,
                 max_plan_review_parse_retries=0,
             ),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 pool=[
                     ModelProfile(
@@ -1567,7 +1567,7 @@ class TestPlanReviewerFailureAudit:
         """Two reviewers configured with min_reviewers=2 → one failure escalates."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 min_reviewers=2,
                 pool=[
@@ -1660,7 +1660,7 @@ class TestPlanReviewerFailureAudit:
                 max_review_cycles=2,
                 max_plan_review_transport_retries=2,
             ),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 min_reviewers=2,
                 pool=[
@@ -1764,7 +1764,7 @@ class TestPlanReviewerFailureAudit:
                 max_review_cycles=2,
                 max_plan_review_transport_retries=2,
             ),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 min_reviewers=2,
                 pool=[
@@ -1951,7 +1951,7 @@ class TestPlanReviewerFailureAudit:
         """Audit log includes reviewer_failures when failures exist."""
         pool_config = dataclasses.replace(
             _make_plan_agent_review_config(tmp_path),
-            plan_agent_review=PlanAgentReviewConfig(
+            plan_agent_review=PlanAgentReviewConfig.of(
                 enabled=True,
                 pool=[
                     ModelProfile(

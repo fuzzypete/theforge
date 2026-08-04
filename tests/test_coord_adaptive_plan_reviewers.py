@@ -96,7 +96,7 @@ def _make_config_with_assignment(tmp_path: Path) -> ForgeConfig:
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=2),
         agents=_make_agents(),
         assignment=_make_assignment_config(),
-        plan=PlanConfig(enabled=True),
+        plan=PlanConfig.of(enabled=True),
     )
 
 
@@ -152,7 +152,7 @@ class TestPlanReviewersAppliedToConfig:
     def test_plan_agent_review_not_overridden_when_explicit(self, tmp_path):
         """Explicit plan_agent_review config is preserved (not overwritten by adaptive)."""
         explicit_profile = _reviewer_profile("explicit-reviewer", "sonnet")
-        explicit_par = PlanAgentReviewConfig(
+        explicit_par = PlanAgentReviewConfig.of(
             enabled=True,
             pool=[explicit_profile],
         )
