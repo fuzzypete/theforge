@@ -199,18 +199,23 @@ def _build_plan_review_per_reviewer(state: CoordinatorState, config: ForgeConfig
     return per_reviewer
 
 
-def _build_plan_reviewer_value(state: CoordinatorState) -> list[dict]:
-    """Per-plan-reviewer mechanical value telemetry for the audit record (#1443).
+def _build_reviewer_value(entries: list[dict] | None, *, index_key: str) -> list[dict]:
+    """Per-reviewer mechanical value telemetry for the audit record (#1443/#2156).
 
-    Surfaces the deterministic signals captured at plan-review pool completion —
+    Surfaces the deterministic signals captured at reviewer-pool completion —
     unique P1 count, total P1 count, latency, and parse-error count — plus the
     derived ``latency_per_p1_s`` so an operator can answer "is this reviewer
     earning its wall-clock cost?" from structured telemetry without grepping logs.
     Parse-error count is carried straight from the per-reviewer capture, which
     derives it from the existing parse step (no parallel parse-failure writer).
+
+    ``index_key`` names the per-phase pool index the capture is keyed on: plan
+    review records one row per pool ``attempt``, code review one per review
+    ``cycle``. Both are echoed under the same key they were captured with, so the
+    audit row and the native capture stay trivially cross-referenceable.
     """
     out: list[dict] = []
-    for v in state.plan_reviewer_value or []:
+    for v in entries or []:
         if not isinstance(v, dict):
             continue
         total_p1 = int(v.get("total_p1_count", 0))
@@ -220,7 +225,7 @@ def _build_plan_reviewer_value(state: CoordinatorState) -> list[dict]:
         )
         out.append(
             {
-                "attempt": v.get("attempt"),
+                index_key: v.get(index_key),
                 "reviewer": v.get("reviewer"),
                 "complexity": v.get("complexity"),
                 "unique_p1_count": int(v.get("unique_p1_count", 0)),
@@ -393,6 +398,18 @@ def _build_phases_block(state: CoordinatorState, config: ForgeConfig) -> dict:
             "cycles": state.reviewer_cycles_run,
             "outcome": _final_verdict,
             "per_reviewer": per_reviewer,
+            # Code-review mechanical value telemetry (#2156): the same
+            # uniqueness / latency-per-P1 rows the plan_review block carries,
+            # captured at code-review pool completion.
+            **(
+                {
+                    "per_reviewer_value": _build_reviewer_value(
+                        state.code_reviewer_value, index_key="cycle"
+                    )
+                }
+                if state.code_reviewer_value
+                else {}
+            ),
         }
 
     # ── totals ────────────────────────────────────────────────────────────────
@@ -865,7 +882,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "cost_usd": _round_cost(state.total_plan_review_cost_measured),
                 **({"per_reviewer": plan_review_per_reviewer} if plan_review_per_reviewer else {}),
                 **(
-                    {"per_reviewer_value": _build_plan_reviewer_value(state)}
+                    {
+                        "per_reviewer_value": _build_reviewer_value(
+                            state.plan_reviewer_value, index_key="attempt"
+                        )
+                    }
                     if state.plan_reviewer_value
                     else {}
                 ),

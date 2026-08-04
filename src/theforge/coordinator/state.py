@@ -686,6 +686,14 @@ class CoordinatorState:
     # derived from the same parse step that feeds plan_review_failures (no parallel
     # parse-failure writer). Consumed by audit.py and the reviewer_value fold.
     plan_reviewer_value: list[dict] = field(default_factory=list)
+    # Per-code-reviewer mechanical value telemetry (#2156). Same shape and same
+    # deterministic anchor-overlap computation as ``plan_reviewer_value`` above,
+    # captured at code-review pool completion instead: one dict per (reviewer,
+    # review cycle) {cycle, reviewer, complexity, unique_p1_count, total_p1_count,
+    # latency_s, parse_error_count, actual_model, provider, cli}. Folded into the
+    # separate ``code_review_value`` profile section so code-review reviewer value
+    # stays independently queryable from plan-review value.
+    code_reviewer_value: list[dict] = field(default_factory=list)
     plan_regen_disposition: str | None = None  # "patch" | "backtrack" | "escalate"
     plan_backtrack_used: bool = False  # True once the backtrack regen has been dispatched
     log_dir: Path | None = None  # per-story log directory under <project_root>/.forge/logs/

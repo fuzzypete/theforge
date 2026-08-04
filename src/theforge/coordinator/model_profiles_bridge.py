@@ -13,7 +13,7 @@ from pathlib import Path
 
 from theforge.config import ForgeConfig
 from theforge.model_profiles import ReviewerAttempt, RoleAttempt, RunOutcome, update_from_run
-from theforge.reviewer_value import PlanReviewerValueSample
+from theforge.reviewer_value import PlanReviewerValueSample, ReviewerValueSample
 
 from .state import CoordinatorState
 from .trust_status import derive_trust_status, is_tainted
@@ -94,6 +94,34 @@ def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerV
             continue
         samples.append(
             PlanReviewerValueSample(
+                name=str(v["reviewer"]),
+                complexity=str(v.get("complexity") or "medium"),
+                unique_p1=int(v.get("unique_p1_count", 0)),
+                total_p1=int(v.get("total_p1_count", 0)),
+                latency_s=v.get("latency_s"),
+                actual_model=v.get("actual_model"),
+                provider=v.get("provider"),
+                cli=v.get("cli"),
+            )
+        )
+    return samples
+
+
+def _extract_code_reviewer_values(state: CoordinatorState) -> list[ReviewerValueSample]:
+    """Convert per-code-reviewer value telemetry dicts into typed samples (#2156).
+
+    The code-review counterpart of :func:`_extract_plan_reviewer_values`, over
+    ``state.code_reviewer_value`` — the native per-(reviewer, review-cycle) capture
+    written at code-review pool completion. Same pure-adapter shape, keyed by each
+    reviewer's canonical identity, so the value signal lands under the same model
+    entry the router looks it up by.
+    """
+    samples: list[ReviewerValueSample] = []
+    for v in state.code_reviewer_value or []:
+        if not isinstance(v, dict) or not v.get("reviewer"):
+            continue
+        samples.append(
+            ReviewerValueSample(
                 name=str(v["reviewer"]),
                 complexity=str(v.get("complexity") or "medium"),
                 unique_p1=int(v.get("unique_p1_count", 0)),
@@ -289,6 +317,7 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         reviewers=_extract_reviewers(state),
         reviewer_attempts=_extract_reviewer_attempts(state),
         plan_reviewer_values=_extract_plan_reviewer_values(state),
+        code_reviewer_values=_extract_code_reviewer_values(state),
         # Domain tags (#155) recorded by preflight, folded into per-domain dev
         # slices so future routing can prefer models strong in the story's domains.
         domains=list(state.preflight_domains or []),
