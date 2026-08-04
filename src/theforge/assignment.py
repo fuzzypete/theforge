@@ -11,6 +11,7 @@ import logging
 import random
 import warnings
 from dataclasses import dataclass, field
+from dataclasses import replace as _replace
 from pathlib import Path
 
 import yaml
@@ -22,11 +23,19 @@ from .config import (
     AgentDef,
     AssignmentConfig,
     ModelProfile,
+    ReasoningEffortConfig,
 )
 from .config.auth import check_agent_auth
 from .config.models import price_tiebreak_signal
 from .routing import (
+    KNOB_EFFORT,
+    KNOB_NONE,
+    REASONING_EFFORT_PHASES,
+    ROUTING_POLICY,
+    EffortKnob,
     axis_decision,
+    effort_knob_for,
+    provider_support_status,
     score_to_dev_tier,
     score_to_plan_tier,
     score_to_reviewer_target,
@@ -2122,6 +2131,214 @@ def _reviewer_count_policy(
     return block
 
 
+# ── Score-driven reasoning effort (#1108) ─────────────────────────────
+#
+# The score→effort table is routing policy and lives in theforge.routing; the
+# provider-shaped half (does this transport take an effort string, a token
+# budget, or nothing?) lives there too, as capability metadata. This module only
+# resolves the two against the FINAL selected profiles and records the outcome.
+
+
+def _thinking_spend_captured(profile: ModelProfile, knob: EffortKnob) -> bool:
+    """Does this run's measured cost actually include the profile's thinking spend?
+
+    Two independent facts, both required: the transport's accounting path must
+    fold thinking tokens into the priced total (``knob.captures_thinking_spend``),
+    *and* the selected model must have a pricing entry — a model absent from
+    ``PRICING_TABLE`` records cost-unknown, which is precisely "spend not
+    captured". Imported lazily so this module stays import-time pure.
+    """
+    if not knob.captures_thinking_spend:
+        return False
+    from .runners.schema_utils import PRICING_TABLE  # noqa: PLC0415
+
+    return (profile.provider_family, profile.model) in PRICING_TABLE
+
+
+def _apply_effort_to_profile(
+    profile: ModelProfile,
+    *,
+    phase: str,
+    score: int,
+    cfg: ReasoningEffortConfig,
+) -> tuple[ModelProfile, dict[str, object]]:
+    """Apply the resolved effort to one selected profile.
+
+    Returns the (possibly replaced) profile and the per-model audit entry. The
+    whole policy view — bucket, covering range, thresholds, output — is recorded
+    per model, not just the support status: a per-provider bucket override
+    changes the *effective table*, so a phase-level view alone would report the
+    sprint-wide bands while the profile ran on the provider's. A reviewer phase
+    can also seat a pool spanning providers, where no single view is correct.
+    """
+    runner = profile.transport.runner if profile.transport is not None else None
+    knob = effort_knob_for(runner)
+    resolved = axis_decision(
+        "reasoning_effort",
+        score,
+        phase=phase,
+        overrides=cfg.buckets_for_provider(runner),
+    )
+    effort = str(resolved["output"])
+    entry: dict[str, object] = {
+        "name": profile.name,
+        "model": profile.model,
+        "transport": runner,
+        "knob": knob.kind,
+        # The bands actually in force for THIS model, after any per-provider
+        # override — the numbers an operator needs to reconstruct the choice.
+        "bucket": resolved["bucket"],
+        "range": resolved["range"],
+        "thresholds": resolved["thresholds"],
+        "output": effort,
+        "provider_support": provider_support_status(
+            knob, cost_captured=_thinking_spend_captured(profile, knob)
+        ),
+        "applied": False,
+        "field": None,
+        "value": None,
+    }
+    if knob.kind == KNOB_NONE:
+        # Resolved but deliberately not applied — the transport has no
+        # passthrough, so writing the field would imply an effect it has none of.
+        entry["reason"] = "provider_has_no_reasoning_effort_passthrough"
+        return profile, entry
+    field_name = "reasoning_effort" if knob.kind == KNOB_EFFORT else "thinking_budget"
+    static = getattr(profile, field_name)
+    if static is not None:
+        # An explicit operator value on the profile wins over score routing
+        # (ADR-0006 clause 1: explicit config bypasses adaptive mechanisms).
+        entry["reason"] = "static_profile_override"
+        entry["field"] = field_name
+        entry["value"] = static
+        return profile, entry
+    value: object = effort if knob.kind == KNOB_EFFORT else cfg.token_budget_for(runner, effort)
+    entry["applied"] = True
+    entry["field"] = field_name
+    entry["value"] = value
+    return _replace(profile, **{field_name: value}), entry
+
+
+def _phase_support_summary(entries: list[dict[str, object]]) -> str | None:
+    """Collapse per-model support statuses into one phase-level value.
+
+    ``mixed`` when the seated pool disagrees — never a silent pick of the first.
+    """
+    statuses = {str(e["provider_support"]) for e in entries}
+    if not statuses:
+        return None
+    return statuses.pop() if len(statuses) == 1 else "mixed"
+
+
+def _apply_phase_policy_view(
+    phase_block: dict[str, object], entries: list[dict[str, object]]
+) -> None:
+    """Reconcile the phase-level policy view with the bands actually applied.
+
+    ``phase_block`` starts as the sprint-wide table's view. When every seated
+    model resolved through the same effective table (the common case, and always
+    true for the single-model plan/dev phases) the phase view is rewritten to
+    that table, so a per-provider bucket override is never reported as the
+    default. When the seated models disagree — a reviewer pool spanning
+    providers with different overrides — the sprint-wide view is kept and
+    ``varies_by_provider`` marks it as a summary, with the per-model entries
+    carrying the authoritative bands.
+    """
+    if not entries:
+        phase_block["varies_by_provider"] = False
+        return
+    views = {
+        (
+            str(e["bucket"]),
+            tuple(e["range"] or ()),  # type: ignore[arg-type]
+            tuple(e["thresholds"] or ()),  # type: ignore[arg-type]
+            str(e["output"]),
+        )
+        for e in entries
+    }
+    phase_block["varies_by_provider"] = len(views) > 1
+    if len(views) > 1:
+        return
+    first = entries[0]
+    for key in ("bucket", "range", "thresholds", "output"):
+        phase_block[key] = first[key]
+
+
+def resolve_reasoning_effort(
+    decision: AssignmentDecision,
+    *,
+    score: int | None,
+    cfg: ReasoningEffortConfig,
+) -> tuple[AssignmentDecision, dict[str, object]]:
+    """Resolve and apply the reasoning-effort axis across plan/dev/review.
+
+    Returns the decision with effort applied to the selected profiles and the
+    canonical ``routing_decision['reasoning_effort']`` block. Pure: no I/O, no
+    profile re-reads.
+    """
+    axis = ROUTING_POLICY["reasoning_effort"]
+    block: dict[str, object] = {
+        "axis": axis.key,
+        "description": axis.description,
+        "score": score,
+        "score_controlled": axis.score_controlled,
+        "enabled": bool(cfg.enabled),
+        "rationale": axis.rationale,
+    }
+    if not cfg.enabled:
+        block["applied"] = False
+        block["reason"] = "disabled_by_config"
+        block["phases"] = {}
+        return decision, block
+    if score is None:
+        # Static / band routing (adaptive disabled, or preflight produced no
+        # numeric score). Record the axis with the fallback reason rather than
+        # fabricating a bucket — same contract as every other axis.
+        block["applied"] = False
+        block["reason"] = "no_numeric_score_static_band_routing"
+        block["phases"] = {
+            phase: axis_decision("reasoning_effort", None, phase=phase)
+            for phase in REASONING_EFFORT_PHASES
+        }
+        return decision, block
+
+    phases: dict[str, object] = {}
+    updated: dict[str, object] = {}
+    for phase in REASONING_EFFORT_PHASES:
+        if phase == "plan":
+            profiles = [decision.planner]
+        elif phase == "dev":
+            profiles = [decision.dev]
+        else:
+            profiles = list(decision.plan_reviewers) + list(decision.code_reviewers)
+        phase_block = dict(axis_decision("reasoning_effort", score, phase=phase))
+        entries: list[dict[str, object]] = []
+        applied_profiles: list[ModelProfile] = []
+        for profile in profiles:
+            new_profile, entry = _apply_effort_to_profile(
+                profile, phase=phase, score=score, cfg=cfg
+            )
+            applied_profiles.append(new_profile)
+            entries.append(entry)
+        phase_block["models"] = entries
+        phase_block["applied"] = any(bool(e["applied"]) for e in entries)
+        phase_block["provider_support"] = _phase_support_summary(entries)
+        _apply_phase_policy_view(phase_block, entries)
+        phases[phase] = phase_block
+        if phase == "plan":
+            updated["planner"] = applied_profiles[0]
+        elif phase == "dev":
+            updated["dev"] = applied_profiles[0]
+        else:
+            split = len(decision.plan_reviewers)
+            updated["plan_reviewers"] = applied_profiles[:split]
+            updated["code_reviewers"] = applied_profiles[split:]
+
+    block["phases"] = phases
+    block["applied"] = any(bool(p["applied"]) for p in phases.values())  # type: ignore[index]
+    return _replace(decision, **updated), block
+
+
 def _build_routing_decision(
     decision: AssignmentDecision,
     agents: list[AgentDef],
@@ -2158,6 +2375,7 @@ def _build_routing_decision(
     planner_reliability_audit: dict[str, object] | None = None,
     min_reviewers: int = 1,
     max_reviewers: int = 1,
+    reasoning_effort_block: dict[str, object] | None = None,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 
@@ -2262,12 +2480,16 @@ def _build_routing_decision(
         # discounted for taint before any per-role explanation. The runs remain in
         # the substrate (ADR-0002 refusal-to-forget); this is a read-time count.
         "excluded_for_taint": int(excluded_for_taint),
-        # Score-to-routing policy axis not tied to a single role: reasoning_effort
-        # is intentionally NOT score-controlled (config/override field only). Recorded
-        # top-level so its exclusion from score routing is explicit, never silent
-        # (#1019). The per-role score_policy blocks below cover the axes the score
-        # DOES control (dev tier, plan tier, reviewer count).
-        "reasoning_effort": axis_decision("reasoning_effort", score),
+        # Score-to-routing policy axis resolved per PHASE rather than per role
+        # (#1108): plan/dev/review each get their own bucket, and each seated
+        # model records how (or whether) its transport took the value. Recorded
+        # top-level because it spans phases; the per-role score_policy blocks
+        # below cover the role-scoped axes (dev tier, plan tier, reviewer count).
+        "reasoning_effort": (
+            reasoning_effort_block
+            if reasoning_effort_block is not None
+            else axis_decision("reasoning_effort", score, phase="dev")
+        ),
         "preflight": {
             "candidate_pool": _single_model_pool(
                 agents,
@@ -3340,10 +3562,15 @@ def assign_models(
         """Build the explainability block from the FINAL decision and attach it.
 
         Called at every return so budget-driven downgrades are reflected in the
-        recorded final models/tiers (plan-review note P1-impl).
+        recorded final models/tiers (plan-review note P1-impl). The
+        reasoning-effort axis (#1108) is resolved here too, for the same reason:
+        it must land on the profiles that actually run, after any downgrade.
         """
         from dataclasses import replace as _dc_replace  # noqa: PLC0415
 
+        dec, _effort_block = resolve_reasoning_effort(
+            dec, score=score, cfg=assignment_config.reasoning_effort
+        )
         block = _build_routing_decision(
             dec,
             agents,
@@ -3379,6 +3606,7 @@ def assign_models(
             preflight_reliability_audit=_preflight_reliability_audit,
             planner_reliability_signals=_planner_reliability_signals,
             planner_reliability_audit=_planner_reliability_audit,
+            reasoning_effort_block=_effort_block,
         )
         return _dc_replace(dec, routing_decision=block)
 

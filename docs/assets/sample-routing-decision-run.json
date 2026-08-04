@@ -9,14 +9,216 @@
       "axis": "reasoning_effort",
       "description": "Model reasoning-effort / thinking budget",
       "score": 9,
-      "score_controlled": false,
-      "thresholds": [],
-      "rationale": "intentionally NOT score-controlled \u2014 a per-model config/override field (config/role_derivation.py), never derived from complexity_score",
-      "applied": false,
-      "bucket": null,
-      "range": null,
-      "output": null,
-      "reason": "not_score_controlled"
+      "score_controlled": true,
+      "enabled": true,
+      "rationale": "3 buckets — plan leads dev by one band; effort scales with score within the tier",
+      "phases": {
+        "plan": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets — plan leads dev by one band; effort scales with score within the tier",
+          "phase": "plan",
+          "applied": false,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "opus",
+              "model": "opus",
+              "transport": "anthropic",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        },
+        "dev": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets — plan leads dev by one band; effort scales with score within the tier",
+          "phase": "dev",
+          "applied": false,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "opus",
+              "model": "opus",
+              "transport": "anthropic",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        },
+        "review": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 9,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets — plan leads dev by one band; effort scales with score within the tier",
+          "phase": "review",
+          "applied": false,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "gpt",
+              "model": "gpt-5.4",
+              "transport": "openai",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "sonnet",
+              "model": "sonnet",
+              "transport": "anthropic",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "gpt",
+              "model": "gpt-5.4",
+              "transport": "openai",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "sonnet",
+              "model": "sonnet",
+              "transport": "anthropic",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        }
+      },
+      "applied": false
     },
     "preflight": {
       "candidate_pool": [
@@ -65,7 +267,7 @@
             5,
             10
           ],
-          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "rationale": "2 buckets — planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
           "applied": true,
           "bucket": "strong",
           "range": [
@@ -104,10 +306,41 @@
       "exploration": {
         "mode": "winner"
       },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "opus": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "gpt": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
       "final": {
         "model": "opus",
         "tier": "strong",
-        "rationale": "[preflight] complexity score 9 \u2192 tier strong ($5.00)"
+        "rationale": "[preflight] complexity score 9 → tier strong ($5.00)"
       }
     },
     "dev": {
@@ -124,7 +357,7 @@
             6,
             10
           ],
-          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "rationale": "3 buckets — splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
           "applied": true,
           "bucket": "strong",
           "range": [
@@ -244,7 +477,7 @@
       "final": {
         "model": "opus",
         "tier": "strong",
-        "rationale": "[preflight] complexity score 9 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.91 \u2265 threshold 0.60 over 60 admissible runs \u2014 pre-promotion held) (profile success_rate=0.91 @ HIGH)"
+        "rationale": "[preflight] complexity score 9 (HIGH) → tier strong (recency recovery: weighted success_rate 0.91 ≥ threshold 0.60 over 60 admissible runs — pre-promotion held) (profile success_rate=0.91 @ HIGH)"
       }
     },
     "plan_review": {
@@ -258,7 +491,7 @@
             5,
             10
           ],
-          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "rationale": "2 buckets — planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
           "applied": true,
           "bucket": "strong",
           "range": [
@@ -277,7 +510,7 @@
             7,
             10
           ],
-          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "rationale": "3 buckets — min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
           "applied": true,
           "bucket": "max",
           "range": [
@@ -338,6 +571,11 @@
             "weighted": null,
             "rate": null,
             "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
             "selected": true
           },
           "sonnet": {
@@ -347,8 +585,38 @@
             "weighted": null,
             "rate": null,
             "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
             "selected": true
           }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "gpt",
+            "sonnet"
+          ],
+          "checked_detail": {
+            "gpt": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "sonnet": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
         }
       },
       "exploration": {
@@ -373,7 +641,7 @@
             5,
             10
           ],
-          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "rationale": "2 buckets — planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
           "applied": true,
           "bucket": "strong",
           "range": [
@@ -392,7 +660,7 @@
             7,
             10
           ],
-          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "rationale": "3 buckets — min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
           "applied": true,
           "bucket": "max",
           "range": [
@@ -453,6 +721,11 @@
             "weighted": null,
             "rate": null,
             "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
             "selected": true
           },
           "sonnet": {
@@ -462,8 +735,38 @@
             "weighted": null,
             "rate": null,
             "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
             "selected": true
           }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "gpt",
+            "sonnet"
+          ],
+          "checked_detail": {
+            "gpt": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "sonnet": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
         }
       },
       "exploration": {
