@@ -672,6 +672,80 @@ def test_numeric_complexity_score_splits_same_legacy_band_assignments():
     assert len(upper_medium.code_reviewers) == 2
 
 
+def test_complexity_score_boundaries_reach_lowest_and_highest_routing():
+    """Score 1 and score 10 land on the extreme ends of every score-driven axis."""
+    # Extra same-provider agents so the max reviewer target is actually reachable
+    # after the self-exclusion of the dev/planner picks.
+    agents = _make_agents_one_per_tier() + [
+        AgentDef(
+            name="opus-2",
+            provider="anthropic",
+            model="opus-2",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+        ),
+        AgentDef(
+            name="opus-3",
+            provider="anthropic",
+            model="opus-3",
+            budget_usd=8.0,
+            timeout_seconds=1200,
+            tier="strong",
+        ),
+    ]
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=3, prefer_cross_provider=False)
+
+    lowest = assign_models(agents, cfg, "medium", complexity_score=1)
+    highest = assign_models(agents, cfg, "medium", complexity_score=10)
+
+    # score 1: dev tier "cheap", plan tier "mid", reviewer target "min"
+    assert lowest.dev.model == "haiku"
+    assert lowest.planner.model == "sonnet"
+    assert len(lowest.code_reviewers) == 1
+    # score 10: dev + plan tier "strong", reviewer target "max"
+    assert highest.dev.model == "opus"
+    assert highest.planner.model == "opus"
+    assert len(highest.code_reviewers) == 3
+
+
+def test_out_of_range_complexity_score_clamps_to_boundary_assignment():
+    """Scores outside 1-10 clamp rather than falling through to the legacy band."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=3, prefer_cross_provider=False)
+
+    def _shape(decision):
+        return (
+            decision.dev.model,
+            decision.planner.model,
+            len(decision.code_reviewers),
+            len(decision.plan_reviewers),
+        )
+
+    below = assign_models(agents, cfg, "medium", complexity_score=0)
+    at_min = assign_models(agents, cfg, "medium", complexity_score=1)
+    above = assign_models(agents, cfg, "medium", complexity_score=99)
+    at_max = assign_models(agents, cfg, "medium", complexity_score=10)
+
+    assert _shape(below) == _shape(at_min)
+    assert _shape(above) == _shape(at_max)
+    # And the clamp is observable: the two ends differ from each other.
+    assert _shape(below) != _shape(above)
+
+
+def test_missing_complexity_score_falls_back_to_legacy_band():
+    """complexity_score=None is the fallback path: routing comes from the band."""
+    agents = _make_agents_one_per_tier()
+    cfg = _make_cfg(min_reviewers=1, max_reviewers=3, prefer_cross_provider=False)
+
+    no_score = assign_models(agents, cfg, "medium", complexity_score=None)
+
+    # MEDIUM band: dev tier "mid", plan tier "strong", reviewer midpoint.
+    assert no_score.dev.model == "sonnet"
+    assert no_score.planner.model == "opus"
+    assert len(no_score.code_reviewers) == _reviewer_count("MEDIUM", 1, 3)
+
+
 def test_adaptive_disabled_ignores_complexity_score():
     """With adaptive_enabled=False, two scores in the same band yield identical assignments."""
     agents = _make_agents_one_per_tier()

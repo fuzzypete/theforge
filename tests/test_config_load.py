@@ -832,7 +832,35 @@ class TestDefaultFlags:
         assert config.custom_models == ("openai/gpt-5.5/cli",)
         assert config.model_registry_sources["openai/gpt-5.5/cli"] == "forge.yaml"
         assert config.model_registry["openai/gpt-5.5/cli"].model == "gpt-5.5"
-        assert config.dev_profile.registry_source in {"builtin", "forge.yaml"}
+        # The dev role resolves to the builtin anthropic/sonnet/cli entry in this
+        # fixture, so name that source exactly: a silent switch to the forge.yaml
+        # declaration (or vice versa, guarded above) now fails the test.
+        assert config.dev_profile.registry_id == "anthropic/sonnet/cli"
+        assert config.dev_profile.registry_source == "builtin"
+
+    def test_models_custom_only_makes_dev_profile_report_forge_yaml_source(self, tmp_path):
+        """When the sole enabled model is forge.yaml-declared, dev names that source."""
+        config_path = _write_config(
+            {
+                "models": {
+                    "enabled": ["gpt-5.5"],
+                    "custom": {
+                        "gpt-5.5": {
+                            "provider": "openai",
+                            "model": "gpt-5.5",
+                            "tier": "strong",
+                            "input_cost_per_mtok": 5,
+                            "output_cost_per_mtok": 30,
+                        }
+                    },
+                },
+                "budget_usd": 50.0,
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.dev_profile.registry_id == "openai/gpt-5.5/cli"
+        assert config.dev_profile.registry_source == "forge.yaml"
 
     def test_models_custom_unknown_provider_rejected(self, tmp_path):
         config_path = _write_config(
