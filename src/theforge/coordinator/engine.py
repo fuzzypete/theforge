@@ -50,6 +50,7 @@ from theforge.task import (
 )
 
 from . import live_state as _live_state
+from . import story_budget as _story_budget
 from .agent_failure import is_infrastructure_abort
 from .cancellation import StoryCancelled
 from .log_tee import (  # noqa: E402
@@ -415,11 +416,87 @@ def _coordinator_loop(
                 dev_cost_estimate_usd=_static_dev_cost_estimate,
                 audit=_audit,
             )
+        # ── Seat permissions the allocation can actually fund (#2238) ─────────
+        # The allocation and the permitted review cycles are derived
+        # independently from the same complexity signal, so nothing stops a
+        # story being granted more review cycles than its allocation can pay
+        # for. Reconcile them here — the last point before dev spends, where
+        # reducing scope is still free — rather than discovering the shortfall
+        # at review dispatch, where the only options left are escalate or
+        # accept unverified work.
+        #
+        # The per-cycle cost is the full configured pool sum: an upper bound
+        # (demotion only ever removes reviewers) and the same number the
+        # dispatch-time funding check plans against.
+        _reviewer_names = [profile.name for profile in config.review_pool]
+        _reconciliation = _story_budget.reconcile_review_cycles(
+            state.story_allocation,
+            dev_cost_estimate_usd=_limits.dev_cost_estimate_usd,
+            review_cycle_cost_usd=sum(float(p.budget_usd) for p in config.review_pool),
+            requested_review_max=_limits.review_max,
+            spent_so_far_usd=state.total_cost_measured,
+        )
+        _audit = dict(_limits.audit)
+        _audit["review_cycle_reconciliation"] = _reconciliation
+        if _reconciliation["action"] in (
+            _story_budget.RECONCILE_REDUCED,
+            _story_budget.RECONCILE_UNFUNDABLE,
+        ):
+            _audit["rationale"] = (
+                f"{_audit.get('rationale', '')} "
+                f"{_story_budget.format_reconciliation(_reconciliation)}"
+            ).strip()
+        _limits = type(_limits)(
+            dev_max=_limits.dev_max,
+            review_max=_reconciliation["reconciled_review_max"],
+            dev_timeout_seconds=_limits.dev_timeout_seconds,
+            dev_cost_estimate_usd=_limits.dev_cost_estimate_usd,
+            audit=_audit,
+        )
+
         state.adaptive_dev_max = _limits.dev_max
         state.adaptive_review_max = _limits.review_max
         state.adaptive_dev_timeout_seconds = _limits.dev_timeout_seconds
         state.adaptive_dev_cost_estimate_usd = _limits.dev_cost_estimate_usd
         state.adaptive_limits_audit = _limits.audit
+
+        if _reconciliation["action"] == _story_budget.RECONCILE_UNFUNDABLE:
+            # Not one review cycle fits. Spending on work that cannot then be
+            # checked is the failure this reconciliation exists to prevent, so
+            # the run stops here — before DEV — and says why.
+            _shortfall = _story_budget.seating_shortfall(
+                state.story_allocation,
+                _reconciliation,
+                participants=_reviewer_names,
+            )
+            if _shortfall is not None:
+                state.allocation_exhausted = _shortfall
+                state.error = _story_budget.format_shortfall(_shortfall, story=task.slug)
+                state.error_type = "allocation_exhausted"
+                state.phase = Phase.ESCALATE
+                _log(f"  ⚠ {state.error}")
+                if logger:
+                    logger._safe_emit(
+                        "allocation_exhausted",
+                        phase="SEATING",
+                        **{
+                            k: _reconciliation.get(k)
+                            for k in (
+                                "allocation_usd",
+                                "dev_cost_estimate_usd",
+                                "review_cycle_cost_usd",
+                                "requested_review_max",
+                                "shortfall_usd",
+                            )
+                        },
+                    )
+                return CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=state.error,
+                )
+
         _log_verbose(
             "  adaptive limits: "
             f"dev_max={_limits.dev_max} review_max={_limits.review_max} "
