@@ -36,13 +36,20 @@ from .models import (
     canonical_id_for_spec,
     canonical_model_id,
     custom_model_capability,
-    custom_model_cost_rank,
     custom_model_dev_capable,
     known_model_overlay_providers,
     normalize_model_key,
     overlay_transport,
     resolve_agent_spec,
     transport_for,
+)
+from .pricing import (
+    COST_BAND_BASIS_OPERATOR_DECLARED,
+    COST_BAND_BASIS_UNPRICED_DEFAULT,
+    PRICING_PROVENANCE_OPERATOR_DECLARED,
+    UNPRICED_COST_RANK,
+    custom_model_cost_rank,
+    price_cost_band_basis,
 )
 from .profiles import (
     CLI_PROVIDER_MAP,
@@ -271,14 +278,41 @@ def _parse_enabled_mapping_entry(
     output_cost = cost_raw.get(
         "output_per_mtok", builtin.output_cost_per_mtok if builtin is not None else None
     )
+    # Declaring any `cost:` figure here attributes the pair to this identity —
+    # the operator asserted it for this entry. Figures merely *inherited* from a
+    # built-in entry keep that entry's attribution, which for a vendor-shorthand
+    # identity is None: the literal is carried for reference but must not band.
+    pricing_provenance = (
+        PRICING_PROVENANCE_OPERATOR_DECLARED
+        if cost_raw
+        else (builtin.pricing_provenance if builtin is not None else None)
+    )
+    banded_cost_rank = (
+        custom_model_cost_rank(
+            float(input_cost or 0.0),
+            float(output_cost or 0.0),
+            pricing_provenance=pricing_provenance,
+        )
+        if input_cost is not None or output_cost is not None
+        else None
+    )
+    # The band travels with the reason it holds, in the same order of precedence:
+    # the operator's own declaration, then this entry's attributable price, then
+    # whatever the built-in entry already justified, then the unpriced default.
+    # Nothing here can reach the band of an unattributed literal — the middle
+    # branch is gated on `banded_cost_rank`, which is None in that case.
     if routing_raw.get("cost_rank") is not None:
         cost_rank = int(routing_raw["cost_rank"])
-    elif input_cost is not None or output_cost is not None:
-        cost_rank = custom_model_cost_rank(float(input_cost or 0.0), float(output_cost or 0.0))
+        cost_rank_basis = COST_BAND_BASIS_OPERATOR_DECLARED
+    elif banded_cost_rank is not None:
+        cost_rank = banded_cost_rank
+        cost_rank_basis = price_cost_band_basis(str(pricing_provenance))
     elif builtin is not None:
         cost_rank = builtin.cost_rank
+        cost_rank_basis = builtin.routing.cost_rank_basis
     else:
-        cost_rank = custom_model_cost_rank(0.0, 0.0)
+        cost_rank = UNPRICED_COST_RANK
+        cost_rank_basis = COST_BAND_BASIS_UNPRICED_DEFAULT
     capability = routing_raw.get("capability")
     dev_capable = routing_raw.get("dev_capable")
     phases = routing_raw.get("phase_eligibility")
@@ -312,11 +346,13 @@ def _parse_enabled_mapping_entry(
                     else RoutingPolicy(tier=tier, capability=1, cost_rank=1).phase_eligibility
                 )
             ),
+            cost_rank_basis=cost_rank_basis,
         ),
         base_url=base_url if base_url is not None else (builtin.base_url if builtin else None),
         registry_source="forge.yaml",
         input_cost_per_mtok=float(input_cost) if input_cost is not None else None,
         output_cost_per_mtok=float(output_cost) if output_cost is not None else None,
+        pricing_provenance=pricing_provenance,
     )
     return canonical_id, spec
 
@@ -438,6 +474,13 @@ def _parse_custom_model_registry(
             raise ValueError(
                 f"forge.yaml 'models.custom.{canonical_id}.base_url' must be a non-empty string"
             )
+        # A models.custom declaration states its own prices for its own identity,
+        # so the pair is attributed to the operator's declaration and bands.
+        overlay_cost_rank = custom_model_cost_rank(
+            float(input_cost),
+            float(output_cost),
+            pricing_provenance=PRICING_PROVENANCE_OPERATOR_DECLARED,
+        )
         spec = AgentSpec(
             provider=normalized_provider,
             model=model,
@@ -445,13 +488,21 @@ def _parse_custom_model_registry(
             routing=RoutingPolicy(
                 tier=tier,
                 capability=custom_model_capability(tier),
-                cost_rank=custom_model_cost_rank(float(input_cost), float(output_cost)),
+                cost_rank=(
+                    overlay_cost_rank if overlay_cost_rank is not None else UNPRICED_COST_RANK
+                ),
                 dev_capable=custom_model_dev_capable(transport),
+                cost_rank_basis=(
+                    price_cost_band_basis(PRICING_PROVENANCE_OPERATOR_DECLARED)
+                    if overlay_cost_rank is not None
+                    else COST_BAND_BASIS_UNPRICED_DEFAULT
+                ),
             ),
             base_url=base_url,
             registry_source="forge.yaml",
             input_cost_per_mtok=float(input_cost),
             output_cost_per_mtok=float(output_cost),
+            pricing_provenance=PRICING_PROVENANCE_OPERATOR_DECLARED,
         )
         # The declaration key is operator-chosen; the identity is not. Register
         # the spec under its canonical id so nothing downstream can select the

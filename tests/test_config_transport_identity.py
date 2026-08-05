@@ -434,6 +434,7 @@ class TestRoutingPolicyIsSeparateFromIdentity:
             "cost_rank",
             "dev_capable",
             "phase_eligibility",
+            "cost_rank_basis",
         }
         assert not policy_fields & {"provider", "model", "transport", "base_url"}
 

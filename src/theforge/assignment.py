@@ -26,7 +26,7 @@ from .config import (
     ReasoningEffortConfig,
 )
 from .config.auth import check_agent_auth
-from .config.models import price_tiebreak_signal
+from .config.pricing import price_tiebreak_signal_for
 from .routing import (
     KNOB_EFFORT,
     KNOB_NONE,
@@ -516,7 +516,7 @@ def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
         matches,
         key=lambda a: (
             a.budget_usd,
-            price_tiebreak_signal(a.input_cost_per_mtok, a.output_cost_per_mtok),
+            price_tiebreak_signal_for(a),
         ),
     )
 
@@ -538,7 +538,7 @@ def _rerank_by_profiles(
     Only role="dev" is profile-aware today; other roles pass through unchanged.
     Candidates without ``min_runs`` observations are ordered behind every
     observed model but among themselves fall back to the real per-MTok price
-    (via :func:`price_tiebreak_signal`), so the cheapest unobserved model is the
+    (via :func:`price_tiebreak_signal_for`), so the cheapest unobserved model is the
     first explored rather than whichever the pool happened to list first (#1617).
 
     Domain match (issue #155) is the *horizontal* preference axis. When
@@ -591,7 +591,7 @@ def _rerank_by_profiles(
         rows.append((agent, signal, dsignal))
 
     def _price(agent: AgentDef) -> float:
-        return price_tiebreak_signal(agent.input_cost_per_mtok, agent.output_cost_per_mtok)
+        return price_tiebreak_signal_for(agent)
 
     def _complexity_key(row: tuple[AgentDef, dict, dict | None]) -> tuple:
         agent, signal, _ = row

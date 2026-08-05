@@ -16,7 +16,8 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
-from .models import AgentDef, AgentSpec, _resolve_model_info, price_tiebreak_signal
+from .models import AgentDef, AgentSpec, _resolve_model_info
+from .pricing import price_tiebreak_signal_for
 from .types import SUPPORTED_PROVIDERS, ModelProfile, TransportFallbackConfig
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -117,6 +118,7 @@ def _agents_from_models(
                 registry_source=info.registry_source,
                 input_cost_per_mtok=info.input_cost_per_mtok,
                 output_cost_per_mtok=info.output_cost_per_mtok,
+                pricing_provenance=info.pricing_provenance,
             )
         )
     return agents
@@ -366,7 +368,7 @@ def _auto_assign_models(
         key=lambda x: (
             x[1].cost_rank,
             -x[1].capability,
-            price_tiebreak_signal(x[1].input_cost_per_mtok, x[1].output_cost_per_mtok),
+            price_tiebreak_signal_for(x[1]),
         ),
     )
 
