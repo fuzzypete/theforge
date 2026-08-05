@@ -271,6 +271,11 @@ class TestRunCodex:
             transport_fallback_fired=True,
             transport_fallback_reason="matched '429'",
             transport_used="api",
+            # Configured stays what the operator selected even though the
+            # invocation resolved onto the API fallback — that divergence is the
+            # fact the ledger exists to keep (#2205).
+            configured_model="gpt-5.4",
+            configured_transport="cli",
         )
 
     def test_codex_non_retryable_failure_does_not_fall_back(self, tmp_path: Path) -> None:
@@ -305,6 +310,8 @@ class TestRunCodex:
             cli_result,
             model_used="gpt-5.4",
             transport_used="cli",
+            configured_model="gpt-5.4",
+            configured_transport="cli",
         )
 
     def test_codex_startup_failure_falls_back_to_openai_api(self, tmp_path: Path) -> None:
@@ -351,6 +358,8 @@ class TestRunCodex:
             transport_fallback_fired=True,
             transport_fallback_reason="CLI unavailable",
             transport_used="api",
+            configured_model="gpt-5.4",
+            configured_transport="cli",
         )
 
     def test_codex_resumed_session_falls_back_to_api_and_drops_cli_session(
@@ -403,6 +412,11 @@ class TestRunCodex:
             transport_fallback_fired=True,
             transport_fallback_reason="matched '429'",
             transport_used="api",
+            # Configured stays what the operator selected even though the
+            # invocation resolved onto the API fallback — that divergence is the
+            # fact the ledger exists to keep (#2205).
+            configured_model="gpt-5.4",
+            configured_transport="cli",
         )
 
     def test_codex_api_fallback_inherits_optional_profile_fields(self, tmp_path: Path) -> None:
@@ -454,6 +468,14 @@ class TestRunCodex:
             transport_fallback_fired=True,
             transport_fallback_reason="matched '429'",
             transport_used="api",
+            # Configured stays what the operator selected even though the
+            # invocation resolved onto the API fallback — that divergence is the
+            # fact the ledger exists to keep (#2205).
+            configured_model="gpt-5.4",
+            configured_transport="cli",
+            # Recorded from the profile that dispatched, so the ledger states the
+            # conditions the invocation ran under, not just its identity.
+            reasoning_effort="high",
         )
 
 

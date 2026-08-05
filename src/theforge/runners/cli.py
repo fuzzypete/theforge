@@ -18,7 +18,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import cast
 
-from theforge.agent_types import AgentResult, ModelUsage
+from theforge.agent_types import COST_UNKNOWN, AgentResult, ModelUsage
 from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
 
@@ -466,14 +466,54 @@ def _fill_invocation_identity(result: AgentResult, profile: ModelProfile) -> Age
     Both fields are only ever filled, never overwritten — a runner that
     switched transport mid-invocation (the CLI→API fallback) has already
     recorded the transport that actually served.
+
+    The *configured* half of the ledger is stamped alongside (#2205): the two
+    are one contract, and filling the resolved identity without also naming what
+    was configured is how the collapse this replaced happened.
     """
-    if result.model_used is not None and result.transport_used:
+    if result.model_used is None or not result.transport_used:
+        result = replace(
+            result,
+            model_used=result.model_used if result.model_used is not None else profile.model,
+            transport_used=result.transport_used or _profile_transport_kind(profile),
+        )
+    return _stamp_configured_identity(result, profile)
+
+
+def _stamp_configured_identity(result: AgentResult, profile: ModelProfile) -> AgentResult:
+    """Record what the invocation was *configured* as, beside what resolved (#2205).
+
+    ``model_used``/``transport_used`` are the resolved primary identity — the
+    concrete model that served. They are not the identity the operator selected:
+    an alias resolves, a preference list falls back, a CLI failure crosses to the
+    API. Recording only the survivor forces a choice among three different facts
+    and discards the rest, which is exactly what leaves cost and outcome attached
+    to something nobody configured.
+
+    So the configured spelling is stamped verbatim from the profile this dispatch
+    started from, before any of those rewrites. Only ever filled, never
+    overwritten: a runner that already knows its own configured identity (a
+    fallback attempt that carries the *original* profile's spelling) has the more
+    specific reading.
+
+    ``cost_provenance`` is normalized here too: an unmeasured cost cannot have
+    been reported *or* estimated, so ``cost_usd is None`` always pairs with
+    :data:`COST_UNKNOWN` no matter what a runner stamped.
+    """
+    if not isinstance(result, AgentResult):
         return result
-    return replace(
-        result,
-        model_used=result.model_used if result.model_used is not None else profile.model,
-        transport_used=result.transport_used or _profile_transport_kind(profile),
-    )
+    changes: dict[str, object] = {}
+    if result.configured_model is None:
+        changes["configured_model"] = profile.model
+    if result.configured_transport is None:
+        changes["configured_transport"] = _profile_transport_kind(profile)
+    if result.reasoning_effort is None and profile.reasoning_effort is not None:
+        changes["reasoning_effort"] = profile.reasoning_effort
+    if result.cost_usd is None and result.cost_provenance != COST_UNKNOWN:
+        changes["cost_provenance"] = COST_UNKNOWN
+    if not changes:
+        return result
+    return replace(result, **changes)  # type: ignore[arg-type]
 
 
 def run_agent(
@@ -491,6 +531,10 @@ def run_agent(
     progress_cb: "Callable[[dict], None] | None" = None,
 ) -> AgentResult:
     """Run an agent using the transport specified in its profile.
+
+    Every dispatch path returns through :func:`_stamp_configured_identity`, so
+    the configured-vs-resolved pair of the invocation ledger (#2205) is recorded
+    once at this seam rather than at each of the six transport returns below.
 
     Dispatches on TransportSpec.kind ('cli' vs 'api'), not on provider string.
     Provider-specific behavior lives inside adapters.
@@ -514,7 +558,7 @@ def run_agent(
             plain_text=plain_text,
             progress_cb=progress_cb,
         )
-        return replace(api_result, transport_used=api_result.transport_used or "api")
+        return _fill_invocation_identity(api_result, profile)
 
     cli = _profile_cli_runner(profile)
     api_fallback_profile = _build_api_fallback_profile(profile)
@@ -616,15 +660,22 @@ def run_agent(
     # ``cli`` never normalized to one — name that unresolved value so the
     # operator sees what they wrote, not a bare None.
     unresolved = cli if cli is not None else profile.cli
-    return AgentResult(
-        success=False,
-        output=f"Unknown CLI: {unresolved!r}. Supported: ['claude', 'codex', 'gemini', 'ghaw']",
-        session_id=None,
-        cost_usd=None,
-        exit_code=-1,
-        raw={},
-        profile_name=profile.name,
-        startup_failure=True,
+    # No resolved identity to record — nothing was invoked — but the configured
+    # one is exactly what the operator needs to see for an unresolvable profile.
+    return _stamp_configured_identity(
+        AgentResult(
+            success=False,
+            output=(
+                f"Unknown CLI: {unresolved!r}. Supported: ['claude', 'codex', 'gemini', 'ghaw']"
+            ),
+            session_id=None,
+            cost_usd=None,
+            exit_code=-1,
+            raw={},
+            profile_name=profile.name,
+            startup_failure=True,
+        ),
+        profile,
     )
 
 

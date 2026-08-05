@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from .agent_identity import dev_model_identity_detail
+from .agent_identity import dev_identity_ledger, dev_model_identity_detail
 
 # Substrate (SQLite) schema version. Bumped to 5 by #2201, which added
 # ``audit_records.dev_model_source`` and repaired the dev-model projection:
@@ -44,7 +44,17 @@ from .agent_identity import dev_model_identity_detail
 # records whether a stored value is canonical or a verbatim fallback. Both
 # changes have to reach already-indexed history, so a version-5 substrate is
 # re-derived on open.
-SUBSTRATE_SCHEMA_VERSION = 6
+#
+# Bumped to 7 by #2205: ``dev_model`` was one column standing in for three
+# different facts — the identity the operator configured, the concrete one it
+# resolved to, and the models actually billed. The configured/resolved pair now
+# has its own columns (``dev_configured_model*`` / ``dev_resolved_model*``)
+# alongside the ledger marker, so a consumer can attribute cost and outcome to
+# each independently and can tell when they differ. ``dev_model`` stays as the
+# resolved-identity compatibility column. A version-6 substrate is re-derived on
+# open so the new columns reach already-indexed history wherever the record
+# carries a ledger.
+SUBSTRATE_SCHEMA_VERSION = 7
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -58,7 +68,7 @@ SUBSTRATE_SCHEMA_VERSION = 6
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 20
+CURRENT_RECORD_SCHEMA_VERSION = 21
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -170,6 +180,12 @@ CREATE TABLE IF NOT EXISTS audit_records (
     dev_model TEXT,
     dev_model_source TEXT,
     dev_model_resolution TEXT,
+    dev_configured_model TEXT,
+    dev_configured_model_resolution TEXT,
+    dev_resolved_model TEXT,
+    dev_resolved_model_resolution TEXT,
+    dev_identity_ledger_version INTEGER,
+    dev_identity_ledger_full INTEGER,
     verdict TEXT,
     raw_json TEXT NOT NULL
 );
@@ -287,6 +303,12 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE audit_records ADD COLUMN dev_model TEXT",
         "ALTER TABLE audit_records ADD COLUMN dev_model_source TEXT",
         "ALTER TABLE audit_records ADD COLUMN dev_model_resolution TEXT",
+        "ALTER TABLE audit_records ADD COLUMN dev_configured_model TEXT",
+        "ALTER TABLE audit_records ADD COLUMN dev_configured_model_resolution TEXT",
+        "ALTER TABLE audit_records ADD COLUMN dev_resolved_model TEXT",
+        "ALTER TABLE audit_records ADD COLUMN dev_resolved_model_resolution TEXT",
+        "ALTER TABLE audit_records ADD COLUMN dev_identity_ledger_version INTEGER",
+        "ALTER TABLE audit_records ADD COLUMN dev_identity_ledger_full INTEGER",
         "ALTER TABLE audit_records ADD COLUMN verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
@@ -303,6 +325,10 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "CREATE INDEX IF NOT EXISTS idx_audit_records_milestone ON audit_records(milestone)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_issue_id ON audit_records(issue_id)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_dev_model ON audit_records(dev_model)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_dev_configured_model "
+        "ON audit_records(dev_configured_model)",
+        "CREATE INDEX IF NOT EXISTS idx_audit_records_dev_resolved_model "
+        "ON audit_records(dev_resolved_model)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_verdict ON audit_records(verdict)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_final_phase ON audit_records(final_phase)",
         "CREATE INDEX IF NOT EXISTS idx_audit_records_outcome ON audit_records(outcome_success)",
@@ -346,6 +372,54 @@ def _stored_schema_version(conn: sqlite3.Connection) -> int | None:
         return None
 
 
+def _dev_identity_columns(record: dict) -> dict:
+    """Project a record to every indexed dev-identity column (#2205).
+
+    One helper so the write path (:func:`_flat_fields`) and the repair path
+    (:func:`_reindex_dev_model_identity`) cannot derive the index differently —
+    the divergence that left ``dev_model`` empty on every row in #2201.
+
+    ``dev_model`` remains the *resolved* identity, so existing consumers keep
+    reading the model that actually ran. The configured identity is indexed
+    beside it rather than folded into it, because attributing cost to the
+    identity the operator selected and to the one it resolved to are different
+    questions and a single column can only answer one.
+    """
+    identity, source, resolution = dev_model_identity_detail(record)
+    ledger = dev_identity_ledger(record)
+    configured = ledger["configured"]
+    resolved = ledger["resolved"]
+    return {
+        "dev_model": identity,
+        "dev_model_source": source,
+        "dev_model_resolution": resolution,
+        "dev_configured_model": configured[0] if configured else None,
+        "dev_configured_model_resolution": configured[2] if configured else None,
+        # Falls back to the single-identity projection for a legacy record: that
+        # value *is* the resolved identity, just recovered rather than recorded.
+        "dev_resolved_model": resolved[0] if resolved else identity,
+        "dev_resolved_model_resolution": resolved[2] if resolved else resolution,
+        "dev_identity_ledger_version": ledger["version"],
+        # The "can a consumer tell a full record from a partial one" marker,
+        # indexed so that question is answerable by query rather than by
+        # re-parsing every raw_json.
+        "dev_identity_ledger_full": 1 if ledger["full_ledger"] else 0,
+    }
+
+
+_DEV_IDENTITY_COLUMNS: tuple[str, ...] = (
+    "dev_model",
+    "dev_model_source",
+    "dev_model_resolution",
+    "dev_configured_model",
+    "dev_configured_model_resolution",
+    "dev_resolved_model",
+    "dev_resolved_model_resolution",
+    "dev_identity_ledger_version",
+    "dev_identity_ledger_full",
+)
+
+
 def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
     """Re-derive the ``dev_model*`` columns from each row's raw_json.
 
@@ -372,13 +446,13 @@ def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
             continue
         if not isinstance(record, dict):
             continue
-        identity, source, resolution = dev_model_identity_detail(record)
-        if not identity:
+        columns = _dev_identity_columns(record)
+        if not columns["dev_model"] and not columns["dev_configured_model"]:
             continue
+        assignments = ", ".join(f"{name} = ?" for name in _DEV_IDENTITY_COLUMNS)
         conn.execute(
-            "UPDATE audit_records SET dev_model = ?, dev_model_source = ?, "
-            "dev_model_resolution = ? WHERE run_id = ?",
-            (identity, source, resolution, run_id),
+            f"UPDATE audit_records SET {assignments} WHERE run_id = ?",
+            (*(columns[name] for name in _DEV_IDENTITY_COLUMNS), run_id),
         )
         updated += 1
     return updated
@@ -708,8 +782,6 @@ def _flat_fields(record: dict) -> dict:
     else:
         issue_id = None
 
-    dev_model, dev_model_source, dev_model_resolution = dev_model_identity_detail(record)
-
     return {
         "slug": task.get("slug"),
         "started_at": timing.get("started_at"),
@@ -723,9 +795,7 @@ def _flat_fields(record: dict) -> dict:
         "record_schema_version": record_schema_version,
         "milestone": milestone,
         "issue_id": issue_id,
-        "dev_model": dev_model,
-        "dev_model_source": dev_model_source,
-        "dev_model_resolution": dev_model_resolution,
+        **_dev_identity_columns(record),
         "verdict": _derive_record_verdict(record),
     }
 
@@ -1201,6 +1271,29 @@ def _migrate_v19_to_v20(record: dict) -> dict:
     }
 
 
+def _migrate_v20_to_v21(record: dict) -> dict:
+    """Add the per-invocation identity ledger to ``cost.agents`` (issue #2205).
+
+    v21 entries carry a ``ledger`` block naming three things a v20 entry
+    collapsed into one: the identity the run was configured with, the concrete
+    identity that configuration resolved to at invocation time, and every model
+    actually billed inside the invocation — plus the conditions it ran under
+    (role, complexity, reasoning effort), its usage counts by class, and whether
+    the observed cost was reported by the provider or estimated by forge.
+
+    No ledger is fabricated here. A v20 entry recorded one identity with no
+    statement of *which* of the three it was, so synthesizing a block would
+    assert a configured-equals-resolved fact the record never established — and
+    that fabricated equality is precisely the signal #2205 exists to make
+    readable. Older entries are left exactly as written; the reader
+    (:func:`agent_identity.entry_identity_ledger`) reports ``full_ledger:
+    False`` for them, which is what lets a consumer tell a record that carries
+    the full set from one that does not. The stored record is never rewritten
+    (ADR-0002 refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1229,6 +1322,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     17: _migrate_v17_to_v18,
     18: _migrate_v18_to_v19,
     19: _migrate_v19_to_v20,
+    20: _migrate_v20_to_v21,
 }
 
 
@@ -1363,19 +1457,20 @@ def upsert_run_record(
         flat["record_schema_version"],
         flat["milestone"],
         flat["issue_id"],
-        flat["dev_model"],
-        flat["dev_model_source"],
-        flat["dev_model_resolution"],
+        *(flat[name] for name in _DEV_IDENTITY_COLUMNS),
         flat["verdict"],
         raw_json,
     )
+    _dev_identity_names = ", ".join(_DEV_IDENTITY_COLUMNS)
+    _dev_identity_updates = ", ".join(f"{name}=excluded.{name}" for name in _DEV_IDENTITY_COLUMNS)
+    _placeholders = ", ".join(["?"] * (16 + len(_DEV_IDENTITY_COLUMNS) + 2))
     conn.execute(
         "INSERT INTO audit_records "
         "(run_id, slug, started_at, finished_at, total_cost_usd, final_phase, "
         "outcome_success, branch, landing_status, provenance, source_path, "
         "source_mtime, complexity_score, record_schema_version, milestone, "
-        "issue_id, dev_model, dev_model_source, dev_model_resolution, verdict, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        f"issue_id, {_dev_identity_names}, verdict, raw_json) "
+        f"VALUES ({_placeholders}) "
         "ON CONFLICT(run_id) DO UPDATE SET "
         "slug=excluded.slug, started_at=excluded.started_at, "
         "finished_at=excluded.finished_at, total_cost_usd=excluded.total_cost_usd, "
@@ -1386,9 +1481,7 @@ def upsert_run_record(
         "complexity_score=excluded.complexity_score, "
         "record_schema_version=excluded.record_schema_version, "
         "milestone=excluded.milestone, issue_id=excluded.issue_id, "
-        "dev_model=excluded.dev_model, "
-        "dev_model_source=excluded.dev_model_source, "
-        "dev_model_resolution=excluded.dev_model_resolution, verdict=excluded.verdict, "
+        f"{_dev_identity_updates}, verdict=excluded.verdict, "
         "raw_json=excluded.raw_json",
         params,
     )
@@ -1951,6 +2044,7 @@ def derive_assignment_history(
             dev_model, _source, dev_model_resolution = dev_model_identity_detail(record)
         if not isinstance(dev_model, str) or not dev_model:
             continue
+        ledger = dev_identity_ledger(record)
         timing = record.get("timing") or {}
         timestamp = timing.get("started_at") or timing.get("finished_at") or ""
         escalation = record.get("escalation") if isinstance(record.get("escalation"), dict) else {}
@@ -1967,6 +2061,18 @@ def derive_assignment_history(
                 # Only set on the cost.agents fallback: a routing-block model is
                 # canonical by construction and carries no resolution status.
                 "dev_model_resolution": dev_model_resolution,
+                # Configured and resolved carried separately beside the
+                # compatibility ``dev_model`` above, so a consumer can group cost
+                # and outcome by either one independently (#2205). Null on a
+                # pre-ledger record — which ``dev_identity_ledger_full`` says
+                # explicitly, so an absent value never reads as "same as
+                # resolved".
+                "dev_configured_model": ledger["configured"][0] if ledger["configured"] else None,
+                "dev_resolved_model": (
+                    ledger["resolved"][0] if ledger["resolved"] else str(dev_model)
+                ),
+                "dev_identity_ledger_full": ledger["full_ledger"],
+                "dev_configured_differs_from_resolved": ledger["differs"],
             }
         )
     return out
@@ -2054,6 +2160,7 @@ def _derive_escalation(record: dict) -> dict | None:
     # present, through the one shared reading of that contract (#2201).
     dev_model, _dev_model_source, dev_model_resolution = dev_model_identity_detail(record)
     dev_model = dev_model or ""
+    ledger = dev_identity_ledger(record)
 
     raw_score = preflight.get("complexity_score") if isinstance(preflight, dict) else None
     if isinstance(raw_score, bool):
@@ -2085,6 +2192,15 @@ def _derive_escalation(record: dict) -> dict | None:
         # spelling — a consumer aggregating per model needs to be able to tell
         # an unrecognized identity from a normalized one (#2225).
         "dev_model_resolution": dev_model_resolution,
+        # Adaptive routing keys off ``dev_model`` (the resolved identity) as it
+        # always has — that is the model whose behaviour the outcome is evidence
+        # about. The configured identity is carried alongside so cost/outcome can
+        # also be grouped by what the operator selected, without either grouping
+        # silently standing in for the other (#2205).
+        "dev_configured_model": ledger["configured"][0] if ledger["configured"] else None,
+        "dev_resolved_model": ledger["resolved"][0] if ledger["resolved"] else dev_model,
+        "dev_identity_ledger_full": ledger["full_ledger"],
+        "dev_configured_differs_from_resolved": ledger["differs"],
     }
 
 

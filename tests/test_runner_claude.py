@@ -13,7 +13,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 import theforge.runners.runner_claude as runner_claude_mod
-from theforge.agent_types import AgentResult
+from theforge.agent_types import (
+    COST_ESTIMATED,
+    COST_PROVIDER_REPORTED,
+    COST_UNKNOWN,
+    AgentResult,
+)
 from theforge.config import ModelProfile
 from theforge.config.types import StuckDetectionConfig
 from theforge.log_level import LogLevel, set_log_level
@@ -109,7 +114,19 @@ class TestHybridRunner:
             plain_text=False,
             progress_cb=None,
         )
-        assert result == AgentResult(**{**mock_result.__dict__, "transport_used": "api"})
+        # The API dispatch fills the whole invocation identity, not just the
+        # transport (#2205): a single-model API profile's resolved model is its
+        # configured one, and the ledger needs both stated rather than one
+        # recorded and the other left null.
+        assert result == AgentResult(
+            **{
+                **mock_result.__dict__,
+                "transport_used": "api",
+                "model_used": "o4-mini",
+                "configured_model": "o4-mini",
+                "configured_transport": "api",
+            }
+        )
 
     def test_run_agent_api_dev_dispatch(self, tmp_path: Path) -> None:
         """run_agent dispatches to run_api_agent for a dev profile with provider set."""
@@ -144,7 +161,15 @@ class TestHybridRunner:
             plain_text=False,
             progress_cb=None,
         )
-        assert result == AgentResult(**{**mock_result.__dict__, "transport_used": "api"})
+        assert result == AgentResult(
+            **{
+                **mock_result.__dict__,
+                "transport_used": "api",
+                "model_used": "gpt-4o",
+                "configured_model": "gpt-4o",
+                "configured_transport": "api",
+            }
+        )
 
     def test_run_agent_cli_dispatch(self, dev_profile: ModelProfile, tmp_path: Path) -> None:
         """run_agent dispatches to CLI runner for CLI profiles."""
@@ -1165,6 +1190,60 @@ class TestClaudeLifecycle:
         assert result.output == "Task complete."
         assert result.session_id == "fake-session-abc123"
         assert result.exit_code == 0
+
+    def test_reported_cost_is_marked_provider_reported(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A cost the CLI's result event carried is recorded as billed, not derived (#2205).
+
+        Run through ``run_agent`` rather than ``_run_claude`` so the configured
+        half of the ledger is stamped too — the two are one contract and the
+        seam that fills them is the dispatch, not the runner.
+        """
+        self._patch_env(monkeypatch, "happy")
+        profile = self._make_profile()
+
+        result = run_agent(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is True
+        assert result.cost_usd == 0.001
+        assert result.cost_provenance == COST_PROVIDER_REPORTED
+        assert result.configured_model == "claude-sonnet-4-5"
+        assert result.configured_transport == "cli"
+        assert result.transport_used == "cli"
+
+    def test_kill_path_reconstructed_cost_is_marked_estimated(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """Spend rebuilt from the stream is forge's pricing, and says so (#2205).
+
+        The CLI never reported a figure here — it was killed before its result
+        event — so the number is a pricing-table derivation. Recording it with
+        the same provenance as a billed one would make the two unattributable.
+        """
+        self._patch_env(monkeypatch, "usage_then_hang")
+        profile = self._make_profile(timeout_seconds=2)
+
+        result = run_agent(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.success is False
+        assert result.cost_usd is not None and result.cost_usd > 0
+        assert result.cost_provenance == COST_ESTIMATED
+        assert [u.cost_provenance for u in result.model_usage] == [COST_ESTIMATED]
+        assert result.model_usage[0].input_tokens == 1000
+        assert result.model_usage[0].cache_read_tokens == 500
+
+    def test_unmeasured_cost_is_unknown_not_estimated(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """A run killed before emitting any usage claims no provenance at all."""
+        self._patch_env(monkeypatch, "hang")
+        profile = self._make_profile(timeout_seconds=2)
+
+        result = run_agent(prompt="do the thing", profile=profile, working_dir=tmp_path)
+
+        assert result.cost_usd is None
+        assert result.cost_provenance == COST_UNKNOWN
 
     def test_stdin_close_no_hang(self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
         """Runner closes stdin after stdout closes; subprocess exits without timing out.
