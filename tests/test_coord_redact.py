@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from theforge.coordinator.redact import redact
+import pytest
+
+from theforge.coordinator.redact import TELEMETRY_NUMERIC_KEYS, redact
 
 # ── redact() unit tests ─────────────────────────────────────────────────────
 
@@ -112,6 +114,129 @@ class TestRedactSecretKeys:
         result = redact({"status": "ok", "message": "all good"}, None)
         assert result["status"] == "ok"
         assert result["message"] == "all good"
+
+
+class TestRedactNumericTelemetry:
+    """Numeric values on secret-shaped keys are measurements, not credentials.
+
+    These tests are the mechanical guard on the carve-out in `_redact_obj`: a
+    widening of `_SECRET_KEY_RE`, or a removal of the numeric exemption, fails
+    here instead of silently discarding usage counts again (#2202).
+    """
+
+    @pytest.mark.parametrize("key", sorted(TELEMETRY_NUMERIC_KEYS))
+    def test_catalogued_telemetry_key_survives_with_numeric_value(self, key: str) -> None:
+        result = redact({key: 1234}, None)
+        assert result[key] == 1234
+
+    @pytest.mark.parametrize("key", sorted(TELEMETRY_NUMERIC_KEYS))
+    def test_catalogued_telemetry_key_still_scrubbed_with_string_value(self, key: str) -> None:
+        # The carve-out is value-shaped, not key-shaped: a string on the same
+        # key could carry a credential and must still be removed.
+        result = redact({key: "tok_abc123"}, None)
+        assert result[key] == "[REDACTED]"
+
+    def test_zero_count_survives(self) -> None:
+        result = redact({"cache_read_tokens": 0}, None)
+        assert result["cache_read_tokens"] == 0
+
+    def test_float_value_on_secret_key_survives(self) -> None:
+        result = redact({"token_ratio": 0.25}, None)
+        assert result["token_ratio"] == 0.25
+
+    def test_string_secret_keys_unaffected_by_carve_out(self) -> None:
+        result = redact(
+            {"api_key": "ak_12345", "authorization": "Bearer x", "password": "hunter2"},
+            None,
+        )
+        assert result == {
+            "api_key": "[REDACTED]",
+            "authorization": "[REDACTED]",
+            "password": "[REDACTED]",
+        }
+
+    def test_null_secret_value_still_scrubbed(self) -> None:
+        # None is not a measurement; leave it reading as scrubbed rather than
+        # as "no credential was present".
+        result = redact({"token": None}, None)
+        assert result["token"] == "[REDACTED]"
+
+    def test_container_on_secret_key_still_scrubbed(self) -> None:
+        result = redact({"tokens": {"raw": "tok_abc"}, "token_list": ["tok_a"]}, None)
+        assert result["tokens"] == "[REDACTED]"
+        assert result["token_list"] == "[REDACTED]"
+
+    def test_model_usage_entry_keeps_counts_and_cost(self) -> None:
+        entry = {
+            "model": "claude-opus-5",
+            "input_tokens": 1500,
+            "output_tokens": 320,
+            "cache_read_tokens": 90_000,
+            "cache_creation_tokens": 12,
+            "cost_usd": 0.42,
+        }
+        result = redact({"cost": {"agents": [{"model_usage": [entry]}]}}, None)
+        assert result["cost"]["agents"][0]["model_usage"][0] == entry
+
+
+class TestRedactAuditRenderSeam:
+    """Counts rendered by audit_render survive the scrubber applied to them.
+
+    Unit coverage above pins redact() in isolation; this exercises the actual
+    render → redact seam, so a change to either side that reintroduces the loss
+    is caught.
+    """
+
+    def test_rendered_model_usage_survives_redaction(self, tmp_path: Path) -> None:
+        from theforge.agent_types import AgentResult, ModelUsage
+        from theforge.coordinator.audit_render import _model_usage_entries
+
+        env = tmp_path / ".env"
+        env.write_text("ANTHROPIC_API_KEY=sk-ant-realsecretvalue\n")
+
+        result = AgentResult(
+            success=True,
+            output="done",
+            session_id="s1",
+            cost_usd=0.42,
+            exit_code=0,
+            raw={},
+            model_usage=(
+                ModelUsage(
+                    model="claude-opus-5",
+                    input_tokens=1500,
+                    output_tokens=320,
+                    cache_read_tokens=90_000,
+                    cache_creation_tokens=12,
+                    cost_usd=0.42,
+                ),
+            ),
+        )
+        rendered = _model_usage_entries(result)
+        scrubbed = redact({"cost": {"agents": [{"model_usage": rendered}]}}, env)
+
+        usage = scrubbed["cost"]["agents"][0]["model_usage"][0]
+        assert usage["input_tokens"] == 1500
+        assert usage["output_tokens"] == 320
+        assert usage["cache_read_tokens"] == 90_000
+        assert usage["cache_creation_tokens"] == 12
+        assert usage["cost_usd"] == 0.42
+        assert usage["model"] == "claude-opus-5"
+        # Cost per unit of work is derivable from the stored record.
+        assert usage["cost_usd"] / usage["output_tokens"] > 0
+
+    def test_credential_alongside_usage_still_scrubbed(self, tmp_path: Path) -> None:
+        env = tmp_path / ".env"
+        env.write_text("ANTHROPIC_API_KEY=sk-ant-realsecretvalue\n")
+        record = {
+            "api_key": "sk-ant-realsecretvalue",
+            "command": "run --key sk-ant-realsecretvalue",
+            "model_usage": [{"input_tokens": 10, "output_tokens": 2}],
+        }
+        scrubbed = redact(record, env)
+        assert scrubbed["api_key"] == "[REDACTED]"
+        assert "sk-ant-realsecretvalue" not in scrubbed["command"]
+        assert scrubbed["model_usage"][0] == {"input_tokens": 10, "output_tokens": 2}
 
 
 class TestRedactEnvironmentDict:
