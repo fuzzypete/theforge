@@ -1,6 +1,6 @@
 # ADR-0002: Audit Substrate and Queryable Run History
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-05; implemented incrementally through v0.13)
 - **Date:** 2026-05-10 (proposed)
 - **Deciders:** Peter Wickersham (project lead), with iterative review by Claude and Codex
 - **Affected milestones:** v0.11.x (substrate landing), v0.12+ (autonomy depends on these invariants), v0.13+ (adaptive router consumes the substrate)
@@ -94,7 +94,7 @@ The router MUST NOT route on:
 
 - LLM-generated summaries (`.forge/knowledge/summaries/`). These are Layer 2 context inputs for future agent prompts, not mechanical decision inputs. (See clause 5.)
 - Ad-hoc state files outside the substrate (e.g., the legacy `assignment_history.yaml` after Phase C).
-- Records from `forge_version` newer than the reader. Skip with a warning; do not guess at unknown fields. *(Today `forge_version` is recorded per record but hardcoded to a placeholder value; meaningful per-release population is part of the per-record schema versioning work in #1522. The clause states the forward-looking contract that the reader-side dispatch in #1522 will rely on.)*
+- Records from `forge_version` newer than the reader. Skip with a warning; do not guess at unknown fields. *(When this ADR was proposed, `forge_version` was recorded per record but hardcoded to a placeholder value. As of 2026-08-05 that gap is closed: `coordinator/audit.py` records the real `theforge.__version__` on every record.)*
 
 The router's trust surface is exactly the substrate. Anything else is advisory.
 
@@ -138,7 +138,7 @@ The substrate evolves over the project's lifetime. The contract that keeps that 
 
 **Shipped today:**
 
-- A substrate-level schema version (`SUBSTRATE_SCHEMA_VERSION = 2`) lives in the `meta` table of the SQLite index. `_apply_schema` is idempotent and reapplies on every open, so the index file can evolve forward without explicit migrations.
+- A substrate-level schema version (`SUBSTRATE_SCHEMA_VERSION` in `audit_substrate.py`; 2 when this ADR was proposed, since advanced — the constant is the source of truth) lives in the `meta` table of the SQLite index. `_apply_schema` is idempotent and reapplies on every open, so the index file can evolve forward without explicit migrations.
 - The substrate refuses corrupt or unreadable files and points at `forge audits rebuild` (see `SubstrateCorruptError`).
 
 **Obligated (tracked in #1522):**
@@ -151,7 +151,7 @@ The substrate evolves over the project's lifetime. The contract that keeps that 
 **Landed in #1522 (substrate-side reader dispatch):**
 
 - `audit_records` gains indexed columns `record_schema_version`, `milestone`, `issue_id`, `dev_model`, and `verdict` (run-level, derived from the final review cycle), plus indexes on `final_phase` and `outcome_success`, satisfying the minimum-query dimensions named in clause 3. The new `verdict` column is distinct from `reviews.verdict` (per-cycle) so `COUNT/GROUP BY` queries at record granularity no longer require joining `reviews`. Missing source fields populate as NULL; existing rows pick up the new columns on the next `forge audits rebuild`.
-- New per-run records are written at `schema_version=2` (`CURRENT_RECORD_SCHEMA_VERSION` in `audit_substrate.py`). Pre-slice records without a `schema_version` field are read as version 1.
+- New per-run records are written at the writer's current record version (`CURRENT_RECORD_SCHEMA_VERSION` in `audit_substrate.py`; 2 when #1522 landed, since advanced through the migration-helper registry). Pre-slice records without a `schema_version` field are read as version 1.
 - `audit_substrate._migrate_record(record, from_version=...)` is the reader-side seam. It is a no-op today (no breaking field changes have shipped) but every reader (`iter_records`, `tail_records`, `iter_escalation_records`, `has_review_approve_in_substrate`) now consults the indexed `record_schema_version` and routes the parsed record through it. Future breaking changes register translations there.
 
 **Landed in #2225 (one identity namespace for `dev_model`):**

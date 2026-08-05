@@ -1,6 +1,6 @@
 # ADR-0006: Adaptive Router Trust Boundary
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-05; implemented incrementally through v0.13)
 - **Date:** 2026-07-20 (proposed)
 - **Deciders:** Peter Wickersham (project lead), with iterative agent review
 - **Affected milestones:** v0.13 (adaptive trust and routing — this ADR is the milestone's design nucleus), v0.14+ (cost-tiered generation consumes the same rules)
@@ -195,6 +195,10 @@ signal that cannot be traced to mechanical provenance lands in C or D no matter
 how useful it looks.
 
 ### 4. Tainted runs don't teach
+
+*Scope (clarified 2026-08-05): this clause governs routing weight only — taint
+does not exclude a run from knowledge summaries or prompt context; prompt-side
+fitness is governed by ADR-0002 clause 5.*
 
 A run that failed its own trust checks — a reviewer whose tree-currency proof
 failed, a run whose gate evidence is known-invalid, any run the v0.12 trust
