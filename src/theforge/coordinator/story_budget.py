@@ -305,6 +305,182 @@ def phase_funding_shortfall(
     }
 
 
+# ── Seating-time reconciliation of permissions against the allocation (#2238) ──
+# Actions a reconciliation can report. The first four are no-ops: the inputs do
+# not admit an honest answer, so the requested permission stands and the record
+# says why nothing was decided.
+RECONCILE_NO_ALLOCATION = "no_allocation"
+RECONCILE_NO_BAND_HISTORY = "no_band_history"
+RECONCILE_NO_DEV_ESTIMATE = "no_dev_estimate"
+RECONCILE_NO_REVIEW_COST = "no_review_cost"
+RECONCILE_COST_UNKNOWN = "cost_unknown"
+RECONCILE_AFFORDABLE = "within_allocation"
+RECONCILE_REDUCED = "review_max_reduced"
+RECONCILE_UNFUNDABLE = "review_unfundable"
+
+
+def reconcile_review_cycles(
+    allocation: dict | None,
+    *,
+    dev_cost_estimate_usd: float | None,
+    review_cycle_cost_usd: float | None,
+    requested_review_max: int,
+    spent_so_far_usd: float | None = 0.0,
+) -> dict:
+    """Reconcile permitted review cycles against what the allocation can fund.
+
+    Pure arithmetic over numbers that are all known at seating time: the
+    allocation, the spend already incurred (preflight/plan/plan-review), the
+    adaptive dev cost estimate, and the per-cycle cost of the review panel the
+    run plans to seat. Returns the audit record of the decision; the caller
+    applies it.
+
+    ``reconciled_review_max`` is the number of review cycles the allocation can
+    actually fund. It equals ``requested_review_max`` whenever the inputs do not
+    support a decision — an absent allocation, a configured-fallback allocation,
+    an absent dev estimate, a zero per-cycle review cost, or cost-unknown spend
+    are recorded as explicit no-ops rather than guessed at. ``action`` is
+    ``review_unfundable`` when not even one cycle fits, which is the case the
+    caller must refuse before dev spends.
+
+    Only a band-derived allocation governs here. The configured fallback is by
+    construction one pass through every role (see ``_configured_story_budget``),
+    so it funds exactly one review cycle for arithmetic reasons that say nothing
+    about this story — reconciling against it would clamp verification to a
+    single cycle on every story in a project with no band history. That is a
+    guess dressed as evidence, and the pre-existing dispatch-time guard already
+    covers the fallback case honestly, against measured spend.
+    """
+    record: dict = {
+        "requested_review_max": int(requested_review_max),
+        "reconciled_review_max": int(requested_review_max),
+        "affordable_review_cycles": None,
+        "allocation_usd": None,
+        "spent_so_far_usd": None
+        if spent_so_far_usd is None
+        else round(float(spent_so_far_usd), 4),
+        "dev_cost_estimate_usd": None,
+        "review_cycle_cost_usd": None,
+        "action": RECONCILE_AFFORDABLE,
+    }
+    try:
+        allocation_usd = float((allocation or {}).get("allocation_usd"))
+    except (TypeError, ValueError, AttributeError):
+        record["action"] = RECONCILE_NO_ALLOCATION
+        return record
+    record["allocation_usd"] = round(allocation_usd, 2)
+    record["basis"] = (allocation or {}).get("basis")
+
+    if record["basis"] != BASIS_SUBSTRATE_BAND:
+        record["action"] = RECONCILE_NO_BAND_HISTORY
+        return record
+
+    if spent_so_far_usd is None:
+        # An unmeasured total is a lower bound. Reducing a permission on a
+        # number the run does not actually have would be a guess.
+        record["action"] = RECONCILE_COST_UNKNOWN
+        return record
+
+    try:
+        dev_estimate = float(dev_cost_estimate_usd)
+    except (TypeError, ValueError):
+        dev_estimate = 0.0
+    if dev_estimate <= 0.0:
+        record["action"] = RECONCILE_NO_DEV_ESTIMATE
+        return record
+    record["dev_cost_estimate_usd"] = round(dev_estimate, 4)
+
+    try:
+        cycle_cost = float(review_cycle_cost_usd)
+    except (TypeError, ValueError):
+        cycle_cost = 0.0
+    if cycle_cost <= 0.0:
+        record["action"] = RECONCILE_NO_REVIEW_COST
+        return record
+    record["review_cycle_cost_usd"] = round(cycle_cost, 4)
+
+    if requested_review_max <= 0:
+        record["action"] = RECONCILE_AFFORDABLE
+        return record
+
+    remaining = allocation_usd - float(spent_so_far_usd) - dev_estimate
+    record["remaining_after_dev_usd"] = round(remaining, 4)
+    affordable = 0 if remaining < cycle_cost else int(remaining // cycle_cost)
+    record["affordable_review_cycles"] = affordable
+    if affordable == 0:
+        record["reconciled_review_max"] = int(requested_review_max)
+        record["action"] = RECONCILE_UNFUNDABLE
+        record["shortfall_usd"] = round(cycle_cost - remaining, 4)
+        return record
+    if affordable >= requested_review_max:
+        record["action"] = RECONCILE_AFFORDABLE
+        return record
+    record["reconciled_review_max"] = affordable
+    record["action"] = RECONCILE_REDUCED
+    record["shortfall_usd"] = round(
+        (requested_review_max - affordable) * cycle_cost - (remaining - affordable * cycle_cost),
+        4,
+    )
+    return record
+
+
+def format_reconciliation(record: dict) -> str:
+    """One-line operator-facing summary of a seating reconciliation."""
+    action = record.get("action")
+    if action == RECONCILE_REDUCED:
+        return (
+            f"review_max reduced {record['requested_review_max']} → "
+            f"{record['reconciled_review_max']}: the "
+            f"${float(record['allocation_usd']):.2f} allocation funds "
+            f"{record['affordable_review_cycles']} review cycle(s) at "
+            f"${float(record['review_cycle_cost_usd']):.2f} each after a "
+            f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate."
+        )
+    if action == RECONCILE_UNFUNDABLE:
+        return (
+            f"the ${float(record['allocation_usd']):.2f} allocation cannot fund one "
+            f"${float(record['review_cycle_cost_usd']):.2f} review cycle after a "
+            f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate "
+            f"(short ${float(record['shortfall_usd']):.2f})."
+        )
+    if action == RECONCILE_AFFORDABLE:
+        return f"allocation funds the permitted {record['requested_review_max']} review cycle(s)."
+    return f"review-cycle reconciliation not decided ({action})."
+
+
+def seating_shortfall(
+    allocation: dict | None,
+    record: dict,
+    *,
+    participants: list[str],
+) -> dict | None:
+    """Build the allocation-exhausted payload for an unfundable seating.
+
+    Reuses the shape :func:`phase_funding_shortfall` produces so every existing
+    consumer (sprint audit, status reader, run record) reads it unchanged. The
+    "observed" figure is the projected spend at the point review would be
+    reached — the already-incurred spend plus the dev estimate — and the record
+    says so via ``projected`` so it is never mistaken for measured cost.
+    """
+    if record.get("action") != RECONCILE_UNFUNDABLE:
+        return None
+    projected = float(record.get("spent_so_far_usd") or 0.0) + float(
+        record.get("dev_cost_estimate_usd") or 0.0
+    )
+    shortfall = phase_funding_shortfall(
+        allocation,
+        projected,
+        phase="review",
+        participants=list(participants),
+        planned_usd=float(record["review_cycle_cost_usd"]),
+    )
+    if shortfall is None:  # pragma: no cover - unfundable implies a shortfall
+        return None
+    shortfall["projected"] = True
+    shortfall["seating_reconciliation"] = dict(record)
+    return shortfall
+
+
 def format_shortfall(shortfall: dict, *, story: str | None = None) -> str:
     """Render the operator-facing allocation-exhausted message."""
     story_label = f"story {story}" if story else "story"
@@ -316,6 +492,13 @@ def format_shortfall(shortfall: dict, *, story: str | None = None) -> str:
             f"max ${float(shortfall['max_usd']):.2f} over "
             f"{shortfall.get('sample_count')} run(s)"
         )
+    observed_label = "projected" if shortfall.get("projected") else "observed"
+    seating = ""
+    if shortfall.get("projected"):
+        seating = (
+            " Decided at seating, before dev spent: the permitted review cycles "
+            "cost more than the allocation leaves after the dev estimate."
+        )
     return (
         f"Story allocation exhausted: {story_label} cannot fund its planned "
         f"{shortfall['phase']} participants "
@@ -323,8 +506,8 @@ def format_shortfall(shortfall: dict, *, story: str | None = None) -> str:
         f"${shortfall['planned_usd']:.2f}, ${shortfall['remaining_usd']:.2f} left of the "
         f"${shortfall['allocation_usd']:.2f} allocation "
         f"(complexity score {shortfall.get('complexity_score')}, basis "
-        f"{shortfall.get('basis')}, expected {expected}); observed "
-        f"${shortfall['observed_usd']:.2f}. Sprint headroom is reported "
+        f"{shortfall.get('basis')}, expected {expected}); {observed_label} "
+        f"${shortfall['observed_usd']:.2f}.{seating} Sprint headroom is reported "
         f"alongside this story in the sprint summary."
     )
 
