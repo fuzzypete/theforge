@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -169,16 +170,23 @@ def _write_native_story_record(project_root: Path, audit_data: dict) -> None:
         from ..coordinator import audit_substrate
         from ..coordinator.redact import redact
 
+        # ``parent_run_id`` is preserved from the audit when it carries one: a
+        # record written for a story whose work happened in an earlier generation
+        # names that generation as its parent, and flattening it to null severs
+        # the only link back to the run that did the work (#2214).
+        parent_run_id = audit_data.get("parent_run_id")
+        if not isinstance(parent_run_id, str) or not parent_run_id:
+            parent_run_id = None
         record = {
             "schema_version": audit_substrate.CURRENT_RECORD_SCHEMA_VERSION,
             "run_id": run_id,
-            "parent_run_id": None,
+            "parent_run_id": parent_run_id,
             "forge_version": audit_data.get("forge_version"),
         }
         record.update(audit_data)
         record["schema_version"] = audit_substrate.CURRENT_RECORD_SCHEMA_VERSION
         record["run_id"] = run_id
-        record["parent_run_id"] = None
+        record["parent_run_id"] = parent_run_id
         record["forge_version"] = audit_data.get("forge_version")
 
         env_file = audit_substrate.secrets_env_path(project_root)
@@ -1298,6 +1306,7 @@ def _write_story_audit(
     sprint_id: str | None = None,
     telemetry_snapshot: dict | None = None,
     overwrite_story_audit: bool = True,
+    prior_generation: "PriorGeneration | None" = None,
 ) -> None:
     """Write per-story audit.yaml to the durable log directory and preserve ESCALATE worktrees.
 
@@ -1306,6 +1315,12 @@ def _write_story_audit(
     generation that actually ran it, and a synthetic drop record must never
     overwrite a real run's evidence. The drop record is written beside it
     instead.
+
+    ``prior_generation`` is that earlier generation's flushed audit, when this
+    record is being written for a story whose work happened before the
+    boundary. Its accounting is folded into the record rather than replaced by
+    the synthetic post-boundary state (#2214) — see
+    :func:`carry_prior_generation_work`.
 
     Best-effort: silently ignores missing workspace or log dir.
     """
@@ -1317,6 +1332,9 @@ def _write_story_audit(
     except Exception as exc:
         _log(f"Warning: failed to generate story audit log for {task.slug}: {exc}")
         return
+
+    if prior_generation:
+        carry_prior_generation_work(audit_data, prior_generation)
 
     if telemetry_snapshot:
         last_phase = telemetry_snapshot.get("last_phase")
@@ -1525,3 +1543,252 @@ def finalize_interrupted_story_audit(
     except OSError:
         return None
     return path
+
+
+# ── Cross-generation accounting (#2214) ───────────────────────────────
+#
+# A sprint that re-execs begins a new generation of the same run. A story the
+# launch guard drops in the new generation may already have run in the old one —
+# dev, review, a committed implementation, real spend. The drop record is
+# synthesized from a state that never entered the state machine, so written as
+# it stands it says INIT, $0.00, unsuccessful: indistinguishable from a story
+# that never began, and every record derived from it inherits that silently.
+#
+# The generation that ran flushed its own evidence to the story's audit.yaml as
+# it went (#2013). That evidence is what the drop record carries forward, so the
+# record accounts for the work its run performed instead of being replaced by
+# the state of the generation that dropped it.
+
+#: Audit sections that describe work a run performed, rather than the
+#: circumstances of its exit. These are the ones an abnormal-exit record must
+#: take from the generation that did the work.
+PRIOR_GENERATION_WORK_KEYS = (
+    "iterations",
+    "cost",
+    "preflight",
+    "context_manifests",
+    "dev_handoffs",
+    "dev_prompt_injections",
+    "reviews",
+    "reviewer_attempts",
+    "human_review",
+    "plan_review",
+    "plan_validation",
+    "story_validation",
+    "convention_violations",
+    "validate_blocks",
+    "finding_registry",
+    "non_blocking_p1s",
+    "routing_decision",
+    "trust_checks",
+    "trust_status",
+    "phase_recovery",
+    "phases",
+    "totals",
+    "workspace",
+)
+
+
+def _is_informative(value: object) -> bool:
+    """True when ``value`` says something a record would otherwise be missing.
+
+    A synthetic exit record is not empty — it carries zeroed counters, null
+    phases and empty lists. Only values that assert something are carried, so a
+    prior generation's silence on a section never overwrites the current
+    record's own.
+    """
+    if value is None:
+        return False
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, dict):
+        return any(_is_informative(v) for v in value.values())
+    if isinstance(value, (list, tuple, set, str)):
+        return len(value) > 0
+    return True
+
+
+def records_performed_work(audit: dict) -> bool:
+    """True when an audit records a run that actually did something.
+
+    Deliberately explicit rather than derived from :func:`_is_informative`: a
+    run that never started still carries configured limits (``usage_summary``'s
+    ``max``), so "this section is non-empty" is not the same claim as "this run
+    performed work". The test is dev/review/gate activity, measured spend, or a
+    phase that produced an outcome.
+    """
+    if not isinstance(audit, dict):
+        return False
+
+    iterations = audit.get("iterations")
+    if isinstance(iterations, dict):
+        for key in (
+            "dev_attempts_total",
+            "dev_iterations",
+            "review_cycles_total",
+            "review_cycles",
+            "gate_runs",
+        ):
+            count = iterations.get(key)
+            if isinstance(count, int) and not isinstance(count, bool) and count > 0:
+                return True
+        for key in ("dev_loop", "review_loop", "gate_decisions"):
+            if iterations.get(key):
+                return True
+
+    cost = audit.get("cost")
+    if isinstance(cost, dict):
+        total = cost.get("total_usd")
+        if isinstance(total, (int, float)) and not isinstance(total, bool) and total > 0:
+            return True
+        if cost.get("agents"):
+            return True
+
+    for key in ("reviews", "dev_handoffs", "preflight", "plan_review", "reviewer_attempts"):
+        if audit.get(key):
+            return True
+
+    phases = audit.get("phases")
+    if isinstance(phases, dict) and any(_is_informative(v) for v in phases.values()):
+        return True
+
+    return False
+
+
+def prior_generation_summary(audit: dict) -> dict:
+    """What an earlier generation's audit says it reached and spent.
+
+    ``cost_measured`` distinguishes a recovered amount from an unmeasured one:
+    a ``None`` ``cost_usd`` with ``cost_measured`` false means the prior
+    generation's spend is unknown, which must never be read as zero (#1992).
+    """
+    cost = audit.get("cost") if isinstance(audit.get("cost"), dict) else {}
+    raw_cost = cost.get("total_usd")
+    measured = isinstance(raw_cost, (int, float)) and not isinstance(raw_cost, bool)
+    outcome = audit.get("outcome") if isinstance(audit.get("outcome"), dict) else {}
+    timing = audit.get("timing") if isinstance(audit.get("timing"), dict) else {}
+    run_id = audit.get("run_id")
+    return {
+        "run_id": run_id if isinstance(run_id, str) and run_id else None,
+        "final_phase": outcome.get("final_phase"),
+        "cost_usd": round(float(raw_cost), 4) if measured else None,
+        "cost_measured": measured,
+        "in_flight": bool(audit.get(AUDIT_IN_FLIGHT_KEY)),
+        "started_at": timing.get("started_at"),
+    }
+
+
+@dataclass(frozen=True)
+class PriorGeneration:
+    """An earlier generation's flushed story audit, and how to account for it.
+
+    ``independently_recorded`` says the prior generation already wrote its own
+    per-run record. Its work is then visible on its own, so this record links to
+    it and reports the phase it reached but does not restate its spend —
+    counting the same dollars in two records would overstate the run.
+    """
+
+    audit: dict
+    independently_recorded: bool = False
+
+    @property
+    def summary(self) -> dict:
+        return {
+            **prior_generation_summary(self.audit),
+            "independently_recorded": self.independently_recorded,
+        }
+
+    @property
+    def recoverable_cost_usd(self) -> float | None:
+        """The prior generation's spend when this record is the one to carry it."""
+        if self.independently_recorded:
+            return None
+        summary = prior_generation_summary(self.audit)
+        return summary["cost_usd"] if summary["cost_measured"] else None
+
+
+def carry_prior_generation_work(audit_data: dict, prior: PriorGeneration) -> list[str]:
+    """Fold an earlier generation's recorded work into this record; return the keys carried.
+
+    The record keeps its own identity and its own account of how it ended — the
+    drop is what happened to *this* generation — but reports the phase the work
+    reached and the budget it consumed, because those are properties of the run,
+    not of the generation that observed its end. ``prior_generation`` names where
+    the accounting came from so a reader is never left to infer it, and
+    ``parent_run_id`` links the record back to the run that produced the work.
+    """
+    source = prior.audit
+    summary = prior.summary
+    skip = {"cost"} if prior.independently_recorded else set()
+
+    carried: list[str] = []
+    for key in PRIOR_GENERATION_WORK_KEYS:
+        if key in skip or key not in source:
+            continue
+        value = source[key]
+        if not _is_informative(value):
+            continue
+        audit_data[key] = value
+        carried.append(key)
+
+    outcome = audit_data.get("outcome")
+    if isinstance(outcome, dict):
+        # The phase this record reports is the furthest phase the run reached.
+        # Reporting the post-boundary INIT is the specific falsehood being fixed:
+        # it renders a story that ran dev and review as one that never started.
+        if summary["final_phase"]:
+            outcome["dropped_at_phase"] = outcome.get("final_phase")
+            outcome["final_phase"] = summary["final_phase"]
+        if summary["cost_measured"] and not prior.independently_recorded:
+            outcome["cost_usd"] = summary["cost_usd"]
+    if summary["run_id"]:
+        audit_data["parent_run_id"] = summary["run_id"]
+    audit_data["prior_generation"] = {**summary, "carried_keys": carried}
+    return carried
+
+
+def load_prior_generation_story_audit(
+    project_root: Path,
+    sprint_name: str | None,
+    slug: str,
+    *,
+    exclude_run_id: str | None = None,
+) -> PriorGeneration | None:
+    """The audit an earlier generation flushed for ``slug``, when it holds work to carry.
+
+    Returns ``None`` when there is no readable audit, when the audit belongs to
+    *this* generation (``exclude_run_id``), or when it records no performed work
+    — there is nothing to carry from a generation that did nothing.
+
+    Best-effort: an unreadable or malformed audit yields ``None``.
+    """
+    if not sprint_name:
+        return None
+    path = _story_audit_path(project_root, sprint_name, slug)
+    try:
+        with open(path, encoding="utf-8") as f:
+            audit = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(audit, dict):
+        return None
+
+    run_id = audit.get("run_id")
+    if exclude_run_id is not None and run_id == exclude_run_id:
+        return None
+    if not records_performed_work(audit):
+        return None
+
+    independently_recorded = False
+    if isinstance(run_id, str) and run_id:
+        try:
+            from ..coordinator import audit_substrate  # noqa: PLC0415
+
+            independently_recorded = (
+                audit_substrate.runs_dir(project_root) / f"{run_id}.json"
+            ).exists()
+        except Exception:  # noqa: BLE001 - identity lookup must not block the record
+            independently_recorded = False
+    return PriorGeneration(audit=audit, independently_recorded=independently_recorded)
