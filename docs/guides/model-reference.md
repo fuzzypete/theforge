@@ -1,14 +1,23 @@
 # Model Reference
 
+> **Dated guidance.** These recommendations reflect vendor positioning as of
+> **April 2026**, and the registry/tier surface described here is being
+> replaced by a unified model catalog (#2204). Treat the tables as historical
+> guidance; the repo's `forge.yaml` and
+> [`routing-policy.md`](routing-policy.md) are current.
+
 Per-provider model recommendations for TheForge, organized by phase and
-complexity tier. These reflect vendor positioning and observed behavior as of
-April 2026.
+complexity tier.
 
 TheForge's adaptive assignment maps complexity to routing tiers
 (`cheap`/`mid`/`strong`) through the current routing policy described in
 [`adaptive-assignment.md`](adaptive-assignment.md) and
 [`routing-policy.md`](routing-policy.md). The tables below show which concrete
-model fits each tier cell.
+model fits each tier cell. Note there are two tier vocabularies: the registry's
+`routing.tier` field uses `cheap`/`fast`/`strong` (a speed/latency band), while
+the adaptive pool tiers are derived from `cost_rank` as `cheap`/`mid`/`strong`
+(`config/profiles.py`). This doc's tier mappings use the adaptive pool
+vocabulary (`cheap`/`mid`/`strong`).
 
 The shipped model set itself is **data**: `src/theforge/config/data/models.yaml`
 inside the package, written in the canonical model-definition schema documented
@@ -62,7 +71,7 @@ Source: Codex recommendation, April 2026.
 | Review | Sonnet | Sonnet | Sonnet |
 
 **Tier mapping:**
-- **cheap:** Haiku — fast classifier tasks only; not recommended for dev or review
+- **cheap:** Haiku — cheap tier for preflight and review (TheForge's own config enables it for both as of v0.13); not dev-capable. Absent from the built-in registry, so it must be declared inline in `models.enabled` with `routing:` and `cost:`
 - **mid:** Sonnet — strong all-rounder; handles most stories well
 - **strong:** Opus — highest capability; large planning and dev
 
