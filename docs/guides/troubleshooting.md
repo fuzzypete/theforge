@@ -211,7 +211,7 @@ forge check-providers --profile dev  # test a single profile
 Common errors:
 | Error | Fix |
 |-------|-----|
-| `binary not found` | Install the CLI or set absolute path in forge.yaml |
+| `binary not found` | Install the CLI and ensure its directory is on `PATH` for the forge process (`cli:` accepts runner names only, never paths — see "CLI opens but TheForge cannot invoke it") |
 | `401 Unauthorized` | Re-auth or refresh API key |
 | `timeout` | Provider is slow; increase `timeout_seconds` in profile |
 | `model not found` | Check model name spelling in forge.yaml |
@@ -402,14 +402,20 @@ forge review stories/my-feature.md --verbose
 
 ---
 
-### Auto-merge reports MERGE_FAILED on a passing story
+### Story refuses at entry with LANDING PRECONDITION, or ends in MERGE_FAILED
 
-**Symptom:** A story passes gate and review but ends in `MERGE_FAILED` when
-`--auto-merge` is on.
+**Symptom:** Under a landing workflow (`workspace.on_approve: merge` or
+`--auto-merge`), a story escalates in `WORKSPACE` with
+`LANDING PRECONDITION: uncommitted changes in project root …` — or, more
+rarely, a story that passed gate and review ends in `MERGE_FAILED`.
 
-**Cause:** The most common cause is a dirty project root, not a real merge
-conflict. Merge steps run in the base checkout; uncommitted changes there
-(often a `forge.yaml` or config edit made mid-sprint) block the merge.
+**Cause:** Merge steps run in the base checkout, so uncommitted changes there
+(often a `forge.yaml` or config edit made mid-sprint) block landing. Since
+#2048 that condition is checked at each story's *entry*: the sprint refuses in
+`WORKSPACE`, names the offending paths, and spends nothing. A story that still
+reaches `MERGE_FAILED` means the root was dirtied after that story entered, or
+the landing failed for a genuine reason (e.g. a real conflict with the base
+branch).
 
 **Fix:**
 ```bash
@@ -418,8 +424,10 @@ git add -A && git commit -m "config edits"
 # or: git stash
 ```
 
-Commit or stash config edits before starting a sprint. The story's branch is
-intact — re-run the merge after cleaning the root.
+Commit or stash config edits before starting a sprint. On `MERGE_FAILED` the
+story's branch is intact — clean the root (or resolve the conflict) and re-run
+the merge. See the landing-precondition section of the
+[controller runbook](controller-runbook.md) for the full semantics.
 
 ---
 

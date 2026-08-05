@@ -1,6 +1,6 @@
 # Flake Register
 
-Status: living.
+Status: living
 
 A flaky gate is a direct trust violation for a project whose thesis is
 trustworthy gates. A red-when-it-should-be-green (or green-when-it-should-be-red)

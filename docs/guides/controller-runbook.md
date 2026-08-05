@@ -47,9 +47,12 @@ interactive Claude Code session**. A new interactive sign-in revokes the
 previous family server-side, which silently disables the substrate. The
 signature is distinctive: `accessToken` and `refreshToken` blanked to empty
 strings while `refreshTokenExpiresAt` stays a future date, so the file reads as
-valid until token *length* is checked. Remedy: re-authenticate the CLI
-(`claude` → `/login`) — and be aware that doing so points the same conflict the
-other way for whichever consumer signed in first.
+valid until token *length* is checked. Remedy: mint a fresh long-lived token
+with `claude setup-token` and store it in `.forge/.env`
+(`CLAUDE_CODE_OAUTH_TOKEN`) rather than re-running interactive `/login` — an
+interactive sign-in revokes the previous family and just points the same
+conflict the other way. Same guidance as the auth section of the
+[troubleshooting guide](troubleshooting.md).
 
 If the credential is revoked *mid-sprint*, a circuit breaker trips on the first
 fatal auth failure: in-flight workers are stopped and no further story is

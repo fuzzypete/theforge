@@ -153,8 +153,15 @@ Choose the storage based on the kind of decision:
 
 Do not rely on user memory as the default sink for project policy.
 
-Any file under `docs/` outside `guides/`, `adr/`, `reference/`, and `vision/`
-must open with a status line: `Status: living` or `Status: record (YYYY-MM-DD, issue #N)`.
+Historical records under `docs/` must be identifiable as records without
+reading them: either they live in a record directory (`docs/archive/`,
+`docs/postmortems/`, `docs/post-release-reviews/`), or they open with a status
+line — `Status: record (YYYY-MM-DD[, issue #N])`, or the older
+`Status: Shipped (vX.Y) … retained for historical context` form. A short
+qualifier after the form is fine. Living documents need no marker; add
+`Status: living` only where a document could otherwise be mistaken for a
+record (the flake register, an active plan in `docs/plans/`).
+`docs/README.md` indexes the living-vs-record classification.
 
 Source: `feedback_capture_decisions.md`
 
