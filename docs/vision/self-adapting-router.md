@@ -145,6 +145,12 @@ for complex stories). Within a week of real usage the router has enough signal
 to outperform any static config. New projects bootstrap from the global
 performance table; per-project overrides accumulate over time.
 
+*(Shipped-state note, 2026-08-05: the tie-break and provenance rules in the
+next three paragraphs landed as #1617/#2203 — they are current behavior, not
+vision — and sit on the registry surface the unified model catalog work
+(#2204) is replacing. Consult `forge check-config` and
+[Routing Policy](../guides/routing-policy.md) for current behavior.)*
+
 When two models land in the same tier (same `cost_rank` and capability), the
 router breaks the tie on their real per-MTok price rather than on
 `models.enabled` list order — so an enabled but never-dispatched model is not

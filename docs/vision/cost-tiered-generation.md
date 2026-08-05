@@ -2,6 +2,18 @@
 
 Captured 2026-03-16 from analysis of phase-specific model economics.
 
+> **Historical design note (added 2026-08-05).** This document is retained as
+> background, not as current state. Several of its prerequisites have since
+> shipped: the plan-review gate (`coordinator/plan_flow.py`), per-phase
+> cheap-tier eligibility (see the `tier: cheap` / `phase_eligibility` entries
+> in `forge.yaml`, enabled in v0.13), and the `api_fallback` auto-wiring
+> described below. The "smart config" terminology refers to config keys removed
+> in v0.8, and no aider/cline/opencode adapter was ever built. The current
+> routing contract is [Routing Policy](../guides/routing-policy.md) and
+> [Adaptive Assignment](../guides/adaptive-assignment.md); the model-registry
+> surface referenced here is being replaced by the unified model catalog
+> (#2204).
+
 ## Context
 
 TheForge's smart config already assigns models by cost_rank and capability,

@@ -2,6 +2,15 @@
 
 Captured 2026-03-15 from discussion on coordinator refactor failure modes.
 
+> **Historical design note (added 2026-08-05).** Retained as background, not
+> current state. Several items marked "spec it" below have since shipped: the
+> plan-review gate before DEV (`coordinator/plan_flow.py`), progress-aware
+> stuck detection (`runners/stuck_detection.py`), and resume-after-timeout
+> (`RetryReason.TIMEOUT_RESUME`). The `smart_config_models` escalation
+> mechanism this document builds on was removed; escalation now flows through
+> adaptive assignment and escalation history — see
+> [Adaptive Assignment](../guides/adaptive-assignment.md) and ADR-0006.
+
 ## Context
 
 The coordinator refactor (2,900-line coordinator.py + 7,500-line test file)
