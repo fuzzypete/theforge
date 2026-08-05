@@ -13,7 +13,8 @@ from typing import Any
 
 from ..routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 from .defaults import DEFAULT_DEV_PROFILE, DEFAULT_PREFLIGHT_PROFILE, DEFAULT_REVIEW_PROFILE
-from .models import AgentSpec, ModelInfo, _resolve_model_info, price_tiebreak_signal
+from .models import AgentSpec, ModelInfo, _resolve_model_info
+from .pricing import price_tiebreak_signal_for
 from .schema import (
     DevRoleConfig,
     ModelRef,
@@ -257,7 +258,7 @@ def derive_roles(
         key=lambda x: (
             x[1].cost_rank,
             -x[1].capability,
-            price_tiebreak_signal(x[1].input_cost_per_mtok, x[1].output_cost_per_mtok),
+            price_tiebreak_signal_for(x[1]),
         ),
     )
 
@@ -317,7 +318,7 @@ def derive_roles(
                     key=lambda x: (
                         x[1].cost_rank,
                         -x[1].capability,
-                        price_tiebreak_signal(x[1].input_cost_per_mtok, x[1].output_cost_per_mtok),
+                        price_tiebreak_signal_for(x[1]),
                     ),
                 )
             ]

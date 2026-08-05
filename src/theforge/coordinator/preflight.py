@@ -284,10 +284,8 @@ def _build_pool_entries(
     from ``ForgeConfig.model_registry``. When None, only built-ins are visible
     and custom-overlay model keys raise ValueError.
     """
-    from theforge.config.models import (  # noqa: PLC0415
-        _resolve_model_info,
-        price_tiebreak_signal,
-    )
+    from theforge.config.models import _resolve_model_info  # noqa: PLC0415
+    from theforge.config.pricing import price_tiebreak_signal_for  # noqa: PLC0415
 
     info_view = model_info_view(registry)
     entries: list[tuple[int, str, ModelInfo]] = []
@@ -302,7 +300,7 @@ def _build_pool_entries(
         key=lambda x: (
             x[0],
             -x[2].capability,
-            price_tiebreak_signal(x[2].input_cost_per_mtok, x[2].output_cost_per_mtok),
+            price_tiebreak_signal_for(x[2]),
         )
     )
     return entries

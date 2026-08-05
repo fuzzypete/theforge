@@ -13,6 +13,14 @@ prefix (``openai-api/``, ``gemini-cli/``). Those spellings survive only as raw
 input aliases (see :data:`_LEGACY_MODEL_KEY_ALIASES` and
 :func:`normalize_model_key`) and are normalized to canonical identities the
 moment they are read.
+
+Per-MTok pricing on a registry entry is a *routing input*: it sets the cost band
+and breaks equal-band ties. A price may only act as one when it can be attributed
+to the identity it describes — see :attr:`AgentSpec.pricing_provenance` and
+:func:`price_tiebreak_signal_for`. An entry whose identity is a vendor shorthand
+that the vendor's own tooling resolves to some other concrete version at
+invocation time carries no attribution, and its literal price is treated as
+unknown rather than trusted.
 """
 
 from __future__ import annotations
@@ -20,6 +28,19 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
+from .pricing import (
+    COST_BAND_BASIS_DECLARED_POLICY,
+    COST_BAND_BASIS_VENDOR_TIER,
+    PRICING_PROVENANCE_LOCAL_ENDPOINT,
+    AttributablePricing,
+    price_tiebreak_signal_for,
+    resolve_cost_band_basis,
+)
+
+# Re-exported: these moved to config/pricing.py, but callers (and the #1617
+# regression suite) import them from the registry module.
+from .pricing import custom_model_cost_rank as custom_model_cost_rank
+from .pricing import price_tiebreak_signal as price_tiebreak_signal
 from .types import (
     AssignmentConfig,
     ExplorationConfig,
@@ -84,6 +105,12 @@ class RoutingPolicy:
     cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
     dev_capable: bool = True  # whether this agent is allowed to own the dev role
     phase_eligibility: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+    # What ``cost_rank`` is derived from: ``price:<provenance>`` when the band is
+    # the entry's own attributable price band, otherwise a COST_BAND_BASIS_*
+    # marker naming a non-price basis. The band is a routing input in its own
+    # right, so it may not be a bare number copied off an untraceable literal —
+    # see config/pricing.resolve_cost_band_basis.
+    cost_rank_basis: str | None = None
 
 
 # ── Runner derivation from (provider, transport.kind) ────────────────────
@@ -163,7 +190,7 @@ _TRANSPORT_DEEPSEEK_API = transport_for("deepseek", "api")
 
 
 @dataclass(frozen=True)
-class AgentSpec:
+class AgentSpec(AttributablePricing):
     """First-class description of an agent: canonical identity + routing policy.
 
     Identity is exactly ``(provider, model, transport.kind)`` — see
@@ -184,6 +211,10 @@ class AgentSpec:
     registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
+    # What the prices above are attributed to (concrete billed identity or a
+    # PRICING_PROVENANCE_* marker). None = unattributed: routing treats the
+    # figures as unknown. See _AttributablePricing.
+    pricing_provenance: str | None = None
 
     @property
     def tier(self) -> str:
@@ -310,7 +341,7 @@ def transport_from_raw_fields(
 
 
 @dataclass(frozen=True)
-class ModelInfo:
+class ModelInfo(AttributablePricing):
     """Legacy flat view derived from an AgentSpec.
 
     Retained for backward compatibility: existing callers read `.cli`, `.provider`,
@@ -334,6 +365,7 @@ class ModelInfo:
     registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
+    pricing_provenance: str | None = None  # carried from the spec; None = unattributed
     transport: TransportSpec | None = None  # the canonical TransportSpec this view was built from
     # Provider family for *both* transports — unlike ``provider`` (which stays
     # None for CLI entries so legacy consumers keep their meaning), this is the
@@ -346,7 +378,7 @@ _CLI_TO_PROVIDER: dict[str, str] = dict(_LEGACY_CLI_TO_PROVIDER)
 
 
 @dataclass(frozen=True)
-class AgentDef:
+class AgentDef(AttributablePricing):
     """An agent available in the pool for adaptive model assignment."""
 
     name: str
@@ -366,9 +398,12 @@ class AgentDef:
     registry_source: str = "builtin"
     # Per-MTok pricing carried through from the registry so ranking helpers can
     # break equal-tier ties by real cost rather than pool list order. See
-    # price_tiebreak_signal and issue #1617.
+    # price_tiebreak_signal_for and issue #1617. ``pricing_provenance`` travels
+    # with the figures so the tie-break can tell a traceable price from a
+    # literal nothing can vouch for.
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
+    pricing_provenance: str | None = None
 
     @property
     def effective_provider(self) -> str | None:
@@ -459,9 +494,31 @@ def _entry(
     base_url: str | None = None,
     input_cost_per_mtok: float | None = None,
     output_cost_per_mtok: float | None = None,
+    pricing_provenance: str | None = None,
+    cost_rank_basis: str | None = None,
 ) -> tuple[str, AgentSpec]:
-    """Build a ``(canonical_id, AgentSpec)`` registry pair."""
+    """Build a ``(canonical_id, AgentSpec)`` registry pair.
+
+    ``pricing_provenance`` names the concrete billed identity the price figures
+    were recorded for. Omitting it marks the figures unattributed, which is what
+    entries identified by a vendor shorthand must do: the shorthand resolves to
+    some other concrete version at invocation time, so nothing ties the stored
+    literal to what is actually billed.
+
+    ``cost_rank`` is a routing input too, so it is held to the same standard:
+    omit ``cost_rank_basis`` only when the band *is* this entry's attributable
+    price band (it is then attributed to that price automatically). Every other
+    band — including every band on an entry whose price is unattributed — must
+    name its non-price basis, or construction raises.
+    """
     transport = transport_for(provider, kind, runner=runner)
+    basis = resolve_cost_band_basis(
+        cost_rank,
+        input_cost_per_mtok=input_cost_per_mtok,
+        output_cost_per_mtok=output_cost_per_mtok,
+        pricing_provenance=pricing_provenance,
+        declared_basis=cost_rank_basis,
+    )
     spec = AgentSpec(
         provider=provider,
         model=model,
@@ -472,10 +529,12 @@ def _entry(
             cost_rank=cost_rank,
             dev_capable=dev_capable,
             phase_eligibility=phases,
+            cost_rank_basis=basis,
         ),
         base_url=base_url,
         input_cost_per_mtok=input_cost_per_mtok,
         output_cost_per_mtok=output_cost_per_mtok,
+        pricing_provenance=pricing_provenance,
     )
     return canonical_id_for_spec(spec), spec
 
@@ -483,6 +542,24 @@ def _entry(
 AGENT_REGISTRY: dict[str, AgentSpec] = dict(
     [
         # ── Anthropic ────────────────────────────────────────────────
+        #
+        # ``sonnet``/``opus`` are Claude-CLI shorthands, not billed identities:
+        # the CLI resolves each to whichever concrete version it currently ships
+        # (the vendor bills ``claude-sonnet-4-6`` / ``claude-opus-4-6``-style
+        # names — see runners/schema_utils.PRICING_TABLE). The entry identity can
+        # therefore move while the literal below does not, so these figures carry
+        # no pricing_provenance: they are indicative only and routing ignores
+        # them. Re-attributing them requires pinning the entry to the concrete
+        # version the price is true of.
+        #
+        # Their cost bands are not derived from those literals either — they
+        # restate the vendor's own tier naming, which is what the shorthand
+        # *means* and stays true when it resolves to a new version: ``opus`` is
+        # whatever Anthropic currently sells as its flagship (strong band),
+        # ``sonnet`` whatever it sells as the mid-priced workhorse (cheap band,
+        # as the fleet's baseline). Note the bands already disagree with the
+        # literals — 3.00/15.00 would band sonnet at 2 — so the figures could
+        # move to any value without moving either band.
         _entry(
             "anthropic",
             "sonnet",
@@ -492,6 +569,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=1,
             input_cost_per_mtok=3.00,
             output_cost_per_mtok=15.00,
+            cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER,
         ),
         _entry(
             "anthropic",
@@ -502,8 +580,14 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=3,
             input_cost_per_mtok=15.00,
             output_cost_per_mtok=75.00,
+            cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER,
         ),
         # ── OpenAI (Codex CLI) ───────────────────────────────────────
+        #
+        # Unlike the Claude-CLI shorthands above, these model strings are the
+        # identity the vendor bills under — they are passed through verbatim and
+        # priced under the same name (runners/schema_utils.PRICING_TABLE keys
+        # them identically), so the figures are attributable to the entry.
         _entry(
             "openai",
             "gpt-5.4",
@@ -513,6 +597,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=2,
             input_cost_per_mtok=1.25,
             output_cost_per_mtok=10.00,
+            pricing_provenance="gpt-5.4",
         ),
         _entry(
             "openai",
@@ -523,6 +608,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=1,
             input_cost_per_mtok=0.25,
             output_cost_per_mtok=2.00,
+            pricing_provenance="gpt-5.4-mini",
         ),
         _entry(
             "openai",
@@ -533,6 +619,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=3,
             input_cost_per_mtok=15.00,
             output_cost_per_mtok=120.00,
+            pricing_provenance="gpt-5.4-pro",
         ),
         # ── OpenAI (API) ─────────────────────────────────────────────
         _entry(
@@ -544,6 +631,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=2,
             input_cost_per_mtok=1.25,
             output_cost_per_mtok=10.00,
+            pricing_provenance="gpt-5.4",
         ),
         _entry(
             "openai",
@@ -554,6 +642,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=1,
             input_cost_per_mtok=0.25,
             output_cost_per_mtok=2.00,
+            pricing_provenance="gpt-5.4-mini",
         ),
         _entry(
             "openai",
@@ -564,6 +653,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=3,
             input_cost_per_mtok=15.00,
             output_cost_per_mtok=120.00,
+            pricing_provenance="gpt-5.4-pro",
             # Reasoning-heavy — intentionally excluded from the preflight role.
             phases=frozenset({"dev", "plan", "review"}),
         ),
@@ -577,6 +667,11 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=2,
             input_cost_per_mtok=0.55,
             output_cost_per_mtok=2.19,
+            pricing_provenance="deepseek-reasoner",
+            # Banded a step above its per-MTok rate on purpose: a reasoning model
+            # spends far more output tokens per task, so the rate alone (band 1)
+            # understates what filling a role with it costs.
+            cost_rank_basis=COST_BAND_BASIS_DECLARED_POLICY,
         ),
         _entry(
             "deepseek",
@@ -587,6 +682,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=1,
             input_cost_per_mtok=0.27,
             output_cost_per_mtok=1.10,
+            pricing_provenance="deepseek-chat",
         ),
         # ── Google (API) ─────────────────────────────────────────────
         _entry(
@@ -606,6 +702,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=2,
             input_cost_per_mtok=2.00,
             output_cost_per_mtok=12.00,
+            pricing_provenance="gemini-3.1-pro-preview",
         ),
         _entry(
             "google",
@@ -616,6 +713,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=2,
             input_cost_per_mtok=1.25,
             output_cost_per_mtok=10.00,
+            pricing_provenance="gemini-2.5-pro",
         ),
         # ── Google (Gemini CLI — explicit opt-in) ────────────────────
         _entry(
@@ -628,6 +726,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             dev_capable=False,
             input_cost_per_mtok=1.25,
             output_cost_per_mtok=10.00,
+            pricing_provenance="gemini-2.5-pro",
         ),
         _entry(
             "google",
@@ -648,6 +747,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             dev_capable=False,
             input_cost_per_mtok=2.00,
             output_cost_per_mtok=12.00,
+            pricing_provenance="gemini-3.1-pro-preview",
         ),
         # ── Local OpenAI-compatible models ───────────────────────────
         # API transport + a localhost base_url. Not a provider prefix, not a
@@ -662,6 +762,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
             input_cost_per_mtok=0.0,
             output_cost_per_mtok=0.0,
+            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
         ),
         _entry(
             "openai",
@@ -673,6 +774,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
             input_cost_per_mtok=0.0,
             output_cost_per_mtok=0.0,
+            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
         ),
         _entry(
             "openai",
@@ -684,6 +786,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
             input_cost_per_mtok=0.0,
             output_cost_per_mtok=0.0,
+            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
         ),
         _entry(
             "openai",
@@ -695,6 +798,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
             input_cost_per_mtok=0.0,
             output_cost_per_mtok=0.0,
+            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
         ),
     ]
 )
@@ -787,48 +891,6 @@ def custom_model_capability(tier: str) -> int:
     return by_tier[tier]
 
 
-def custom_model_cost_rank(input_cost_per_mtok: float, output_cost_per_mtok: float) -> int:
-    """Map per-MTok pricing to the routing cost bands used by the registry."""
-    price_signal = max(float(input_cost_per_mtok), float(output_cost_per_mtok))
-    if price_signal <= 5.0:
-        return 1
-    if price_signal <= 25.0:
-        return 2
-    return 3
-
-
-# Sentinel returned by ``price_tiebreak_signal`` when a candidate carries no
-# pricing data. It sorts *after* every priced candidate so unpriced models keep
-# their original relative order (list-order fallback) among themselves rather
-# than jumping ahead of a model whose real cost is known.
-_UNPRICED_SIGNAL: float = float("inf")
-
-
-def price_tiebreak_signal(
-    input_cost_per_mtok: float | None,
-    output_cost_per_mtok: float | None,
-) -> float:
-    """Return a per-MTok price signal for breaking equal-``cost_rank`` ties.
-
-    Two models can share a ``cost_rank`` band (and even a ``capability`` score) yet
-    differ substantially in real price — e.g. the cheap-tier bucket holds both
-    ``claude/sonnet`` and ``openai/gpt-5.4-mini``. Ranking helpers previously broke
-    that tie by ``models.enabled`` list order, permanently starving whichever model
-    was listed second. This collapses the two per-MTok costs into one comparable
-    number (``max`` of input/output, mirroring :func:`custom_model_cost_rank`'s
-    price banding) so the cheaper candidate wins the tie deterministically.
-
-    Candidates with no pricing data return :data:`_UNPRICED_SIGNAL` so they rank
-    behind any priced peer while preserving list order among unpriced models.
-    """
-    if input_cost_per_mtok is None and output_cost_per_mtok is None:
-        return _UNPRICED_SIGNAL
-    return max(
-        float(input_cost_per_mtok) if input_cost_per_mtok is not None else 0.0,
-        float(output_cost_per_mtok) if output_cost_per_mtok is not None else 0.0,
-    )
-
-
 def custom_model_dev_capable(transport: TransportSpec) -> bool:
     """Return whether a custom model transport can own the dev role."""
     return not (transport.kind == "cli" and transport.runner == "gemini")
@@ -866,6 +928,7 @@ def _spec_to_model_info(
         registry_source=spec.registry_source,
         input_cost_per_mtok=spec.input_cost_per_mtok,
         output_cost_per_mtok=spec.output_cost_per_mtok,
+        pricing_provenance=spec.pricing_provenance,
         transport=spec.transport,
     )
 
@@ -1008,7 +1071,7 @@ def _planner_candidate_models(agents: list[AgentDef]) -> set[str]:
             [a for a in agents if a.tier == tier],
             key=lambda a: (
                 a.budget_usd,
-                price_tiebreak_signal(a.input_cost_per_mtok, a.output_cost_per_mtok),
+                price_tiebreak_signal_for(a),
             ),
         )
         if tier_agents:
