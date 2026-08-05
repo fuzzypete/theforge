@@ -149,7 +149,7 @@ def test_below_min_runs_returns_none_regardless_of_weighting():
 
 
 def test_tainted_runs_excluded_from_weighted_aggregate_and_counted():
-    """Tainted runs don't teach (clause 4): they never enter the weighted ring
+    """Tainted runs don't influence routing (clause 4): they never enter the weighted ring
     and are tallied under tainted_runs so the exclusion stays visible."""
     data: dict = {"models": {}}
     for _ in range(5):

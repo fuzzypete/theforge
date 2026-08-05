@@ -154,7 +154,7 @@ class TestPerDomainAggregation:
         assert sig["rate"] == 0.75
 
     def test_tainted_runs_excluded_from_domain_rate(self):
-        # Tainted runs "don't teach": they are tallied but never move the rate.
+        # Tainted runs don't influence routing: they are tallied but never move the rate.
         data: dict = {"models": {}}
         _record(data, "A", True, domains=["api"], n=3)
         _record(data, "A", False, domains=["api"], n=5, tainted=True)

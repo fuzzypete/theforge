@@ -1,6 +1,6 @@
 """Trust-status vocabulary and mechanical derivation for per-run records.
 
-ADR-0006 clause 4 ("tainted runs don't teach") requires v0.13 routing to
+ADR-0006 clause 4 ("tainted runs don't influence routing") requires v0.13 routing to
 exclude runs that failed their own trust checks from aggregates. This module
 owns the machine-readable marker that makes that possible: an enumerable
 ``trust_status`` plus structured ``trust_checks`` entries on the native per-run
@@ -98,7 +98,7 @@ def derive_trust_status(trust_checks: Iterable[dict] | None) -> str:
 
 # ── Centralized routing taint gate (ADR-0006 clause 4, #1852) ─────────────
 # One admissibility rule, applied by every router-consumed aggregate and
-# profile lookup so "tainted runs don't teach" is enforced in exactly one
+# profile lookup so "tainted runs don't influence routing" is enforced in exactly one
 # place rather than re-derived per call site. The rule is intentionally
 # asymmetric: only an affirmative ``tainted`` status excludes a run. A missing
 # status (legacy records that predate the marker), ``trusted``, and

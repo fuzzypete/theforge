@@ -100,7 +100,7 @@ def test_dev_success_rate_includes_trusted_and_unchecked() -> None:
 def test_dev_success_rate_excludes_tainted() -> None:
     data: dict = {"models": {}}
     apply_run(data, _dev_outcome(success=True, tainted=False))
-    # Five tainted failures must not drag the rate down: they don't teach.
+    # Five tainted failures must not drag the rate down: they don't influence routing.
     for _ in range(5):
         apply_run(data, _dev_outcome(success=False, tainted=True))
     assert get_dev_success_rate(data, "sonnet", "medium", min_runs=1) == 1.0
