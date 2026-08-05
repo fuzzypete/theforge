@@ -14,7 +14,11 @@ openai = ["openai>=1.0"]
 anthropic = ["anthropic>=0.30"]
 google = ["google-genai>=1.0"]
 all = ["openai>=1.0", "anthropic>=0.30", "google-genai>=1.0"]
-dev = ["pytest", "pytest-xdist", "ruff"]
+# hatchling is the build backend below; it is also a test dependency because the
+# packaging guard in tests/test_model_catalog.py builds a real wheel and looks
+# inside it. Nothing importable can stand in for that — the source tree always
+# has the catalog whether or not the build would ship it.
+dev = ["pytest", "pytest-xdist", "ruff", "hatchling"]
 
 [project.scripts]
 forge = "theforge.cli:main"

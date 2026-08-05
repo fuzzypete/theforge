@@ -56,6 +56,28 @@ class TransportSpec:
 
 _DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
 
+# Domains of the routing fields, kept next to the policy they constrain so both
+# declaration surfaces check the same thing. Each is bounded by what actually
+# consumes it, not by taste:
+#
+# - ``MODEL_TIERS``: the tiers ``custom_model_capability`` below can score.
+# - ``CAPABILITY_RANGE``: the 1-10 scale ``RoutingPolicy.capability`` documents.
+# - ``COST_RANK_RANGE``: the bands role selection reads (1=cheap, 2=mid,
+#   3=strong) — see ``config/pricing.py``.
+# - ``KNOWN_PHASES``: the only phases ever queried, by ``derive_roles()`` in
+#   ``role_derivation.py``. It equals the default set today because every known
+#   phase is eligible by default; they are separate names because a future phase
+#   that is *not* default-eligible would make them diverge.
+#
+# An unrecognized phase is the sharpest of these: ``_phase_candidates`` falls
+# back to the whole list when filtering empties it, so ``[reviewer]`` for
+# ``[review]`` does not fail — it quietly drops the model from the pool it was
+# declared for, which is the failure mode that is impossible to see from config.
+MODEL_TIERS: frozenset[str] = frozenset({"cheap", "fast", "strong"})
+CAPABILITY_RANGE: tuple[int, int] = (1, 10)
+COST_RANK_RANGE: tuple[int, int] = (1, 3)
+KNOWN_PHASES: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+
 
 @dataclass(frozen=True)
 class RoutingPolicy:

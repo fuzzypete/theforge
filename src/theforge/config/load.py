@@ -34,6 +34,7 @@ from .model_catalog import (
     parse_transport_block,
     resolve_project,
 )
+from .model_identity import MODEL_TIERS
 from .models import (
     AGENT_REGISTRY,
     AgentSpec,
@@ -290,6 +291,13 @@ def _custom_declaration_to_definition(canonical_id: str, decl: dict[str, Any]) -
         raise ValueError(f"forge.yaml '{where}.model' must be a non-empty string")
     if not isinstance(tier, str) or not tier:
         raise ValueError(f"forge.yaml '{where}.tier' must be a non-empty string")
+    # Checked here as well as in the canonical parser: this shape spells it at the
+    # top level, so delegating would report it as '<id>.routing.tier' — a key this
+    # operator did not write.
+    if tier not in MODEL_TIERS:
+        raise ValueError(
+            f"forge.yaml '{where}.tier' must be one of {sorted(MODEL_TIERS)}, got {tier!r}"
+        )
     if provider not in known_model_overlay_providers():
         known = ", ".join(known_model_overlay_providers())
         raise ValueError(

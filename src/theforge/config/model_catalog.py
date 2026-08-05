@@ -60,6 +60,10 @@ import yaml
 
 from .model_identity import (
     _DEFAULT_PHASE_ELIGIBILITY,
+    CAPABILITY_RANGE,
+    COST_RANK_RANGE,
+    KNOWN_PHASES,
+    MODEL_TIERS,
     TRANSPORT_KINDS,
     AgentSpec,
     RoutingPolicy,
@@ -173,6 +177,31 @@ def _require_price(value: Any, *, where: str) -> float:
     return float(value)
 
 
+def _require_tier(value: Any, *, where: str) -> str:
+    tier = _require_str(value, where=where)
+    if tier not in MODEL_TIERS:
+        raise ValueError(
+            f"forge.yaml '{where}' must be one of {sorted(MODEL_TIERS)}, got {tier!r}"
+        )
+    return tier
+
+
+def _require_in_range(value: Any, bounds: tuple[int, int], *, where: str) -> int:
+    """Bound a routing integer to the scale its consumer actually reads.
+
+    Type alone is not enough for these: ``capability: 999`` and ``cost_rank: -8``
+    are well-typed and load, then sort a model to the top or bottom of every
+    candidate list forever. Out-of-scale is never a meaningful declaration, so it
+    is a load error rather than a value to clamp — clamping would resolve a
+    definition to something the operator did not write.
+    """
+    number = _require_int(value, where=where)
+    low, high = bounds
+    if not low <= number <= high:
+        raise ValueError(f"forge.yaml '{where}' must be between {low} and {high}, got {number}")
+    return number
+
+
 def parse_transport_block(raw: Any, where: str) -> tuple[str, str | None]:
     """Read the bounded ``transport: {kind: cli|api, runner: …}`` object.
 
@@ -249,14 +278,14 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
 
     routing: dict[str, Any] = {}
     if "tier" in routing_raw:
-        routing["tier"] = _require_str(routing_raw["tier"], where=f"{where}.routing.tier")
+        routing["tier"] = _require_tier(routing_raw["tier"], where=f"{where}.routing.tier")
     if "capability" in routing_raw:
-        routing["capability"] = _require_int(
-            routing_raw["capability"], where=f"{where}.routing.capability"
+        routing["capability"] = _require_in_range(
+            routing_raw["capability"], CAPABILITY_RANGE, where=f"{where}.routing.capability"
         )
     if "cost_rank" in routing_raw:
-        routing["cost_rank"] = _require_int(
-            routing_raw["cost_rank"], where=f"{where}.routing.cost_rank"
+        routing["cost_rank"] = _require_in_range(
+            routing_raw["cost_rank"], COST_RANK_RANGE, where=f"{where}.routing.cost_rank"
         )
     if "dev_capable" in routing_raw:
         routing["dev_capable"] = _require_bool(
@@ -268,9 +297,16 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
             raise ValueError(
                 f"forge.yaml '{where}.routing.phase_eligibility' must be a non-empty list"
             )
-        routing["phase_eligibility"] = frozenset(
+        parsed_phases = frozenset(
             _require_str(p, where=f"{where}.routing.phase_eligibility") for p in phases
         )
+        unknown_phases = parsed_phases - KNOWN_PHASES
+        if unknown_phases:
+            raise ValueError(
+                f"forge.yaml '{where}.routing.phase_eligibility' only supports "
+                f"{sorted(KNOWN_PHASES)}; got {sorted(unknown_phases)}"
+            )
+        routing["phase_eligibility"] = parsed_phases
     if "cost_rank_basis" in routing_raw:
         routing["cost_rank_basis"] = _require_str(
             routing_raw["cost_rank_basis"], where=f"{where}.routing.cost_rank_basis"
@@ -458,7 +494,16 @@ def resolve_project(
     elif banded_cost_rank is not None:
         cost_rank = banded_cost_rank
         cost_rank_basis = declared_basis or price_cost_band_basis(str(provenance))
-        sources["cost_rank"] = sources["input_cost_per_mtok"]
+        # The band is derived from *both* figures, so it is the project's as soon
+        # as either one is — reading only the input side reported an output-only
+        # overlay's band as builtin, which is the opposite of what happened. Fall
+        # back to the input side's source when neither is declared, which is the
+        # inherited-figures case.
+        sources["cost_rank"] = (
+            SOURCE_PROJECT
+            if declares_price
+            else sources.get("input_cost_per_mtok", SOURCE_BUILTIN)
+        )
     elif builtin is not None:
         cost_rank = builtin.cost_rank
         cost_rank_basis = declared_basis or builtin.routing.cost_rank_basis

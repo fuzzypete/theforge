@@ -19,13 +19,14 @@ from __future__ import annotations
 
 import argparse
 import ast
-import tomllib
+import zipfile
 from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 import yaml
+from hatchling.builders.wheel import WheelBuilder
 
 from theforge.cli.check_config import cmd_check_config
 from theforge.config import load_config
@@ -113,35 +114,49 @@ class TestLayering:
 # ── The shipped set is data ───────────────────────────────────────────────
 
 # Routing policy of every entry the catalog shipped with, as ``(tier, capability,
-# cost_rank)``. These three fields decide which model gets which work, so a
-# change to one of them changes dispatch for every project on the release.
+# cost_rank, dev_capable, phase_eligibility)`` — the whole of RoutingPolicy that
+# decides *which* model gets work, so a change to any of it changes dispatch for
+# every project on the release.
+#
+# ``dev_capable`` and ``phase_eligibility`` are in here rather than left to the
+# first three because they gate rather than rank: dropping a phase removes a
+# model from that pool outright, and role derivation falls back to the unfiltered
+# list when a filter empties a pool, so the removal shows up as a quietly
+# different assignment rather than as an error.
+#
+# ``cost_rank_basis`` is deliberately excluded — it explains a band rather than
+# selecting anything, and pinning it here would duplicate the attribution tests
+# above.
 #
 # Asserted as a *subset*, which is what keeps the guard aligned with the point of
 # #2204 rather than fighting it: adding a model stays a pure data edit and needs
 # no test change, while re-tiering one of these fails until the expectation is
 # updated in the same commit. A silent re-tier is the failure #2217 was about,
 # and moving the set into YAML is what made it a one-line edit.
-_SHIPPED_ROUTING: dict[str, tuple[str, int, int]] = {
-    "anthropic/opus/cli": ("strong", 10, 3),
-    "anthropic/sonnet/cli": ("fast", 7, 1),
-    "deepseek/deepseek-chat/api": ("fast", 7, 1),
-    "deepseek/deepseek-reasoner/api": ("strong", 9, 2),
-    "google/gemini-2.5-pro/api": ("strong", 8, 2),
-    "google/gemini-2.5-pro/cli": ("strong", 8, 2),
-    "google/gemini-3-flash-preview/api": ("cheap", 7, 1),
-    "google/gemini-3-flash-preview/cli": ("cheap", 7, 1),
-    "google/gemini-3.1-pro-preview/api": ("strong", 9, 2),
-    "google/gemini-3.1-pro-preview/cli": ("strong", 9, 2),
-    "openai/codestral/api": ("fast", 7, 1),
-    "openai/deepseek-coder/api": ("fast", 7, 1),
-    "openai/gpt-5.4-mini/api": ("cheap", 7, 1),
-    "openai/gpt-5.4-mini/cli": ("cheap", 7, 1),
-    "openai/gpt-5.4-pro/api": ("strong", 10, 3),
-    "openai/gpt-5.4-pro/cli": ("strong", 10, 3),
-    "openai/gpt-5.4/api": ("strong", 9, 2),
-    "openai/gpt-5.4/cli": ("strong", 9, 2),
-    "openai/llama3.1/api": ("fast", 6, 1),
-    "openai/qwen2.5-coder/api": ("fast", 7, 1),
+_ALL_PHASES = ("dev", "plan", "preflight", "review")
+_SHIPPED_ROUTING: dict[str, tuple[str, int, int, bool, tuple[str, ...]]] = {
+    "anthropic/opus/cli": ("strong", 10, 3, True, _ALL_PHASES),
+    "anthropic/sonnet/cli": ("fast", 7, 1, True, _ALL_PHASES),
+    "deepseek/deepseek-chat/api": ("fast", 7, 1, True, _ALL_PHASES),
+    "deepseek/deepseek-reasoner/api": ("strong", 9, 2, True, _ALL_PHASES),
+    "google/gemini-2.5-pro/api": ("strong", 8, 2, True, _ALL_PHASES),
+    "google/gemini-2.5-pro/cli": ("strong", 8, 2, False, _ALL_PHASES),
+    "google/gemini-3-flash-preview/api": ("cheap", 7, 1, True, _ALL_PHASES),
+    "google/gemini-3-flash-preview/cli": ("cheap", 7, 1, False, _ALL_PHASES),
+    "google/gemini-3.1-pro-preview/api": ("strong", 9, 2, True, _ALL_PHASES),
+    "google/gemini-3.1-pro-preview/cli": ("strong", 9, 2, False, _ALL_PHASES),
+    "openai/codestral/api": ("fast", 7, 1, True, _ALL_PHASES),
+    "openai/deepseek-coder/api": ("fast", 7, 1, True, _ALL_PHASES),
+    "openai/gpt-5.4-mini/api": ("cheap", 7, 1, True, _ALL_PHASES),
+    "openai/gpt-5.4-mini/cli": ("cheap", 7, 1, True, _ALL_PHASES),
+    # No preflight: the pro tier is kept out of the phase that runs before
+    # complexity is known, so it cannot be drawn for cheap up-front work.
+    "openai/gpt-5.4-pro/api": ("strong", 10, 3, True, ("dev", "plan", "review")),
+    "openai/gpt-5.4-pro/cli": ("strong", 10, 3, True, _ALL_PHASES),
+    "openai/gpt-5.4/api": ("strong", 9, 2, True, _ALL_PHASES),
+    "openai/gpt-5.4/cli": ("strong", 9, 2, True, _ALL_PHASES),
+    "openai/llama3.1/api": ("fast", 6, 1, True, _ALL_PHASES),
+    "openai/qwen2.5-coder/api": ("fast", 7, 1, True, _ALL_PHASES),
 }
 
 
@@ -164,26 +179,30 @@ class TestPackagedCatalog:
         document = yaml.safe_load(resource.read_text(encoding="utf-8"))
         assert len(document["models"]) == len(AGENT_REGISTRY)
 
-    def test_the_wheel_is_declared_to_carry_the_catalog(self):
-        """The build config must keep package data in the distribution.
+    def test_the_built_wheel_carries_the_catalog(self, tmp_path):
+        """Build a real wheel and look inside it.
 
-        The catalog is read at import time, so if it does not travel in the
-        wheel then ``import theforge`` fails outright for an installed copy —
-        while CI, which imports from the source tree, stays green. Nothing else
-        in the suite can see that difference, so the build declaration itself is
-        what gets pinned: the wheel target names the package, and no exclusion
-        rule carves the data directory back out.
+        The catalog is read at import time, so if it stops travelling in the
+        wheel then ``import theforge`` fails outright for an installed copy while
+        CI, which imports from the source tree, stays green — the dogfood
+        substrate would find it at the next cut, not here.
+
+        Reading the build *declaration* instead is not equivalent, which is why
+        this builds. Hatch resolves inclusion through several interacting keys —
+        ``exclude`` takes precedence over inclusion, and ``only-include``
+        restricts traversal — so a rule that never mentions the data directory
+        can still drop it (``exclude = ["src/theforge/config/**"]``,
+        ``only-include = ["src/theforge/cli"]``). The artifact is the only thing
+        that answers the question the operator cares about.
         """
-        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-        build = tomllib.loads(pyproject.read_text(encoding="utf-8"))["tool"]["hatch"]["build"]
-        wheel = build["targets"]["wheel"]
-        assert "src/theforge" in wheel["packages"]
-        # An exclude/artifacts rule naming the data directory would silently
-        # drop it from a build that otherwise looks correctly configured.
-        for scope in (build, wheel):
-            for key in ("exclude", "artifacts", "only-include"):
-                for rule in scope.get(key, ()):
-                    assert "data" not in rule, f"build rule {key}={rule!r} may drop the catalog"
+        builder = WheelBuilder(str(Path(__file__).resolve().parents[1]))
+        artifact = next(iter(builder.build(directory=str(tmp_path), versions=["standard"])))
+        with zipfile.ZipFile(artifact) as wheel:
+            names = set(wheel.namelist())
+        assert "theforge/config/data/models.yaml" in names, (
+            "the shipped catalog is missing from the built wheel — an installed "
+            f"copy would fail at import. Wheel contains {len(names)} entries."
+        )
 
     def test_shipped_pricing_attribution_survives_the_data_round_trip(self):
         """The vendor shorthands stay unattributed with a declared band basis.
@@ -208,18 +227,60 @@ class TestPackagedCatalog:
         compares two loads of the same file and holds whatever that file says.
         This is the assertion that holds the file to something.
         """
-        drifted = {
-            model_id: (
-                (spec.routing.tier, spec.capability, spec.cost_rank),
-                expected,
+
+        def actual(spec) -> tuple:
+            return (
+                spec.routing.tier,
+                spec.capability,
+                spec.cost_rank,
+                spec.routing.dev_capable,
+                tuple(sorted(spec.routing.phase_eligibility)),
             )
+
+        drifted = {
+            model_id: (actual(spec), expected)
             for model_id, expected in _SHIPPED_ROUTING.items()
-            if (spec := AGENT_REGISTRY.get(model_id)) is not None
-            and (spec.routing.tier, spec.capability, spec.cost_rank) != expected
+            if (spec := AGENT_REGISTRY.get(model_id)) is not None and actual(spec) != expected
         }
         assert not drifted, f"shipped routing changed (got, expected): {drifted}"
         missing = sorted(_SHIPPED_ROUTING.keys() - AGENT_REGISTRY.keys())
         assert not missing, f"shipped entries disappeared from the catalog: {missing}"
+
+    @pytest.mark.parametrize(
+        "routing,expected",
+        [
+            ({"tier": "banana", "capability": 7, "cost_rank": 1}, "must be one of"),
+            ({"tier": "cheap", "capability": 999, "cost_rank": 1}, "between 1 and 10"),
+            ({"tier": "cheap", "capability": 7, "cost_rank": -8}, "between 1 and 3"),
+            (
+                {
+                    "tier": "cheap",
+                    "capability": 7,
+                    "cost_rank": 1,
+                    "phase_eligibility": ["launch"],
+                },
+                "only supports",
+            ),
+        ],
+    )
+    def test_routing_values_outside_their_domain_are_refused(self, routing, expected):
+        """Well-typed nonsense steers dispatch just as well as a real value.
+
+        Each of these parsed cleanly before: ``tier`` fell through to whatever
+        read it, an out-of-scale ``capability`` sorted the model to the top of
+        every candidate list, and an unrecognized phase is the quietest of the
+        four — ``_phase_candidates`` falls back to the unfiltered list when a
+        filter empties a pool, so a misspelled phase removes the model from the
+        pool it was declared for without failing anything.
+        """
+        definition = {
+            "provider": "openai",
+            "model": "m",
+            "transport": {"kind": "api"},
+            "routing": routing,
+        }
+        with pytest.raises(ValueError, match=expected):
+            parse_definition(definition, where="x")
 
     def test_a_new_shipped_entry_is_a_data_edit_not_a_code_edit(self):
         """Re-pinning a model on an already-supported adapter adds no code."""
@@ -683,6 +744,70 @@ class TestProjectDeclarationsAreAsExpressiveAsShipped:
 
 
 class TestFieldLevelProvenance:
+    @pytest.mark.parametrize("declared_side", ["input_per_mtok", "output_per_mtok"])
+    def test_a_price_overlay_owns_the_band_it_moved_whichever_side_it_stated(
+        self, tmp_path, declared_side
+    ):
+        """The band derives from both figures, so either one declared makes it ours.
+
+        Reading only the input side reported an output-only overlay's band as
+        ``builtin`` — the opposite of what happened, since the project's own
+        figure is what re-banded the entry. That is the one thing this provenance
+        map exists to answer, so it being backwards is worse than absent.
+        """
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": [
+                        {
+                            "provider": "anthropic",
+                            "model": "sonnet",
+                            "transport": {"kind": "cli"},
+                            "cost": {declared_side: 99.0},
+                        }
+                    ]
+                },
+                "budget_usd": 30.0,
+            },
+        )
+        config = load_config(path)
+        sources = config.model_registry_field_sources["anthropic/sonnet/cli"]
+        assert sources[f"{declared_side.split('_')[0]}_cost_per_mtok"] == SOURCE_PROJECT
+        assert sources["cost_rank"] == SOURCE_PROJECT
+        assert sources["cost_rank_basis"] == SOURCE_PROJECT
+        # The band really did move off the shipped entry's, so the attribution is
+        # answering a live question rather than restating a no-op.
+        assert (config.model_registry or {})["anthropic/sonnet/cli"].cost_rank != AGENT_REGISTRY[
+            "anthropic/sonnet/cli"
+        ].cost_rank
+
+    def test_inherited_prices_leave_the_band_attributed_to_the_shipped_entry(self, tmp_path):
+        """A declaration that states no price at all has not moved the band."""
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": [
+                        {
+                            "provider": "anthropic",
+                            "model": "sonnet",
+                            "transport": {"kind": "cli"},
+                            "routing": {"capability": 8},
+                        }
+                    ]
+                },
+                "budget_usd": 30.0,
+            },
+        )
+        config = load_config(path)
+        sources = config.model_registry_field_sources["anthropic/sonnet/cli"]
+        assert sources["capability"] == SOURCE_PROJECT
+        assert sources["cost_rank"] == SOURCE_BUILTIN
+        assert sources["input_cost_per_mtok"] == SOURCE_BUILTIN
+
     def test_a_partial_overlay_reports_which_source_supplied_each_field(self, tmp_path):
         path = _write(
             tmp_path,
