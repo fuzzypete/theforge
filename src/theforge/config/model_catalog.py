@@ -43,10 +43,11 @@ Two resolution modes sit on top of that one syntax:
   records which of the two sources supplied it, which is what makes a partial
   project overlay auditable rather than a silent replacement.
 
-Import note: :mod:`theforge.config.models` imports this module *lazily* (from
-inside a function) because this module imports the registry dataclasses from it.
-Everything imported below is defined above the point where ``models.py`` builds
-``AGENT_REGISTRY``, so the deferred import resolves cleanly.
+Layering: the identity types this module builds on live in
+:mod:`theforge.config.model_identity`, a leaf both this module and
+:mod:`theforge.config.models` import. That is what lets ``models.py`` build
+``AGENT_REGISTRY`` by calling :func:`load_packaged_catalog` at import time
+without the two modules importing each other.
 """
 
 from __future__ import annotations
@@ -57,7 +58,7 @@ from typing import Any, Callable
 
 import yaml
 
-from .models import (
+from .model_identity import (
     _DEFAULT_PHASE_ELIGIBILITY,
     TRANSPORT_KINDS,
     AgentSpec,
@@ -176,8 +177,8 @@ def parse_transport_block(raw: Any, where: str) -> tuple[str, str | None]:
     """Read the bounded ``transport: {kind: cli|api, runner: …}`` object.
 
     ``runner`` only needs naming for ``(provider, kind)`` tuples that admit more
-    than one executor; :func:`theforge.config.models.transport_for` derives it
-    everywhere else and rejects a runner that contradicts the tuple.
+    than one executor; :func:`theforge.config.model_identity.transport_for`
+    derives it everywhere else and rejects a runner that contradicts the tuple.
     """
     if not isinstance(raw, dict):
         raise ValueError(f"forge.yaml '{where}.transport' must be a mapping with a 'kind' key")

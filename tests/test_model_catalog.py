@@ -17,6 +17,7 @@ claim load-bearing:
 from __future__ import annotations
 
 import argparse
+import ast
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +47,64 @@ def _write(tmp_path: Path, body: dict) -> Path:
     path = tmp_path / "forge.yaml"
     path.write_text(yaml.dump(body), encoding="utf-8")
     return path
+
+
+# ── Module layering ───────────────────────────────────────────────────────
+
+
+class TestLayering:
+    """The parser and the registry it builds must not import each other.
+
+    ``models.py`` builds AGENT_REGISTRY by calling the parser at import time, so
+    a back-edge from ``model_catalog`` to ``models`` is a genuine import cycle
+    (and a hard convention violation), not merely untidy. Both sit on the
+    ``model_identity`` leaf instead.
+    """
+
+    def _imports(self, module_name: str) -> set[str]:
+        source = Path(__file__).resolve().parents[1] / f"src/theforge/config/{module_name}.py"
+        tree = ast.parse(source.read_text(encoding="utf-8"))
+        found: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                found.add(node.module)
+            elif isinstance(node, ast.Import):
+                found.update(alias.name for alias in node.names)
+        return found
+
+    def test_the_parser_does_not_import_the_registry(self):
+        # Every import, including function-level ones — a deferred import is
+        # still a cycle to the convention checker and to a reader.
+        assert "models" not in self._imports("model_catalog")
+
+    def test_the_identity_leaf_imports_neither(self):
+        identity_imports = self._imports("model_identity")
+        assert "models" not in identity_imports
+        assert "model_catalog" not in identity_imports
+
+    def test_the_registry_still_re_exports_the_identity_surface(self):
+        """Callers import these from config.models and must keep being able to."""
+        from theforge.config import model_identity, models
+
+        for name in (
+            "TRANSPORT_KINDS",
+            "TransportSpec",
+            "RoutingPolicy",
+            "AgentSpec",
+            "transport_for",
+            "canonical_model_id",
+            "canonical_id_for_spec",
+            "is_canonical_model_id",
+            "provider_for_cli_runner",
+            "provider_for_transport",
+            "mirror_fields_for_transport",
+            "transport_from_raw_fields",
+            "known_model_overlay_providers",
+            "overlay_transport",
+            "custom_model_capability",
+            "custom_model_dev_capable",
+        ):
+            assert getattr(models, name) is getattr(model_identity, name), name
 
 
 # ── The shipped set is data ───────────────────────────────────────────────

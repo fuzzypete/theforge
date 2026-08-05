@@ -24,6 +24,12 @@ and secrets handling.
   disk and environment.
 - `defaults.py`, `profiles.py`, and `models.py` define how omitted values are
   filled and how model/provider capabilities are represented.
+- Model definitions are layered so the shipped set and project-declared models
+  share one schema: `model_identity.py` (leaf — canonical identity, transport,
+  routing policy, `AgentSpec`) ← `model_catalog.py` (the one parser, plus the
+  packaged `data/models.yaml` catalog) ← `models.py` (`AGENT_REGISTRY`, legacy
+  views, lookups) ← `load.py`. Keep that direction: a back-edge would put the
+  parser and the registry it builds in an import cycle.
 - `types.py` contains typed config structures used throughout the codebase.
 - `auth.py` and `secrets.py` are the main places to inspect when credentials or
   provider authentication behavior changes.
