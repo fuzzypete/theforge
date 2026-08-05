@@ -194,7 +194,7 @@ enters bucket A or B by passing clause 2, not by analogy to an entry above; a
 signal that cannot be traced to mechanical provenance lands in C or D no matter
 how useful it looks.
 
-### 4. Tainted runs don't teach
+### 4. Tainted runs don't influence routing
 
 A run that failed its own trust checks — a reviewer whose tree-currency proof
 failed, a run whose gate evidence is known-invalid, any run the v0.12 trust

@@ -111,6 +111,42 @@ This is the *"LLMs propose, the coordinator decides"* invariant applied to histo
 
 If a future feature wants to act on a pattern observed in summaries (e.g., "this kind of bug always escalates"), it must first record that pattern in the per-run substrate (e.g., as a structured tag on the runs the pattern applies to), and act on the structured signal — not on the prose summary.
 
+**Which summaries are fit to advise.** The rules above govern what a summary may
+influence; they say nothing about whether a given summary should be advising
+anything at all. A summary may enter agent context only after deterministic
+evaluation produces an admissible verdict. A summary with no verdict is
+inadmissible — absence of evaluation is never read as admission.
+
+Fitness has two kinds, and they resolve differently:
+
+- **Relevance decay reduces rank.** A summary whose cited sources still resolve
+  — including through a rename with traceable continuity — stays admissible,
+  ranked lower as those sources move further from what the summary described.
+  Decay is the ordinary condition of a living repository, not a disqualification.
+- **Soundness failure is inadmissible.** A summary whose source run is marked
+  tainted, whose provenance references do not resolve, or whose cited source has
+  been deleted, is excluded outright. What distinguishes this kind is that the
+  claim can no longer be checked at all, rather than merely being less likely to
+  apply.
+
+Where the kind is indeterminate, the fallback follows the kind and not the
+category name: unresolvable *relevance* down-ranks and stays admissible;
+unresolvable *soundness* is inadmissible. Categories like "stale" bundle
+properties that belong on opposite sides of this line — a renamed file and a
+deleted one are both "stale" and only one is unverifiable — so a rule stated in
+terms of the category rather than the property will admit what it meant to
+exclude.
+
+Exclusion and down-ranking are themselves advisory acts on context, not
+mechanical gates, and both MUST be recorded so an operator can tell "no relevant
+prior knowledge exists" from "prior knowledge exists and was withheld."
+
+Evaluation is deterministic and takes no LLM call: it is a judgment about
+whether evidence still resolves, not about whether a lesson is good. Taint
+exclusion here is related to but distinct from ADR-0006 clause 4, which governs
+routing weight; this clause governs prompt content, and a run may be excluded
+from one without the other.
+
 #### 6. What intake-readiness commands must emit
 
 Every intake-readiness command (`forge shape`, `forge groom`, `forge diagnose`, the shape-gate verdict emitter, and the inline-remediation path) writes a structured event into the substrate at the point it is currently emitting to YAML or stdout. Specific per-issue requirements live in the implementation issues (#1509/#1517, #1511, #1513, #1516); the substrate-level invariants are:
