@@ -29,12 +29,8 @@ from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
 from .pricing import (
-    COST_BAND_BASIS_DECLARED_POLICY,
-    COST_BAND_BASIS_VENDOR_TIER,
-    PRICING_PROVENANCE_LOCAL_ENDPOINT,
     AttributablePricing,
     price_tiebreak_signal_for,
-    resolve_cost_band_basis,
 )
 
 # Re-exported: these moved to config/pricing.py, but callers (and the #1617
@@ -480,6 +476,19 @@ def is_canonical_model_id(value: str | None) -> bool:
 LOCAL_OPENAI_COMPATIBLE_BASE_URL = "http://localhost:11434/v1"
 
 
+def custom_model_capability(tier: str) -> int:
+    """Return the default capability score for a custom model tier."""
+    by_tier = {"cheap": 6, "fast": 7, "strong": 9}
+    if tier not in by_tier:
+        raise ValueError(f"models.custom tier must be one of {sorted(by_tier)}, got {tier!r}")
+    return by_tier[tier]
+
+
+def custom_model_dev_capable(transport: TransportSpec) -> bool:
+    """Return whether a custom model transport can own the dev role."""
+    return not (transport.kind == "cli" and transport.runner == "gemini")
+
+
 def _entry(
     provider: str,
     model: str,
@@ -497,7 +506,12 @@ def _entry(
     pricing_provenance: str | None = None,
     cost_rank_basis: str | None = None,
 ) -> tuple[str, AgentSpec]:
-    """Build a ``(canonical_id, AgentSpec)`` registry pair.
+    """Build a ``(canonical_id, AgentSpec)`` registry pair from keyword form.
+
+    A thin adapter over the canonical model-definition schema: the keywords are
+    assembled into a canonical definition mapping and resolved by the same
+    parser that reads the packaged catalog and project-declared models, so this
+    spelling cannot drift from the data one.
 
     ``pricing_provenance`` names the concrete billed identity the price figures
     were recorded for. Omitting it marks the figures unattributed, which is what
@@ -511,297 +525,62 @@ def _entry(
     band — including every band on an entry whose price is unattributed — must
     name its non-price basis, or construction raises.
     """
-    transport = transport_for(provider, kind, runner=runner)
-    basis = resolve_cost_band_basis(
-        cost_rank,
-        input_cost_per_mtok=input_cost_per_mtok,
-        output_cost_per_mtok=output_cost_per_mtok,
-        pricing_provenance=pricing_provenance,
-        declared_basis=cost_rank_basis,
-    )
-    spec = AgentSpec(
-        provider=provider,
-        model=model,
-        transport=transport,
-        routing=RoutingPolicy(
-            tier=tier,
-            capability=capability,
-            cost_rank=cost_rank,
-            dev_capable=dev_capable,
-            phase_eligibility=phases,
-            cost_rank_basis=basis,
-        ),
-        base_url=base_url,
-        input_cost_per_mtok=input_cost_per_mtok,
-        output_cost_per_mtok=output_cost_per_mtok,
-        pricing_provenance=pricing_provenance,
-    )
-    return canonical_id_for_spec(spec), spec
+    from .model_catalog import parse_definition, resolve_packaged  # noqa: PLC0415
+
+    transport_block: dict[str, Any] = {"kind": kind}
+    if runner is not None:
+        transport_block["runner"] = runner
+    routing: dict[str, Any] = {
+        "tier": tier,
+        "capability": capability,
+        "cost_rank": cost_rank,
+        "dev_capable": dev_capable,
+        "phase_eligibility": sorted(phases),
+    }
+    if cost_rank_basis is not None:
+        routing["cost_rank_basis"] = cost_rank_basis
+    cost: dict[str, Any] = {}
+    if input_cost_per_mtok is not None:
+        cost["input_per_mtok"] = input_cost_per_mtok
+    if output_cost_per_mtok is not None:
+        cost["output_per_mtok"] = output_cost_per_mtok
+    if pricing_provenance is not None:
+        cost["pricing_provenance"] = pricing_provenance
+    definition: dict[str, Any] = {
+        "provider": provider,
+        "model": model,
+        "transport": transport_block,
+        "routing": routing,
+    }
+    if base_url is not None:
+        definition["base_url"] = base_url
+    if cost:
+        definition["cost"] = cost
+    where = f"{provider}/{model}/{kind}"
+    resolved = resolve_packaged(parse_definition(definition, where=where), where=where)
+    return resolved.canonical_id, resolved.spec
 
 
-AGENT_REGISTRY: dict[str, AgentSpec] = dict(
-    [
-        # ── Anthropic ────────────────────────────────────────────────
-        #
-        # ``sonnet``/``opus`` are Claude-CLI shorthands, not billed identities:
-        # the CLI resolves each to whichever concrete version it currently ships
-        # (the vendor bills ``claude-sonnet-4-6`` / ``claude-opus-4-6``-style
-        # names — see runners/schema_utils.PRICING_TABLE). The entry identity can
-        # therefore move while the literal below does not, so these figures carry
-        # no pricing_provenance: they are indicative only and routing ignores
-        # them. Re-attributing them requires pinning the entry to the concrete
-        # version the price is true of.
-        #
-        # Their cost bands are not derived from those literals either — they
-        # restate the vendor's own tier naming, which is what the shorthand
-        # *means* and stays true when it resolves to a new version: ``opus`` is
-        # whatever Anthropic currently sells as its flagship (strong band),
-        # ``sonnet`` whatever it sells as the mid-priced workhorse (cheap band,
-        # as the fleet's baseline). Note the bands already disagree with the
-        # literals — 3.00/15.00 would band sonnet at 2 — so the figures could
-        # move to any value without moving either band.
-        _entry(
-            "anthropic",
-            "sonnet",
-            "cli",
-            tier="fast",
-            capability=7,
-            cost_rank=1,
-            input_cost_per_mtok=3.00,
-            output_cost_per_mtok=15.00,
-            cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER,
-        ),
-        _entry(
-            "anthropic",
-            "opus",
-            "cli",
-            tier="strong",
-            capability=10,
-            cost_rank=3,
-            input_cost_per_mtok=15.00,
-            output_cost_per_mtok=75.00,
-            cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER,
-        ),
-        # ── OpenAI (Codex CLI) ───────────────────────────────────────
-        #
-        # Unlike the Claude-CLI shorthands above, these model strings are the
-        # identity the vendor bills under — they are passed through verbatim and
-        # priced under the same name (runners/schema_utils.PRICING_TABLE keys
-        # them identically), so the figures are attributable to the entry.
-        _entry(
-            "openai",
-            "gpt-5.4",
-            "cli",
-            tier="strong",
-            capability=9,
-            cost_rank=2,
-            input_cost_per_mtok=1.25,
-            output_cost_per_mtok=10.00,
-            pricing_provenance="gpt-5.4",
-        ),
-        _entry(
-            "openai",
-            "gpt-5.4-mini",
-            "cli",
-            tier="cheap",
-            capability=7,
-            cost_rank=1,
-            input_cost_per_mtok=0.25,
-            output_cost_per_mtok=2.00,
-            pricing_provenance="gpt-5.4-mini",
-        ),
-        _entry(
-            "openai",
-            "gpt-5.4-pro",
-            "cli",
-            tier="strong",
-            capability=10,
-            cost_rank=3,
-            input_cost_per_mtok=15.00,
-            output_cost_per_mtok=120.00,
-            pricing_provenance="gpt-5.4-pro",
-        ),
-        # ── OpenAI (API) ─────────────────────────────────────────────
-        _entry(
-            "openai",
-            "gpt-5.4",
-            "api",
-            tier="strong",
-            capability=9,
-            cost_rank=2,
-            input_cost_per_mtok=1.25,
-            output_cost_per_mtok=10.00,
-            pricing_provenance="gpt-5.4",
-        ),
-        _entry(
-            "openai",
-            "gpt-5.4-mini",
-            "api",
-            tier="cheap",
-            capability=7,
-            cost_rank=1,
-            input_cost_per_mtok=0.25,
-            output_cost_per_mtok=2.00,
-            pricing_provenance="gpt-5.4-mini",
-        ),
-        _entry(
-            "openai",
-            "gpt-5.4-pro",
-            "api",
-            tier="strong",
-            capability=10,
-            cost_rank=3,
-            input_cost_per_mtok=15.00,
-            output_cost_per_mtok=120.00,
-            pricing_provenance="gpt-5.4-pro",
-            # Reasoning-heavy — intentionally excluded from the preflight role.
-            phases=frozenset({"dev", "plan", "review"}),
-        ),
-        # ── DeepSeek (API) ───────────────────────────────────────────
-        _entry(
-            "deepseek",
-            "deepseek-reasoner",
-            "api",
-            tier="strong",
-            capability=9,
-            cost_rank=2,
-            input_cost_per_mtok=0.55,
-            output_cost_per_mtok=2.19,
-            pricing_provenance="deepseek-reasoner",
-            # Banded a step above its per-MTok rate on purpose: a reasoning model
-            # spends far more output tokens per task, so the rate alone (band 1)
-            # understates what filling a role with it costs.
-            cost_rank_basis=COST_BAND_BASIS_DECLARED_POLICY,
-        ),
-        _entry(
-            "deepseek",
-            "deepseek-chat",
-            "api",
-            tier="fast",
-            capability=7,
-            cost_rank=1,
-            input_cost_per_mtok=0.27,
-            output_cost_per_mtok=1.10,
-            pricing_provenance="deepseek-chat",
-        ),
-        # ── Google (API) ─────────────────────────────────────────────
-        _entry(
-            "google",
-            "gemini-3-flash-preview",
-            "api",
-            tier="cheap",
-            capability=7,
-            cost_rank=1,
-        ),
-        _entry(
-            "google",
-            "gemini-3.1-pro-preview",
-            "api",
-            tier="strong",
-            capability=9,
-            cost_rank=2,
-            input_cost_per_mtok=2.00,
-            output_cost_per_mtok=12.00,
-            pricing_provenance="gemini-3.1-pro-preview",
-        ),
-        _entry(
-            "google",
-            "gemini-2.5-pro",
-            "api",
-            tier="strong",
-            capability=8,
-            cost_rank=2,
-            input_cost_per_mtok=1.25,
-            output_cost_per_mtok=10.00,
-            pricing_provenance="gemini-2.5-pro",
-        ),
-        # ── Google (Gemini CLI — explicit opt-in) ────────────────────
-        _entry(
-            "google",
-            "gemini-2.5-pro",
-            "cli",
-            tier="strong",
-            capability=8,
-            cost_rank=2,
-            dev_capable=False,
-            input_cost_per_mtok=1.25,
-            output_cost_per_mtok=10.00,
-            pricing_provenance="gemini-2.5-pro",
-        ),
-        _entry(
-            "google",
-            "gemini-3-flash-preview",
-            "cli",
-            tier="cheap",
-            capability=7,
-            cost_rank=1,
-            dev_capable=False,
-        ),
-        _entry(
-            "google",
-            "gemini-3.1-pro-preview",
-            "cli",
-            tier="strong",
-            capability=9,
-            cost_rank=2,
-            dev_capable=False,
-            input_cost_per_mtok=2.00,
-            output_cost_per_mtok=12.00,
-            pricing_provenance="gemini-3.1-pro-preview",
-        ),
-        # ── Local OpenAI-compatible models ───────────────────────────
-        # API transport + a localhost base_url. Not a provider prefix, not a
-        # transport kind — just an endpoint.
-        _entry(
-            "openai",
-            "codestral",
-            "api",
-            tier="fast",
-            capability=7,
-            cost_rank=1,
-            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
-            input_cost_per_mtok=0.0,
-            output_cost_per_mtok=0.0,
-            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
-        ),
-        _entry(
-            "openai",
-            "deepseek-coder",
-            "api",
-            tier="fast",
-            capability=7,
-            cost_rank=1,
-            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
-            input_cost_per_mtok=0.0,
-            output_cost_per_mtok=0.0,
-            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
-        ),
-        _entry(
-            "openai",
-            "llama3.1",
-            "api",
-            tier="fast",
-            capability=6,
-            cost_rank=1,
-            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
-            input_cost_per_mtok=0.0,
-            output_cost_per_mtok=0.0,
-            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
-        ),
-        _entry(
-            "openai",
-            "qwen2.5-coder",
-            "api",
-            tier="fast",
-            capability=7,
-            cost_rank=1,
-            base_url=LOCAL_OPENAI_COMPATIBLE_BASE_URL,
-            input_cost_per_mtok=0.0,
-            output_cost_per_mtok=0.0,
-            pricing_provenance=PRICING_PROVENANCE_LOCAL_ENDPOINT,
-        ),
-    ]
-)
+def _load_packaged_registry() -> dict[str, AgentSpec]:
+    """Load the shipped default model set from packaged catalog data.
+
+    Imported lazily: :mod:`theforge.config.model_catalog` imports the registry
+    dataclasses from this module, and every name it needs is defined above this
+    call, so deferring the import to call time is what keeps the two modules
+    from forming an import cycle.
+    """
+    from .model_catalog import load_packaged_catalog  # noqa: PLC0415
+
+    return load_packaged_catalog()
+
+
+# The shipped default set is *data*, not code: it lives in
+# ``config/data/models.yaml`` and is read through the same canonical parser
+# project-declared models use. Adding or re-pinning a model that runs on an
+# already-supported adapter is an edit to that file — no code change, no
+# release. Adding a *provider* still requires code, because a provider needs a
+# runner module (see :func:`transport_for`).
+AGENT_REGISTRY: dict[str, AgentSpec] = _load_packaged_registry()
 
 
 # Raw-input aliases for the pre-transport key spellings. These are accepted only
@@ -881,19 +660,6 @@ def overlay_transport(
     family, implied_kind = _MODEL_OVERLAY_PROVIDER_MAP[provider]
     kind = transport_kind or implied_kind
     return family, transport_for(family, kind)
-
-
-def custom_model_capability(tier: str) -> int:
-    """Return the default capability score for a custom model tier."""
-    by_tier = {"cheap": 6, "fast": 7, "strong": 9}
-    if tier not in by_tier:
-        raise ValueError(f"models.custom tier must be one of {sorted(by_tier)}, got {tier!r}")
-    return by_tier[tier]
-
-
-def custom_model_dev_capable(transport: TransportSpec) -> bool:
-    """Return whether a custom model transport can own the dev role."""
-    return not (transport.kind == "cli" and transport.runner == "gemini")
 
 
 def _spec_to_model_info(

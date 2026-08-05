@@ -10,6 +10,20 @@ TheForge's adaptive assignment maps complexity to routing tiers
 [`routing-policy.md`](routing-policy.md). The tables below show which concrete
 model fits each tier cell.
 
+The shipped model set itself is **data**: `src/theforge/config/data/models.yaml`
+inside the package, written in the canonical model-definition schema documented
+in [`inputs-reference.md`](inputs-reference.md#model-definitions) and read by the
+same parser that reads a project's `forge.yaml`. Adding or re-pinning a model
+that runs on an existing adapter is an edit to that file — or to your own
+`forge.yaml`, with no code change at all. Adding a *provider* still requires
+code, because a provider needs a runner module.
+
+> **TheForge's own `forge.yaml` is deliberately unchanged.** Moving this
+> repository's config onto the canonical schema is separate operator work,
+> sequenced after a release containing the schema has been cut and deployed:
+> sprints here run against an *installed release*, which cannot read a schema it
+> does not yet contain.
+
 ---
 
 ## OpenAI (GPT-5.4 family)

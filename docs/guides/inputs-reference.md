@@ -408,6 +408,75 @@ models:
 selection *policy*, not identity — two entries differing only in `routing` are
 the same model.
 
+### Model definitions
+
+That mapping is the **canonical model definition schema**, and it is the only
+one. The models TheForge ships with are written in it too: they live in
+`src/theforge/config/data/models.yaml` inside the package and are read by the
+same parser that reads your `forge.yaml`, so a project-declared model is not a
+second-class one — anything the shipped set can express, yours can:
+
+```yaml
+models:
+  enabled:
+    - provider: google              # adapter family (required)
+      model: gemini-4-pro           # model id passed to that adapter (required)
+      transport:
+        kind: api                   # cli | api (required)
+        # runner: ghaw              # only for (provider, kind) tuples with
+                                    # more than one executor
+      base_url: https://…/v1        # endpoint metadata (local/compatible servers)
+      routing:
+        tier: strong                # cheap | fast | strong
+        capability: 10              # 1–10 relative capability
+        cost_rank: 3                # 1=cheap, 2=moderate, 3=expensive
+        dev_capable: false          # may this model own the dev role?
+        phase_eligibility: [dev, plan, review]
+        cost_rank_basis: declared-policy
+      cost:
+        input_per_mtok: 2.00
+        output_per_mtok: 12.00
+        pricing_provenance: gemini-4-pro-2026-08
+```
+
+**Adding a model needs no code and no release** as long as it runs on an adapter
+that already exists (`anthropic`, `openai`, `google`, `deepseek`). Adding a
+*provider* does need code, because a provider needs a runner module — declaring
+one that has no adapter fails at load with a message naming the adapters that
+do exist.
+
+**Cost attribution.** `pricing_provenance` names the concrete billed identity
+the figures were recorded for. Omit it and the figures are *unattributed*:
+carried for reference, ignored by cost banding and price tie-breaks. Write
+`pricing_provenance: null` explicitly for a vendor shorthand whose price you
+record but cannot vouch for. `cost_rank_basis` states why the band holds when it
+is not simply this entry's own attributable price band; a band that is neither
+price-attributable nor explained is a load error rather than a silent guess.
+
+**Overlaying a shipped definition.** A declaration whose identity matches a
+shipped one refines it: fields you state win, fields you omit keep the shipped
+value. `forge check-config` reports which source supplied each field.
+
+**Existing configuration keeps loading.** The flat `models.custom` form below
+and inline `models.enabled` mappings written before this schema existed are
+translated into it at the parse boundary — adopting the canonical shape is
+optional, not forced:
+
+```yaml
+models:
+  enabled: [anthropic/sonnet/cli, gpt-5.5]   # a custom declaration may still be
+  custom:                                     # selected by its declaration key
+    gpt-5.5:
+      provider: openai                        # alias tokens (openai-api,
+      model: gpt-5.5                          # gemini-cli) still normalize
+      tier: strong
+      input_cost_per_mtok: 1.50
+      output_cost_per_mtok: 12.00
+```
+
+The flat form still derives `capability` from `tier` and cannot set
+`phase_eligibility`; use the canonical shape when you need those.
+
 **Rejected/migration-only spellings.** `openai-api/gpt-5.4`,
 `gemini-cli/gemini-2.5-pro` and `claude/opus` are legacy aliases. They still
 load, but they are rewritten to their canonical identity at the parse boundary

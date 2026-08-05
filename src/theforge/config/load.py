@@ -27,30 +27,23 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
+from .model_catalog import (
+    PROVENANCE_FIELDS,
+    ResolvedModel,
+    parse_definition,
+    parse_transport_block,
+    resolve_project,
+)
 from .models import (
     AGENT_REGISTRY,
-    TRANSPORT_KINDS,
     AgentSpec,
-    RoutingPolicy,
     _parse_assignment,
-    canonical_id_for_spec,
-    canonical_model_id,
-    custom_model_capability,
-    custom_model_dev_capable,
     known_model_overlay_providers,
     normalize_model_key,
     overlay_transport,
     resolve_agent_spec,
-    transport_for,
 )
-from .pricing import (
-    COST_BAND_BASIS_OPERATOR_DECLARED,
-    COST_BAND_BASIS_UNPRICED_DEFAULT,
-    PRICING_PROVENANCE_OPERATOR_DECLARED,
-    UNPRICED_COST_RANK,
-    custom_model_cost_rank,
-    price_cost_band_basis,
-)
+from .pricing import PRICING_PROVENANCE_OPERATOR_DECLARED
 from .profiles import (
     CLI_PROVIDER_MAP,
     _agents_from_models,
@@ -153,19 +146,28 @@ def _parse_sandbox_config(sandbox_raw: Any) -> SandboxConfig:
 
 def _parse_models_section(
     raw_models: Any,
-) -> tuple[list[str] | None, dict[str, AgentSpec], dict[str, Any], bool]:
+) -> tuple[
+    list[str] | None,
+    dict[str, AgentSpec],
+    dict[str, dict[str, str]],
+    dict[str, Any],
+    bool,
+]:
     """Normalize the top-level models section.
 
-    Returns ``(enabled_models, inline_specs, custom_raw, simple_mode_enabled)`` where:
+    Returns ``(enabled_models, inline_specs, inline_field_sources, custom_raw,
+    simple_mode_enabled)`` where:
     - ``enabled_models`` is the selected model list, as canonical
       ``provider/model/transport-kind`` identities
     - ``inline_specs`` holds AgentSpecs declared inline under ``models.enabled``
+    - ``inline_field_sources`` reports, per inline declaration, which source
+      supplied each resolved field
     - ``custom_raw`` is the raw ``models.custom`` mapping (possibly empty)
     - ``simple_mode_enabled`` indicates whether the config opted into simple mode
     """
     if isinstance(raw_models, list):
-        ids, inline = _normalize_enabled_entries(raw_models)
-        return ids, inline, {}, True
+        ids, inline, inline_sources = _normalize_enabled_entries(raw_models)
+        return ids, inline, inline_sources, {}, True
     if raw_models is None:
         raise ValueError("'models' must be a non-empty list")
     if not isinstance(raw_models, dict):
@@ -188,178 +190,36 @@ def _parse_models_section(
     if not isinstance(custom_raw, dict):
         raise ValueError("forge.yaml 'models.custom' must be a mapping")
 
-    enabled_ids, inline_specs = (
-        _normalize_enabled_entries(enabled_raw) if enabled_raw is not None else (None, {})
+    enabled_ids, inline_specs, inline_sources = (
+        _normalize_enabled_entries(enabled_raw) if enabled_raw is not None else (None, {}, {})
     )
-    return enabled_ids, inline_specs, custom_raw, enabled_raw is not None
-
-
-def _parse_transport_block(raw: Any, where: str) -> str:
-    """Read the bounded ``transport: {kind: cli|api}`` object off a raw entry."""
-    if not isinstance(raw, dict):
-        raise ValueError(f"forge.yaml '{where}.transport' must be a mapping with a 'kind' key")
-    unknown = set(raw) - {"kind"}
-    if unknown:
-        raise ValueError(
-            f"forge.yaml '{where}.transport' only supports 'kind'; got {sorted(unknown)}"
-        )
-    kind = raw.get("kind")
-    if kind not in TRANSPORT_KINDS:
-        raise ValueError(
-            f"forge.yaml '{where}.transport.kind' must be one of {sorted(TRANSPORT_KINDS)}, "
-            f"got {kind!r}"
-        )
-    return str(kind)
-
-
-_ENABLED_ENTRY_KEYS = {"provider", "model", "transport", "routing", "base_url", "cost"}
-_ROUTING_KEYS = {"tier", "capability", "cost_rank", "dev_capable", "phase_eligibility"}
+    return enabled_ids, inline_specs, inline_sources, custom_raw, enabled_raw is not None
 
 
 def _parse_enabled_mapping_entry(
     entry: dict[str, Any], index: int
-) -> tuple[str, AgentSpec | None]:
+) -> tuple[str, ResolvedModel | None]:
     """Normalize one canonical ``models.enabled`` mapping entry.
 
-    Returns ``(canonical_id, spec_or_None)``. The spec is None when the entry
-    only selects a model the built-in registry already knows — declaring
+    Returns ``(canonical_id, resolved_or_None)``. The resolution is None when the
+    entry only selects a model the built-in registry already knows — declaring
     ``provider``/``model``/``transport`` is enough to name it, and the built-in
     routing policy and pricing apply unchanged.
+
+    An entry that *does* carry ``routing``/``cost``/``base_url`` is a definition,
+    and goes through the same canonical parser as the packaged catalog.
     """
     where = f"models.enabled[{index}]"
-    unknown = set(entry) - _ENABLED_ENTRY_KEYS
-    if unknown:
-        raise ValueError(
-            f"forge.yaml '{where}' only supports {sorted(_ENABLED_ENTRY_KEYS)}; "
-            f"unknown key(s): {sorted(unknown)}"
-        )
-    for required in ("provider", "model", "transport"):
-        if required not in entry:
-            raise ValueError(f"forge.yaml '{where}' is missing required field {required!r}")
-    provider = entry["provider"]
-    model = entry["model"]
-    if not isinstance(provider, str) or not provider:
-        raise ValueError(f"forge.yaml '{where}.provider' must be a non-empty string")
-    if not isinstance(model, str) or not model:
-        raise ValueError(f"forge.yaml '{where}.model' must be a non-empty string")
-    kind = _parse_transport_block(entry["transport"], where)
-    transport = transport_for(provider, kind)
-    canonical_id = canonical_model_id(provider, model, kind)
-
-    routing_raw = entry.get("routing") or {}
-    if not isinstance(routing_raw, dict):
-        raise ValueError(f"forge.yaml '{where}.routing' must be a mapping")
-    unknown_routing = set(routing_raw) - _ROUTING_KEYS
-    if unknown_routing:
-        raise ValueError(
-            f"forge.yaml '{where}.routing' only supports {sorted(_ROUTING_KEYS)}; "
-            f"unknown key(s): {sorted(unknown_routing)}"
-        )
-    base_url = entry.get("base_url")
-    if base_url is not None and (not isinstance(base_url, str) or not base_url):
-        raise ValueError(f"forge.yaml '{where}.base_url' must be a non-empty string")
-    cost_raw = entry.get("cost") or {}
-    if not isinstance(cost_raw, dict):
-        raise ValueError(f"forge.yaml '{where}.cost' must be a mapping")
-
-    builtin = AGENT_REGISTRY.get(canonical_id)
-    if builtin is not None and not routing_raw and base_url is None and not cost_raw:
-        return canonical_id, None
-
-    tier = routing_raw.get("tier") or (builtin.tier if builtin is not None else None)
-    if not isinstance(tier, str) or not tier:
-        raise ValueError(
-            f"forge.yaml '{where}.routing.tier' is required for a model that is not "
-            "in the built-in registry"
-        )
-    input_cost = cost_raw.get(
-        "input_per_mtok", builtin.input_cost_per_mtok if builtin is not None else None
-    )
-    output_cost = cost_raw.get(
-        "output_per_mtok", builtin.output_cost_per_mtok if builtin is not None else None
-    )
-    # Declaring any `cost:` figure here attributes the pair to this identity —
-    # the operator asserted it for this entry. Figures merely *inherited* from a
-    # built-in entry keep that entry's attribution, which for a vendor-shorthand
-    # identity is None: the literal is carried for reference but must not band.
-    pricing_provenance = (
-        PRICING_PROVENANCE_OPERATOR_DECLARED
-        if cost_raw
-        else (builtin.pricing_provenance if builtin is not None else None)
-    )
-    banded_cost_rank = (
-        custom_model_cost_rank(
-            float(input_cost or 0.0),
-            float(output_cost or 0.0),
-            pricing_provenance=pricing_provenance,
-        )
-        if input_cost is not None or output_cost is not None
-        else None
-    )
-    # The band travels with the reason it holds, in the same order of precedence:
-    # the operator's own declaration, then this entry's attributable price, then
-    # whatever the built-in entry already justified, then the unpriced default.
-    # Nothing here can reach the band of an unattributed literal — the middle
-    # branch is gated on `banded_cost_rank`, which is None in that case.
-    if routing_raw.get("cost_rank") is not None:
-        cost_rank = int(routing_raw["cost_rank"])
-        cost_rank_basis = COST_BAND_BASIS_OPERATOR_DECLARED
-    elif banded_cost_rank is not None:
-        cost_rank = banded_cost_rank
-        cost_rank_basis = price_cost_band_basis(str(pricing_provenance))
-    elif builtin is not None:
-        cost_rank = builtin.cost_rank
-        cost_rank_basis = builtin.routing.cost_rank_basis
-    else:
-        cost_rank = UNPRICED_COST_RANK
-        cost_rank_basis = COST_BAND_BASIS_UNPRICED_DEFAULT
-    capability = routing_raw.get("capability")
-    dev_capable = routing_raw.get("dev_capable")
-    phases = routing_raw.get("phase_eligibility")
-    spec = AgentSpec(
-        provider=provider,
-        model=model,
-        transport=transport,
-        routing=RoutingPolicy(
-            tier=tier,
-            capability=(
-                int(capability)
-                if capability is not None
-                else (builtin.capability if builtin is not None else custom_model_capability(tier))
-            ),
-            cost_rank=cost_rank,
-            dev_capable=(
-                bool(dev_capable)
-                if dev_capable is not None
-                else (
-                    builtin.dev_capable
-                    if builtin is not None
-                    else custom_model_dev_capable(transport)
-                )
-            ),
-            phase_eligibility=(
-                frozenset(str(p) for p in phases)
-                if phases is not None
-                else (
-                    builtin.phase_eligibility
-                    if builtin is not None
-                    else RoutingPolicy(tier=tier, capability=1, cost_rank=1).phase_eligibility
-                )
-            ),
-            cost_rank_basis=cost_rank_basis,
-        ),
-        base_url=base_url if base_url is not None else (builtin.base_url if builtin else None),
-        registry_source="forge.yaml",
-        input_cost_per_mtok=float(input_cost) if input_cost is not None else None,
-        output_cost_per_mtok=float(output_cost) if output_cost is not None else None,
-        pricing_provenance=pricing_provenance,
-    )
-    return canonical_id, spec
+    defn = parse_definition(entry, where=where)
+    builtin = AGENT_REGISTRY.get(defn.canonical_id)
+    if builtin is not None and not defn.declared:
+        return defn.canonical_id, None
+    return defn.canonical_id, resolve_project(defn, where=where, builtin=builtin)
 
 
 def _normalize_enabled_entries(
     enabled_raw: list[Any],
-) -> tuple[list[str], dict[str, AgentSpec]]:
+) -> tuple[list[str], dict[str, AgentSpec], dict[str, dict[str, str]]]:
     """Normalize ``models.enabled`` into canonical ids plus any inline declarations.
 
     Two spellings are accepted at this boundary and both leave it as canonical
@@ -369,148 +229,134 @@ def _normalize_enabled_entries(
       plus optional ``routing``/``base_url``/``cost`` metadata;
     - a canonical id string, or one of the legacy provider-prefix spellings
       (``openai-api/…``, ``gemini-cli/…``), which is rewritten here.
+
+    The third element carries per-field provenance for the inline declarations.
     """
     ids: list[str] = []
     inline: dict[str, AgentSpec] = {}
+    field_sources: dict[str, dict[str, str]] = {}
     for index, entry in enumerate(enabled_raw):
         if isinstance(entry, dict):
-            canonical_id, spec = _parse_enabled_mapping_entry(entry, index)
-            if spec is not None:
-                inline[canonical_id] = spec
+            canonical_id, resolved = _parse_enabled_mapping_entry(entry, index)
+            if resolved is not None:
+                inline[canonical_id] = resolved.spec
+                field_sources[canonical_id] = resolved.field_sources
             ids.append(canonical_id)
         else:
             ids.append(normalize_model_key(str(entry)))
-    return ids, inline
+    return ids, inline, field_sources
+
+
+_CUSTOM_REQUIRED_KEYS = (
+    "provider",
+    "model",
+    "tier",
+    "input_cost_per_mtok",
+    "output_cost_per_mtok",
+)
+
+
+def _custom_declaration_to_definition(canonical_id: str, decl: dict[str, Any]) -> dict[str, Any]:
+    """Translate a legacy flat ``models.custom`` declaration into the canonical shape.
+
+    The flat form predates the canonical schema and stays loadable unchanged:
+    the fields are rearranged here (``tier`` under ``routing``,
+    ``input_cost_per_mtok``/``output_cost_per_mtok`` under ``cost``) and the
+    provider-like alias tokens (``openai-api``, ``gemini-cli``) are resolved to a
+    provider family plus a transport kind, so the declaration is validated and
+    resolved by the same parser everything else goes through.
+
+    Field-level validation stays here rather than being delegated, so the
+    messages keep naming the keys the operator actually wrote.
+    """
+    where = f"models.custom.{canonical_id}"
+    if not isinstance(decl, dict):
+        raise ValueError(f"forge.yaml '{where}' must be a mapping")
+    missing = [key for key in _CUSTOM_REQUIRED_KEYS if key not in decl]
+    if missing:
+        raise ValueError(f"forge.yaml '{where}' is missing required field(s): {missing}")
+
+    provider = decl["provider"]
+    model = decl["model"]
+    tier = decl["tier"]
+    if not isinstance(provider, str) or not provider:
+        raise ValueError(f"forge.yaml '{where}.provider' must be a non-empty string")
+    if not isinstance(model, str) or not model:
+        raise ValueError(f"forge.yaml '{where}.model' must be a non-empty string")
+    if not isinstance(tier, str) or not tier:
+        raise ValueError(f"forge.yaml '{where}.tier' must be a non-empty string")
+    if provider not in known_model_overlay_providers():
+        known = ", ".join(known_model_overlay_providers())
+        raise ValueError(
+            f"Unknown provider {provider!r} in {where}. Known providers/adapters: {known}"
+        )
+
+    for cost_key in ("input_cost_per_mtok", "output_cost_per_mtok"):
+        value = decl[cost_key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or float(value) < 0:
+            raise ValueError(
+                f"forge.yaml '{where}.{cost_key}' must be a non-negative number, got {value!r}"
+            )
+
+    transport_kind = (
+        parse_transport_block(decl["transport"], where)[0] if "transport" in decl else None
+    )
+    # Alias tokens carry an implied kind; an explicit transport block wins.
+    normalized_provider, transport = overlay_transport(provider, transport_kind)
+    definition: dict[str, Any] = {
+        "provider": normalized_provider,
+        "model": model,
+        "transport": {"kind": transport.kind},
+        "routing": {"tier": tier},
+        # A models.custom declaration states its own prices for its own
+        # identity, so the pair is attributed to the operator's declaration.
+        "cost": {
+            "input_per_mtok": float(decl["input_cost_per_mtok"]),
+            "output_per_mtok": float(decl["output_cost_per_mtok"]),
+            "pricing_provenance": PRICING_PROVENANCE_OPERATOR_DECLARED,
+        },
+    }
+    base_url = decl.get("base_url")
+    if base_url is not None:
+        if not isinstance(base_url, str) or not base_url:
+            raise ValueError(f"forge.yaml '{where}.base_url' must be a non-empty string")
+        definition["base_url"] = base_url
+    return definition
 
 
 def _parse_custom_model_registry(
     custom_raw: dict[str, Any],
-) -> tuple[dict[str, AgentSpec], dict[str, str]]:
+) -> tuple[dict[str, AgentSpec], dict[str, str], dict[str, dict[str, str]]]:
     """Parse and validate user-declared model overlays from forge.yaml.
 
-    Returns ``(registry, declaration_aliases)``. The registry is keyed by
-    canonical identity (``provider/model/transport-kind``); the alias map
+    Returns ``(registry, declaration_aliases, field_sources)``. The registry is
+    keyed by canonical identity (``provider/model/transport-kind``); the alias map
     translates the operator-chosen declaration key into that identity so a
     ``models.enabled`` entry may still refer to the declaration by name. The
     declaration key is raw input and never reaches the registry.
+
+    A ``models.custom`` entry is a standalone declaration, not a refinement of a
+    built-in one (replacing a built-in identity requires ``override: true``), so
+    it resolves without a built-in fallback and every field is its own.
     """
     registry: dict[str, AgentSpec] = {}
     aliases: dict[str, str] = {}
+    field_sources: dict[str, dict[str, str]] = {}
     for canonical_id, decl in custom_raw.items():
         if not isinstance(canonical_id, str) or not canonical_id:
             raise ValueError("forge.yaml 'models.custom' keys must be non-empty strings")
-        if not isinstance(decl, dict):
-            raise ValueError(f"forge.yaml 'models.custom.{canonical_id}' must be a mapping")
-
-        missing = [
-            key
-            for key in (
-                "provider",
-                "model",
-                "tier",
-                "input_cost_per_mtok",
-                "output_cost_per_mtok",
-            )
-            if key not in decl
-        ]
-        if missing:
-            raise ValueError(
-                "forge.yaml "
-                f"'models.custom.{canonical_id}' is missing required field(s): {missing}"
-            )
-
-        provider = decl["provider"]
-        model = decl["model"]
-        tier = decl["tier"]
-        if not isinstance(provider, str) or not provider:
-            raise ValueError(
-                f"forge.yaml 'models.custom.{canonical_id}.provider' must be a non-empty string"
-            )
-        if not isinstance(model, str) or not model:
-            raise ValueError(
-                f"forge.yaml 'models.custom.{canonical_id}.model' must be a non-empty string"
-            )
-        if not isinstance(tier, str) or not tier:
-            raise ValueError(
-                f"forge.yaml 'models.custom.{canonical_id}.tier' must be a non-empty string"
-            )
-
-        if provider not in known_model_overlay_providers():
-            known = ", ".join(known_model_overlay_providers())
-            raise ValueError(
-                f"Unknown provider {provider!r} in models.custom.{canonical_id}. "
-                f"Known providers/adapters: {known}"
-            )
-
-        input_cost = decl["input_cost_per_mtok"]
-        output_cost = decl["output_cost_per_mtok"]
-        if (
-            isinstance(input_cost, bool)
-            or not isinstance(input_cost, (int, float))
-            or float(input_cost) < 0
-        ):
-            raise ValueError(
-                f"forge.yaml 'models.custom.{canonical_id}.input_cost_per_mtok' must be a "
-                f"non-negative number, got {input_cost!r}"
-            )
-        if (
-            isinstance(output_cost, bool)
-            or not isinstance(output_cost, (int, float))
-            or float(output_cost) < 0
-        ):
-            raise ValueError(
-                f"forge.yaml 'models.custom.{canonical_id}.output_cost_per_mtok' must be a "
-                f"non-negative number, got {output_cost!r}"
-            )
-
-        transport_kind = (
-            _parse_transport_block(decl["transport"], f"models.custom.{canonical_id}")
-            if "transport" in decl
-            else None
-        )
-        normalized_provider, transport = overlay_transport(provider, transport_kind)
-        base_url = decl.get("base_url")
-        if base_url is not None and (not isinstance(base_url, str) or not base_url):
-            raise ValueError(
-                f"forge.yaml 'models.custom.{canonical_id}.base_url' must be a non-empty string"
-            )
-        # A models.custom declaration states its own prices for its own identity,
-        # so the pair is attributed to the operator's declaration and bands.
-        overlay_cost_rank = custom_model_cost_rank(
-            float(input_cost),
-            float(output_cost),
-            pricing_provenance=PRICING_PROVENANCE_OPERATOR_DECLARED,
-        )
-        spec = AgentSpec(
-            provider=normalized_provider,
-            model=model,
-            transport=transport,
-            routing=RoutingPolicy(
-                tier=tier,
-                capability=custom_model_capability(tier),
-                cost_rank=(
-                    overlay_cost_rank if overlay_cost_rank is not None else UNPRICED_COST_RANK
-                ),
-                dev_capable=custom_model_dev_capable(transport),
-                cost_rank_basis=(
-                    price_cost_band_basis(PRICING_PROVENANCE_OPERATOR_DECLARED)
-                    if overlay_cost_rank is not None
-                    else COST_BAND_BASIS_UNPRICED_DEFAULT
-                ),
-            ),
-            base_url=base_url,
-            registry_source="forge.yaml",
-            input_cost_per_mtok=float(input_cost),
-            output_cost_per_mtok=float(output_cost),
-            pricing_provenance=PRICING_PROVENANCE_OPERATOR_DECLARED,
+        where = f"models.custom.{canonical_id}"
+        definition = _custom_declaration_to_definition(canonical_id, decl)
+        resolved = resolve_project(
+            parse_definition(definition, where=where), where=where, builtin=None
         )
         # The declaration key is operator-chosen; the identity is not. Register
         # the spec under its canonical id so nothing downstream can select the
         # same model twice under two different names.
-        identity = canonical_id_for_spec(spec)
-        registry[identity] = spec
-        aliases[canonical_id] = identity
-    return registry, aliases
+        registry[resolved.canonical_id] = resolved.spec
+        field_sources[resolved.canonical_id] = resolved.field_sources
+        aliases[canonical_id] = resolved.canonical_id
+    return registry, aliases, field_sources
 
 
 def _merge_model_registry(
@@ -1090,14 +936,32 @@ def load_config(config_path: Path) -> ForgeConfig:
     _raw_overrides: dict[str, Any] | None = None
     model_registry = dict(AGENT_REGISTRY)
     model_registry_sources = {key: "builtin" for key in AGENT_REGISTRY}
+    # Entry-level source (above) says which file an entry came from; this says
+    # which file supplied each *field* of it, which is the only way to read a
+    # partial project overlay of a shipped definition.
+    model_registry_field_sources: dict[str, dict[str, str]] = {
+        key: {field: "builtin" for field in PROVENANCE_FIELDS} for key in AGENT_REGISTRY
+    }
     custom_models: tuple[str, ...] = ()
     if "models" in raw:
-        models_list, inline_specs, custom_raw, simple_mode_enabled = _parse_models_section(
-            raw["models"]
-        )
+        (
+            models_list,
+            inline_specs,
+            inline_field_sources,
+            custom_raw,
+            simple_mode_enabled,
+        ) = _parse_models_section(raw["models"])
     else:
-        models_list, inline_specs, custom_raw, simple_mode_enabled = (None, {}, {}, False)
-    overlay_registry, overlay_aliases = _parse_custom_model_registry(custom_raw)
+        models_list, inline_specs, inline_field_sources, custom_raw, simple_mode_enabled = (
+            None,
+            {},
+            {},
+            {},
+            False,
+        )
+    overlay_registry, overlay_aliases, overlay_field_sources = _parse_custom_model_registry(
+        custom_raw
+    )
     custom_registry = {**overlay_registry, **inline_specs}
     if models_list is not None and overlay_aliases:
         models_list = [overlay_aliases.get(key, key) for key in models_list]
@@ -1110,6 +974,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         model_registry = _merge_model_registry(custom_registry, override_ids)
         custom_models = tuple(sorted(custom_registry))
         model_registry_sources.update({key: "forge.yaml" for key in custom_registry})
+        model_registry_field_sources.update({**overlay_field_sources, **inline_field_sources})
 
     if simple_mode_enabled:
         assert models_list is not None
@@ -1811,6 +1676,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         models_overrides=_raw_overrides,
         model_registry=model_registry,
         model_registry_sources=model_registry_sources,
+        model_registry_field_sources=model_registry_field_sources,
         custom_models=custom_models,
         diagnose=diagnose_cfg,
     )
