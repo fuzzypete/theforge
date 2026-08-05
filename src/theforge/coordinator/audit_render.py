@@ -57,6 +57,11 @@ def _agent_entry(r: object, role: str, profile_fallback: str, dur: float | None)
     if r.model_config:
         # Preference list configured for this profile — present whenever list has >1 entry
         entry["model_config"] = list(r.model_config)
+    if r.transport_used:
+        # The transport that actually served. Recorded because it is the hint
+        # that makes a bare ``model_used`` (e.g. ``gpt-5.4``, offered over both
+        # CLI and API) resolvable to one canonical identity (#2225).
+        entry["transport_used"] = r.transport_used
     return entry
 
 

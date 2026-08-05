@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from theforge.config import ModelProfile
 from theforge.coordinator import audit_substrate as sub
 
 
@@ -1157,20 +1159,155 @@ class TestRendererIndexerModelIdentitySeam:
             "direct",
         )
 
-    def test_unresolvable_model_used_is_recorded_verbatim_not_dropped(
+    def _index_detail(self, tmp_path: Path, record: dict) -> tuple:
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, record, provenance="native")
+            conn.commit()
+            return tuple(
+                conn.execute(
+                    "SELECT dev_model, dev_model_source, dev_model_resolution "
+                    "FROM audit_records WHERE run_id = ?",
+                    (record["run_id"],),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
+    def test_unresolvable_model_used_is_recorded_verbatim_and_marked_unresolved(
         self, tmp_path: Path
     ) -> None:
-        """An identity the profile registry cannot canonicalize is still what ran."""
+        """An identity the registry cannot canonicalize is still what ran (#2225).
+
+        Keeping it verbatim is correct; presenting it in the same form as a
+        canonical id is what made the fragmentation undetectable, so the row
+        also records that it was never normalized.
+        """
         from theforge.coordinator import audit_render
 
         entry = audit_render._agent_entry(
-            self._agent_result(model_used="claude-opus-4-1-20250805"), "dev", "dev", 12.0
+            self._agent_result(model_used="brand-new-model-9"), "dev", "dev", 12.0
         )
 
-        assert self._index(tmp_path, self._record_with_agent_entry(entry)) == (
-            "claude-opus-4-1-20250805",
+        assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
+            "brand-new-model-9",
             "direct",
+            "unresolved",
         )
+
+    def test_canonicalized_identity_is_marked_canonical(self, tmp_path: Path) -> None:
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_used="claude-sonnet-4-6"), "dev", "dev", 12.0
+        )
+
+        assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
+            "anthropic/sonnet/cli",
+            "direct",
+            "canonical",
+        )
+
+    def test_production_shaped_api_result_indexes_as_the_api_identity(
+        self, tmp_path: Path
+    ) -> None:
+        """The whole runner → renderer → indexer path for a single-model API profile.
+
+        This is the shape that fragmented in production: an API result carries
+        no ``model_used`` at all, so the renderer back-fills it from per-model
+        billing and gets the bare ``gpt-5.4``. The runner's recorded transport
+        is the only thing that keeps it from indexing under its own spelling
+        (#2225), so the runner is driven for real here rather than the entry
+        being hand-shaped.
+        """
+        from theforge.agent_types import ModelUsage
+        from theforge.coordinator import audit_render
+        from theforge.runners.api import run_api_agent
+
+        api_profile = ModelProfile(
+            name="dev",
+            provider="openai",
+            cli=None,
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+        )
+        billed_only = self._agent_result(
+            model_usage=(
+                ModelUsage(
+                    model="gpt-5.4",
+                    input_tokens=10,
+                    output_tokens=5,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=1.0,
+                ),
+            )
+        )
+        with patch.dict(
+            "theforge.runners.api.PROVIDER_RUNNERS",
+            {"openai": lambda prompt, prof, secrets: billed_only},
+        ):
+            result = run_api_agent(
+                prompt="go", profile=api_profile, working_dir=tmp_path, quiet=True
+            )
+
+        entry = audit_render._agent_entry(result, "dev", "dev", 12.0)
+        assert entry["model_used"] == "gpt-5.4", "renderer no longer back-fills from billing"
+
+        assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
+            "openai/gpt-5.4/api",
+            "direct",
+            "canonical",
+        )
+
+    def test_transport_used_disambiguates_a_bare_model_name(self, tmp_path: Path) -> None:
+        """``gpt-5.4`` exists over both transports; the recorded one resolves it."""
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_used="gpt-5.4", transport_used="api"), "dev", "dev", 12.0
+        )
+        assert entry["transport_used"] == "api", "renderer dropped the disambiguating hint"
+
+        assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
+            "openai/gpt-5.4/api",
+            "direct",
+            "canonical",
+        )
+
+    def test_bare_name_without_a_transport_hint_stays_unresolved(self, tmp_path: Path) -> None:
+        """No hint and two registry transports → guessing would be worse than verbatim."""
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_used="gpt-5.4"), "dev", "dev", 12.0
+        )
+
+        assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
+            "gpt-5.4",
+            "direct",
+            "unresolved",
+        )
+
+    def test_one_model_spelled_three_ways_indexes_under_one_identity(self, tmp_path: Path) -> None:
+        """The #2225 regression: canonical id, shorthand and concrete version agree."""
+        conn = sub.create_or_open(tmp_path)
+        try:
+            for i, spelling in enumerate(("anthropic/sonnet/cli", "sonnet", "claude-sonnet-4-6")):
+                rec = _make_record(run_id=f"frag-{i}")
+                rec["cost"]["agents"] = [{"role": "dev", "model_used": spelling}]
+                sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            rows = conn.execute(
+                "SELECT dev_model, COUNT(*) FROM audit_records "
+                "WHERE run_id LIKE 'frag-%' GROUP BY dev_model"
+            ).fetchall()
+        finally:
+            conn.close()
+
+        assert [tuple(r) for r in rows] == [("anthropic/sonnet/cli", 3)]
 
     def test_model_config_only_entry_indexes_as_recovered_identity(self, tmp_path: Path) -> None:
         """No recorded model_used → reconstruct from invocation config, marked recovered."""
@@ -1286,3 +1423,33 @@ class TestRendererIndexerModelIdentitySeam:
 
         assert row == ("anthropic/sonnet/cli", "direct")
         assert version == str(sub.SUBSTRATE_SCHEMA_VERSION)
+
+    def test_reindex_recanonicalizes_a_schema_5_substrate(self, tmp_path: Path) -> None:
+        """A version-5 row holds the runner's spelling; opening it normalizes (#2225)."""
+        rec = _make_record(run_id="v5-1")
+        rec["cost"]["agents"] = [{"role": "dev", "model_used": "claude-sonnet-4-6"}]
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.execute(
+                "UPDATE audit_records SET dev_model = 'claude-sonnet-4-6', "
+                "dev_model_source = 'direct', dev_model_resolution = NULL "
+                "WHERE run_id = 'v5-1'"
+            )
+            conn.execute("UPDATE meta SET value = '5' WHERE key = 'schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        conn = sub.create_or_open(tmp_path)
+        try:
+            row = tuple(
+                conn.execute(
+                    "SELECT dev_model, dev_model_source, dev_model_resolution "
+                    "FROM audit_records WHERE run_id='v5-1'"
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
+        assert row == ("anthropic/sonnet/cli", "direct", "canonical")
