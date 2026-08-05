@@ -1239,6 +1239,13 @@ class ForgeConfig:
     # sets a populated dict (built-in + forge.yaml overlay).
     model_registry: dict[str, AgentSpec] | None = None
     model_registry_sources: dict[str, str] = field(default_factory=dict)
+    # Per-field provenance for the merged registry: {canonical_id: {field:
+    # "builtin" | "forge.yaml"}}. Entry-level ``model_registry_sources`` above
+    # says which file an entry came from; this says which file supplied each
+    # field of it, which is what makes a project declaration that only refines
+    # part of a shipped definition readable rather than opaque. Empty for a
+    # directly-constructed config that never went through load_config().
+    model_registry_field_sources: dict[str, dict[str, str]] = field(default_factory=dict)
     custom_models: tuple[str, ...] = ()
     diagnose: DiagnoseConfig = field(default_factory=DiagnoseConfig)
     # Identity of the configuration this object represents (#2056). Populated by

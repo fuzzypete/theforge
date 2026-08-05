@@ -18,12 +18,12 @@ import pytest
 import yaml
 
 from theforge.config import load_config
+from theforge.config.model_catalog import parse_definition, resolve_packaged
 from theforge.config.models import (
     AGENT_REGISTRY,
     MODEL_REGISTRY,
     AgentSpec,
     RoutingPolicy,
-    _entry,
     _spec_to_model_info,
     transport_for,
 )
@@ -350,19 +350,25 @@ def test_the_defects_exact_entry_shape_no_longer_builds():
     """The shape the bug was reported in: a vendor-shorthand entry carrying an
     unattributable 15.00/75.00 and banded 3 — the band those figures produce, with
     nothing recording whether that was a derivation or a coincidence. Building it
-    now raises; the entry only exists once it says why band 3 holds without them."""
-    args = ("anthropic", "opus", "cli")
-    kwargs = dict(
-        tier="strong",
-        capability=10,
-        cost_rank=3,
-        input_cost_per_mtok=15.00,
-        output_cost_per_mtok=75.00,
-    )
-    with pytest.raises(ValueError, match="cannot be attributed"):
-        _entry(*args, **kwargs)
+    now raises; the entry only exists once it says why band 3 holds without them.
 
-    _key, spec = _entry(*args, **kwargs, cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER)
+    Written as catalog data, because that is what a shipped entry is since #2204:
+    the guard has to hold at the parser the packaged catalog goes through."""
+
+    def _shipped(**routing_extra):
+        definition = {
+            "provider": "anthropic",
+            "model": "opus",
+            "transport": {"kind": "cli"},
+            "routing": {"tier": "strong", "capability": 10, "cost_rank": 3, **routing_extra},
+            "cost": {"input_per_mtok": 15.00, "output_per_mtok": 75.00},
+        }
+        return resolve_packaged(parse_definition(definition, where="x"), where="x")
+
+    with pytest.raises(ValueError, match="cannot be attributed"):
+        _shipped()
+
+    spec = _shipped(cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER).spec
     assert spec.cost_rank == 3
     assert spec.routing.cost_rank_basis == COST_BAND_BASIS_VENDOR_TIER
     # And that band still owes nothing to the figures beside it.

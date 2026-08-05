@@ -506,6 +506,17 @@ def _format_config(
                 )
             if custom_details:
                 lines.append(f"  {'declared forge.yaml:':<18}{', '.join(custom_details)}")
+        # Where a project declaration refines a shipped definition, the entry is
+        # neither wholly builtin nor wholly forge.yaml. Name the fields the
+        # project actually supplied, or the overlay reads as a replacement.
+        for model_id in config.custom_models:
+            field_sources = config.model_registry_field_sources.get(model_id, {})
+            overlaid = sorted(f for f, src in field_sources.items() if src == "builtin")
+            if overlaid:
+                declared = sorted(f for f, src in field_sources.items() if src != "builtin")
+                lines.append(f"  field provenance for {model_id}:")
+                lines.append(f"    {'forge.yaml:':<12}{', '.join(declared) or '(none)'}")
+                lines.append(f"    {'builtin:':<12}{', '.join(overlaid)}")
         lines.append("")
 
     # ── DERIVED ROLES (v0.8 simple mode) ─────────────────────────────────
