@@ -17,17 +17,65 @@ models:
     #                                 savings) but zero dev runs — profile reranker starves zero-history models
     #                                 regardless of order. Reverted same day; real fix is #1617.
     - openai/gpt-5.5/cli          # OpenAI's recommended coding model; overlay entry below
+    # GPT-5.6 (2026-08-05, #2207). Identifiers verified against the live /v1/models list for this
+    # key: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna. Declared api rather than cli because the
+    # family ships no -codex variant (5.1/5.2/5.3 do), so Codex CLI support is unconfirmed; the
+    # api transport is the one the identifiers were verified on and check-providers can probe it.
+    # Luna omitted — no published price found, and an unpriced entry seeds the cost band with a
+    # default rather than a figure. Prices below are secondary-source seeds, not provider-attested;
+    # that is exactly the provenance gap #2203 gated on and #2206 replaces with observed cost.
+    # BLOCKED 2026-08-05 — cannot be enabled until the temperature bug is fixed. check-providers
+    # live-probe returned 400 on both: "'temperature' does not support 0 with this model. Only the
+    # default (1) value". Verified directly against /v1/chat/completions: gpt-5.6-sol succeeds with
+    # no temperature and fails with temperature=0, so the model is fine and the adapter is not —
+    # _is_reasoning_model in runners/schema_utils.py matches only ^o\d plus two deepseek prefixes.
+    # Uncomment once that lands; identifiers and probe method are already verified.
+    # - provider: openai
+    #   model: gpt-5.6-sol
+    #   transport: {kind: api}
+    #   routing: {tier: strong, capability: 9, cost_rank: 2}
+    #   cost: {input_per_mtok: 2.50, output_per_mtok: 15.00}
+    # - provider: openai
+    #   model: gpt-5.6-terra
+    #   transport: {kind: api}
+    #   routing: {tier: fast, capability: 8, cost_rank: 2}
+    #   cost: {input_per_mtok: 1.00, output_per_mtok: 6.00}
+    # Haiku — cheap tier for the Anthropic adapter (#2207). Already billed inside invocations as a
+    # component model (claude-haiku-4-5 appears in cost.agents[].model_usage) while absent from the
+    # catalog entirely. dev_capable and phase_eligibility stated explicitly rather than inherited:
+    # introduced for preflight and review only until it has run history of its own.
+    - provider: anthropic
+      model: haiku
+      transport: {kind: cli}
+      routing:
+        tier: cheap
+        capability: 6
+        cost_rank: 1
+        dev_capable: false
+        phase_eligibility: [preflight, review]
+      cost: {input_per_mtok: 1.00, output_per_mtok: 5.00}
     - google/gemini-3.5-flash/api  # Google re-entry (2026-07-16, the registry story flagged below): stable/GA
     #                                 since 2026-05, Google's recommended model for agentic+coding. Beats
     #                                 3.1-pro on tool-call chaining (MCP Atlas 83.6%, Terminal-Bench 76.2 vs
     #                                 70.3) — the exact no-submit failure class that benched 3.1-pro (#1598).
     #                                 Overlay entry below; promote to AGENT_REGISTRY when the registry story lands.
-    # - deepseek/deepseek-reasoner/api  # disabled 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
-    #                                  Re-enable when adaptive routing can decide reviewer fitness automatically.
+    # Both benches below are RETAINED as of 2026-08-05 (#2207), but their exit condition is
+    # restated. The prior wording — "re-enable when adaptive routing can decide reviewer fitness
+    # automatically" — was not checkable, so neither bench had a defined exit and both persisted by
+    # default. Replaced with a condition that can be evaluated by looking at run history:
+    #   RE-TEST TRIGGER: each bench predates the fix for the failure that caused it, and neither has
+    #   been re-tested since. Re-test in a bounded exploration slot (assignment.exploration caps the
+    #   blast radius); re-bench only if the SAME failure class recurs, and record the run id here.
+    #   Checkable by asking: has this model run at all since the fix date recorded on its line?
+    # - deepseek/deepseek-reasoner/api  # benched 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
+    #                                  Fixes landed AFTER the bench: #1574 provider-health signal (2026-05-12),
+    #                                  #1434 reviewer crash retries instead of escalating (2026-07-09).
+    #                                  Not re-tested since either. See RE-TEST TRIGGER above.
     # - google/gemini-3.1-pro-preview/api  # benched 2026-07-09: reviewer completed without calling submit_review
     #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
-    #                                      Same fitness criterion as deepseek above: re-enable when adaptive
-    #                                      routing can decide reviewer fitness automatically.
+    #                                      #1598 closed 2026-07-12 — three days AFTER this bench — and fixes
+    #                                      precisely this failure (no retry, no substitute on a non-submitting
+    #                                      reviewer). Not re-tested since. See RE-TEST TRIGGER above.
     #                                      Still the only Google pro tier (never GA'd; 3.5 Pro delayed to
     #                                      mid-July 2026 over recursive tool-calling failures — bench it
     #                                      separately if it GAs). gemini-3.5-flash re-entry shipped above.
@@ -136,9 +184,13 @@ assignment:
   # Mechanical plan-reviewer value signals (#1443): P1 uniqueness + latency-per-P1,
   # sample-floor gated, recency-weighted, taint-excluded. Built and tested but
   # default-off; enabled 2026-08-02 after 703-audit review showed reviewer
-  # selection running on completion rate alone. Code-review selection does not
-  # consume this yet — tracked in #2156.
+  # selection running on completion rate alone.
   reviewer_value_enabled: true
+  # Code-review selection consumes the same signals since #2156 (closed 2026-08-04).
+  # Enabled 2026-08-05 (#2207) — it shipped default-off and was never switched on here,
+  # so code-review reviewers were still being selected on completion rate alone while
+  # plan reviewers had moved to value signals three days earlier.
+  code_review_value_enabled: true
 
 # Neutralize the stuck-detector's no-file-modifications arm pending the redesign
 # in #1215. Repeat-call and identical-error-loop arms remain at their defaults
