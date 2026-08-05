@@ -5175,6 +5175,10 @@ def run_sprint(
             _log(f"Collision claim released for {slug} ({why})")
         claim_results.pop(slug, None)
         file_footprints.pop(slug, None)
+        # Nothing throttles a claim that no longer exists, and a slug that were
+        # ever re-queued must be probed immediately rather than inheriting a
+        # timestamp from its previous landing attempt.
+        _queued_probe_at.pop(slug, None)
         # plan_done is what re-derives the footprint; leaving it behind would
         # resurrect the claim on the next _release_plan_gates pass.
         with phase_lock:
@@ -5316,6 +5320,10 @@ def run_sprint(
         # Out of queued_prs before the claim is reconciled: membership there is
         # itself a reason to keep a collision claim alive.
         del queued_prs[slug]
+        # The throttle only exists to pace probes of a *queued* PR. This one is
+        # decided; _end_collision_claim drops the entry on the paths that keep a
+        # claim, and this covers a resolution with no claim behind it.
+        _queued_probe_at.pop(slug, None)
 
         if poll_result["status"] == "merged":
             merged_slugs.add(slug)

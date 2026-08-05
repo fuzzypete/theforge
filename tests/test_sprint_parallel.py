@@ -3130,6 +3130,80 @@ class TestCollisionGateQueuedParent:
         assert sprint.specs_skipped == 0
 
 
+class TestCollisionClaimWrapUpDrain:
+    """#2234: the wrap-up drain must resolve a claim left on a still-queued PR.
+
+    A story whose PR is queued is marked terminal immediately, so a sprint can
+    finish its work loop with that PR outstanding and reach the wrap-up drain
+    without any in-loop path having polled it. That drain is the last place a
+    collision claim can be released, and it runs after every gate is gone — so
+    it is also the path least likely to be exercised by the other tests.
+    """
+
+    def _run(self, tmp_path: Path, *, pr_status: str):
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        # One story, but max_parallel=2 so plan gates (and therefore collision
+        # claims) are active. Queuing its PR makes it terminal, so the work loop
+        # ends with the PR still in flight and drops straight into wrap-up.
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md"], budget=10.0, max_parallel=2
+        )
+        config = _make_config(tmp_path)
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            plan_result = _make_coordinator_result(success=True, cost=1.0, phase=Phase.PLAN_REVIEW)
+            plan_result.state.workspace_path = tmp_path / task.slug
+            return plan_result
+
+        def _fake_run_from_dev(cfg, task, workspace_path, **kwargs):  # noqa: ANN001
+            return _make_coordinator_result(
+                success=True, cost=1.0, landing_status="pending_integration"
+            )
+
+        def _fake_land_story(*args, **kwargs):  # noqa: ANN002, ANN003
+            return (
+                {"merge_queued": True, "pr_url": "https://github.com/x/y/pull/1"},
+                "pending_integration",
+            )
+
+        with (
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.runner.run_from_dev", side_effect=_fake_run_from_dev),
+            patch(
+                "theforge.sprint.runner._extract_plan_footprint",
+                return_value={"src/shared.py"},
+            ),
+            patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
+            patch(
+                "theforge.sprint.runner._poll_queued_pr",
+                return_value={"status": pr_status},
+            ) as mock_poll,
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        return sprint, mock_poll
+
+    def test_wrap_up_drain_releases_claim_on_merged_pr(self, tmp_path: Path, capsys) -> None:
+        sprint, mock_poll = self._run(tmp_path, pr_status="merged")
+        err = capsys.readouterr().err
+
+        # The drain ran (nothing in the loop polled this PR) and the claim went
+        # with the landing verdict.
+        assert mock_poll.call_count == 1
+        assert "Collision claim released for story-a (queued PR merged at wrap-up)" in err
+        assert sprint.specs_succeeded == 1
+
+    def test_wrap_up_drain_releases_claim_on_failed_pr(self, tmp_path: Path, capsys) -> None:
+        sprint, mock_poll = self._run(tmp_path, pr_status="closed")
+        err = capsys.readouterr().err
+
+        assert mock_poll.call_count == 1
+        assert "queued PR closed during sprint wrap-up" in err
+        assert "Collision claim released for story-a (queued PR closed at wrap-up)" in err
+        assert sprint.specs_succeeded == 0
+
+
 class TestSprintLandsLocallyResolution:
     """run_sprint answers the local-landing question sprint-wide, once."""
 
