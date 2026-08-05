@@ -2955,6 +2955,181 @@ class TestCollisionGatePreservedWork:
         assert "Holding collision claim for story-a" in err
 
 
+class TestCollisionGateQueuedParent:
+    """#2234: a claim held for a queued PR must end when that PR lands.
+
+    A ``CLAIM_PENDING_LANDING`` claim is resolvable *in this run*, but only the
+    queued-PR polling paths resolve it — and the no-active-workers loop cannot
+    run while a worker sits parked at its plan gate. Both remaining resolution
+    paths (the gate-service probe and the dependent-dispatch pre-check) must
+    therefore release the claim, or the gated sibling waits out its own timeout
+    on work that landed minutes ago.
+    """
+
+    @staticmethod
+    def _plan_result(tmp_path: Path, slug: str):
+        plan_result = _make_coordinator_result(success=True, cost=1.0, phase=Phase.PLAN_REVIEW)
+        plan_result.state.workspace_path = tmp_path / slug
+        return plan_result
+
+    @staticmethod
+    def _queued_land(*args, **kwargs):  # noqa: ANN002, ANN003
+        return (
+            {"merge_queued": True, "pr_url": "https://github.com/x/y/pull/1"},
+            "pending_integration",
+        )
+
+    def test_gate_service_probe_releases_claim_when_queued_pr_lands(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """story-b is parked at its gate, so the loop never goes idle.
+
+        Nothing else polls story-a's queued PR while story-b keeps a worker
+        alive; the gate-service probe is what turns the merge into a released
+        claim. Before the fix story-b waited out its 7200s gate timeout.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path, ["story-a.md", "story-b.md"], budget=10.0, max_parallel=2
+        )
+        config = _make_config(tmp_path)
+
+        a_in_dev = threading.Event()
+        b_footprint_seen = threading.Event()
+        dev_calls: list[str] = []
+        poll_timeouts: list[int] = []
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            if task.slug == "story-b":
+                assert a_in_dev.wait(timeout=30)
+            return self._plan_result(tmp_path, task.slug)
+
+        def _fake_run_from_dev(cfg, task, workspace_path, **kwargs):  # noqa: ANN001
+            dev_calls.append(task.slug)
+            if task.slug == "story-a":
+                a_in_dev.set()
+                # Park story-b at its gate before story-a queues its PR, so the
+                # claim is created while a worker still holds the loop open.
+                assert b_footprint_seen.wait(timeout=30)
+                return _make_coordinator_result(
+                    success=True, cost=1.0, landing_status="pending_integration"
+                )
+            return _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        def _fake_footprint(workspace_path):  # noqa: ANN001
+            if workspace_path is not None and Path(workspace_path).name == "story-b":
+                b_footprint_seen.set()
+            return {"src/shared.py"}
+
+        def _fake_poll(pr_url, project_root, timeout_seconds, **kwargs):  # noqa: ANN001
+            poll_timeouts.append(timeout_seconds)
+            return {"status": "merged"}
+
+        with (
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.runner.run_from_dev", side_effect=_fake_run_from_dev),
+            patch("theforge.sprint.runner._extract_plan_footprint", side_effect=_fake_footprint),
+            patch("theforge.coordinator.completion.land_story", side_effect=self._queued_land),
+            patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        err = capsys.readouterr().err
+        # The gate opened on the merge, not on a timeout, and not by dropping
+        # the claim when story-a stopped being active.
+        assert dev_calls == ["story-a", "story-b"]
+        assert "queued PR merged (holding a collision gate)" in err
+        assert "Collision claim released for story-a" in err
+        # The probe is single-shot: it must not spend the merge-wait budget on
+        # the 2s gate-service tick.
+        assert poll_timeouts[0] == 0
+        assert sprint.specs_succeeded == 2
+        assert sprint.specs_skipped == 0
+
+    def test_dependent_dispatch_precheck_releases_claim_when_queued_pr_lands(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """The cited path: story-c's dispatch pre-check resolves story-a's PR.
+
+        story-b is parked at its gate on story-a's claim. story-c is released
+        by the collision edge and hits the queued-PR pre-check, which polls the
+        PR as merged. That branch previously recorded neither the landing nor
+        the claim release, leaving story-b parked on a claim nothing else in the
+        run would ever clear.
+        """
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        _make_spec_file(tmp_path, "Story C", "story-c")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md", "story-c.md"],
+            budget=20.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        a_in_dev = threading.Event()
+        b_footprint_seen = threading.Event()
+        dev_calls: list[str] = []
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            if task.slug == "story-b":
+                assert a_in_dev.wait(timeout=30)
+            return self._plan_result(tmp_path, task.slug)
+
+        def _fake_run_from_dev(cfg, task, workspace_path, **kwargs):  # noqa: ANN001
+            dev_calls.append(task.slug)
+            if task.slug == "story-a":
+                a_in_dev.set()
+                assert b_footprint_seen.wait(timeout=30)
+                return _make_coordinator_result(
+                    success=True, cost=1.0, landing_status="pending_integration"
+                )
+            return _make_coordinator_result(success=True, cost=1.0, landing_status="landed")
+
+        def _fake_footprint(workspace_path):  # noqa: ANN001
+            name = Path(workspace_path).name if workspace_path is not None else ""
+            if name == "story-c":
+                # Disjoint: story-c is gated by the DAG edge, not by a collision.
+                return {"src/other.py"}
+            if name == "story-b":
+                b_footprint_seen.set()
+            return {"src/shared.py"}
+
+        def _fake_poll(pr_url, project_root, timeout_seconds, **kwargs):  # noqa: ANN001
+            # Keep the single-shot gate-service probe (timeout 0) undecided so
+            # resolution lands on the blocking dependent-dispatch pre-check,
+            # which is the path under test.
+            if timeout_seconds == 0:
+                return {"status": "timeout"}
+            return {"status": "merged"}
+
+        with (
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch(
+                "theforge.sprint.runner.compute_synthetic_edges",
+                return_value={"story-c": ["story-a"]},
+            ),
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.runner.run_from_dev", side_effect=_fake_run_from_dev),
+            patch("theforge.sprint.runner._extract_plan_footprint", side_effect=_fake_footprint),
+            patch("theforge.coordinator.completion.land_story", side_effect=self._queued_land),
+            patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        err = capsys.readouterr().err
+        assert "queued PR merged (before dependent dispatch)" in err
+        assert "Collision claim released for story-a" in err
+        # story-b got off the gate and ran; nothing was skipped or stood down.
+        assert "story-b" in dev_calls
+        assert "STAND DOWN" not in err
+        assert sprint.specs_succeeded == 3
+        assert sprint.specs_skipped == 0
+
+
 class TestSprintLandsLocallyResolution:
     """run_sprint answers the local-landing question sprint-wide, once."""
 

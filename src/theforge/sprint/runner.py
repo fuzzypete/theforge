@@ -1729,6 +1729,12 @@ CLAIM_PENDING_LANDING = "landing pending"
 #: the files it planned to rewrite stay claimed until the sprint ends (#2234).
 CLAIM_PRESERVED = "preserved for operator decision"
 
+#: How often a queued PR whose claim is holding a sibling's plan gate is probed
+#: while the scheduling loop is otherwise busy. Matches _poll_queued_pr's own
+#: inter-poll sleep: the gate should open on the merge, not on its own timeout,
+#: without turning the 2s gate-service tick into a `gh pr view` per second.
+_QUEUED_CLAIM_PROBE_SECONDS = 30.0
+
 
 def _release_plan_gates(
     plan_done: dict[str, str],
@@ -5161,6 +5167,7 @@ def run_sprint(
     collision_claims: dict[str, str] = {}  # slug -> claim reason (CLAIM_* above)
     claim_results: dict[str, CoordinatorResult] = {}  # slug -> last known result
     gate_stood_down: dict[str, str] = {}  # slug -> reason it never entered DEV
+    _queued_probe_at: dict[str, float] = {}  # slug -> monotonic time of last PR probe
 
     def _end_collision_claim(slug: str, why: str) -> None:
         """Drop a story's claim on its planned files, and the state behind it."""
@@ -5205,24 +5212,6 @@ def run_sprint(
             _c_result = claim_results.get(_c_slug)
             if _c_result is not None:
                 _reconcile_collision_claim(_c_slug, _c_result)
-
-    def _service_plan_gates() -> None:
-        """Release openable plan gates and stand down the unopenable ones."""
-        for _sd_slug in _release_plan_gates(
-            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
-        ):
-            _sd_gate = plan_gates.pop(_sd_slug, None)
-            gate_stood_down[_sd_slug] = (
-                "collision gate stood down: the files it planned to change are held "
-                "by preserved work that has not landed"
-            )
-            # stop_event BEFORE the gate, same ordering as the deadline teardown:
-            # the worker must observe the shutdown flag when the gate wakes it.
-            _sd_evt = stop_events.get(_sd_slug)
-            if _sd_evt is not None:
-                _sd_evt.set()
-            if _sd_gate is not None:
-                _sd_gate.set()
 
     def _apply_batch_landing_to_member(
         member_slug: str,
@@ -5294,6 +5283,118 @@ def run_sprint(
             _apply_batch_landing_to_member(
                 member_slug, member_task, member_result, landing_status, leader_slug, group_id
             )
+
+    def _resolve_queued_pr(slug: str, *, blocking: bool, context: str) -> str:
+        """Poll one queued PR and apply its landing verdict everywhere it is owed.
+
+        The single site for queued-PR resolution during the work loop. Every
+        caller owes the same bookkeeping — DAG, canonical outcome, durable
+        landing evidence, audit, batch-leader propagation and, since #2234, the
+        collision claim — and the copies drifted: the dependent-dispatch gate
+        recorded neither the landing nor the claim release, so a merged parent
+        left a gated sibling parked on a claim nothing would ever clear.
+
+        With *blocking* false the PR is probed exactly once and anything short
+        of a confirmed merge returns ``"pending"``, leaving it queued for the
+        blocking poll that owns the failure verdict. Returns ``"merged"``,
+        ``"failed"`` or ``"pending"``.
+        """
+        task, result, pr_url = queued_prs[slug]
+        _queued_probe_at[slug] = time.monotonic()
+        poll_result = _poll_queued_pr(
+            pr_url,
+            config.project_root,
+            config.workspace.merge_wait_timeout_seconds if blocking else 0,
+            base_branch=config.workspace.base_branch,
+        )
+        if not blocking and poll_result["status"] != "merged":
+            # A single probe cannot tell "still in the queue" from "decided
+            # against us" without re-running the wait budget, and only a merge
+            # is safe to conclude from it. Everything else stays queued.
+            return "pending"
+
+        # Out of queued_prs before the claim is reconciled: membership there is
+        # itself a reason to keep a collision claim alive.
+        del queued_prs[slug]
+
+        if poll_result["status"] == "merged":
+            merged_slugs.add(slug)
+            dag.mark_complete(slug)
+            result.landing_status = "landed"
+            # The immutability marker: this DONE is confirmed-landed and must
+            # not be clobbered by a later re-dispatch or wrap-up pass.
+            _set_outcome(slug, StoryOutcome.DONE, landed=True)
+            _persist_story_landing(slug, result)
+            _write_story_audit(config, task, result, sprint_id=_sprint_id)
+            _resolve_batch_leader_landing(slug, "landed")
+            _end_collision_claim(slug, "queued PR merged")
+            _log(f"INFO {slug}: queued PR merged ({context}); unblocking dependents")
+            return "merged"
+
+        from ..coordinator.completion import (  # noqa: PLC0415
+            mark_merge_failed as _mark_mf,
+        )
+
+        _err = _queued_pr_failure_message(
+            poll_result, pr_url, config.workspace.merge_wait_timeout_seconds
+        )
+        _mark_mf(result.state, result, _err, result.state.branch_name)
+        _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
+        _persist_story_landing(slug, result)
+        # Defensive/idempotent: the parent is normally already in the DAG's
+        # _finished set (added when its PR was queued, via the
+        # pending_integration classify branch), so its collision (soft) edge is
+        # already released; this guarantees it on any path that skipped that
+        # classification. _finished (not _completed) is what still blocks a hard
+        # depends_on dependent. Actual redispatch of a released dependent onto
+        # the current base comes from the dag.ready() re-check at the top of the
+        # deadlock-cleanup branch.
+        dag.mark_skipped(slug)
+        _write_story_audit(config, task, result, sprint_id=_sprint_id)
+        _resolve_batch_leader_landing(slug, "failed")
+        _end_collision_claim(slug, f"queued PR {poll_result['status']}")
+        _log(f"✗ {slug}: queued PR {poll_result['status']} ({context})")
+        return "failed"
+
+    def _service_plan_gates() -> None:
+        """Release openable plan gates and stand down the unopenable ones."""
+        # A CLAIM_PENDING_LANDING claim is resolvable *in this run*, but only
+        # the queued-PR paths resolve it, and those run when the loop has no
+        # active workers. A worker parked at its plan gate keeps the loop busy
+        # forever, so the gate would wait on a PR that may have merged minutes
+        # ago and then open on its own 7200s timeout instead (#2234). Probe
+        # cheaply — one `gh pr view`, no queue wait — so the gate opens on the
+        # merge. The blocking polls keep sole ownership of the failure verdict.
+        if plan_gates and queued_prs:
+            _probe_now: float | None = None
+            for _q_slug in list(queued_prs):
+                if collision_claims.get(_q_slug) != CLAIM_PENDING_LANDING:
+                    continue
+                # Read the clock only once a probe is actually in question: this
+                # runs on the 2s gate-service tick, and the common case has no
+                # queued PR holding a claim at all.
+                if _probe_now is None:
+                    _probe_now = time.monotonic()
+                _last = _queued_probe_at.get(_q_slug)
+                if _last is not None and _probe_now - _last < _QUEUED_CLAIM_PROBE_SECONDS:
+                    continue
+                _resolve_queued_pr(_q_slug, blocking=False, context="holding a collision gate")
+
+        for _sd_slug in _release_plan_gates(
+            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+        ):
+            _sd_gate = plan_gates.pop(_sd_slug, None)
+            gate_stood_down[_sd_slug] = (
+                "collision gate stood down: the files it planned to change are held "
+                "by preserved work that has not landed"
+            )
+            # stop_event BEFORE the gate, same ordering as the deadline teardown:
+            # the worker must observe the shutdown flag when the gate wakes it.
+            _sd_evt = stop_events.get(_sd_slug)
+            if _sd_evt is not None:
+                _sd_evt.set()
+            if _sd_gate is not None:
+                _sd_gate.set()
 
     def _attempt_integration(
         slug: str,
@@ -5449,56 +5550,12 @@ def run_sprint(
                 if blocked_by_queued:
                     dependency_failed = False
                     for dep in blocked_by_queued:
-                        dep_task, dep_result, dep_pr_url = queued_prs[dep]
-                        poll_result = _poll_queued_pr(
-                            dep_pr_url,
-                            config.project_root,
-                            config.workspace.merge_wait_timeout_seconds,
-                            base_branch=config.workspace.base_branch,
-                        )
-                        if poll_result["status"] == "merged":
-                            merged_slugs.add(dep)
-                            dag.mark_complete(dep)
-                            del queued_prs[dep]
-                            _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
-                            _resolve_batch_leader_landing(dep, "landed")
-                        else:
-                            from ..coordinator.completion import (  # noqa: PLC0415
-                                mark_merge_failed as _mark_mf,
+                        if (
+                            _resolve_queued_pr(
+                                dep, blocking=True, context="before dependent dispatch"
                             )
-
-                            _err = _queued_pr_failure_message(
-                                poll_result,
-                                dep_pr_url,
-                                config.workspace.merge_wait_timeout_seconds,
-                            )
-                            _mark_mf(
-                                dep_result.state,
-                                dep_result,
-                                _err,
-                                dep_result.state.branch_name,
-                            )
-                            _set_outcome(
-                                dep, StoryOutcome.MERGE_FAILED, phase=dep_result.phase.name
-                            )
-                            del queued_prs[dep]
-                            # Defensive/idempotent: the parent is normally already
-                            # in the DAG's _finished set (added when its PR was
-                            # queued, via the pending_integration classify branch),
-                            # so its collision (soft) edge is already released. This
-                            # call guarantees _finished membership on any path that
-                            # queued without that classification. _finished (not
-                            # _completed) is what keeps a genuine depends_on (hard)
-                            # dependent blocked. The redispatch of the released
-                            # dependent onto the current base is driven by the
-                            # dag.ready() re-check before the deadlock-cleanup sweep.
-                            dag.mark_skipped(dep)
-                            _write_story_audit(config, dep_task, dep_result, sprint_id=_sprint_id)
-                            _resolve_batch_leader_landing(dep, "failed")
-                            _log(
-                                f"✗ {dep}: queued PR {poll_result['status']} "
-                                "before dependent dispatch"
-                            )
+                            == "failed"
+                        ):
                             dependency_failed = True
                     if dependency_failed:
                         continue
@@ -5804,56 +5861,11 @@ def run_sprint(
             # once the PR lands — do not declare deadlock while PRs are pending.
             if not active and queued_prs:
                 for _qp_slug in list(queued_prs):
-                    _qp_task, _qp_result, _qp_pr_url = queued_prs[_qp_slug]
-                    _qp_poll = _poll_queued_pr(
-                        _qp_pr_url,
-                        config.project_root,
-                        config.workspace.merge_wait_timeout_seconds,
-                        base_branch=config.workspace.base_branch,
-                    )
-                    if _qp_poll["status"] == "merged":
-                        merged_slugs.add(_qp_slug)
-                        dag.mark_complete(_qp_slug)
-                        _qp_result.landing_status = "landed"
-                        # Record the confirmed-landed DONE with the immutability
-                        # marker. This is the code path most directly implicated
-                        # in the redispatch-after-restart bug: a queued PR merges
-                        # while another story occupies the only worker slot. The
-                        # marker guarantees this DONE cannot later be clobbered.
-                        _set_outcome(_qp_slug, StoryOutcome.DONE, landed=True)
-                        _persist_story_landing(_qp_slug, _qp_result)
-                        del queued_prs[_qp_slug]
-                        _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
-                        _resolve_batch_leader_landing(_qp_slug, "landed")
-                        _log(f"INFO {_qp_slug}: queued PR merged; unblocking dependents")
-                    else:
-                        from ..coordinator.completion import (  # noqa: PLC0415
-                            mark_merge_failed as _mark_mf,
-                        )
-
-                        _err = _queued_pr_failure_message(
-                            _qp_poll, _qp_pr_url, config.workspace.merge_wait_timeout_seconds
-                        )
-                        _mark_mf(_qp_result.state, _qp_result, _err, _qp_result.state.branch_name)
-                        _set_outcome(
-                            _qp_slug, StoryOutcome.MERGE_FAILED, phase=_qp_result.phase.name
-                        )
-                        _persist_story_landing(_qp_slug, _qp_result)
-                        del queued_prs[_qp_slug]
-                        # Defensive/idempotent: the parent is normally already in
-                        # _finished (added when its PR was queued), so its collision
-                        # (soft) edge is already released; this guarantees it on any
-                        # path that skipped that classification. _finished (not
-                        # _completed) is what still blocks a hard depends_on
-                        # dependent. Actual redispatch of a released dependent onto
-                        # the current base comes from the dag.ready() re-check at the
-                        # top of the deadlock-cleanup branch, reached after the
-                        # `continue` below.
-                        dag.mark_skipped(_qp_slug)
-                        _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
-                        _resolve_batch_leader_landing(_qp_slug, "failed")
-                        _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
-                    _reconcile_collision_claim(_qp_slug, _qp_result)
+                    # The redispatch-after-restart bug lives on this path: a
+                    # queued PR merges while another story occupies the only
+                    # worker slot. _resolve_queued_pr writes the confirmed-landed
+                    # DONE with its immutability marker so it cannot be clobbered.
+                    _resolve_queued_pr(_qp_slug, blocking=True, context="no active workers")
                 continue
 
             _log(f"[debug] calling wait() with {len(active)} active futures")
@@ -6382,7 +6394,10 @@ def run_sprint(
             _persist_story_landing(slug, result)
             _write_story_audit(config, task, result, sprint_id=_sprint_id)
             del queued_prs[slug]
-            _reconcile_collision_claim(slug, result)
+            # The landing verdict is in: end the claim outright rather than
+            # re-deriving it from the result, whose phase mark_merge_failed can
+            # legitimately leave as ESCALATE (inherited-dev-residue).
+            _end_collision_claim(slug, f"queued PR {poll_result['status']} at wrap-up")
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
