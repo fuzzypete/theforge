@@ -254,6 +254,13 @@ _CUSTOM_REQUIRED_KEYS = (
     "input_cost_per_mtok",
     "output_cost_per_mtok",
 )
+# Top-level keys that exist only in the legacy flat shape. Their presence is what
+# tells the two shapes apart: ``provider``/``model``/``transport``/``base_url``
+# are spelled the same in both, so they cannot discriminate.
+_CUSTOM_LEGACY_ONLY_KEYS = frozenset({"tier", "input_cost_per_mtok", "output_cost_per_mtok"})
+# Operator control keys that ride alongside a declaration without being part of
+# the definition itself, and so are stripped before the definition is parsed.
+_CUSTOM_CONTROL_KEYS = frozenset({"override"})
 
 
 def _custom_declaration_to_definition(canonical_id: str, decl: dict[str, Any]) -> dict[str, Any]:
@@ -270,8 +277,6 @@ def _custom_declaration_to_definition(canonical_id: str, decl: dict[str, Any]) -
     messages keep naming the keys the operator actually wrote.
     """
     where = f"models.custom.{canonical_id}"
-    if not isinstance(decl, dict):
-        raise ValueError(f"forge.yaml '{where}' must be a mapping")
     missing = [key for key in _CUSTOM_REQUIRED_KEYS if key not in decl]
     if missing:
         raise ValueError(f"forge.yaml '{where}' is missing required field(s): {missing}")
@@ -324,6 +329,43 @@ def _custom_declaration_to_definition(canonical_id: str, decl: dict[str, Any]) -
     return definition
 
 
+def _custom_definition(canonical_id: str, decl: Any) -> dict[str, Any]:
+    """Return the canonical definition for one ``models.custom`` declaration.
+
+    Two shapes are accepted under this key, and which one was written is decided
+    by the legacy-only top-level fields (``tier``, ``input_cost_per_mtok``,
+    ``output_cost_per_mtok``):
+
+    - none present → the declaration is already canonical and goes to the shared
+      parser untouched, so a reusable ``models.custom`` entry can express every
+      field the shipped catalog can;
+    - any present → the legacy flat shape, translated field by field.
+
+    A declaration carrying both is rejected rather than silently resolved under
+    one reading: config loading is an integrity boundary, and guessing which
+    ``tier`` (flat or ``routing.tier``) the operator meant would decide routing
+    on a coin flip.
+    """
+    where = f"models.custom.{canonical_id}"
+    if not isinstance(decl, dict):
+        raise ValueError(f"forge.yaml '{where}' must be a mapping")
+    legacy_keys = sorted(_CUSTOM_LEGACY_ONLY_KEYS & decl.keys())
+    canonical_keys = sorted({"routing", "cost"} & decl.keys())
+    if legacy_keys and canonical_keys:
+        raise ValueError(
+            f"forge.yaml '{where}' mixes the flat declaration shape ({legacy_keys}) with the "
+            f"canonical one ({canonical_keys}). Use one: move {legacy_keys} under "
+            "'routing'/'cost', or drop the canonical block(s)."
+        )
+    if legacy_keys:
+        return _custom_declaration_to_definition(canonical_id, decl)
+    # Canonical: strip the operator control keys, which are not part of the
+    # definition, and let the shared parser validate the rest — including the
+    # adapter, so an unsupported provider fails here naming the adapters that do
+    # exist.
+    return {key: value for key, value in decl.items() if key not in _CUSTOM_CONTROL_KEYS}
+
+
 def _parse_custom_model_registry(
     custom_raw: dict[str, Any],
 ) -> tuple[dict[str, AgentSpec], dict[str, str], dict[str, dict[str, str]]]:
@@ -334,6 +376,14 @@ def _parse_custom_model_registry(
     translates the operator-chosen declaration key into that identity so a
     ``models.enabled`` entry may still refer to the declaration by name. The
     declaration key is raw input and never reaches the registry.
+
+    Both declaration shapes are accepted here. A declaration written in the
+    canonical schema (``routing``/``cost`` blocks) is handed to the shared parser
+    as-is, so ``models.custom`` is a fully expressive *reusable* definition
+    surface rather than a lesser one — a definition no longer has to be inlined
+    into ``models.enabled`` to set capability or phase eligibility. The legacy
+    flat shape is translated into the canonical one first
+    (:func:`_custom_declaration_to_definition`) and keeps loading unchanged.
 
     A ``models.custom`` entry is a standalone declaration, not a refinement of a
     built-in one (replacing a built-in identity requires ``override: true``), so
@@ -346,7 +396,7 @@ def _parse_custom_model_registry(
         if not isinstance(canonical_id, str) or not canonical_id:
             raise ValueError("forge.yaml 'models.custom' keys must be non-empty strings")
         where = f"models.custom.{canonical_id}"
-        definition = _custom_declaration_to_definition(canonical_id, decl)
+        definition = _custom_definition(canonical_id, decl)
         resolved = resolve_project(
             parse_definition(definition, where=where), where=where, builtin=None
         )

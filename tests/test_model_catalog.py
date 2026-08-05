@@ -8,7 +8,8 @@ claim load-bearing:
 - the packaged defaults really do come from data, through the shared parser;
 - the shapes projects already write (``models.custom`` flat mappings, inline
   ``models.enabled`` mappings) still load unchanged;
-- a project declaration can express every field the shipped set can;
+- a project declaration can express every field the shipped set can, on either
+  surface — inline in ``models.enabled`` or reusable under ``models.custom``;
 - a provider with no adapter fails at load time, naming the adapters that exist;
 - where a project declaration overlays a shipped definition, the resolved entry
   reports which source supplied each field.
@@ -429,6 +430,134 @@ class TestProjectDeclarationsAreAsExpressiveAsShipped:
         assert spec.routing.cost_rank_basis == COST_BAND_BASIS_DECLARED_POLICY
         assert spec.pricing_provenance == "gemini-4-pro-2026-08"
         assert spec.base_url == "https://example.invalid/v1"
+
+    def test_models_custom_accepts_the_canonical_schema(self, tmp_path):
+        """A reusable declaration is as expressive as an inline one.
+
+        Before #2204 the only fully expressive surface was an inline
+        ``models.enabled`` mapping — a selection list, not a definition surface.
+        """
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": ["anthropic/sonnet/cli", "fast-reviewer"],
+                    "custom": {
+                        "fast-reviewer": {
+                            "provider": "google",
+                            "model": "gemini-4-flash",
+                            "transport": {"kind": "api"},
+                            "base_url": "https://example.invalid/v1",
+                            "routing": {
+                                "tier": "cheap",
+                                "capability": 8,
+                                "cost_rank": 1,
+                                "dev_capable": False,
+                                "phase_eligibility": ["review"],
+                                "cost_rank_basis": COST_BAND_BASIS_DECLARED_POLICY,
+                            },
+                            "cost": {
+                                "input_per_mtok": 0.30,
+                                "output_per_mtok": 2.50,
+                                "pricing_provenance": "gemini-4-flash-2026-08",
+                            },
+                        }
+                    },
+                },
+                "budget_usd": 30.0,
+            },
+        )
+        config = load_config(path)
+        spec = (config.model_registry or {})["google/gemini-4-flash/api"]
+        assert spec.capability == 8
+        assert spec.phase_eligibility == frozenset({"review"})
+        assert spec.dev_capable is False
+        assert spec.routing.cost_rank_basis == COST_BAND_BASIS_DECLARED_POLICY
+        assert spec.pricing_provenance == "gemini-4-flash-2026-08"
+        assert spec.base_url == "https://example.invalid/v1"
+        # And the operator-chosen key still selects it.
+        assert "google/gemini-4-flash/api" in config.models
+        assert "fast-reviewer" not in config.models
+
+    def test_a_canonical_models_custom_declaration_may_override_a_shipped_identity(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": ["anthropic/sonnet/cli", "pinned-opus"],
+                    "custom": {
+                        "pinned-opus": {
+                            "provider": "anthropic",
+                            "model": "opus",
+                            "transport": {"kind": "cli"},
+                            "override": True,
+                            "routing": {"tier": "strong", "capability": 9, "cost_rank": 3},
+                            "cost": {
+                                "input_per_mtok": 15.0,
+                                "output_per_mtok": 75.0,
+                                "pricing_provenance": "claude-opus-4-6",
+                            },
+                        }
+                    },
+                },
+                "budget_usd": 30.0,
+            },
+        )
+        config = load_config(path)
+        spec = (config.model_registry or {})["anthropic/opus/cli"]
+        assert spec.capability == 9  # the shipped entry says 10
+        assert spec.pricing_provenance == "claude-opus-4-6"
+        assert config.model_registry_sources["anthropic/opus/cli"] == "forge.yaml"
+
+    def test_an_unsupported_provider_in_a_canonical_custom_declaration_is_rejected(self, tmp_path):
+        """Adapter validation reaches the canonical models.custom path too."""
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": ["anthropic/sonnet/cli"],
+                    "custom": {
+                        "mistral": {
+                            "provider": "mistral",
+                            "model": "large",
+                            "transport": {"kind": "api"},
+                            "routing": {"tier": "strong"},
+                        }
+                    },
+                },
+                "budget_usd": 30.0,
+            },
+        )
+        with pytest.raises(ValueError, match="No API adapter for provider 'mistral'"):
+            load_config(path)
+
+    def test_mixing_the_flat_and_canonical_shapes_is_rejected(self, tmp_path):
+        """Two spellings of tier in one declaration is ambiguous, not resolvable."""
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": ["anthropic/sonnet/cli", "muddle"],
+                    "custom": {
+                        "muddle": {
+                            "provider": "openai",
+                            "model": "gpt-5.5",
+                            "tier": "strong",
+                            "input_cost_per_mtok": 1.5,
+                            "output_cost_per_mtok": 12.0,
+                            "routing": {"tier": "cheap", "capability": 3},
+                        }
+                    },
+                },
+                "budget_usd": 30.0,
+            },
+        )
+        with pytest.raises(ValueError, match="mixes the flat declaration shape"):
+            load_config(path)
 
     def test_a_declaration_may_state_its_price_is_unattributable(self, tmp_path):
         """The vendor-shorthand case a project could not express before."""

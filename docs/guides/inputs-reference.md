@@ -370,8 +370,10 @@ complexity. Use `forge check-config` to inspect the derived role table.
 A model is identified by exactly three things: **provider**, **model**, and
 **transport kind** (`cli` or `api`). Runner/executor is derived from
 `(provider, transport.kind)` — `(openai, cli)` is the Codex CLI, `(anthropic,
-cli)` is the Claude CLI, `(google, api)` is the Google API adapter — so no
-config names a runner.
+cli)` is the Claude CLI, `(google, api)` is the Google API adapter — so config
+normally does not name a runner. The one exception is a `(provider, kind)` pair
+that has more than one executor, where `transport.runner` picks between them; a
+runner that contradicts the pair is rejected at load.
 
 The mapping form spells the same identity out, and is the place to attach
 endpoint and routing metadata:
@@ -457,6 +459,32 @@ price-attributable nor explained is a load error rather than a silent guess.
 shipped one refines it: fields you state win, fields you omit keep the shipped
 value. `forge check-config` reports which source supplied each field.
 
+**Where a definition can go.** Either surface accepts the canonical schema:
+inline in `models.enabled` (defines and selects in one place), or under
+`models.custom` (a reusable declaration, selected by its key). They are the same
+shape and the same parser:
+
+```yaml
+models:
+  enabled: [anthropic/sonnet/cli, fast-reviewer]
+  custom:
+    fast-reviewer:                  # operator-chosen key — the selector
+      provider: google
+      model: gemini-4-flash
+      transport: {kind: api}
+      routing:
+        tier: cheap
+        capability: 7
+        phase_eligibility: [review]
+      cost:
+        input_per_mtok: 0.30
+        output_per_mtok: 2.50
+```
+
+A `models.custom` declaration stands alone: it does not inherit from a shipped
+entry, and replacing a shipped identity requires `override: true` alongside the
+definition.
+
 **Existing configuration keeps loading.** The flat `models.custom` form below
 and inline `models.enabled` mappings written before this schema existed are
 translated into it at the parse boundary — adopting the canonical shape is
@@ -475,7 +503,9 @@ models:
 ```
 
 The flat form still derives `capability` from `tier` and cannot set
-`phase_eligibility`; use the canonical shape when you need those.
+`phase_eligibility`; use the canonical shape when you need those. A declaration
+that mixes the two — flat `tier` next to a `routing:` block — is rejected rather
+than resolved under one reading.
 
 **Rejected/migration-only spellings.** `openai-api/gpt-5.4`,
 `gemini-cli/gemini-2.5-pro` and `claude/opus` are legacy aliases. They still

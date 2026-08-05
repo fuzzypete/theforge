@@ -34,7 +34,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
-from .model_catalog import load_packaged_catalog, parse_definition, resolve_packaged
+from .model_catalog import load_packaged_catalog
 from .model_identity import (
     _DEFAULT_PHASE_ELIGIBILITY,
     _LEGACY_CLI_TO_PROVIDER,
@@ -187,91 +187,15 @@ class AgentDef(AttributablePricing):
 #
 # Keys are canonical model identities: ``<provider>/<model>/<transport.kind>``.
 # CLI-vs-API is carried by the transport half of that key, never by a
-# provider-like prefix. Adding a model is a single entry here — no
-# role-derivation, profile, or runner-dispatch edits required.
-
-# Default endpoint for OpenAI-compatible models served locally (Ollama et al).
-# Locality is endpoint metadata on an ordinary API transport; there is no
-# ``local`` provider and no ``local`` transport kind.
-LOCAL_OPENAI_COMPATIBLE_BASE_URL = "http://localhost:11434/v1"
-
-
-def _entry(
-    provider: str,
-    model: str,
-    kind: str,
-    *,
-    tier: str,
-    capability: int,
-    cost_rank: int,
-    dev_capable: bool = True,
-    phases: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY,
-    runner: str | None = None,
-    base_url: str | None = None,
-    input_cost_per_mtok: float | None = None,
-    output_cost_per_mtok: float | None = None,
-    pricing_provenance: str | None = None,
-    cost_rank_basis: str | None = None,
-) -> tuple[str, AgentSpec]:
-    """Build a ``(canonical_id, AgentSpec)`` registry pair from keyword form.
-
-    A thin adapter over the canonical model-definition schema: the keywords are
-    assembled into a canonical definition mapping and resolved by the same
-    parser that reads the packaged catalog and project-declared models, so this
-    spelling cannot drift from the data one.
-
-    ``pricing_provenance`` names the concrete billed identity the price figures
-    were recorded for. Omitting it marks the figures unattributed, which is what
-    entries identified by a vendor shorthand must do: the shorthand resolves to
-    some other concrete version at invocation time, so nothing ties the stored
-    literal to what is actually billed.
-
-    ``cost_rank`` is a routing input too, so it is held to the same standard:
-    omit ``cost_rank_basis`` only when the band *is* this entry's attributable
-    price band (it is then attributed to that price automatically). Every other
-    band — including every band on an entry whose price is unattributed — must
-    name its non-price basis, or construction raises.
-    """
-    transport_block: dict[str, Any] = {"kind": kind}
-    if runner is not None:
-        transport_block["runner"] = runner
-    routing: dict[str, Any] = {
-        "tier": tier,
-        "capability": capability,
-        "cost_rank": cost_rank,
-        "dev_capable": dev_capable,
-        "phase_eligibility": sorted(phases),
-    }
-    if cost_rank_basis is not None:
-        routing["cost_rank_basis"] = cost_rank_basis
-    cost: dict[str, Any] = {}
-    if input_cost_per_mtok is not None:
-        cost["input_per_mtok"] = input_cost_per_mtok
-    if output_cost_per_mtok is not None:
-        cost["output_per_mtok"] = output_cost_per_mtok
-    if pricing_provenance is not None:
-        cost["pricing_provenance"] = pricing_provenance
-    definition: dict[str, Any] = {
-        "provider": provider,
-        "model": model,
-        "transport": transport_block,
-        "routing": routing,
-    }
-    if base_url is not None:
-        definition["base_url"] = base_url
-    if cost:
-        definition["cost"] = cost
-    where = f"{provider}/{model}/{kind}"
-    resolved = resolve_packaged(parse_definition(definition, where=where), where=where)
-    return resolved.canonical_id, resolved.spec
-
-
+# provider-like prefix.
+#
 # The shipped default set is *data*, not code: it lives in
 # ``config/data/models.yaml`` and is read through the same canonical parser
 # project-declared models use. Adding or re-pinning a model that runs on an
-# already-supported adapter is an edit to that file — no code change, no
-# release. Adding a *provider* still requires code, because a provider needs a
-# runner module (see :func:`transport_for`).
+# already-supported adapter is one entry in that file — no code change, no
+# release, and no role-derivation, profile, or runner-dispatch edits. Adding a
+# *provider* still requires code, because a provider needs a runner module (see
+# :func:`transport_for`).
 AGENT_REGISTRY: dict[str, AgentSpec] = load_packaged_catalog()
 
 
