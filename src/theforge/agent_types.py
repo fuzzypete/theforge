@@ -5,6 +5,24 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+# ── Cost provenance (#2205) ───────────────────────────────────────────────
+# An observed cost is not self-describing: a number the provider billed and a
+# number forge derived from a token count and a pricing table are different
+# kinds of evidence, and a consumer attributing spend to a model has to be able
+# to tell them apart. Recorded next to every cost rather than inferred from the
+# runner, because the same runner produces both (a Claude CLI result event
+# reports cost; the same runner's kill path reconstructs one).
+COST_PROVIDER_REPORTED = "provider_reported"
+"""The provider returned this cost; forge did not compute it."""
+
+COST_ESTIMATED = "estimated"
+"""Derived by forge from observed token counts and a pricing table."""
+
+COST_UNKNOWN = "unknown"
+"""No cost was observed. Always paired with ``cost_usd is None``."""
+
+COST_PROVENANCE_VALUES = (COST_PROVIDER_REPORTED, COST_ESTIMATED, COST_UNKNOWN)
+
 
 @dataclass(frozen=True)
 class ModelUsage:
@@ -17,6 +35,10 @@ class ModelUsage:
     cache_creation_tokens: int
     cost_usd: float | None
     thinking_tokens: int = 0
+    # Whether this component's cost was reported by the provider or estimated
+    # by forge. Defaults to "unknown" so a legacy constructor that predates the
+    # field says "not stated" rather than claiming provider authority (#2205).
+    cost_provenance: str = COST_UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -56,3 +78,19 @@ class AgentResult:
     # None on clean successes (``output`` already carries the text) and on
     # providers that do not stream partial output.
     partial_output: str | None = None
+    # ── Invocation ledger identity (#2205) ────────────────────────────────
+    # ``model_used``/``transport_used`` above are the *resolved primary*
+    # identity: the concrete model that served this invocation. The two fields
+    # below are the *configured* identity: the spelling the operator selected
+    # in the profile, before any alias resolution, preference-list fallback, or
+    # transport fallback rewrote it. They are separate values because a single
+    # invocation genuinely has a different answer for each, and collapsing them
+    # forces a choice that discards the rest.
+    configured_model: str | None = None
+    configured_transport: str | None = None  # "cli" | "api" as configured
+    # Reasoning effort the profile requested for this invocation, when the
+    # transport supports one. None means the profile did not request one.
+    reasoning_effort: str | None = None
+    # Whether ``cost_usd`` was reported by the provider or estimated by forge.
+    # Always ``COST_UNKNOWN`` when ``cost_usd`` is None.
+    cost_provenance: str = COST_UNKNOWN

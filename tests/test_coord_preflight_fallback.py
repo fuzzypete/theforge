@@ -136,7 +136,14 @@ class TestPreflightFallbackRetry:
         assert result.success is True
         assert mock_preflight.call_count == 1
         assert result.state.total_preflight_cost == 0.11
-        assert result.state.preflight_result.raw["attempts"] == [
+        # Compared without the per-attempt ledger, which has its own tests
+        # (#2205); this test is about which attempts were recorded.
+        attempts = [
+            {k: v for k, v in a.items() if k != "ledger"}
+            for a in result.state.preflight_result.raw["attempts"]
+        ]
+        assert all("ledger" in a for a in result.state.preflight_result.raw["attempts"])
+        assert attempts == [
             {
                 "profile_name": "preflight",
                 "model": config.preflight_profile.model,
