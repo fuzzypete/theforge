@@ -407,11 +407,11 @@ class TestExistingShapesStillLoad:
             {
                 "project": "p",
                 "models": {
-                    "enabled": ["anthropic/sonnet/cli", "openai/gpt-5.5/cli"],
+                    "enabled": ["anthropic/sonnet/cli", "openai/gpt-5.9/cli"],
                     "custom": {
-                        "gpt-5.5": {
+                        "gpt-5.9": {
                             "provider": "openai",
-                            "model": "gpt-5.5",
+                            "model": "gpt-5.9",
                             "tier": "strong",
                             "input_cost_per_mtok": 1.5,
                             "output_cost_per_mtok": 12.0,
@@ -422,13 +422,13 @@ class TestExistingShapesStillLoad:
             },
         )
         config = load_config(path)
-        spec = (config.model_registry or {})["openai/gpt-5.5/cli"]
+        spec = (config.model_registry or {})["openai/gpt-5.9/cli"]
         assert spec.tier == "strong"
         assert spec.capability == 9  # still derived from tier
         assert spec.dev_capable is True
         assert spec.cost_rank == 2  # banded from the operator-declared price
         assert spec.pricing_provenance == PRICING_PROVENANCE_OPERATOR_DECLARED
-        assert config.model_registry_sources["openai/gpt-5.5/cli"] == "forge.yaml"
+        assert config.model_registry_sources["openai/gpt-5.9/cli"] == "forge.yaml"
 
     def test_models_enabled_can_still_select_a_custom_declaration_by_its_key(self, tmp_path):
         """The operator-chosen declaration key stays a valid selector."""
@@ -437,11 +437,11 @@ class TestExistingShapesStillLoad:
             {
                 "project": "p",
                 "models": {
-                    "enabled": ["anthropic/sonnet/cli", "gpt-5.5"],
+                    "enabled": ["anthropic/sonnet/cli", "gpt-5.9"],
                     "custom": {
-                        "gpt-5.5": {
+                        "gpt-5.9": {
                             "provider": "openai",
-                            "model": "gpt-5.5",
+                            "model": "gpt-5.9",
                             "tier": "strong",
                             "input_cost_per_mtok": 1.5,
                             "output_cost_per_mtok": 12.0,
@@ -452,8 +452,8 @@ class TestExistingShapesStillLoad:
             },
         )
         config = load_config(path)
-        assert "openai/gpt-5.5/cli" in config.models
-        assert "gpt-5.5" not in config.models
+        assert "openai/gpt-5.9/cli" in config.models
+        assert "gpt-5.9" not in config.models
 
     def test_models_custom_provider_alias_tokens_still_normalize(self, tmp_path):
         path = _write(
@@ -889,11 +889,11 @@ class TestFieldLevelProvenance:
             {
                 "project": "p",
                 "models": {
-                    "enabled": ["anthropic/sonnet/cli", "gpt-5.5"],
+                    "enabled": ["anthropic/sonnet/cli", "gpt-5.9"],
                     "custom": {
-                        "gpt-5.5": {
+                        "gpt-5.9": {
                             "provider": "openai",
-                            "model": "gpt-5.5",
+                            "model": "gpt-5.9",
                             "tier": "strong",
                             "input_cost_per_mtok": 1.5,
                             "output_cost_per_mtok": 12.0,
@@ -903,5 +903,5 @@ class TestFieldLevelProvenance:
                 "budget_usd": 30.0,
             },
         )
-        sources = load_config(path).model_registry_field_sources["openai/gpt-5.5/cli"]
+        sources = load_config(path).model_registry_field_sources["openai/gpt-5.9/cli"]
         assert set(sources.values()) == {SOURCE_PROJECT}

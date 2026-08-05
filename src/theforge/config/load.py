@@ -417,6 +417,36 @@ def _parse_custom_model_registry(
     return registry, aliases, field_sources
 
 
+def _agent_spec_routing_matches(a: AgentSpec, b: AgentSpec) -> bool:
+    """True when two specs dispatch identically, ignoring attribution labels.
+
+    A ``models.custom`` declaration is resolved standalone (see
+    :func:`_parse_custom_model_registry`), so it never inherits a built-in
+    entry's fields the way an inline ``models.enabled`` overlay does — even a
+    declaration that transcribes a promoted entry's own routing policy and
+    cost seeds re-derives its own ``pricing_provenance``/``cost_rank_basis``
+    (``forge.yaml``/``price:forge.yaml`` rather than the shipped entry's
+    attributed identity), since ``resolve_project`` has no built-in to inherit
+    the label from. That is a difference in *how the band is explained*, not
+    in what it resolves to, so it is compared on the fields that actually
+    decide dispatch: tier, capability, cost band, dev eligibility, phase
+    eligibility, endpoint and price.
+    """
+    return (
+        a.provider == b.provider
+        and a.model == b.model
+        and a.transport == b.transport
+        and a.routing.tier == b.routing.tier
+        and a.routing.capability == b.routing.capability
+        and a.routing.cost_rank == b.routing.cost_rank
+        and a.routing.dev_capable == b.routing.dev_capable
+        and a.routing.phase_eligibility == b.routing.phase_eligibility
+        and a.base_url == b.base_url
+        and a.input_cost_per_mtok == b.input_cost_per_mtok
+        and a.output_cost_per_mtok == b.output_cost_per_mtok
+    )
+
+
 def _merge_model_registry(
     custom_registry: dict[str, AgentSpec],
     override_ids: frozenset[str] = frozenset(),
@@ -427,10 +457,22 @@ def _merge_model_registry(
     a ``models.custom`` declaration carrying ``override: true``, or an inline
     ``models.enabled`` mapping (which names the model *and* selects it in one
     place, so refining a built-in entry there is unambiguous).
+
+    A declaration that duplicates a built-in identity with a *different*
+    routing policy or cost seed is still rejected outright — that is a real
+    redefinition, and requires ``override: true`` to say so on purpose. One
+    that duplicates it with the *same* values is redundant rather than
+    conflicting (the shipped catalog now carries a promoted copy of what the
+    declaration already said), so it is allowed through unchanged.
     """
     merged = dict(AGENT_REGISTRY)
     for canonical_id, spec in custom_registry.items():
-        if canonical_id in AGENT_REGISTRY and canonical_id not in override_ids:
+        builtin_spec = AGENT_REGISTRY.get(canonical_id)
+        if (
+            builtin_spec is not None
+            and canonical_id not in override_ids
+            and not _agent_spec_routing_matches(spec, builtin_spec)
+        ):
             raise ValueError(
                 f"forge.yaml 'models.custom' declares {canonical_id!r}, which duplicates a "
                 "built-in model identity. Set override: true to replace the built-in entry "
