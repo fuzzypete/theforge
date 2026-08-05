@@ -7,18 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-<!-- v0.11.0 development (main) -->
-### Changed
+<!-- v0.13.0 development (release/v0.13). The full v0.13.0 section is derived
+     from milestone issues by promote-rc.sh at promotion; do not hand-write it. -->
 
-- **Assignment history is now a derived view (#793):** completed stories no
-  longer rewrite `.forge/assignment_history.yaml`. Adaptive routing reads
-  escalation history straight from the SQLite audit substrate, so unrelated
-  parallel branches no longer collide on that snapshot. Any checked-in
-  `.forge/assignment_history.yaml` can be deleted post-upgrade — the audit
-  substrate already contains the same facts. Run
-  `forge audits export-assignment-history` to rebuild a local human-readable
-  snapshot on demand. `forge init`/`forge secrets-init` now ignore the file
-  in fresh repositories by default.
+> **Note:** v0.12.0 was never promoted to a final release (rc0–rc5 only; the
+> latest release is v0.11.0). Its content, and everything shipped across the
+> v0.13.0 release candidates, rolls forward into the v0.13.0 section at
+> promotion. Interim record: the v0.12.0/v0.13.0 GitHub milestones.
 
 ### Fixed
 
@@ -69,6 +64,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   did not apply; and (b) honors a new optional `validation.failed_test_pattern`
   regex so a project can declare how its gate names failures and point retries
   at the exact failing tests. Pytest projects are unaffected.
+
+## [0.11.0] — 2026-07-18
+
+<!-- v0.11.0 development (main) -->
+### Changed
+
+- **Assignment history is now a derived view (#793):** completed stories no
+  longer rewrite `.forge/assignment_history.yaml`. Adaptive routing reads
+  escalation history straight from the SQLite audit substrate, so unrelated
+  parallel branches no longer collide on that snapshot. Any checked-in
+  `.forge/assignment_history.yaml` can be deleted post-upgrade — the audit
+  substrate already contains the same facts. Run
+  `forge audits export-assignment-history` to rebuild a local human-readable
+  snapshot on demand. `forge init`/`forge secrets-init` now ignore the file
+  in fresh repositories by default.
 
 <!-- v0.10.0 content forward-ported from release/v0.10; promote-rc.sh renames
      the release branch's section at promotion — reconcile then. -->
