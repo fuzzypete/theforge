@@ -72,6 +72,7 @@ from .audit import (
     _write_sprint_audit,
     _write_sprint_summary,
     _write_story_audit,
+    load_prior_generation_story_audit,
     persist_accumulated_story_state,
     write_live_story_audit,
 )
@@ -4527,6 +4528,10 @@ def run_sprint(
     # kept for human review, and counts as skipped (not failed) in aggregates.
     _dropped_slugs: dict[str, str] = dict(dropped_slugs or {})
     _dropped_work: dict[str, WorktreeWork] = {}
+    # slug -> what the generation that ran the story before this one recorded.
+    # Populated when its drop record is written, and read back for the story's
+    # sprint row so both surfaces report the same accounting (#2214).
+    _prior_generation_work: dict[str, dict] = {}
     # slug -> description of the work the drop abandoned. Membership is the
     # single test for "this drop was not free and not evidence-free".
     _dropped_with_work: dict[str, str] = {}
@@ -4640,6 +4645,53 @@ def run_sprint(
             return entry.cost_usd
         return 0.0
 
+    def _attribute_prior_generation_cost(slug: str) -> float | None:
+        """Spend recovered from the generation that ran ``slug`` before this one.
+
+        The prior generation's audit is the only surviving account of a story
+        that was still in flight when the boundary was crossed: it never wrote an
+        accumulated row, so its spend is in neither ``prior_cost`` nor this
+        generation's ledger, and the story's row would report 0.0 for work that
+        cost real money (#2214). Rolling it into ``accumulated_cost`` as the row
+        is written keeps the sprint total and the sum of the rows equal, and the
+        bump happens once per story however many times this is asked.
+
+        Returns ``None`` when nothing was recovered — never 0.0, which would
+        assert that the prior generation spent nothing.
+        """
+        nonlocal accumulated_cost
+
+        carried = _prior_generation_work.get(slug)
+        if not carried:
+            return None
+        cost = carried.get("recoverable_cost_usd")
+        if cost is None:
+            return None
+        if not carried.get("cost_attributed"):
+            # No lock: the drop loop runs before any worker is dispatched, so
+            # this generation has no other writer to the ledger yet.
+            carried["cost_attributed"] = True
+            accumulated_cost += cost
+            _log(f"RECOVERED {slug}: ${cost:.4f} of prior-generation spend rolled into the total")
+        return cost
+
+    def _dropped_row_cost(slug: str) -> float | None:
+        """The cost every surface reports for a dropped story's row.
+
+        Ordered by what is actually known: spend recovered from the generation
+        that ran the story, then unmeasured for a drop that abandoned work whose
+        cost nothing recorded, then 0.0 only for a story that really did nothing.
+
+        Only *attributed* spend is reported. A recovered amount that the drop
+        branch decided not to use (because the sprint already held a measured
+        cost for the story) is not in this generation's ledger, and putting it on
+        the row would make the rows sum to more than the sprint total.
+        """
+        carried = _prior_generation_work.get(slug)
+        if carried and carried.get("cost_attributed"):
+            return carried.get("recoverable_cost_usd")
+        return None if slug in _dropped_with_work else 0.0
+
     def _record_dropped_story_audit(slug: str, cause_text: str) -> dict:
         """Write the per-run audit record for a story dropped before dispatch.
 
@@ -4649,6 +4701,13 @@ def run_sprint(
         here is deliberately the same shape as the worker-exception and
         worker-timeout ones: same synthetic result, same ``error``, same
         ``abnormal_termination`` block, differing only in ``kind``.
+
+        A drop at a re-exec boundary is not necessarily a story that never ran:
+        the generation before the boundary may have run dev, run review and
+        committed an implementation. The record it flushed as it went is carried
+        into this one, so the drop reports the phase that work reached and the
+        budget it consumed instead of the INIT/$0.00 of a story that never
+        started (#2214).
 
         Returns the cause record so the caller can retain it in sprint state as
         well. Best-effort: a story is never left un-dropped because its evidence
@@ -4680,6 +4739,23 @@ def run_sprint(
                 source="sprint.runner:launch-guard-drop",
             )
             drop_result.state.abnormal_termination = cause
+            prior = load_prior_generation_story_audit(
+                config.project_root,
+                resolved.name,
+                slug,
+                exclude_run_id=drop_result.state.run_id,
+            )
+            if prior is not None:
+                _prior_generation_work[slug] = {
+                    **prior.summary,
+                    "recoverable_cost_usd": prior.recoverable_cost_usd,
+                }
+                _log(
+                    f"CARRIED {slug}: drop record carries the prior generation's work "
+                    f"(run {prior.summary['run_id']}, phase "
+                    f"{prior.summary['final_phase']}, cost "
+                    f"{prior.summary['cost_usd']})"
+                )
             _write_story_audit(
                 config,
                 task_ctx[0],
@@ -4689,6 +4765,7 @@ def run_sprint(
                 # that actually ran it. Its audit.yaml is that run's evidence and
                 # must survive the drop record, not be replaced by it.
                 overwrite_story_audit=False,
+                prior_generation=prior,
             )
             return cause
         except Exception as exc:  # noqa: BLE001 - evidence writing must not fail the sprint
@@ -4755,6 +4832,13 @@ def run_sprint(
             dag.mark_skipped(slug)
             _stranded_cause = _record_dropped_story_audit(slug, reason)
             _stranded_cost = _measured_recorded_cost(slug)
+            if _stranded_cost == 0.0:
+                # No record of spend anywhere the sprint keeps one — but the
+                # generation that stranded this worktree may have flushed its own
+                # audit before it was interrupted (#2214).
+                _recovered_stranded = _attribute_prior_generation_cost(slug)
+                if _recovered_stranded is not None:
+                    _stranded_cost = _recovered_stranded
             if _stranded_cost is None:
                 unmeasured_spend.append(f"stranded-unmeasured:{slug}")
             _set_outcome(
@@ -4767,21 +4851,29 @@ def run_sprint(
             # Same reasoning as the reconciled branch: the prior generation's
             # measured spend is this sprint's spend, whatever outcome the story
             # ended at. It must not be replaced by the 0.0 default (#2189).
+            _stranded_extras: dict[str, object] = {"drop_reason": reason}
+            _stranded_prior = _prior_generation_work.get(slug)
+            if _stranded_prior:
+                _stranded_extras["prior_generation_run_id"] = _stranded_prior.get("run_id")
+                _stranded_extras["prior_generation_final_phase"] = _stranded_prior.get(
+                    "final_phase"
+                )
             _record_current_story_entry(
                 slug,
                 "DROPPED",
                 error=reason,
                 error_type="dropped",
                 cost_usd=_stranded_cost,
-                extras={"drop_reason": reason},
+                extras=_stranded_extras,
                 failure_cause=_stranded_cause or None,
             )
         else:
             # A dropped story is normally a story that never ran — but if its
             # worktree holds commits, it did run, and recording that as a $0.00
             # no-evidence drop erases exactly the run an operator needs evidence
-            # for. Cost cannot be recovered here (the spend was the previous
-            # process image's), so it is recorded as unmeasured, not as zero.
+            # for. The spend was the previous process image's, so it is recovered
+            # from the audit that generation flushed when there is one (#2214),
+            # and recorded as unmeasured — never as zero — when there is not.
             work = _inspect_dropped_work(slug)
             work_detail = describe_worktree_work(work)
             if work_detail:
@@ -4794,13 +4886,23 @@ def run_sprint(
             # reason plus whatever work the drop abandoned — because that record,
             # not the sprint summary line, is what outlives the next resume.
             _drop_cause = _record_dropped_story_audit(slug, _detail_msg)
+            # The generation that ran this story recorded what it reached and
+            # what it spent; the sprint row reports the same, so the summary
+            # cannot claim a story with committed work cost nothing and reached
+            # nothing (#2214).
+            _carried = _prior_generation_work.get(slug)
+            if _carried:
+                _extras["prior_generation_run_id"] = _carried.get("run_id")
+                _extras["prior_generation_final_phase"] = _carried.get("final_phase")
+            _carried_cost = _attribute_prior_generation_cost(slug)
             if work_detail:
-                unmeasured_spend.append(f"dropped-with-work:{slug}")
+                if _carried_cost is None:
+                    unmeasured_spend.append(f"dropped-with-work:{slug}")
                 _set_outcome(
                     slug,
                     StoryOutcome.DROPPED,
                     reason=_detail_msg,
-                    cost_usd=None,
+                    cost_usd=_carried_cost,
                     detail={"final_outcome": "DROPPED", **_extras},
                     failure_cause=_drop_cause or None,
                 )
@@ -4809,19 +4911,27 @@ def run_sprint(
                     "DROPPED",
                     error=_detail_msg,
                     error_type="dropped",
-                    cost_usd=None,
+                    cost_usd=_carried_cost,
                     extras=_extras,
                     failure_cause=_drop_cause or None,
                 )
             else:
+                # No worktree work to describe, but a prior generation may still
+                # have spent budget on this story; 0.0 only when nothing did.
+                _row_cost = _carried_cost if _carried_cost is not None else 0.0
                 _set_outcome(
-                    slug, StoryOutcome.DROPPED, reason=reason, failure_cause=_drop_cause or None
+                    slug,
+                    StoryOutcome.DROPPED,
+                    reason=reason,
+                    cost_usd=_row_cost,
+                    failure_cause=_drop_cause or None,
                 )
                 _record_current_story_entry(
                     slug,
                     "DROPPED",
                     error=reason,
                     error_type="dropped",
+                    cost_usd=_row_cost,
                     extras=_extras,
                     failure_cause=_drop_cause or None,
                 )
@@ -5002,9 +5112,10 @@ def run_sprint(
                     "path": _display_key,
                     "status": _status,
                     "phase": "PREFLIGHT" if _status == "waiting" else None,
-                    # A dropped story that abandoned work has a real, unrecovered
-                    # cost: record it unmeasured rather than fabricating $0.00.
-                    "cost_usd": None if _slug in _dropped_with_work else 0.0,
+                    # A dropped story that abandoned work has a real cost: the
+                    # prior generation's when its audit survived (#2214),
+                    # unmeasured when it did not — never a fabricated $0.00.
+                    "cost_usd": _dropped_row_cost(_slug),
                     "bundle_candidate": _slug in _bundle_candidate_slugs,
                     "batch_group": batch_group_by_slug.get(_slug),
                     "blocked_by": _blocked_by,
