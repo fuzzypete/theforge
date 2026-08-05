@@ -86,15 +86,23 @@ Run only the review phase on an existing worktree.
 
 ```bash
 forge review <story-file> [flags]
+forge review --issue <N> [flags]
 ```
 
 **Use this when:** You implemented or fixed something in a worktree and want to
 run review without re-running PLAN/DEV.
 
+Name the **story**, not the worktree. A story sourced from a GitHub issue is
+never written to disk, so `--issue N` is the only way to review one — it reads
+the issue exactly as the sprint path does, and the slug it derives (`issue-N`)
+is what points at the existing worktree. Pass a story file *or* `--issue`, not
+both.
+
 **Flags:**
 
 | Flag | Description |
 |------|-------------|
+| `--issue <N>` | Review a GitHub-issue-backed story (instead of a story file) |
 | `--worktree <path>` | Explicit worktree path |
 | `--auto-merge` | Merge after APPROVE |
 | `--verbose`, `-v` | Show reviewer activity |
