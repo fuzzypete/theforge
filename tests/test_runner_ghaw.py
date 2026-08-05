@@ -164,6 +164,10 @@ class TestGhawGuards:
             )
         assert mock_run.call_count == 1
         assert result.model_used == "copilot"
+        # The model back-fill without a transport is only half an identity: a
+        # bare model name cannot be canonicalized without knowing which
+        # transport served it (#2225). gh-aw dispatches a CLI engine.
+        assert result.transport_used == "cli"
 
 
 def _make_result():

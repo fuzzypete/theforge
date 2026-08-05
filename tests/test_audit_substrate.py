@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import sqlite3
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 
+from theforge.config import ModelProfile
 from theforge.coordinator import audit_substrate as sub
 
 
@@ -1202,6 +1204,60 @@ class TestRendererIndexerModelIdentitySeam:
 
         assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
             "anthropic/sonnet/cli",
+            "direct",
+            "canonical",
+        )
+
+    def test_production_shaped_api_result_indexes_as_the_api_identity(
+        self, tmp_path: Path
+    ) -> None:
+        """The whole runner → renderer → indexer path for a single-model API profile.
+
+        This is the shape that fragmented in production: an API result carries
+        no ``model_used`` at all, so the renderer back-fills it from per-model
+        billing and gets the bare ``gpt-5.4``. The runner's recorded transport
+        is the only thing that keeps it from indexing under its own spelling
+        (#2225), so the runner is driven for real here rather than the entry
+        being hand-shaped.
+        """
+        from theforge.agent_types import ModelUsage
+        from theforge.coordinator import audit_render
+        from theforge.runners.api import run_api_agent
+
+        api_profile = ModelProfile(
+            name="dev",
+            provider="openai",
+            cli=None,
+            model="gpt-5.4",
+            budget_usd=1.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+        )
+        billed_only = self._agent_result(
+            model_usage=(
+                ModelUsage(
+                    model="gpt-5.4",
+                    input_tokens=10,
+                    output_tokens=5,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=1.0,
+                ),
+            )
+        )
+        with patch.dict(
+            "theforge.runners.api.PROVIDER_RUNNERS",
+            {"openai": lambda prompt, prof, secrets: billed_only},
+        ):
+            result = run_api_agent(
+                prompt="go", profile=api_profile, working_dir=tmp_path, quiet=True
+            )
+
+        entry = audit_render._agent_entry(result, "dev", "dev", 12.0)
+        assert entry["model_used"] == "gpt-5.4", "renderer no longer back-fills from billing"
+
+        assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
+            "openai/gpt-5.4/api",
             "direct",
             "canonical",
         )
