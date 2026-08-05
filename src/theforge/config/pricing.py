@@ -32,6 +32,78 @@ PRICING_PROVENANCE_LOCAL_ENDPOINT = "local-endpoint"
 # derived from an untraceable price.
 UNPRICED_COST_RANK = 1
 
+# ── Cost-band attribution ────────────────────────────────────────────────
+#
+# ``RoutingPolicy.cost_rank`` is the *other* price-shaped routing input: it
+# selects the tier a role is filled from (1=cheap, 2=mid, 3=strong), so a band
+# copied off an untraceable literal steers selection just as the tie-break does.
+# Every band therefore records what it is derived from. A band that matches the
+# entry's *attributable* price is attributed to that price automatically; any
+# other band has to name a non-price basis, which is what stops an entry from
+# silently inheriting a band from figures it is not allowed to trust.
+
+# The band restates the vendor's own tier naming (Claude's ``opus`` is the
+# flagship tier, ``sonnet`` the mid tier). That claim is true of the shorthand
+# identity itself and survives the shorthand resolving to a new version, which
+# is exactly what the literal price does not do.
+COST_BAND_BASIS_VENDOR_TIER = "vendor-tier"
+# A deliberate routing decision that is not the entry's price band — e.g. a
+# reasoning model whose token *volume* puts it a band above its per-MTok rate.
+COST_BAND_BASIS_DECLARED_POLICY = "declared-policy"
+# The operator set ``routing.cost_rank`` for this entry in forge.yaml.
+COST_BAND_BASIS_OPERATOR_DECLARED = "forge.yaml"
+# No usable price and no band to inherit: :data:`UNPRICED_COST_RANK` applies.
+COST_BAND_BASIS_UNPRICED_DEFAULT = "default-unpriced"
+
+
+def price_cost_band_basis(pricing_provenance: str) -> str:
+    """Name the basis of a band that was derived from an attributed price."""
+    return f"price:{pricing_provenance}"
+
+
+def resolve_cost_band_basis(
+    cost_rank: int,
+    *,
+    input_cost_per_mtok: float | None,
+    output_cost_per_mtok: float | None,
+    pricing_provenance: str | None,
+    declared_basis: str | None,
+) -> str:
+    """Return the basis to record for ``cost_rank``, or raise if there is none.
+
+    An explicit ``declared_basis`` always wins — the author stated why the band
+    is what it is. Otherwise the band may only be attributed to the entry's own
+    price, and only when that price is attributable *and* actually produces this
+    band. Anything else (an unattributed literal, no price at all, or a band that
+    disagrees with the price it would sit next to) raises: the band has no
+    traceable source, and inventing one is the defect this module exists to stop.
+    """
+    if declared_basis is not None:
+        return declared_basis
+    derived = (
+        custom_model_cost_rank(
+            float(input_cost_per_mtok or 0.0),
+            float(output_cost_per_mtok or 0.0),
+            pricing_provenance=pricing_provenance,
+        )
+        if input_cost_per_mtok is not None or output_cost_per_mtok is not None
+        else None
+    )
+    if derived is None and cost_rank == UNPRICED_COST_RANK:
+        # No price recorded at all and the band is the unpriced default — that
+        # default *is* the basis, and it cannot have come from a literal because
+        # there is none.
+        return COST_BAND_BASIS_UNPRICED_DEFAULT
+    if derived is None or derived != cost_rank or pricing_provenance is None:
+        raise ValueError(
+            f"cost_rank={cost_rank} cannot be attributed to this entry's pricing "
+            f"(provenance={pricing_provenance!r}, derived band={derived!r}). "
+            "State a non-price basis explicitly — see COST_BAND_BASIS_* in "
+            "config/pricing.py."
+        )
+    return price_cost_band_basis(pricing_provenance)
+
+
 # Sentinel returned by ``price_tiebreak_signal`` when a candidate carries no
 # usable pricing. It sorts *after* every priced candidate so unpriced models keep
 # their original relative order (list-order fallback) among themselves rather

@@ -271,6 +271,27 @@ def _unattributed_pricing_models(
     return flagged
 
 
+def _cost_band_bases(
+    model_keys: list[str],
+    registry: dict | None = None,
+) -> list[tuple[str, int, str]]:
+    """Return ``(model_key, cost_rank, basis)`` for each resolvable enabled model.
+
+    ``cost_rank`` selects which tier a role is filled from, so it steers routing
+    the same way the price tie-break does. Reporting the basis alongside it makes
+    a band that came from a price distinguishable from one declared on non-price
+    grounds, without the operator having to read the registry (#2203).
+    """
+    rows: list[tuple[str, int, str]] = []
+    for model_key in model_keys:
+        try:
+            spec = resolve_agent_spec(model_key, registry=registry)
+        except ValueError:
+            continue  # unresolvable keys are already reported elsewhere
+        rows.append((model_key, spec.cost_rank, spec.routing.cost_rank_basis or "unrecorded"))
+    return rows
+
+
 def _ref_transport_label(
     provider: str | None,
     model: str,
@@ -463,6 +484,14 @@ def _format_config(
                     "    (recorded price is not attributable to the resolved model — "
                     "ignored for cost banding and price tie-breaks)"
                 )
+            # The cost band is the other price-shaped routing input, so show what
+            # each enabled model's band is derived from — an operator diagnosing a
+            # selection can otherwise only see the number, not its source (#2203).
+            bands = _cost_band_bases(config.models, registry=config.model_registry)
+            if bands:
+                lines.append("  cost band basis:")
+                for model_key, rank, basis in bands:
+                    lines.append(f"    {model_key:<32}rank {rank}  from {basis}")
         if config.custom_models:
             custom_details = []
             for model_id in config.custom_models:

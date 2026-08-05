@@ -162,6 +162,16 @@ Attribution comes from pinning the entry to the version its figures describe,
 or from an operator declaring the price for that identity in `forge.yaml`.
 `forge check-config` lists any enabled model whose price is being ignored.
 
+The cost band (`cost_rank`, which decides the tier a role is filled from) is the
+other price-shaped routing input, so it is held to the same standard: every
+registry entry records what its band is derived from. A band that matches the
+entry's attributable price is attributed to that price; any other band has to
+name a non-price basis — the Claude shorthands' bands restate the vendor's own
+tier naming, which stays true when the shorthand resolves to a new version.
+Building an entry whose band can be traced to neither raises at import, so a
+band cannot quietly be a number copied off an untraceable literal.
+`forge check-config` prints each enabled model's band and its basis.
+
 ## What Stays in forge.yaml
 
 Only what forge cannot discover:

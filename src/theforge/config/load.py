@@ -44,9 +44,12 @@ from .models import (
     transport_for,
 )
 from .pricing import (
+    COST_BAND_BASIS_OPERATOR_DECLARED,
+    COST_BAND_BASIS_UNPRICED_DEFAULT,
     PRICING_PROVENANCE_OPERATOR_DECLARED,
     UNPRICED_COST_RANK,
     custom_model_cost_rank,
+    price_cost_band_basis,
 )
 from .profiles import (
     CLI_PROVIDER_MAP,
@@ -293,14 +296,23 @@ def _parse_enabled_mapping_entry(
         if input_cost is not None or output_cost is not None
         else None
     )
+    # The band travels with the reason it holds, in the same order of precedence:
+    # the operator's own declaration, then this entry's attributable price, then
+    # whatever the built-in entry already justified, then the unpriced default.
+    # Nothing here can reach the band of an unattributed literal — the middle
+    # branch is gated on `banded_cost_rank`, which is None in that case.
     if routing_raw.get("cost_rank") is not None:
         cost_rank = int(routing_raw["cost_rank"])
+        cost_rank_basis = COST_BAND_BASIS_OPERATOR_DECLARED
     elif banded_cost_rank is not None:
         cost_rank = banded_cost_rank
+        cost_rank_basis = price_cost_band_basis(str(pricing_provenance))
     elif builtin is not None:
         cost_rank = builtin.cost_rank
+        cost_rank_basis = builtin.routing.cost_rank_basis
     else:
         cost_rank = UNPRICED_COST_RANK
+        cost_rank_basis = COST_BAND_BASIS_UNPRICED_DEFAULT
     capability = routing_raw.get("capability")
     dev_capable = routing_raw.get("dev_capable")
     phases = routing_raw.get("phase_eligibility")
@@ -334,6 +346,7 @@ def _parse_enabled_mapping_entry(
                     else RoutingPolicy(tier=tier, capability=1, cost_rank=1).phase_eligibility
                 )
             ),
+            cost_rank_basis=cost_rank_basis,
         ),
         base_url=base_url if base_url is not None else (builtin.base_url if builtin else None),
         registry_source="forge.yaml",
@@ -479,6 +492,11 @@ def _parse_custom_model_registry(
                     overlay_cost_rank if overlay_cost_rank is not None else UNPRICED_COST_RANK
                 ),
                 dev_capable=custom_model_dev_capable(transport),
+                cost_rank_basis=(
+                    price_cost_band_basis(PRICING_PROVENANCE_OPERATOR_DECLARED)
+                    if overlay_cost_rank is not None
+                    else COST_BAND_BASIS_UNPRICED_DEFAULT
+                ),
             ),
             base_url=base_url,
             registry_source="forge.yaml",

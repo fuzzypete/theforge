@@ -29,9 +29,12 @@ from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
 from .pricing import (
+    COST_BAND_BASIS_DECLARED_POLICY,
+    COST_BAND_BASIS_VENDOR_TIER,
     PRICING_PROVENANCE_LOCAL_ENDPOINT,
     AttributablePricing,
     price_tiebreak_signal_for,
+    resolve_cost_band_basis,
 )
 
 # Re-exported: these moved to config/pricing.py, but callers (and the #1617
@@ -102,6 +105,12 @@ class RoutingPolicy:
     cost_rank: int  # 1=cheap, 2=moderate, 3=expensive
     dev_capable: bool = True  # whether this agent is allowed to own the dev role
     phase_eligibility: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+    # What ``cost_rank`` is derived from: ``price:<provenance>`` when the band is
+    # the entry's own attributable price band, otherwise a COST_BAND_BASIS_*
+    # marker naming a non-price basis. The band is a routing input in its own
+    # right, so it may not be a bare number copied off an untraceable literal —
+    # see config/pricing.resolve_cost_band_basis.
+    cost_rank_basis: str | None = None
 
 
 # ── Runner derivation from (provider, transport.kind) ────────────────────
@@ -486,6 +495,7 @@ def _entry(
     input_cost_per_mtok: float | None = None,
     output_cost_per_mtok: float | None = None,
     pricing_provenance: str | None = None,
+    cost_rank_basis: str | None = None,
 ) -> tuple[str, AgentSpec]:
     """Build a ``(canonical_id, AgentSpec)`` registry pair.
 
@@ -494,8 +504,21 @@ def _entry(
     entries identified by a vendor shorthand must do: the shorthand resolves to
     some other concrete version at invocation time, so nothing ties the stored
     literal to what is actually billed.
+
+    ``cost_rank`` is a routing input too, so it is held to the same standard:
+    omit ``cost_rank_basis`` only when the band *is* this entry's attributable
+    price band (it is then attributed to that price automatically). Every other
+    band — including every band on an entry whose price is unattributed — must
+    name its non-price basis, or construction raises.
     """
     transport = transport_for(provider, kind, runner=runner)
+    basis = resolve_cost_band_basis(
+        cost_rank,
+        input_cost_per_mtok=input_cost_per_mtok,
+        output_cost_per_mtok=output_cost_per_mtok,
+        pricing_provenance=pricing_provenance,
+        declared_basis=cost_rank_basis,
+    )
     spec = AgentSpec(
         provider=provider,
         model=model,
@@ -506,6 +529,7 @@ def _entry(
             cost_rank=cost_rank,
             dev_capable=dev_capable,
             phase_eligibility=phases,
+            cost_rank_basis=basis,
         ),
         base_url=base_url,
         input_cost_per_mtok=input_cost_per_mtok,
@@ -527,6 +551,15 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
         # no pricing_provenance: they are indicative only and routing ignores
         # them. Re-attributing them requires pinning the entry to the concrete
         # version the price is true of.
+        #
+        # Their cost bands are not derived from those literals either — they
+        # restate the vendor's own tier naming, which is what the shorthand
+        # *means* and stays true when it resolves to a new version: ``opus`` is
+        # whatever Anthropic currently sells as its flagship (strong band),
+        # ``sonnet`` whatever it sells as the mid-priced workhorse (cheap band,
+        # as the fleet's baseline). Note the bands already disagree with the
+        # literals — 3.00/15.00 would band sonnet at 2 — so the figures could
+        # move to any value without moving either band.
         _entry(
             "anthropic",
             "sonnet",
@@ -536,6 +569,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=1,
             input_cost_per_mtok=3.00,
             output_cost_per_mtok=15.00,
+            cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER,
         ),
         _entry(
             "anthropic",
@@ -546,6 +580,7 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             cost_rank=3,
             input_cost_per_mtok=15.00,
             output_cost_per_mtok=75.00,
+            cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER,
         ),
         # ── OpenAI (Codex CLI) ───────────────────────────────────────
         #
@@ -633,6 +668,10 @@ AGENT_REGISTRY: dict[str, AgentSpec] = dict(
             input_cost_per_mtok=0.55,
             output_cost_per_mtok=2.19,
             pricing_provenance="deepseek-reasoner",
+            # Banded a step above its per-MTok rate on purpose: a reasoning model
+            # spends far more output tokens per task, so the rate alone (band 1)
+            # understates what filling a role with it costs.
+            cost_rank_basis=COST_BAND_BASIS_DECLARED_POLICY,
         ),
         _entry(
             "deepseek",

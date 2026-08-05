@@ -11,6 +11,7 @@ while attributed prices keep the #1617 behaviour intact.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -22,15 +23,19 @@ from theforge.config.models import (
     MODEL_REGISTRY,
     AgentSpec,
     RoutingPolicy,
+    _entry,
     _spec_to_model_info,
     transport_for,
 )
 from theforge.config.pricing import (
+    COST_BAND_BASIS_OPERATOR_DECLARED,
+    COST_BAND_BASIS_VENDOR_TIER,
     PRICING_PROVENANCE_LOCAL_ENDPOINT,
     PRICING_PROVENANCE_OPERATOR_DECLARED,
     custom_model_cost_rank,
     price_tiebreak_signal,
     price_tiebreak_signal_for,
+    resolve_cost_band_basis,
 )
 from theforge.config.profiles import _agents_from_models
 from theforge.config.role_derivation import derive_roles
@@ -282,6 +287,272 @@ def test_check_config_names_the_models_whose_price_is_ignored(tmp_path, capsys):
     out = capsys.readouterr().out
     assert "unattributed price:" in out
     assert "anthropic/opus/cli" in out.split("unattributed price:")[1].splitlines()[0]
+
+
+# ── The cost band is attributed too ────────────────────────────────────
+#
+# ``cost_rank`` selects which tier a role is filled from, so a band copied off an
+# untraceable literal steers selection exactly as the tie-break did. These pin
+# the second half of the fix: every band names what it is derived from, and the
+# alias entries' bands are not a function of their literals.
+
+
+_ALIAS_KEYS = ["anthropic/opus/cli", "anthropic/sonnet/cli"]
+
+
+def test_every_builtin_band_records_what_it_is_derived_from():
+    assert [
+        key for key, spec in AGENT_REGISTRY.items() if spec.routing.cost_rank_basis is None
+    ] == []
+
+
+def test_alias_bands_are_declared_on_non_price_grounds():
+    """The entries whose price cannot be attributed must not be banding off it."""
+    for key in _ALIAS_KEYS:
+        basis = AGENT_REGISTRY[key].routing.cost_rank_basis
+        assert basis == COST_BAND_BASIS_VENDOR_TIER
+        assert not basis.startswith("price:")
+
+
+@pytest.mark.parametrize("key", _ALIAS_KEYS)
+@pytest.mark.parametrize(
+    ("input_cost", "output_cost"),
+    [
+        (15.00, 75.00),  # what the registry records today
+        (5.00, 25.00),  # what forge.yaml annotates as actually billed — bands 2
+        (0.01, 0.01),  # bands 1
+        (999.0, 999.0),  # bands 3
+    ],
+)
+def test_alias_band_does_not_move_when_the_literal_moves(key, input_cost, output_cost):
+    """No value of the unattributable literal changes the band — including the
+    5.00/25.00 forge.yaml annotates, which is a band below the 15.00/75.00 the
+    registry records and is where the reported one-band divergence came from."""
+    spec = AGENT_REGISTRY[key]
+    repriced = replace(spec, input_cost_per_mtok=input_cost, output_cost_per_mtok=output_cost)
+    assert repriced.cost_rank == spec.cost_rank
+    assert repriced.routing.cost_rank_basis == spec.routing.cost_rank_basis
+    assert price_tiebreak_signal_for(repriced) == _UNPRICED
+
+
+def test_sonnets_band_already_disagrees_with_its_literal():
+    """Evidence the band is not price-derived rather than merely coinciding:
+    3.00/15.00 would band 2, and the entry is banded 1."""
+    spec = AGENT_REGISTRY["anthropic/sonnet/cli"]
+    would_be = custom_model_cost_rank(
+        spec.input_cost_per_mtok, spec.output_cost_per_mtok, pricing_provenance="hypothetical"
+    )
+    assert would_be == 2
+    assert spec.cost_rank == 1
+
+
+def test_the_defects_exact_entry_shape_no_longer_builds():
+    """The shape the bug was reported in: a vendor-shorthand entry carrying an
+    unattributable 15.00/75.00 and banded 3 — the band those figures produce, with
+    nothing recording whether that was a derivation or a coincidence. Building it
+    now raises; the entry only exists once it says why band 3 holds without them."""
+    args = ("anthropic", "opus", "cli")
+    kwargs = dict(
+        tier="strong",
+        capability=10,
+        cost_rank=3,
+        input_cost_per_mtok=15.00,
+        output_cost_per_mtok=75.00,
+    )
+    with pytest.raises(ValueError, match="cannot be attributed"):
+        _entry(*args, **kwargs)
+
+    _key, spec = _entry(*args, **kwargs, cost_rank_basis=COST_BAND_BASIS_VENDOR_TIER)
+    assert spec.cost_rank == 3
+    assert spec.routing.cost_rank_basis == COST_BAND_BASIS_VENDOR_TIER
+    # And that band still owes nothing to the figures beside it.
+    assert price_tiebreak_signal_for(spec) == _UNPRICED
+
+
+def test_an_untraceable_band_is_refused_at_construction():
+    """The mechanical guard: a band with no attributable price and no declared
+    basis cannot be built, so a future entry cannot quietly acquire one."""
+    with pytest.raises(ValueError, match="cannot be attributed"):
+        resolve_cost_band_basis(
+            3,
+            input_cost_per_mtok=15.0,
+            output_cost_per_mtok=75.0,
+            pricing_provenance=None,
+            declared_basis=None,
+        )
+    # Attributed, but the band disagrees with the price it claims to come from.
+    with pytest.raises(ValueError, match="cannot be attributed"):
+        resolve_cost_band_basis(
+            3,
+            input_cost_per_mtok=1.0,
+            output_cost_per_mtok=2.0,
+            pricing_provenance="pinned-2026-07",
+            declared_basis=None,
+        )
+    # A band that *is* the attributable price band is attributed to that price.
+    assert (
+        resolve_cost_band_basis(
+            1,
+            input_cost_per_mtok=1.0,
+            output_cost_per_mtok=2.0,
+            pricing_provenance="pinned-2026-07",
+            declared_basis=None,
+        )
+        == "price:pinned-2026-07"
+    )
+
+
+def _alias_repriced_registry(input_cost: float, output_cost: float) -> dict[str, AgentSpec]:
+    """The real registry with both Claude shorthand literals moved."""
+    registry = dict(AGENT_REGISTRY)
+    for key in _ALIAS_KEYS:
+        registry[key] = replace(
+            registry[key],
+            input_cost_per_mtok=input_cost,
+            output_cost_per_mtok=output_cost,
+        )
+    return registry
+
+
+_FLEET = [
+    "anthropic/sonnet/cli",
+    "anthropic/opus/cli",
+    "openai/gpt-5.4/cli",
+    "openai/gpt-5.4-mini/cli",
+]
+
+
+@pytest.mark.parametrize(
+    ("input_cost", "output_cost"), [(5.00, 25.00), (0.01, 0.01), (999.0, 999.0)]
+)
+def test_selection_is_identical_whatever_the_alias_literal_says(input_cost, output_cost):
+    """End-to-end at both selection seams: moving the unattributable figures —
+    including to the billed 5.00/25.00 that would have re-banded opus — changes
+    neither the preflight pool order nor any derived role."""
+    baseline_pool = _build_pool_entries(_FLEET, registry=AGENT_REGISTRY)
+    moved_pool = _build_pool_entries(
+        _FLEET, registry=_alias_repriced_registry(input_cost, output_cost)
+    )
+    assert [(rank, key) for rank, key, _info in moved_pool] == [
+        (rank, key) for rank, key, _info in baseline_pool
+    ]
+
+    for complexity in ("LOW", "MEDIUM", "HIGH"):
+        baseline = derive_roles(_FLEET, registry=AGENT_REGISTRY, complexity=complexity)
+        moved = derive_roles(
+            _FLEET,
+            registry=_alias_repriced_registry(input_cost, output_cost),
+            complexity=complexity,
+        )
+        for role in ("preflight", "plan", "dev"):
+            assert getattr(moved, role).ref.model == getattr(baseline, role).ref.model
+        assert [r.ref.model for r in moved.review_pool] == [
+            r.ref.model for r in baseline.review_pool
+        ]
+
+
+def test_check_config_reports_each_bands_basis(tmp_path, capsys):
+    """Operator-visible: the band and its source are printed together, so a
+    selection can be traced without reading the registry."""
+    from unittest.mock import patch
+
+    from theforge.cli.check_config import _cost_band_bases, cmd_check_config
+
+    assert _cost_band_bases(["anthropic/opus/cli", "openai/gpt-5.4/cli"]) == [
+        ("anthropic/opus/cli", 3, COST_BAND_BASIS_VENDOR_TIER),
+        ("openai/gpt-5.4/cli", 2, "price:gpt-5.4"),
+    ]
+
+    config_path = _write_config(
+        {
+            "models": {"enabled": ["anthropic/opus/cli", "openai/gpt-5.4-mini/cli"]},
+            "budget_usd": 50.0,
+        },
+        tmp_path,
+    )
+    config = load_config(config_path)
+    args = type("Args", (), {"config": str(config_path), "verbose": False, "json": False})()
+    with (
+        patch("theforge.cli.check_config._find_config", return_value=config_path),
+        patch("theforge.cli.check_config.load_config", return_value=config),
+        patch("theforge.cli.check_config.check_agent_auth", return_value=(True, "")),
+    ):
+        cmd_check_config(args)
+    out = capsys.readouterr().out
+    assert "cost band basis:" in out
+    assert f"rank 3  from {COST_BAND_BASIS_VENDOR_TIER}" in out
+
+
+def test_operator_declared_band_is_attributed_to_the_operator(tmp_path):
+    """A `routing.cost_rank` in forge.yaml is the operator declaring the band."""
+    config_path = _write_config(
+        {
+            "models": {
+                "enabled": [
+                    {
+                        "provider": "anthropic",
+                        "model": "opus",
+                        "transport": {"kind": "cli"},
+                        "routing": {"cost_rank": 2},
+                    }
+                ]
+            },
+            "budget_usd": 50.0,
+        },
+        tmp_path,
+    )
+    config = load_config(config_path)
+    spec = config.model_registry["anthropic/opus/cli"]
+    assert spec.cost_rank == 2
+    assert spec.routing.cost_rank_basis == COST_BAND_BASIS_OPERATOR_DECLARED
+
+
+def test_inherited_band_keeps_the_builtin_basis(tmp_path):
+    """Inheriting a built-in band inherits its justification too — it does not
+    become a price-derived band on the way through the loader."""
+    config_path = _write_config(
+        {
+            "models": {
+                "enabled": [
+                    {
+                        "provider": "anthropic",
+                        "model": "opus",
+                        "transport": {"kind": "cli"},
+                        "routing": {"capability": 8},
+                    }
+                ]
+            },
+            "budget_usd": 50.0,
+        },
+        tmp_path,
+    )
+    config = load_config(config_path)
+    spec = config.model_registry["anthropic/opus/cli"]
+    assert spec.routing.cost_rank_basis == COST_BAND_BASIS_VENDOR_TIER
+
+
+def test_operator_declared_cost_bands_from_the_declared_price(tmp_path):
+    """The `cost:` path bands *and* records that the band came from that price."""
+    config_path = _write_config(
+        {
+            "models": {
+                "enabled": [
+                    {
+                        "provider": "anthropic",
+                        "model": "opus",
+                        "transport": {"kind": "cli"},
+                        "cost": {"input_per_mtok": 5.0, "output_per_mtok": 25.0},
+                    }
+                ]
+            },
+            "budget_usd": 50.0,
+        },
+        tmp_path,
+    )
+    config = load_config(config_path)
+    spec = config.model_registry["anthropic/opus/cli"]
+    assert spec.cost_rank == 2
+    assert spec.routing.cost_rank_basis == f"price:{PRICING_PROVENANCE_OPERATOR_DECLARED}"
 
 
 def test_models_custom_declaration_is_attributed(tmp_path):
