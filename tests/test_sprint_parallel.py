@@ -2869,6 +2869,92 @@ class TestRunFreshPlanGatedForwarding:
         assert mock_run_from_dev.call_args.kwargs["base_lands_locally"] is True
 
 
+class TestCollisionGatePreservedWork:
+    """#2234: a collision claim ends when the work ends, not when the story does.
+
+    story-a and story-b plan the same file. story-a passes the gate first and
+    then escalates — which *preserves* its worktree and commits for an operator
+    decision. Before the fix, leaving the ``active`` set dropped story-a's
+    footprint, the gate opened, and story-b built twelve files' worth of work on
+    a base the pending decision was about to rewrite.
+    """
+
+    def _run(self, tmp_path: Path):
+        _make_spec_file(tmp_path, "Story A", "story-a")
+        _make_spec_file(tmp_path, "Story B", "story-b")
+        manifest_path = _make_manifest_parallel(
+            tmp_path,
+            ["story-a.md", "story-b.md"],
+            budget=10.0,
+            max_parallel=2,
+        )
+        config = _make_config(tmp_path)
+
+        a_in_dev = threading.Event()
+        b_footprint_seen = threading.Event()
+        dev_calls: list[str] = []
+
+        def _fake_run_task(cfg, task, **kwargs):  # noqa: ANN001
+            # Deterministic ordering: story-b only reaches PLAN_DONE after
+            # story-a is past its gate, so story-a is the claim holder.
+            if task.slug == "story-b":
+                assert a_in_dev.wait(timeout=30)
+            plan_result = _make_coordinator_result(success=True, cost=1.0, phase=Phase.PLAN_REVIEW)
+            plan_result.state.workspace_path = tmp_path / task.slug
+            return plan_result
+
+        def _fake_run_from_dev(cfg, task, workspace_path, **kwargs):  # noqa: ANN001
+            dev_calls.append(task.slug)
+            a_in_dev.set()
+            # Hold story-a in DEV until story-b is parked at the gate, so the
+            # escalation lands on a scheduler that is already holding a gate.
+            assert b_footprint_seen.wait(timeout=30)
+            return _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
+
+        def _fake_footprint(workspace_path):  # noqa: ANN001
+            if workspace_path is not None and Path(workspace_path).name == "story-b":
+                b_footprint_seen.set()
+            return {"src/shared.py"}
+
+        with (
+            patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+            patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
+            patch("theforge.sprint.runner.run_from_dev", side_effect=_fake_run_from_dev),
+            patch("theforge.sprint.runner._extract_plan_footprint", side_effect=_fake_footprint),
+        ):
+            sprint = run_sprint(config, manifest_path)
+
+        return sprint, dev_calls
+
+    def test_gated_story_never_enters_dev_behind_preserved_escalation(
+        self, tmp_path: Path
+    ) -> None:
+        sprint, dev_calls = self._run(tmp_path)
+
+        # The whole point: story-b must not build on a base that excludes the
+        # preserved rewrite it was gated on.
+        assert dev_calls == ["story-a"]
+        assert "story-b" not in dev_calls
+
+    def test_stood_down_story_is_skipped_not_failed(self, tmp_path: Path) -> None:
+        sprint, _ = self._run(tmp_path)
+
+        # story-a escalated (failed); story-b is deferred work, not a verdict.
+        assert sprint.specs_failed == 1
+        assert sprint.specs_skipped == 1
+        assert sprint.specs_succeeded == 0
+
+    def test_stand_down_reason_is_recorded(self, tmp_path: Path, capsys) -> None:
+        self._run(tmp_path)
+        err = capsys.readouterr().err
+
+        assert "STAND DOWN story-b" in err
+        assert "preserved, undecided work from story-a" in err
+        assert "src/shared.py" in err
+        # The claim retention decision is visible too, not just its consequence.
+        assert "Holding collision claim for story-a" in err
+
+
 class TestSprintLandsLocallyResolution:
     """run_sprint answers the local-landing question sprint-wide, once."""
 

@@ -1199,6 +1199,118 @@ class TestReleaseplanGates:
         assert gate_b.is_set()
         assert "story-b" not in plan_gates
 
+    def test_deferred_gate_stays_closed_while_blocker_holds_a_claim(self) -> None:
+        """#2234: a blocker that left ``active`` still holds its files while claimed.
+
+        story-a escalated with its worktree preserved — no longer active, but the
+        pending decision is precisely whether its rewrite of src/shared.py lands.
+        """
+        from theforge.sprint.runner import CLAIM_PRESERVED, _release_plan_gates
+
+        plan_done: dict[str, str] = {}
+        file_footprints = {
+            "story-a": {"src/shared.py"},
+            "story-b": {"src/shared.py"},
+        }
+        gate_b = threading.Event()
+        plan_gates = {"story-b": gate_b}
+        # story-a is no longer active, but its claim survives.
+        active: dict[str, object] = {"story-b": MagicMock()}
+        collision_claims = {"story-a": CLAIM_PRESERVED}
+        phase_lock = threading.Lock()
+
+        stood_down = _release_plan_gates(
+            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+        )
+
+        assert not gate_b.is_set()
+        # Nothing in this run can resolve the preserved claim, so story-b is
+        # stood down rather than released onto a base that is about to change.
+        assert stood_down == ["story-b"]
+        assert "story-b" in plan_gates
+
+    def test_deferred_gate_waits_while_blocker_claim_is_still_resolvable(self) -> None:
+        """A claim held for a pending landing is not a stand-down: it can resolve."""
+        from theforge.sprint.runner import CLAIM_PENDING_LANDING, _release_plan_gates
+
+        plan_done: dict[str, str] = {}
+        file_footprints = {
+            "story-a": {"src/shared.py"},
+            "story-b": {"src/shared.py"},
+        }
+        gate_b = threading.Event()
+        plan_gates = {"story-b": gate_b}
+        active: dict[str, object] = {"story-b": MagicMock()}
+        collision_claims = {"story-a": CLAIM_PENDING_LANDING}
+        phase_lock = threading.Lock()
+
+        stood_down = _release_plan_gates(
+            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+        )
+
+        assert not gate_b.is_set()
+        assert stood_down == []
+        assert "story-b" in plan_gates
+
+    def test_deferred_gate_releases_once_claim_is_dropped(self) -> None:
+        """The claim, not the status transition, is what holds the gate."""
+        from theforge.sprint.runner import CLAIM_PRESERVED, _release_plan_gates
+
+        plan_done: dict[str, str] = {}
+        file_footprints = {
+            "story-a": {"src/shared.py"},
+            "story-b": {"src/shared.py"},
+        }
+        gate_b = threading.Event()
+        plan_gates = {"story-b": gate_b}
+        active: dict[str, object] = {"story-b": MagicMock()}
+        collision_claims = {"story-a": CLAIM_PRESERVED}
+        phase_lock = threading.Lock()
+
+        _release_plan_gates(
+            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+        )
+        assert not gate_b.is_set()
+
+        # The claim ends (work landed or was abandoned) — the scheduler clears
+        # the footprint alongside it, exactly as _end_collision_claim does.
+        del collision_claims["story-a"]
+        del file_footprints["story-a"]
+
+        stood_down = _release_plan_gates(
+            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+        )
+
+        assert gate_b.is_set()
+        assert stood_down == []
+        assert "story-b" not in plan_gates
+        # Passing the gate registers story-b's own claim on its files.
+        assert "story-b" in collision_claims
+
+    def test_new_plan_defers_behind_a_preserved_claim(self) -> None:
+        """A story reaching PLAN_DONE after the blocker escalated is still held."""
+        from theforge.sprint.runner import CLAIM_PRESERVED, _release_plan_gates
+
+        plan_done = {"story-b": "/tmp/ws-b"}
+        file_footprints: dict[str, set[str]] = {"story-a": {"src/shared.py"}}
+        gate_b = threading.Event()
+        plan_gates = {"story-b": gate_b}
+        active: dict[str, object] = {"story-b": MagicMock()}
+        collision_claims = {"story-a": CLAIM_PRESERVED}
+        phase_lock = threading.Lock()
+
+        with patch(
+            "theforge.sprint.runner._extract_plan_footprint",
+            return_value={"src/shared.py"},
+        ):
+            _release_plan_gates(
+                plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+            )
+
+        assert not gate_b.is_set()
+        assert "story-b" in plan_gates
+        assert "story-b" not in collision_claims
+
     def test_poll_loop_no_false_timeout_after_last_gate_released(self):
         """Releasing the last plan gate must not cause a false timeout.
 

@@ -1719,18 +1719,60 @@ def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str
         return []
 
 
+#: A collision claim is held while its story is running past the plan gate.
+CLAIM_IN_DEV = "in dev"
+#: Held while the story's work is queued/pending a landing decision that this
+#: run will still resolve — the gate can legitimately open once it resolves.
+CLAIM_PENDING_LANDING = "landing pending"
+#: Held because the story stopped without a landing verdict but its work was
+#: preserved for an operator decision. Nothing in this run can resolve it, so
+#: the files it planned to rewrite stay claimed until the sprint ends (#2234).
+CLAIM_PRESERVED = "preserved for operator decision"
+
+
 def _release_plan_gates(
     plan_done: dict[str, str],
     file_footprints: dict[str, set[str]],
     plan_gates: dict[str, threading.Event],
     active: dict[str, object],
     phase_lock: threading.Lock,
-) -> None:
+    collision_claims: "dict[str, str] | None" = None,
+) -> list[str]:
     """Check newly-planned stories and release their gates if no file overlap.
 
     Called from the scheduling loop — both the poll interval and after a future
     completes — to avoid deadlock when gated workers block in _run_fresh.
+
+    *collision_claims* maps slug -> claim reason for stories that are past their
+    plan gate. A claim, not worker liveness, is what holds a file: a story that
+    escalates with its worktree preserved is no longer ``active`` but its work
+    is still expected to land, so releasing the gate on that transition would
+    hand the waiting story a base the pending decision is about to rewrite
+    (#2234).
+
+    Returns the slugs whose gate can never open in this run — every file they
+    are blocked on is claimed by preserved, undecided work — for the caller to
+    stand down. Those slugs are left in *plan_gates* for the caller to remove.
     """
+    claims = collision_claims if collision_claims is not None else {}
+
+    def _blockers(slug: str, footprint: set[str]) -> dict[str, set[str]]:
+        """Map blocker slug -> overlapping files for stories holding *footprint*.
+
+        A story holds its files while it is running past its own gate (``active``)
+        *or* while it still holds a collision claim.
+        """
+        held: dict[str, set[str]] = {}
+        for other_slug, other_files in file_footprints.items():
+            if other_slug == slug or other_slug in plan_gates:
+                continue
+            if other_slug not in active and other_slug not in claims:
+                continue
+            shared = footprint & other_files
+            if shared:
+                held[other_slug] = shared
+        return held
+
     with phase_lock:
         pd_snapshot = dict(plan_done)
 
@@ -1740,38 +1782,49 @@ def _release_plan_gates(
             footprint = _extract_plan_footprint(ws_path)
             file_footprints[pd_slug] = footprint
 
-            # Check overlap with stories already past their gate (in DEV)
-            active_dev_files: set[str] = set()
-            for other_slug, other_files in file_footprints.items():
-                if other_slug != pd_slug and other_slug in active and other_slug not in plan_gates:
-                    active_dev_files |= other_files
-
-            overlap = footprint & active_dev_files
-            if overlap:
+            # Check overlap with stories already past their gate (in DEV) or
+            # still claiming their files after leaving the active set.
+            blockers = _blockers(pd_slug, footprint)
+            if blockers:
+                overlap = set().union(*blockers.values())
                 _log(
                     f"WARNING: {pd_slug} overlaps with active stories on: "
                     f"{', '.join(sorted(overlap))}"
                 )
             else:
-                if pd_slug in plan_gates:
-                    plan_gates[pd_slug].set()
-                    del plan_gates[pd_slug]
+                gate = plan_gates.pop(pd_slug, None)
+                if gate is not None:
+                    gate.set()
+                claims[pd_slug] = CLAIM_IN_DEV
 
     # Re-check deferred gates (conflicting story may have finished)
+    stood_down: list[str] = []
     for deferred_slug, gate in list(plan_gates.items()):
-        if deferred_slug in file_footprints:
-            active_dev_files = set()
-            for other_slug, other_files in file_footprints.items():
-                if (
-                    other_slug != deferred_slug
-                    and other_slug in active
-                    and other_slug not in plan_gates
-                ):
-                    active_dev_files |= other_files
-            overlap = file_footprints[deferred_slug] & active_dev_files
-            if not overlap:
-                gate.set()
-                del plan_gates[deferred_slug]
+        if deferred_slug not in file_footprints:
+            continue
+        blockers = _blockers(deferred_slug, file_footprints[deferred_slug])
+        if not blockers:
+            gate.set()
+            del plan_gates[deferred_slug]
+            claims[deferred_slug] = CLAIM_IN_DEV
+            continue
+        # Every blocker is preserved, undecided work that no longer has a
+        # worker or a landing path in this run: the gate cannot open here.
+        # Waiting forever and releasing onto a doomed base are both wrong —
+        # stand the story down instead so the operator's decision on the
+        # preserved work comes first.
+        if all(
+            blocker not in active and claims.get(blocker) == CLAIM_PRESERVED
+            for blocker in blockers
+        ):
+            overlap = sorted(set().union(*blockers.values()))
+            _log(
+                f"STAND DOWN {deferred_slug}: blocked only by preserved, undecided "
+                f"work from {', '.join(sorted(blockers))} on {', '.join(overlap)} — "
+                "the collision gate cannot open in this run"
+            )
+            stood_down.append(deferred_slug)
+    return stood_down
 
 
 def _validate_story_paths(config: ForgeConfig, manifest_path: Path) -> list[Path]:
@@ -1952,6 +2005,14 @@ def _run_fresh(
 
     # Wait for scheduler to release the gate (with safety timeout)
     plan_gate.wait(timeout=7200)
+
+    # The scheduler also opens the gate to *stop* a worker — on a stand-down
+    # (blocked only by preserved work that cannot land in this run), an auth
+    # abort, or a deadline. It sets stop_event first, so an open gate plus a set
+    # stop_event means "come back out", not "proceed into DEV" (#2234).
+    if stop_event is not None and stop_event.is_set():
+        _log(f"{task.slug}: plan gate opened for shutdown — not entering DEV")
+        return plan_result
 
     # Phase 2: continue from DEV
     return run_from_dev(
@@ -5092,6 +5153,77 @@ def run_sprint(
     plan_done: dict[str, str] = {}  # slug -> workspace_path (set by phase callback)
     use_plan_gates = max_parallel > 1  # only for parallel mode
 
+    # Collision claims (#2234). A story past its plan gate *claims* the files it
+    # planned to touch, and the claim outlives the worker: a story that escalates
+    # with its work preserved is no longer active, but the decision pending on it
+    # is precisely whether that work lands. Releasing the claim on the status
+    # transition hands a gated sibling a base that is about to change.
+    collision_claims: dict[str, str] = {}  # slug -> claim reason (CLAIM_* above)
+    claim_results: dict[str, CoordinatorResult] = {}  # slug -> last known result
+    gate_stood_down: dict[str, str] = {}  # slug -> reason it never entered DEV
+
+    def _end_collision_claim(slug: str, why: str) -> None:
+        """Drop a story's claim on its planned files, and the state behind it."""
+        if collision_claims.pop(slug, None) is not None:
+            _log(f"Collision claim released for {slug} ({why})")
+        claim_results.pop(slug, None)
+        file_footprints.pop(slug, None)
+        # plan_done is what re-derives the footprint; leaving it behind would
+        # resurrect the claim on the next _release_plan_gates pass.
+        with phase_lock:
+            plan_done.pop(slug, None)
+
+    def _reconcile_collision_claim(slug: str, result: CoordinatorResult) -> None:
+        """Re-evaluate whether *slug* can still land the files it claimed."""
+        if slug not in collision_claims:
+            return
+        claim_results[slug] = result
+        if (
+            slug in queued_prs
+            or slug in pending_integration
+            or result.landing_status == "pending_integration"
+        ):
+            reason = CLAIM_PENDING_LANDING
+        elif result.phase == Phase.ESCALATE and not getattr(
+            result, "infrastructure_failure", False
+        ):
+            # Escalation preserves the worktree and its commits for an operator
+            # decision. The work has not been abandoned — holding is the cheap
+            # side of the asymmetry (waiting vs. a conflict found after spend).
+            reason = CLAIM_PRESERVED
+        else:
+            _end_collision_claim(slug, f"landing_status={result.landing_status or 'none'}")
+            return
+        if collision_claims.get(slug) != reason:
+            collision_claims[slug] = reason
+            _files = ", ".join(sorted(file_footprints.get(slug, set()))) or "its planned files"
+            _log(f"Holding collision claim for {slug} on {_files}: {reason}")
+
+    def _refresh_collision_claims() -> None:
+        """Re-evaluate every live claim against the latest known result."""
+        for _c_slug in list(collision_claims):
+            _c_result = claim_results.get(_c_slug)
+            if _c_result is not None:
+                _reconcile_collision_claim(_c_slug, _c_result)
+
+    def _service_plan_gates() -> None:
+        """Release openable plan gates and stand down the unopenable ones."""
+        for _sd_slug in _release_plan_gates(
+            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+        ):
+            _sd_gate = plan_gates.pop(_sd_slug, None)
+            gate_stood_down[_sd_slug] = (
+                "collision gate stood down: the files it planned to change are held "
+                "by preserved work that has not landed"
+            )
+            # stop_event BEFORE the gate, same ordering as the deadline teardown:
+            # the worker must observe the shutdown flag when the gate wakes it.
+            _sd_evt = stop_events.get(_sd_slug)
+            if _sd_evt is not None:
+                _sd_evt.set()
+            if _sd_gate is not None:
+                _sd_gate.set()
+
     def _apply_batch_landing_to_member(
         member_slug: str,
         task: TaskStory,
@@ -5721,6 +5853,7 @@ def run_sprint(
                         _write_story_audit(config, _qp_task, _qp_result, sprint_id=_sprint_id)
                         _resolve_batch_leader_landing(_qp_slug, "failed")
                         _log(f"✗ {_qp_slug}: queued PR {_qp_poll['status']} (no active workers)")
+                    _reconcile_collision_claim(_qp_slug, _qp_result)
                 continue
 
             _log(f"[debug] calling wait() with {len(active)} active futures")
@@ -5755,7 +5888,7 @@ def run_sprint(
                 story_wait_started.update(active)
                 if not done_futs and use_plan_gates:
                     # Service plan gates while polling
-                    _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
+                    _service_plan_gates()
                 _now = time.monotonic()
                 expired_slugs = [
                     slug
@@ -5775,6 +5908,10 @@ def run_sprint(
                     fut = active.pop(slug)
                     story_deadlines.pop(slug, None)
                     story_wait_started.discard(slug)
+                    # A worker killed at its deadline is not preserved work
+                    # awaiting a decision — nothing can land it, so its files
+                    # are free.
+                    _end_collision_claim(slug, "worker timed out")
                     # Set the cancellation event BEFORE cancel() so any in-flight
                     # work stops at the next phase boundary or subprocess read.
                     # Future.cancel() is a no-op for an already-running thread.
@@ -5881,6 +6018,7 @@ def run_sprint(
                     story_deadlines.pop(slug, None)
                     story_wait_started.discard(slug)
                     stop_events.pop(slug, None)
+                    _end_collision_claim(slug, "worker raised")
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
                     snapshot = _snapshot_last_known(slug, _state_writer)
@@ -6021,9 +6159,33 @@ def run_sprint(
                     auth_cancelled_slugs.discard(slug)
                     _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
                     _mark_story_auth_cancelled(result, auth_circuit, reason=_cancel_reason)
+                    _end_collision_claim(slug, "cancelled by the auth circuit breaker")
                     _log(f"SKIPPED {slug} ({_cancel_reason})")
                     _record_current_story_entry(slug, "SKIPPED", error=_cancel_reason)
                     _set_outcome(slug, StoryOutcome.SKIPPED, reason=_cancel_reason)
+                    if _state_writer is not None:
+                        _state_writer.update(slug, status="skipped")
+                    dag.mark_skipped(slug)
+                    _write_story_audit(config, task, result, sprint_id=_sprint_id)
+                    _print_worker_status(active, worker_phases, dag, total)
+                    continue
+
+                # Stood down at its collision gate (#2234): the scheduler opened
+                # the gate to release the worker, not to admit it to DEV. The
+                # story reached PLAN and stopped, so it is skipped — not failed:
+                # nothing judged it, and its planned work is still valid once the
+                # preserved work it collided with is decided.
+                if slug in gate_stood_down:
+                    _stand_down_reason = gate_stood_down.pop(slug)
+                    _end_collision_claim(slug, "stood down before entering DEV")
+                    _log(f"SKIPPED {slug} ({_stand_down_reason})")
+                    _record_current_story_entry(slug, "SKIPPED", error=_stand_down_reason)
+                    _set_outcome(
+                        slug,
+                        StoryOutcome.SKIPPED,
+                        reason=_stand_down_reason,
+                        phase=result.phase.name,
+                    )
                     if _state_writer is not None:
                         _state_writer.update(slug, status="skipped")
                     dag.mark_skipped(slug)
@@ -6136,6 +6298,14 @@ def run_sprint(
                 else:
                     _write_story_audit(config, task, result, sprint_id=_sprint_id)
 
+                # The landing verdict — not the worker exiting — is what ends a
+                # collision claim (#2234). Re-check every live claim, not just
+                # this story's: the integration drain above can turn a sibling's
+                # pending_integration into landed or merge-failed.
+                if use_plan_gates:
+                    _reconcile_collision_claim(slug, result)
+                    _refresh_collision_claims()
+
                 # Batch groups land as one branch (#727) — the leader's. Register
                 # each member so a leader landing that resolves later (queued PR,
                 # wrap-up) can still correct it, and apply the leader's verdict
@@ -6181,7 +6351,7 @@ def run_sprint(
 
             # ── Overlap detection: check plan gates ────────────────────
             if use_plan_gates:
-                _release_plan_gates(plan_done, file_footprints, plan_gates, active, phase_lock)
+                _service_plan_gates()
 
     if queued_prs:
         for slug, (task, result, pr_url) in list(queued_prs.items()):
@@ -6212,6 +6382,7 @@ def run_sprint(
             _persist_story_landing(slug, result)
             _write_story_audit(config, task, result, sprint_id=_sprint_id)
             del queued_prs[slug]
+            _reconcile_collision_claim(slug, result)
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
