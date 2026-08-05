@@ -2186,7 +2186,22 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
          (e.g. ``sonnet-cli`` → unique anthropic/sonnet CLI spec).
       5. Bare-name unique-spec lookup with constructable transport
          (e.g. ``deepseek-deepseek-reasoner`` → unique deepseek/deepseek-reasoner
-         API spec).
+         API spec), narrowed by a transport hint recorded on ``entry`` when the
+         bare name alone is ambiguous (``gpt-5.4`` + ``transport_used: cli`` →
+         ``openai/gpt-5.4/cli``).
+      6. Anthropic CLI concrete-version family match (``claude-sonnet-4-6`` →
+         ``anthropic/sonnet/cli``). This one is a *prefix heuristic*, not a
+         registry-derived rule: it holds only because the Anthropic registry
+         slots are the shorthands ``sonnet``/``opus`` while the runner reports
+         dated concrete versions. It is gated on the shorthand slot actually
+         existing in the registry, and applies only to Anthropic CLI, so a
+         future ``claude-<family>-*`` model with no matching shorthand stays
+         unresolved rather than being folded into the wrong slot.
+
+    ``entry`` is the optional record the key was read from — either a profiles
+    storage entry (``_identity`` metadata) or an audit ``cost.agents`` entry
+    (``transport_used``). It is only ever used as a *hint*; a key that stays
+    ambiguous with the hint applied is still reported unresolved.
 
     Returns ``None`` when the key cannot be resolved unambiguously — those keys
     are reported as ambiguous by the migration tool and left under their legacy
@@ -2196,6 +2211,7 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
     if not key:
         return None
 
+    entry_transport: str | None = None
     if isinstance(entry, dict):
         metadata = entry.get("_identity")
         if isinstance(metadata, dict):
@@ -2206,6 +2222,11 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
                 transport = "cli"
             if provider and model and transport in ("cli", "api"):
                 return f"{provider}/{model}/{transport}"
+        for hint_key in ("transport_used", "transport"):
+            hint = str(entry.get(hint_key) or "").strip().lower()
+            if hint in ("cli", "api"):
+                entry_transport = hint
+                break
 
     # Already canonical?
     parts = key.split("/")
@@ -2225,9 +2246,17 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
         transport_hint = "api"
         base = key[: -len("-api")]
 
-    spec = _unique_registry_spec(base, transport_hint)
+    # A suffix on the key is a stronger statement than a hint recorded
+    # alongside it, so the suffix wins when both are present.
+    effective_hint = transport_hint or entry_transport
+
+    spec = _unique_registry_spec(base, effective_hint)
     if spec is not None:
         return f"{spec.provider}/{spec.model}/{spec.transport.kind}"
+
+    family = _anthropic_cli_family_id(key, effective_hint)
+    if family is not None:
+        return family
 
     if transport_hint is None:
         # Try `<provider>-<model>` style: split at the first dash where the
@@ -2252,6 +2281,42 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
                         return f"{spec_obj.provider}/{spec_obj.model}/{spec_obj.transport.kind}"
 
     return None
+
+
+def _anthropic_cli_family_id(model_key: str, transport: str | None) -> str | None:
+    """Map a concrete Anthropic CLI model version onto its registry shorthand.
+
+    The Anthropic registry slots are family shorthands (``anthropic/sonnet/cli``,
+    ``anthropic/opus/cli``) while the Claude CLI reports dated concrete versions
+    (``claude-sonnet-4-6``). Without this the same model indexes under two
+    spellings (#2225).
+
+    Deliberately narrow, because this is the one prefix heuristic in the
+    resolver rather than a registry-derived rule:
+
+    * only ``claude-<family>-<version…>`` keys,
+    * only when ``anthropic/<family>/cli`` exists in the registry, and
+    * only when nothing hints at a non-CLI transport.
+
+    A future ``claude-<family>-*`` model with no matching shorthand slot
+    resolves to ``None`` and is reported unresolved, which is the behaviour a
+    catalog change should surface rather than silently mis-bucket.
+    """
+    if transport not in (None, "cli"):
+        return None
+    prefix = "claude-"
+    if not model_key.startswith(prefix):
+        return None
+    rest = model_key[len(prefix) :]
+    family, sep, version = rest.partition("-")
+    if not family or not sep or not version:
+        return None
+    try:
+        from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
+    except Exception:  # noqa: BLE001
+        return None
+    canonical = f"anthropic/{family}/cli"
+    return canonical if canonical in AGENT_REGISTRY else None
 
 
 def _unique_registry_spec(model_name: str, transport: str | None) -> Any | None:

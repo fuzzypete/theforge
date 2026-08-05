@@ -29,7 +29,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from .agent_identity import dev_model_identity
+from .agent_identity import dev_model_identity_detail
 
 # Substrate (SQLite) schema version. Bumped to 5 by #2201, which added
 # ``audit_records.dev_model_source`` and repaired the dev-model projection:
@@ -37,7 +37,14 @@ from .agent_identity import dev_model_identity
 # row, so opening an older one re-derives both columns from the stored
 # ``raw_json`` (see :func:`_reindex_dev_model_identity`) instead of leaving the
 # repaired projection unapplied to already-indexed history.
-SUBSTRATE_SCHEMA_VERSION = 5
+#
+# Bumped to 6 by #2225: ``dev_model`` had been indexing whatever spelling the
+# runner recorded, so one model split across several values. Canonicalization
+# now resolves more spellings, and ``audit_records.dev_model_resolution``
+# records whether a stored value is canonical or a verbatim fallback. Both
+# changes have to reach already-indexed history, so a version-5 substrate is
+# re-derived on open.
+SUBSTRATE_SCHEMA_VERSION = 6
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -162,6 +169,7 @@ CREATE TABLE IF NOT EXISTS audit_records (
     issue_id INTEGER,
     dev_model TEXT,
     dev_model_source TEXT,
+    dev_model_resolution TEXT,
     verdict TEXT,
     raw_json TEXT NOT NULL
 );
@@ -278,6 +286,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE audit_records ADD COLUMN issue_id INTEGER",
         "ALTER TABLE audit_records ADD COLUMN dev_model TEXT",
         "ALTER TABLE audit_records ADD COLUMN dev_model_source TEXT",
+        "ALTER TABLE audit_records ADD COLUMN dev_model_resolution TEXT",
         "ALTER TABLE audit_records ADD COLUMN verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
@@ -338,7 +347,7 @@ def _stored_schema_version(conn: sqlite3.Connection) -> int | None:
 
 
 def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
-    """Re-derive ``dev_model``/``dev_model_source`` from each row's raw_json.
+    """Re-derive the ``dev_model*`` columns from each row's raw_json.
 
     The canonical per-run JSON is not needed — ``raw_json`` is the record, so
     rows imported from legacy history are repaired alongside native ones. Rows
@@ -363,12 +372,13 @@ def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
             continue
         if not isinstance(record, dict):
             continue
-        identity, source = dev_model_identity(record)
+        identity, source, resolution = dev_model_identity_detail(record)
         if not identity:
             continue
         conn.execute(
-            "UPDATE audit_records SET dev_model = ?, dev_model_source = ? WHERE run_id = ?",
-            (identity, source, run_id),
+            "UPDATE audit_records SET dev_model = ?, dev_model_source = ?, "
+            "dev_model_resolution = ? WHERE run_id = ?",
+            (identity, source, resolution, run_id),
         )
         updated += 1
     return updated
@@ -698,7 +708,7 @@ def _flat_fields(record: dict) -> dict:
     else:
         issue_id = None
 
-    dev_model, dev_model_source = dev_model_identity(record)
+    dev_model, dev_model_source, dev_model_resolution = dev_model_identity_detail(record)
 
     return {
         "slug": task.get("slug"),
@@ -715,6 +725,7 @@ def _flat_fields(record: dict) -> dict:
         "issue_id": issue_id,
         "dev_model": dev_model,
         "dev_model_source": dev_model_source,
+        "dev_model_resolution": dev_model_resolution,
         "verdict": _derive_record_verdict(record),
     }
 
@@ -1354,6 +1365,7 @@ def upsert_run_record(
         flat["issue_id"],
         flat["dev_model"],
         flat["dev_model_source"],
+        flat["dev_model_resolution"],
         flat["verdict"],
         raw_json,
     )
@@ -1362,8 +1374,8 @@ def upsert_run_record(
         "(run_id, slug, started_at, finished_at, total_cost_usd, final_phase, "
         "outcome_success, branch, landing_status, provenance, source_path, "
         "source_mtime, complexity_score, record_schema_version, milestone, "
-        "issue_id, dev_model, dev_model_source, verdict, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "issue_id, dev_model, dev_model_source, dev_model_resolution, verdict, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(run_id) DO UPDATE SET "
         "slug=excluded.slug, started_at=excluded.started_at, "
         "finished_at=excluded.finished_at, total_cost_usd=excluded.total_cost_usd, "
@@ -1375,7 +1387,8 @@ def upsert_run_record(
         "record_schema_version=excluded.record_schema_version, "
         "milestone=excluded.milestone, issue_id=excluded.issue_id, "
         "dev_model=excluded.dev_model, "
-        "dev_model_source=excluded.dev_model_source, verdict=excluded.verdict, "
+        "dev_model_source=excluded.dev_model_source, "
+        "dev_model_resolution=excluded.dev_model_resolution, verdict=excluded.verdict, "
         "raw_json=excluded.raw_json",
         params,
     )
@@ -1927,6 +1940,7 @@ def derive_assignment_history(
         dev_raw = assignments.get("dev")
         dev = dev_raw if isinstance(dev_raw, dict) else {}
         dev_model = dev.get("canonical_id") or dev.get("model")
+        dev_model_resolution: str | None = None
         # Fallback: when the audit record lacks the preflight.complexity_routing
         # block (older audits, or audits seeded by tests that bypass routing),
         # derive the canonical dev model from cost.agents — the model that
@@ -1934,7 +1948,7 @@ def derive_assignment_history(
         # the routing block would have provided. Shares the one reading of the
         # agent-entry identity contract (#2201).
         if not (isinstance(dev_model, str) and dev_model):
-            dev_model = dev_model_identity(record)[0]
+            dev_model, _source, dev_model_resolution = dev_model_identity_detail(record)
         if not isinstance(dev_model, str) or not dev_model:
             continue
         timing = record.get("timing") or {}
@@ -1950,6 +1964,9 @@ def derive_assignment_history(
                 "reason": reason or "",
                 "timestamp": str(timestamp),
                 "complexity_score": _coerce_complexity_score(pre.get("complexity_score")),
+                # Only set on the cost.agents fallback: a routing-block model is
+                # canonical by construction and carries no resolution status.
+                "dev_model_resolution": dev_model_resolution,
             }
         )
     return out
@@ -2035,7 +2052,8 @@ def _derive_escalation(record: dict) -> dict | None:
 
     # Canonical dev model identity, derived from the cost.agents block when
     # present, through the one shared reading of that contract (#2201).
-    dev_model = dev_model_identity(record)[0] or ""
+    dev_model, _dev_model_source, dev_model_resolution = dev_model_identity_detail(record)
+    dev_model = dev_model or ""
 
     raw_score = preflight.get("complexity_score") if isinstance(preflight, dict) else None
     if isinstance(raw_score, bool):
@@ -2063,6 +2081,10 @@ def _derive_escalation(record: dict) -> dict | None:
         "reason": reason,
         "timestamp": timestamp,
         "complexity_score": complexity_score,
+        # Whether ``dev_model`` is a canonical identity or the runner's verbatim
+        # spelling — a consumer aggregating per model needs to be able to tell
+        # an unrecognized identity from a normalized one (#2225).
+        "dev_model_resolution": dev_model_resolution,
     }
 
 

@@ -943,6 +943,27 @@ def _run_single_api_model(
         return runner_fn(prompt, profile, secrets)
 
 
+def _stamp_api_transport(result: AgentResult) -> AgentResult:
+    """Record that this result came over the API transport.
+
+    The transport is a *hint the identity projection needs*: a bare model name
+    the catalog offers over both CLI and API (``gpt-5.4``) cannot be resolved to
+    one canonical id without it, so an API result that omits it indexes under
+    the bare spelling and splits from ``openai/gpt-5.4/api`` (#2225). Stamping
+    it here rather than only at the callers means every API invocation carries
+    it regardless of which entry point ran — including single-model profiles,
+    which never pass through the preference-list annotation below.
+
+    Only fills an empty value: a caller that already knows the transport (the
+    CLI→API fallback in ``cli.py``, which also records *why* it switched) has
+    the more specific reading. Non-dataclass results — the mocks that
+    ``run_api_agent``'s callers return in tests — are passed through untouched.
+    """
+    if not isinstance(result, AgentResult) or result.transport_used:
+        return result
+    return dataclasses.replace(result, transport_used="api")
+
+
 def run_api_agent(
     *,
     prompt: str,
@@ -1017,8 +1038,10 @@ def run_api_agent(
             # configured. Skip replace() for single-model profiles to avoid breaking
             # callers that return non-dataclass objects (e.g., mocks in tests).
             if model_config:
-                return dataclasses.replace(result, model_config=model_config, model_used=model)
-            return result
+                return _stamp_api_transport(
+                    dataclasses.replace(result, model_config=model_config, model_used=model)
+                )
+            return _stamp_api_transport(result)
 
         last_result = result
 
@@ -1043,5 +1066,7 @@ def run_api_agent(
         )
         _log_verbose(f"  ... {label} done | {status} | cost={cost_str}")
     if model_config:
-        return dataclasses.replace(last_result, model_config=model_config, model_used=model)
-    return last_result
+        return _stamp_api_transport(
+            dataclasses.replace(last_result, model_config=model_config, model_used=model)
+        )
+    return _stamp_api_transport(last_result)

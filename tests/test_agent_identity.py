@@ -60,3 +60,72 @@ def test_dev_entry_matches_role_or_legacy_phase_key() -> None:
 def test_malformed_records_project_to_nothing() -> None:
     for record in (None, {}, {"cost": "nope"}, {"cost": {"agents": "nope"}}, {"cost": {}}):
         assert ai.dev_model_identity(record) == (None, None)
+        assert ai.dev_model_identity_detail(record) == (None, None, None)
+
+
+# ── Resolution status (#2225) ──────────────────────────────────────────
+
+
+def test_canonicalized_identity_reports_canonical_resolution() -> None:
+    assert ai.entry_model_identity_detail({"role": "dev", "model_used": "sonnet"}) == (
+        "anthropic/sonnet/cli",
+        ai.SOURCE_DIRECT,
+        ai.RESOLUTION_CANONICAL,
+    )
+
+
+def test_verbatim_identity_reports_unresolved_resolution() -> None:
+    """Verbatim is correct; indistinguishable-from-canonical is the defect."""
+    assert ai.entry_model_identity_detail({"role": "dev", "model_used": "some-new-model"}) == (
+        "some-new-model",
+        ai.SOURCE_DIRECT,
+        ai.RESOLUTION_UNRESOLVED,
+    )
+
+
+def test_concrete_anthropic_version_folds_onto_the_registry_shorthand() -> None:
+    """The three live spellings of one model project to one identity."""
+    identities = {
+        ai.entry_model_identity_detail({"role": "dev", "model_used": spelling})[0]
+        for spelling in ("anthropic/sonnet/cli", "sonnet", "claude-sonnet-4-6")
+    }
+    assert identities == {"anthropic/sonnet/cli"}
+
+
+def test_transport_used_disambiguates_a_bare_model_name() -> None:
+    for transport in ("cli", "api"):
+        assert ai.entry_model_identity_detail(
+            {"role": "dev", "model_used": "gpt-5.4", "transport_used": transport}
+        ) == (f"openai/gpt-5.4/{transport}", ai.SOURCE_DIRECT, ai.RESOLUTION_CANONICAL)
+
+
+def test_bare_model_name_without_a_hint_stays_unresolved() -> None:
+    assert ai.entry_model_identity_detail({"role": "dev", "model_used": "gpt-5.4"}) == (
+        "gpt-5.4",
+        ai.SOURCE_DIRECT,
+        ai.RESOLUTION_UNRESOLVED,
+    )
+
+
+def test_transport_hint_does_not_leak_into_the_recovered_config_reading() -> None:
+    """Which preference-list entry served is unrecorded, so the hint does not apply."""
+    assert ai.entry_model_identity_detail(
+        {"role": "dev", "model_config": ["gpt-5.4"], "transport_used": "cli"}
+    ) == ("gpt-5.4", ai.SOURCE_RECOVERED, ai.RESOLUTION_UNRESOLVED)
+
+
+def test_dev_model_identity_detail_prefers_the_direct_entry() -> None:
+    record = {
+        "cost": {
+            "agents": [
+                {"role": "dev", "model_config": ["opus"]},
+                {"role": "dev", "model_used": "claude-sonnet-4-6"},
+            ]
+        }
+    }
+    assert ai.dev_model_identity_detail(record) == (
+        "anthropic/sonnet/cli",
+        ai.SOURCE_DIRECT,
+        ai.RESOLUTION_CANONICAL,
+    )
+    assert ai.dev_model_identity(record) == ("anthropic/sonnet/cli", ai.SOURCE_DIRECT)
