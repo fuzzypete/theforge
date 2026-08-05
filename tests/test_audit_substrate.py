@@ -1099,3 +1099,190 @@ def test_migrate_record_chains_up_to_v14() -> None:
 
     assert migrated["iterations"]["gate_runs"] is None
     assert migrated["iterations"]["gate_debug"][0]["trace_index"] == 1
+
+
+class TestRendererIndexerModelIdentitySeam:
+    """#2201: the fields the renderer writes are the fields the indexer reads.
+
+    These build the ``cost.agents`` entry with the *real* writer
+    (:func:`audit_render._agent_entry`) rather than a hand-shaped dict, so a
+    future rename on either side of the seam fails here instead of silently
+    emptying the ``dev_model`` column on every indexed record.
+    """
+
+    def _agent_result(self, **overrides) -> object:
+        from theforge.agent_types import AgentResult
+
+        kwargs = {
+            "success": True,
+            "output": "done",
+            "session_id": None,
+            "cost_usd": 1.0,
+            "exit_code": 0,
+            "raw": {},
+            "profile_name": "dev",
+        }
+        kwargs.update(overrides)
+        return AgentResult(**kwargs)
+
+    def _record_with_agent_entry(self, entry: dict, run_id: str = "seam-1") -> dict:
+        rec = _make_record(run_id=run_id)
+        rec["cost"]["agents"] = [entry]
+        return rec
+
+    def _index(self, tmp_path: Path, record: dict) -> tuple:
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, record, provenance="native")
+            conn.commit()
+            return tuple(
+                conn.execute(
+                    "SELECT dev_model, dev_model_source FROM audit_records WHERE run_id = ?",
+                    (record["run_id"],),
+                ).fetchone()
+            )
+        finally:
+            conn.close()
+
+    def test_model_used_from_renderer_indexes_as_direct_identity(self, tmp_path: Path) -> None:
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_used="sonnet"), "dev", "dev", 12.0
+        )
+        assert "model_used" in entry, "renderer no longer emits the key the indexer reads"
+
+        assert self._index(tmp_path, self._record_with_agent_entry(entry)) == (
+            "anthropic/sonnet/cli",
+            "direct",
+        )
+
+    def test_unresolvable_model_used_is_recorded_verbatim_not_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """An identity the profile registry cannot canonicalize is still what ran."""
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_used="claude-opus-4-1-20250805"), "dev", "dev", 12.0
+        )
+
+        assert self._index(tmp_path, self._record_with_agent_entry(entry)) == (
+            "claude-opus-4-1-20250805",
+            "direct",
+        )
+
+    def test_model_config_only_entry_indexes_as_recovered_identity(self, tmp_path: Path) -> None:
+        """No recorded model_used → reconstruct from invocation config, marked recovered."""
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_config=("opus", "sonnet")), "dev", "dev", 12.0
+        )
+        assert "model_used" not in entry
+
+        assert self._index(tmp_path, self._record_with_agent_entry(entry)) == (
+            "anthropic/opus/cli",
+            "recovered",
+        )
+
+    def test_component_billing_is_not_treated_as_invocation_identity(self, tmp_path: Path) -> None:
+        """A model billed inside an invocation is not the model that was invoked.
+
+        ``_agent_entry`` back-fills ``model_used`` from ``model_usage`` itself,
+        so the indexer must not reach into per-component billing on its own —
+        an entry carrying only ``model_usage`` has no invocation identity.
+        """
+        entry = {
+            "role": "dev",
+            "profile": "dev",
+            "cost_usd": 1.0,
+            "duration_seconds": 12.0,
+            "success": True,
+            "exit_code": 0,
+            "model_usage": [{"model": "claude-haiku-4-5", "cost_usd": 0.01}],
+        }
+
+        assert self._index(tmp_path, self._record_with_agent_entry(entry)) == (None, None)
+
+    def test_direct_identity_wins_over_a_recovered_one(self, tmp_path: Path) -> None:
+        """A later dev attempt that recorded model_used is not reported as recovered."""
+        rec = _make_record(run_id="seam-multi")
+        rec["cost"]["agents"] = [
+            {"role": "dev", "model_config": ["opus", "sonnet"]},
+            {"role": "dev", "model_used": "sonnet"},
+        ]
+
+        assert self._index(tmp_path, rec) == ("anthropic/sonnet/cli", "direct")
+
+    def test_legacy_identity_keys_still_index_as_recovered(self, tmp_path: Path) -> None:
+        """Older records carry provider/model/cli; keep reading them, marked recovered."""
+        rec = _make_record(run_id="seam-legacy")
+        rec["cost"]["agents"] = [
+            {"phase": "dev", "provider": "openai", "model": "gpt-5", "cli": ""}
+        ]
+
+        assert self._index(tmp_path, rec) == ("openai/gpt-5/api", "recovered")
+
+    def test_escalation_projection_uses_the_same_identity(self, tmp_path: Path) -> None:
+        """The adaptive-routing view reads the renderer's keys, not the stale ones."""
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_used="sonnet"), "dev", "dev", 12.0
+        )
+        rec = self._record_with_agent_entry(entry, run_id="esc-seam")
+        rec["outcome"] = {"success": False, "final_phase": "ESCALATE"}
+        rec["preflight"] = {"complexity": "medium", "complexity_score": 5}
+
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.commit()
+            projected = list(sub.iter_escalation_records(conn))
+        finally:
+            conn.close()
+
+        assert [p["dev_model"] for p in projected] == ["anthropic/sonnet/cli"]
+
+    def test_reindex_repairs_rows_indexed_under_the_broken_projection(
+        self, tmp_path: Path
+    ) -> None:
+        """Opening a pre-#2201 substrate re-derives dev_model from raw_json.
+
+        Simulates the observed failure: rows present, identity in the record,
+        column empty. The substrate schema version is what marks them stale.
+        """
+        from theforge.coordinator import audit_render
+
+        entry = audit_render._agent_entry(
+            self._agent_result(model_used="sonnet"), "dev", "dev", 12.0
+        )
+        rec = self._record_with_agent_entry(entry, run_id="stale-1")
+        conn = sub.create_or_open(tmp_path)
+        try:
+            sub.upsert_run_record(conn, rec, provenance="native")
+            conn.execute(
+                "UPDATE audit_records SET dev_model = NULL, dev_model_source = NULL "
+                "WHERE run_id = 'stale-1'"
+            )
+            conn.execute("UPDATE meta SET value = '4' WHERE key = 'schema_version'")
+            conn.commit()
+        finally:
+            conn.close()
+
+        conn = sub.create_or_open(tmp_path)
+        try:
+            row = tuple(
+                conn.execute(
+                    "SELECT dev_model, dev_model_source FROM audit_records WHERE run_id='stale-1'"
+                ).fetchone()
+            )
+            version = conn.execute(
+                "SELECT value FROM meta WHERE key = 'schema_version'"
+            ).fetchone()[0]
+        finally:
+            conn.close()
+
+        assert row == ("anthropic/sonnet/cli", "direct")
+        assert version == str(sub.SUBSTRATE_SCHEMA_VERSION)
