@@ -211,6 +211,8 @@ def build_agent_entries(state: CoordinatorState, config: ForgeConfig) -> list[di
     here before (#2205). Complexity is stamped from the run's preflight
     classification, which is the condition each of those invocations ran under.
     """
+    from theforge.agent_types import AgentResult  # noqa: PLC0415
+
     agents: list[dict] = []
     complexity = state.preflight_complexity
     complexity_score = state.preflight_complexity_score
@@ -227,7 +229,16 @@ def build_agent_entries(state: CoordinatorState, config: ForgeConfig) -> list[di
             )
         )
 
-    if state.preflight_result is not None:
+    # ``isinstance`` rather than a bare None check, because this is the one
+    # AgentResult the renderer reads that is a single field rather than a
+    # phase-appended list: ``preflight_result`` is reassigned across the
+    # parse-retry/fallback path and read duck-typed elsewhere in the writer
+    # (``audit.py`` takes ``.cost_usd`` off it without a type check). Rendering
+    # the audit must never be the thing that kills a run — an unreadable
+    # preflight result costs this one entry, not the entire record, and an
+    # entry is not fabricated from an object whose fields cannot be trusted to
+    # be identities.
+    if isinstance(state.preflight_result, AgentResult):
         # Only the final preflight attempt lands here; the earlier parse-retry
         # and fallback attempts carry their own ledger inside
         # ``preflight.attempts`` (see preflight_flow._record_attempt).

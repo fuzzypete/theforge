@@ -591,3 +591,52 @@ def test_each_preflight_attempt_carries_its_own_ledger(tmp_path: Path) -> None:
         assert "resolved_primary_identity" in ledger
     # The superseded attempt keeps its own cost, separately attributable.
     assert [a["cost_usd"] for a in attempts] == [0.05, 0.11]
+
+
+# ── The renderer must not become a crash site ────────────────────────────
+
+
+def test_unreadable_preflight_result_costs_one_entry_not_the_whole_record(
+    tmp_path: Path,
+) -> None:
+    """Rendering the audit must never be the thing that kills a run.
+
+    ``preflight_result`` is the one AgentResult the renderer reads that is a
+    single reassigned field rather than a phase-appended list, and the rest of
+    the writer already reads it duck-typed. When #2205 started rendering it, an
+    unreadable value raised out of ``generate_audit_log`` and the run lost its
+    *entire* audit record — the opposite of what instrumenting a phase is for.
+    """
+    from unittest.mock import MagicMock  # noqa: PLC0415
+
+    from coord_test_helpers import _make_config, _make_task  # noqa: PLC0415
+
+    from theforge.coordinator.audit import generate_audit_log  # noqa: PLC0415
+    from theforge.coordinator.audit_render import build_agent_entries  # noqa: PLC0415
+    from theforge.coordinator.state import (  # noqa: PLC0415
+        CoordinatorResult,
+        CoordinatorState,
+        Phase,
+    )
+
+    config = _make_config(tmp_path)
+    state = CoordinatorState()
+    state.preflight_verdict = "PROCEED"
+    # A stand-in used purely as a cost carrier — the shape several sprint-level
+    # fixtures build, and the shape any future non-AgentResult assignment has.
+    state.preflight_result = MagicMock()
+    state.dev_results.append(_result())
+    state.dev_durations.append(1.0)
+
+    entries = build_agent_entries(state, config)
+
+    # The unreadable preflight invocation is skipped rather than fabricated
+    # from an unknown object's attributes...
+    assert [e["role"] for e in entries] == ["dev"]
+    # ...and the record as a whole is still produced.
+    record = generate_audit_log(
+        config,
+        _make_task(tmp_path),
+        CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done"),
+    )
+    assert record["cost"]["agents"] == entries
