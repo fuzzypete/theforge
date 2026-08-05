@@ -305,3 +305,149 @@ class TestPhaseFundingShortfall:
             )
             is None
         )
+
+
+class TestReviewCycleReconciliation:
+    """Permitted review cycles are reconciled against the allocation (#2238)."""
+
+    def _allocation(self, usd: float = 48.02) -> dict:
+        return {
+            "allocation_usd": usd,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 8,
+            "median_usd": 7.53,
+            "p90_usd": 19.74,
+            "max_usd": 38.42,
+            "sample_count": 12,
+        }
+
+    def test_issue_2204_arithmetic_reduces_five_permitted_cycles_to_one(self) -> None:
+        """The seating numbers from run 88a7e2cc81eb admit one review cycle."""
+        record = sb.reconcile_review_cycles(
+            self._allocation(),
+            dev_cost_estimate_usd=25.0428,
+            review_cycle_cost_usd=17.55,
+            requested_review_max=5,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_REDUCED
+        assert record["affordable_review_cycles"] == 1
+        assert record["reconciled_review_max"] == 1
+        assert record["allocation_usd"] == 48.02
+        assert record["dev_cost_estimate_usd"] == 25.0428
+        assert record["review_cycle_cost_usd"] == 17.55
+        assert record["requested_review_max"] == 5
+        assert record["remaining_after_dev_usd"] == round(48.02 - 25.0428, 4)
+        assert record["shortfall_usd"] > 0
+
+        message = sb.format_reconciliation(record)
+        assert "5 → 1" in message
+        assert "$48.02" in message
+
+    def test_spend_already_incurred_counts_against_the_remainder(self) -> None:
+        """Preflight/plan spend is real money and is not affordable twice."""
+        record = sb.reconcile_review_cycles(
+            self._allocation(),
+            dev_cost_estimate_usd=25.0428,
+            review_cycle_cost_usd=17.55,
+            requested_review_max=5,
+            spent_so_far_usd=6.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_UNFUNDABLE
+        assert record["affordable_review_cycles"] == 0
+        assert record["spent_so_far_usd"] == 6.0
+        assert record["shortfall_usd"] == round(17.55 - (48.02 - 6.0 - 25.0428), 4)
+
+    def test_an_allocation_that_funds_the_permission_is_left_alone(self) -> None:
+        record = sb.reconcile_review_cycles(
+            self._allocation(usd=120.0),
+            dev_cost_estimate_usd=25.0,
+            review_cycle_cost_usd=17.55,
+            requested_review_max=5,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_AFFORDABLE
+        assert record["reconciled_review_max"] == 5
+        assert record["affordable_review_cycles"] == 5
+
+    def test_missing_inputs_are_explicit_no_ops_not_guesses(self) -> None:
+        base = dict(
+            dev_cost_estimate_usd=25.0,
+            review_cycle_cost_usd=17.55,
+            requested_review_max=5,
+            spent_so_far_usd=0.0,
+        )
+        assert sb.reconcile_review_cycles(None, **base)["action"] == sb.RECONCILE_NO_ALLOCATION
+        assert (
+            sb.reconcile_review_cycles(
+                self._allocation(), **{**base, "dev_cost_estimate_usd": 0.0}
+            )["action"]
+            == sb.RECONCILE_NO_DEV_ESTIMATE
+        )
+        assert (
+            sb.reconcile_review_cycles(
+                self._allocation(), **{**base, "review_cycle_cost_usd": 0.0}
+            )["action"]
+            == sb.RECONCILE_NO_REVIEW_COST
+        )
+        # The configured fallback is one pass through every role by
+        # construction, so it funds exactly one review cycle for reasons that
+        # say nothing about this story. Reconciling against it would clamp
+        # verification to one cycle on every band without history.
+        fallback = sb.reconcile_review_cycles(
+            {**self._allocation(), "basis": sb.BASIS_CONFIGURED_FALLBACK}, **base
+        )
+        assert fallback["action"] == sb.RECONCILE_NO_BAND_HISTORY
+        assert fallback["reconciled_review_max"] == 5
+        # Cost-unknown spend is a lower bound; refusing on it would be a guess.
+        unknown = sb.reconcile_review_cycles(
+            self._allocation(usd=1.0), **{**base, "spent_so_far_usd": None}
+        )
+        assert unknown["action"] == sb.RECONCILE_COST_UNKNOWN
+        assert unknown["reconciled_review_max"] == 5
+        for record in (
+            sb.reconcile_review_cycles(None, **base),
+            fallback,
+            unknown,
+        ):
+            assert record["reconciled_review_max"] == record["requested_review_max"]
+
+    def test_unfundable_seating_reports_the_existing_shortfall_shape(self) -> None:
+        allocation = self._allocation(usd=30.0)
+        record = sb.reconcile_review_cycles(
+            allocation,
+            dev_cost_estimate_usd=25.0,
+            review_cycle_cost_usd=17.55,
+            requested_review_max=5,
+            spent_so_far_usd=0.0,
+        )
+        shortfall = sb.seating_shortfall(allocation, record, participants=["a", "b", "c"])
+
+        assert shortfall is not None
+        # Same keys every existing consumer already reads.
+        assert shortfall["phase"] == "review"
+        assert shortfall["participants"] == ["a", "b", "c"]
+        assert shortfall["planned_usd"] == 17.55
+        assert shortfall["allocation_usd"] == 30.0
+        assert shortfall["observed_usd"] == 25.0
+        assert shortfall["projected"] is True
+        assert shortfall["seating_reconciliation"]["action"] == sb.RECONCILE_UNFUNDABLE
+
+        message = sb.format_shortfall(shortfall, story="issue-2204")
+        assert "issue-2204" in message
+        assert "projected" in message
+        assert "Decided at seating" in message
+
+    def test_no_shortfall_payload_when_the_seating_was_fundable(self) -> None:
+        allocation = self._allocation(usd=120.0)
+        record = sb.reconcile_review_cycles(
+            allocation,
+            dev_cost_estimate_usd=25.0,
+            review_cycle_cost_usd=17.55,
+            requested_review_max=5,
+            spent_so_far_usd=0.0,
+        )
+        assert sb.seating_shortfall(allocation, record, participants=["a"]) is None

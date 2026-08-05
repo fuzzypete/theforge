@@ -472,3 +472,222 @@ class TestResumeCarriesTheAllocation:
         assert state.story_allocation["allocation_usd"] == first["allocation_usd"]
         assert state.story_allocation["fallback_configured_usd"] == 50.0
         assert _runtime_total(twice) == pytest.approx(_runtime_total(once), abs=0.05)
+
+
+class TestSeatingReconcilesPermissionsWithTheAllocation:
+    """A story is never seated with review cycles it cannot pay for (#2238)."""
+
+    def _adaptive_config(
+        self,
+        tmp_path: Path,
+        *,
+        dev_budget_usd: float,
+        reviewer_budget_usd: float,
+        reviewers: int = 3,
+    ):
+        from coord_test_helpers import _make_config, _make_review_profile
+
+        from theforge.config.types import AssignmentConfig, RetryPolicy
+
+        config = _make_config(tmp_path)
+        return dataclasses.replace(
+            config,
+            dev_profile=dataclasses.replace(config.dev_profile, budget_usd=dev_budget_usd),
+            review_pool=[
+                _make_review_profile(name, budget_usd=reviewer_budget_usd)
+                for name in ("a", "b", "c")[:reviewers]
+            ],
+            synthesis_profile=None,
+            retry=RetryPolicy(
+                max_dev_iterations=3,
+                max_review_cycles=5,
+                max_dev_iterations_cap=6,
+                max_review_cycles_cap=5,
+                adaptive_iterations=True,
+            ),
+            assignment=AssignmentConfig(enabled=True, adaptive_enabled=True),
+        )
+
+    def _seated_state(self, tmp_path: Path, allocation_usd: float):
+        state = CoordinatorState()
+        state.preflight_complexity = "large"
+        state.preflight_complexity_score = 9
+        state.workspace_path = tmp_path
+        state.branch_name = "feat/test"
+        state.story_allocation = {
+            "allocation_usd": allocation_usd,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 9,
+            "median_usd": 7.53,
+            "p90_usd": 19.74,
+            "max_usd": round(allocation_usd / 1.25, 2),
+            "sample_count": 12,
+        }
+        return state
+
+    def test_review_max_is_reduced_to_what_the_allocation_funds_before_dev(
+        self, tmp_path: Path
+    ) -> None:
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        # The seating numbers from run 88a7e2cc81eb: $48.02 allocation, a
+        # $25.0428 dev estimate, a $17.55-per-cycle panel.
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 48.02)
+
+        class _StopAtDev(Exception):
+            pass
+
+        seen: dict = {}
+
+        def _fake_dev(*_args, **_kwargs):
+            seen["review_max_at_dev"] = state.adaptive_review_max
+            raise _StopAtDev()
+
+        with patch("theforge.coordinator.engine._run_dev_phase", _fake_dev):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert record["action"] == sb.RECONCILE_REDUCED
+        assert record["requested_review_max"] > 1
+        assert record["reconciled_review_max"] == 1
+        assert record["review_cycle_cost_usd"] == 17.55
+        assert record["allocation_usd"] == 48.02
+        # The reduction is in force before dev spends a cent, not afterwards.
+        assert seen["review_max_at_dev"] == 1
+        assert state.adaptive_review_max == 1
+        assert "review_max reduced" in state.adaptive_limits_audit["rationale"]
+
+    def test_an_allocation_that_cannot_fund_one_cycle_escalates_before_dev(
+        self, tmp_path: Path
+    ) -> None:
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 30.0)
+
+        with patch("theforge.coordinator.engine._run_dev_phase") as mock_dev:
+            result = _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        # No dev spend on work that could never have been reviewed.
+        assert mock_dev.called is False
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert state.phase == Phase.ESCALATE
+        assert state.error_type == "allocation_exhausted"
+        assert state.allocation_exhausted is not None
+        assert state.allocation_exhausted["participants"] == ["a", "b", "c"]
+        assert state.allocation_exhausted["planned_usd"] == 17.55
+        assert "test-task" in state.error
+        assert "Decided at seating" in state.error
+        assert (
+            state.adaptive_limits_audit["review_cycle_reconciliation"]["action"]
+            == sb.RECONCILE_UNFUNDABLE
+        )
+
+    def test_a_sufficient_allocation_leaves_the_permitted_cycles_intact(
+        self, tmp_path: Path
+    ) -> None:
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 500.0)
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert record["action"] == sb.RECONCILE_AFFORDABLE
+        assert state.adaptive_review_max == record["requested_review_max"]
+        assert state.allocation_exhausted is None
+
+    def test_a_story_without_an_allocation_is_left_untouched(self, tmp_path: Path) -> None:
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 1.0)
+        state.story_allocation = None
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert record["action"] == sb.RECONCILE_NO_ALLOCATION
+        assert state.adaptive_review_max == record["requested_review_max"]
+
+    def test_a_configured_fallback_allocation_does_not_clamp_review_cycles(
+        self, tmp_path: Path
+    ) -> None:
+        """No band history means no evidence — the dispatch guard still covers it."""
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 48.02)
+        state.story_allocation = {
+            **state.story_allocation,
+            "basis": sb.BASIS_CONFIGURED_FALLBACK,
+        }
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert record["action"] == sb.RECONCILE_NO_BAND_HISTORY
+        assert state.adaptive_review_max == record["requested_review_max"]
+        assert state.allocation_exhausted is None
+
+    def test_the_reconciliation_reaches_the_run_audit(self, tmp_path: Path) -> None:
+        """The operator can see which of the two governors moved, and why."""
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.audit import generate_audit_log
+        from theforge.coordinator.engine import _coordinator_loop
+        from theforge.coordinator.state import CoordinatorResult
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 48.02)
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        audit = generate_audit_log(
+            config,
+            task,
+            CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message="x"),
+        )
+        block = audit["iterations"]["adaptive_limits"]["review_cycle_reconciliation"]
+        assert block["action"] == sb.RECONCILE_REDUCED
+        assert block["reconciled_review_max"] == 1
