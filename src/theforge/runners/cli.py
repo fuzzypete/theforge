@@ -454,6 +454,28 @@ def _profile_cli_runner(profile: ModelProfile) -> str | None:
     return None
 
 
+def _fill_invocation_identity(result: AgentResult, profile: ModelProfile) -> AgentResult:
+    """Back-fill the identity fields a runner did not report for itself.
+
+    ``model_used`` alone is not an identity: a bare model name the catalog
+    offers over both transports (``gpt-5.4``) cannot be canonicalized without
+    knowing which one ran, and indexes under its own spelling instead (#2225).
+    So the transport is filled from the profile alongside the model whenever a
+    runner left it empty.
+
+    Both fields are only ever filled, never overwritten — a runner that
+    switched transport mid-invocation (the CLI→API fallback) has already
+    recorded the transport that actually served.
+    """
+    if result.model_used is not None and result.transport_used:
+        return result
+    return replace(
+        result,
+        model_used=result.model_used if result.model_used is not None else profile.model,
+        transport_used=result.transport_used or _profile_transport_kind(profile),
+    )
+
+
 def run_agent(
     *,
     prompt: str,
@@ -521,9 +543,7 @@ def run_agent(
             secrets=secrets,
             plain_text=plain_text,
         )
-        if result.model_used is None:
-            result = replace(result, model_used=profile.model)
-        return result
+        return _fill_invocation_identity(result, profile)
 
     if cli == "codex":
         from .runner_codex import _run_codex  # noqa: PLC0415
@@ -548,9 +568,7 @@ def run_agent(
             secrets=secrets,
             plain_text=plain_text,
         )
-        if result.model_used is None:
-            result = replace(result, model_used=profile.model)
-        return result
+        return _fill_invocation_identity(result, profile)
 
     if cli == "gemini":
         from .runner_gemini import _run_gemini  # noqa: PLC0415
@@ -575,9 +593,7 @@ def run_agent(
             secrets=secrets,
             plain_text=plain_text,
         )
-        if result.model_used is None:
-            result = replace(result, model_used=profile.model)
-        return result
+        return _fill_invocation_identity(result, profile)
 
     if cli == "ghaw":
         from .runner_ghaw import _run_ghaw  # noqa: PLC0415
@@ -594,9 +610,7 @@ def run_agent(
             is_pool=is_pool,
             secrets=secrets,
         )
-        if result.model_used is None:
-            result = replace(result, model_used=profile.model)
-        return result
+        return _fill_invocation_identity(result, profile)
 
     # No CLI runner resolved. When the profile has no transport at all its raw
     # ``cli`` never normalized to one — name that unresolved value so the

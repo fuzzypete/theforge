@@ -10,6 +10,7 @@ Covers:
 
 from __future__ import annotations
 
+import dataclasses
 from unittest.mock import patch
 
 import pytest
@@ -419,6 +420,67 @@ class TestRunApiAgentPreferenceList:
             )
 
         assert result.model_config == ()
+
+    def test_single_model_success_records_the_api_transport(self, tmp_path):
+        """#2225: a bare model name needs the transport to canonicalize.
+
+        A single-model API profile never passes through the preference-list
+        annotation, so without a stamp here its ``gpt-5.4`` stays ambiguous
+        (the catalog offers that model over CLI and API alike) and indexes
+        separately from ``openai/gpt-5.4/api``.
+        """
+        profile = _make_api_profile(model="gpt-5.4")
+        expected = _success_result("gpt-5.4")
+
+        with patch.dict(
+            "theforge.runners.api.PROVIDER_RUNNERS", {"openai": lambda p, pr, s: expected}
+        ):
+            result = run_api_agent(
+                prompt="test", profile=profile, working_dir=tmp_path, quiet=True
+            )
+
+        assert result.transport_used == "api"
+
+    def test_preference_list_success_records_the_api_transport(self, tmp_path):
+        profile = _make_api_profile(model="gpt-5.4", fallback_models=("gpt-5.4-mini",))
+
+        with patch.dict(
+            "theforge.runners.api.PROVIDER_RUNNERS",
+            {"openai": lambda prompt, prof, secrets: _success_result(prof.model)},
+        ):
+            result = run_api_agent(
+                prompt="test", profile=profile, working_dir=tmp_path, quiet=True
+            )
+
+        assert (result.model_used, result.transport_used) == ("gpt-5.4", "api")
+
+    def test_failure_result_also_records_the_api_transport(self, tmp_path):
+        profile = _make_api_profile(model="gpt-5.4")
+        failed = _runtime_fail_result()
+
+        with patch.dict(
+            "theforge.runners.api.PROVIDER_RUNNERS", {"openai": lambda p, pr, s: failed}
+        ):
+            result = run_api_agent(
+                prompt="test", profile=profile, working_dir=tmp_path, quiet=True
+            )
+
+        assert not result.success
+        assert result.transport_used == "api"
+
+    def test_transport_already_recorded_is_not_overwritten(self, tmp_path):
+        """A caller that knows more — the CLI→API fallback — keeps its reading."""
+        profile = _make_api_profile(model="gpt-5.4")
+        expected = dataclasses.replace(_success_result("gpt-5.4"), transport_used="cli")
+
+        with patch.dict(
+            "theforge.runners.api.PROVIDER_RUNNERS", {"openai": lambda p, pr, s: expected}
+        ):
+            result = run_api_agent(
+                prompt="test", profile=profile, working_dir=tmp_path, quiet=True
+            )
+
+        assert result.transport_used == "cli"
 
     def test_three_model_list_second_succeeds(self, tmp_path):
         """Middle model succeeds after first quota-fails; third is never tried."""
