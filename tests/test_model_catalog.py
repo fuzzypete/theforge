@@ -19,6 +19,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import tomllib
+from importlib import resources
 from pathlib import Path
 from unittest.mock import patch
 
@@ -110,6 +112,38 @@ class TestLayering:
 
 # ── The shipped set is data ───────────────────────────────────────────────
 
+# Routing policy of every entry the catalog shipped with, as ``(tier, capability,
+# cost_rank)``. These three fields decide which model gets which work, so a
+# change to one of them changes dispatch for every project on the release.
+#
+# Asserted as a *subset*, which is what keeps the guard aligned with the point of
+# #2204 rather than fighting it: adding a model stays a pure data edit and needs
+# no test change, while re-tiering one of these fails until the expectation is
+# updated in the same commit. A silent re-tier is the failure #2217 was about,
+# and moving the set into YAML is what made it a one-line edit.
+_SHIPPED_ROUTING: dict[str, tuple[str, int, int]] = {
+    "anthropic/opus/cli": ("strong", 10, 3),
+    "anthropic/sonnet/cli": ("fast", 7, 1),
+    "deepseek/deepseek-chat/api": ("fast", 7, 1),
+    "deepseek/deepseek-reasoner/api": ("strong", 9, 2),
+    "google/gemini-2.5-pro/api": ("strong", 8, 2),
+    "google/gemini-2.5-pro/cli": ("strong", 8, 2),
+    "google/gemini-3-flash-preview/api": ("cheap", 7, 1),
+    "google/gemini-3-flash-preview/cli": ("cheap", 7, 1),
+    "google/gemini-3.1-pro-preview/api": ("strong", 9, 2),
+    "google/gemini-3.1-pro-preview/cli": ("strong", 9, 2),
+    "openai/codestral/api": ("fast", 7, 1),
+    "openai/deepseek-coder/api": ("fast", 7, 1),
+    "openai/gpt-5.4-mini/api": ("cheap", 7, 1),
+    "openai/gpt-5.4-mini/cli": ("cheap", 7, 1),
+    "openai/gpt-5.4-pro/api": ("strong", 10, 3),
+    "openai/gpt-5.4-pro/cli": ("strong", 10, 3),
+    "openai/gpt-5.4/api": ("strong", 9, 2),
+    "openai/gpt-5.4/cli": ("strong", 9, 2),
+    "openai/llama3.1/api": ("fast", 6, 1),
+    "openai/qwen2.5-coder/api": ("fast", 7, 1),
+}
+
 
 class TestPackagedCatalog:
     def test_the_builtin_registry_is_what_the_catalog_data_says(self):
@@ -118,10 +152,38 @@ class TestPackagedCatalog:
         assert AGENT_REGISTRY  # and the data is actually there
 
     def test_catalog_data_ships_inside_the_package(self):
-        catalog = Path(__file__).resolve().parents[1] / "src/theforge/config/data/models.yaml"
-        assert catalog.is_file()
-        document = yaml.safe_load(catalog.read_text(encoding="utf-8"))
+        """Reach the catalog the way production does, not by source-tree path.
+
+        ``importlib.resources`` is what :func:`load_packaged_catalog` uses, so
+        resolving it here is what proves the file is addressable *as package
+        data*. A source-tree ``Path(__file__).parents[1]`` lookup passes even
+        after a move that makes the resource unreachable once installed.
+        """
+        resource = resources.files("theforge.config").joinpath("data/models.yaml")
+        assert resource.is_file()
+        document = yaml.safe_load(resource.read_text(encoding="utf-8"))
         assert len(document["models"]) == len(AGENT_REGISTRY)
+
+    def test_the_wheel_is_declared_to_carry_the_catalog(self):
+        """The build config must keep package data in the distribution.
+
+        The catalog is read at import time, so if it does not travel in the
+        wheel then ``import theforge`` fails outright for an installed copy —
+        while CI, which imports from the source tree, stays green. Nothing else
+        in the suite can see that difference, so the build declaration itself is
+        what gets pinned: the wheel target names the package, and no exclusion
+        rule carves the data directory back out.
+        """
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        build = tomllib.loads(pyproject.read_text(encoding="utf-8"))["tool"]["hatch"]["build"]
+        wheel = build["targets"]["wheel"]
+        assert "src/theforge" in wheel["packages"]
+        # An exclude/artifacts rule naming the data directory would silently
+        # drop it from a build that otherwise looks correctly configured.
+        for scope in (build, wheel):
+            for key in ("exclude", "artifacts", "only-include"):
+                for rule in scope.get(key, ()):
+                    assert "data" not in rule, f"build rule {key}={rule!r} may drop the catalog"
 
     def test_shipped_pricing_attribution_survives_the_data_round_trip(self):
         """The vendor shorthands stay unattributed with a declared band basis.
@@ -137,6 +199,27 @@ class TestPackagedCatalog:
         reasoner = AGENT_REGISTRY["deepseek/deepseek-reasoner/api"]
         assert reasoner.routing.cost_rank_basis == COST_BAND_BASIS_DECLARED_POLICY
         assert AGENT_REGISTRY["openai/gpt-5.4/cli"].pricing_provenance == "gpt-5.4"
+
+    def test_every_shipped_entry_keeps_the_routing_it_shipped_with(self):
+        """Transcribing the set into YAML must not have moved any dispatch.
+
+        ``test_the_builtin_registry_is_what_the_catalog_data_says`` cannot see a
+        drift here — ``AGENT_REGISTRY`` *is* ``load_packaged_catalog()``, so it
+        compares two loads of the same file and holds whatever that file says.
+        This is the assertion that holds the file to something.
+        """
+        drifted = {
+            model_id: (
+                (spec.routing.tier, spec.capability, spec.cost_rank),
+                expected,
+            )
+            for model_id, expected in _SHIPPED_ROUTING.items()
+            if (spec := AGENT_REGISTRY.get(model_id)) is not None
+            and (spec.routing.tier, spec.capability, spec.cost_rank) != expected
+        }
+        assert not drifted, f"shipped routing changed (got, expected): {drifted}"
+        missing = sorted(_SHIPPED_ROUTING.keys() - AGENT_REGISTRY.keys())
+        assert not missing, f"shipped entries disappeared from the catalog: {missing}"
 
     def test_a_new_shipped_entry_is_a_data_edit_not_a_code_edit(self):
         """Re-pinning a model on an already-supported adapter adds no code."""
