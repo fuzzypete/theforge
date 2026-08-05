@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 import yaml
 
+from theforge.agent_types import AgentResult
 from theforge.config import ForgeConfig, ModelProfile
 from theforge.sprint.dag import _is_branch_merged
 from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
@@ -42,6 +43,7 @@ from .agent_failure import (
     record_invocation_failure,
 )
 from .audit import has_review_approve
+from .audit_render import build_invocation_ledger
 from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
@@ -346,6 +348,37 @@ def _run_preflight_phase(
                 # parse-degraded narration both fail; the fold attributes this to
                 # the model that actually ran the attempt.
                 "completed": not _attempt_failed(result),
+                # Full invocation ledger for THIS attempt (#2205). Only the final
+                # attempt reaches ``state.preflight_result`` and therefore
+                # ``cost.agents``; a parse-retry or a fallback that ran and was
+                # superseded exists nowhere else. Without this the earlier
+                # attempts would keep the collapsed profile_name/model pair while
+                # every other invocation in the run carried configured, resolved,
+                # and billed identities separately.
+                #
+                # Explicit null rather than an omitted key when the attempt's
+                # result is not a readable AgentResult. Defensive symmetry with
+                # the same guard in ``audit_render.build_agent_entries``, where
+                # the equivalent crash cost a run its whole audit record: "the
+                # ledger was not recorded" is a fact a consumer can act on,
+                # unlike a ledger built out of an unknown object's attributes.
+                # Unreachable via the phase's own paths today — anything that
+                # is not an AgentResult fails earlier on verdict parsing — so
+                # this is deliberately untested rather than covered by a test
+                # that would only re-assert the branch.
+                "ledger": (
+                    build_invocation_ledger(
+                        result,
+                        "preflight",
+                        profile.name or "preflight",
+                        # Complexity is what preflight is running to determine,
+                        # so there is nothing truthful to stamp here.
+                        complexity=None,
+                        complexity_score=None,
+                    )
+                    if isinstance(result, AgentResult)
+                    else None
+                ),
             }
         )
 

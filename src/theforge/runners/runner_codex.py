@@ -25,7 +25,12 @@ from pathlib import Path
 from typing import Any
 
 from theforge import process_group
-from theforge.agent_types import AgentResult, ModelUsage
+from theforge.agent_types import (
+    COST_ESTIMATED,
+    COST_UNKNOWN,
+    AgentResult,
+    ModelUsage,
+)
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
@@ -618,6 +623,9 @@ def _price_codex_usage(
             cache_creation_tokens=usage.cache_write_input_tokens,
             cost_usd=cost,
             thinking_tokens=usage.reasoning_output_tokens,
+            # Codex reports tokens, never a price: this is forge's pricing-table
+            # derivation, not a billed figure.
+            cost_provenance=COST_ESTIMATED if cost is not None else COST_UNKNOWN,
         ),
     )
     return cost, model_usage
@@ -817,6 +825,7 @@ def _run_codex(
                 output=_json_output,
                 session_id=extracted_sid,
                 cost_usd=cost_usd,
+                cost_provenance=(COST_ESTIMATED if cost_usd is not None else COST_UNKNOWN),
                 exit_code=proc.returncode,
                 raw=result_json,
                 profile_name=profile.name,
@@ -831,6 +840,7 @@ def _run_codex(
             output=output_text,
             session_id=extracted_sid,
             cost_usd=cost_usd,
+            cost_provenance=(COST_ESTIMATED if cost_usd is not None else COST_UNKNOWN),
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,

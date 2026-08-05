@@ -13,6 +13,12 @@ Controlled via FAKE_CLAUDE_MODE environment variable:
   nudge       — emit two identical tool-call iterations to trigger stuck-
                 detection nudge, then read the nudge from stdin and respond
                 with a result event (nudge delivery test)
+  usage_then_hang
+              — emit assistant events carrying per-message ``usage`` blocks and
+                then hang, so the runner is killed at its watchdog and has to
+                reconstruct spend from the stream it already saw. Exercises the
+                kill-path cost reconstruction, whose cost is a forge pricing-
+                table derivation rather than a figure the CLI reported (#2205).
   grandchild_hang
               — spawn a long-sleeping grandchild (same process group), write
                 its PID to $FAKE_GRANDCHILD_PID_FILE, then emit nothing and
@@ -128,6 +134,32 @@ def main() -> None:
     if MODE == "happy":
         _read_user_msg()
         _emit(_RESULT_EVENT)
+        sys.exit(0)
+
+    if MODE == "usage_then_hang":
+        # Emit real per-message usage, then never emit a result event and hang
+        # so the watchdog kills us. The runner must price what it saw.
+        _read_user_msg()
+        _emit(
+            {
+                "type": "assistant",
+                "message": {
+                    "role": "assistant",
+                    "model": "claude-sonnet-4-6",
+                    "content": [],
+                    "usage": {
+                        "input_tokens": 1000,
+                        "output_tokens": 2000,
+                        "cache_read_input_tokens": 500,
+                        "cache_creation_input_tokens": 100,
+                    },
+                },
+            }
+        )
+        sys.stdout.flush()
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            time.sleep(0.1)
         sys.exit(0)
 
     if MODE == "wait_stdin":

@@ -16,6 +16,7 @@ from pathlib import Path
 
 import pytest
 
+from theforge.agent_types import COST_PROVIDER_REPORTED, ModelUsage
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -69,6 +70,13 @@ _PINNED_LIST_ELEMENTS: tuple[str, ...] = (
     "iterations.review_loop",  # ReviewIterationTelemetry
     "iterations.budget_consumption_log",  # RetryBudgetConsumption
     "validate_blocks",  # validate_phase.record_validate_block
+    "cost.agents",  # audit_render._agent_entry
+    # The invocation ledger's billed-component list (#2205). Pinned because the
+    # whole point of the ledger is that each billed identity is a first-class
+    # record: a field silently dropped from an element would take a separately
+    # attributable cost with it, and the guard would never see it if only the
+    # outer list were pinned.
+    "cost.agents[].ledger.billed_components",
 )
 
 
@@ -184,6 +192,42 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
     )
     state.budget.consume(review_cycle=0)
     record_validate_block(state, outcome="terminal", reason="budgets_exhausted")
+    # One fully-populated dev invocation so the guard sees the invocation ledger
+    # and its billed components (#2205). Built through the real AgentResult /
+    # ModelUsage dataclasses so a field added to either shows up here on its own.
+    state.preflight_complexity = "large"
+    state.preflight_complexity_score = 8
+    state.dev_results.append(
+        AgentResult(
+            success=True,
+            output="done",
+            session_id="sess",
+            cost_usd=10.902,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+            model_usage=(
+                ModelUsage(
+                    model="claude-opus-5",
+                    input_tokens=100,
+                    output_tokens=200,
+                    cache_read_tokens=10,
+                    cache_creation_tokens=5,
+                    cost_usd=10.892,
+                    thinking_tokens=50,
+                    cost_provenance=COST_PROVIDER_REPORTED,
+                ),
+            ),
+            model_config=("opus", "sonnet"),
+            model_used="claude-opus-5",
+            transport_used="cli",
+            configured_model="opus",
+            configured_transport="cli",
+            reasoning_effort="high",
+            cost_provenance=COST_PROVIDER_REPORTED,
+        )
+    )
+    state.dev_durations.append(12.0)
 
 
 def _build_canonical_record(tmp_path: Path) -> dict:

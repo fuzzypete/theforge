@@ -28,7 +28,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from theforge.agent_types import AgentResult, ModelUsage
+from theforge.agent_types import (
+    COST_ESTIMATED,
+    COST_UNKNOWN,
+    AgentResult,
+    ModelUsage,
+)
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
@@ -247,6 +252,9 @@ def _parse_agent_usage(dest: Path) -> tuple[float | None, tuple[ModelUsage, ...]
             cache_read_tokens=int(data.get("cache_read_tokens", 0)),
             cache_creation_tokens=int(data.get("cache_write_tokens", 0)),
             cost_usd=cost,
+            # gh-aw bills AI credits, not dollars; the USD figure is forge's
+            # conversion at a fixed rate, so it is an estimate.
+            cost_provenance=COST_ESTIMATED if cost is not None else COST_UNKNOWN,
         )
         return cost, (usage,)
     return None, ()
@@ -454,6 +462,7 @@ def _run_ghaw(
         output=output,
         session_id=str(run_id),
         cost_usd=cost_usd,
+        cost_provenance=(COST_ESTIMATED if cost_usd is not None else COST_UNKNOWN),
         exit_code=0 if success else 1,
         raw={"run": run_json, "artifacts": artifact_index, "timing": timing},
         profile_name=profile.name,

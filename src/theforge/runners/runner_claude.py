@@ -15,7 +15,13 @@ from pathlib import Path
 from typing import Any
 
 from theforge import process_group
-from theforge.agent_types import AgentResult, ModelUsage
+from theforge.agent_types import (
+    COST_ESTIMATED,
+    COST_PROVIDER_REPORTED,
+    COST_UNKNOWN,
+    AgentResult,
+    ModelUsage,
+)
 from theforge.log_util import _log_line
 from theforge.runners.stuck_detection import StuckTracker, build_observation
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
@@ -100,6 +106,8 @@ def _parse_model_usage(result_json: dict[str, Any]) -> tuple[ModelUsage, ...]:
                 cache_read_tokens=int(data.get("cacheReadInputTokens", 0)),
                 cache_creation_tokens=int(data.get("cacheCreationInputTokens", 0)),
                 cost_usd=float(data.get("costUSD", 0.0)),
+                # The CLI's own ``modelUsage`` block — billed, not derived.
+                cost_provenance=COST_PROVIDER_REPORTED,
             )
         )
     return tuple(usages)
@@ -244,6 +252,8 @@ def _reconstruct_partial_cost(
                 cache_read_tokens=acc["cache_read"],
                 cache_creation_tokens=acc["cache_creation"],
                 cost_usd=cost,
+                # Priced here from the pricing table, not billed by the CLI.
+                cost_provenance=COST_ESTIMATED if cost is not None else COST_UNKNOWN,
             )
         )
     return (total_cost if any_priced else None), tuple(usages)
@@ -912,6 +922,7 @@ def _run_claude(
                 min_mtime=start_wall,
             ),
             cost_usd=_stuck_cost,
+            cost_provenance=(COST_ESTIMATED if _stuck_cost is not None else COST_UNKNOWN),
             exit_code=-2,
             raw={},
             profile_name=profile.name,
@@ -941,6 +952,7 @@ def _run_claude(
                 min_mtime=start_wall,
             ),
             cost_usd=_timeout_cost,
+            cost_provenance=(COST_ESTIMATED if _timeout_cost is not None else COST_UNKNOWN),
             exit_code=-9,
             raw={},
             profile_name=profile.name,
@@ -993,6 +1005,7 @@ def _run_claude(
                 min_mtime=start_wall,
             ),
             cost_usd=_noresult_cost,
+            cost_provenance=(COST_ESTIMATED if _noresult_cost is not None else COST_UNKNOWN),
             exit_code=proc.returncode,
             raw={},
             profile_name=profile.name,
@@ -1018,6 +1031,8 @@ def _run_claude(
         output=_success_output,
         session_id=result_json.get("session_id"),
         cost_usd=cost,
+        # ``total_cost_usd`` from the CLI's terminal result event.
+        cost_provenance=(COST_PROVIDER_REPORTED if cost is not None else COST_UNKNOWN),
         exit_code=proc.returncode,
         raw=result_json,
         profile_name=profile.name,

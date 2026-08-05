@@ -12,7 +12,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from theforge.agent_types import AgentResult, ModelUsage
+from theforge.agent_types import (
+    COST_ESTIMATED,
+    COST_UNKNOWN,
+    AgentResult,
+    ModelUsage,
+)
 from theforge.runners.adapters.anthropic import (
     _make_anthropic_adapter,
     _run_anthropic,
@@ -943,6 +948,39 @@ def _run_single_api_model(
         return runner_fn(prompt, profile, secrets)
 
 
+def _stamp_api_cost_provenance(result: AgentResult) -> AgentResult:
+    """Mark an API result's costs as forge-derived estimates (#2205).
+
+    No API transport forge speaks returns a price: every provider reports token
+    counts and forge multiplies them by :data:`schema_utils.PRICING_TABLE`. So a
+    cost that reached here was computed, not billed, and a consumer attributing
+    spend has to be able to see that. Stamped at this one seam rather than at
+    each adapter's ``_estimate_cost`` call because the statement is a property of
+    the transport, not of any one provider — a new adapter is covered the day it
+    is added.
+
+    A ``None`` cost stays :data:`COST_UNKNOWN`: nothing was observed, so there is
+    nothing to characterize. An already-stated provenance is never overwritten —
+    a future provider that *does* bill a figure would say so at its own site.
+    """
+    if not isinstance(result, AgentResult):
+        return result
+    usage = tuple(
+        u
+        if u.cost_usd is None or u.cost_provenance != COST_UNKNOWN
+        else dataclasses.replace(u, cost_provenance=COST_ESTIMATED)
+        for u in (result.model_usage or ())
+    )
+    provenance = result.cost_provenance
+    if result.cost_usd is None:
+        provenance = COST_UNKNOWN
+    elif provenance == COST_UNKNOWN:
+        provenance = COST_ESTIMATED
+    if provenance == result.cost_provenance and usage == result.model_usage:
+        return result
+    return dataclasses.replace(result, cost_provenance=provenance, model_usage=usage)
+
+
 def _stamp_api_transport(result: AgentResult) -> AgentResult:
     """Record that this result came over the API transport.
 
@@ -959,7 +997,10 @@ def _stamp_api_transport(result: AgentResult) -> AgentResult:
     the more specific reading. Non-dataclass results — the mocks that
     ``run_api_agent``'s callers return in tests — are passed through untouched.
     """
-    if not isinstance(result, AgentResult) or result.transport_used:
+    if not isinstance(result, AgentResult):
+        return result
+    result = _stamp_api_cost_provenance(result)
+    if result.transport_used:
         return result
     return dataclasses.replace(result, transport_used="api")
 
