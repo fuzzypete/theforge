@@ -77,6 +77,25 @@ pip install -e ".[dev]"
 
 ---
 
+### Config load fails: `workspace.setup_command uses {forge_python} but workspace.python_interpreter ...`
+
+**Symptom:** `forge.yaml` fails to load with this error.
+
+**Cause:** The project's `setup_command` references `{forge_python}` but does
+not declare which interpreter the project develops against. TheForge fails
+closed here rather than substituting the orchestrator's own interpreter —
+the orchestrator's runtime must not decide which Python the project's gate
+runs under.
+
+**Fix:**
+```yaml
+workspace:
+  python_interpreter: "python3.12"   # the interpreter this project develops against
+  setup_command: "{forge_python} -m pip install -e ."
+```
+
+---
+
 ## Provider / auth
 
 ### Provider binary not on PATH
@@ -106,10 +125,21 @@ claude --version
 **Cause:** CLI session expired or API key rotated.
 
 **Fix:**
-```bash
-# Claude Code — re-authenticate
-claude auth login
 
+For the Claude CLI, put a long-lived token in `.forge/.env` — that is the
+credential path forge reads (`CLAUDE_CODE_OAUTH_TOKEN`, or `ANTHROPIC_API_KEY`
+for API billing). Generate one with the CLI's token flow:
+
+```bash
+claude setup-token
+# paste the token into .forge/.env as CLAUDE_CODE_OAUTH_TOKEN=...
+```
+
+Avoid re-running interactive `claude` auth with the credential forge uses:
+interactive auth flows rotate the shared OAuth token family and are a known
+cause of revoking the forge credential, not a cure.
+
+```bash
 # API-mode providers — update key in .forge/.env
 forge secrets-init
 # then edit .forge/.env with fresh keys
@@ -128,12 +158,21 @@ agent invocation.
 **Cause:** PATH in the forge subprocess differs from your shell PATH (common on
 macOS with GUI apps or in some CI environments).
 
-**Fix:**
+**Fix:** `cli:` accepts only a runner name (`claude`, `codex`, `gemini`,
+`ghaw`) — an absolute path is rejected at config load. Fix PATH for the
+environment forge actually runs in instead:
+
 ```bash
-# Add the CLI's full path to forge.yaml
-profiles:
-  dev:
-    cli: /usr/local/bin/claude    # absolute path
+# Find where the binary lives
+which claude
+
+# Ensure that directory is on PATH in your shell profile
+# (~/.zshrc / ~/.bashrc) for foreground runs.
+# GUI-launched and launchd/CI environments have their own PATH —
+# set it there too if forge runs outside your login shell.
+
+# Verify from forge's perspective
+forge check-providers
 ```
 
 ---
@@ -270,7 +309,7 @@ timed out.
 # Increase timeout in forge.yaml
 profiles:
   dev:
-    timeout_seconds: 900   # default is often 600
+    timeout_seconds: 1800   # shipped default is 900
 
 # Or resume from where it left off
 forge run stories/my-feature.md --resume --verbose
@@ -363,6 +402,27 @@ forge review stories/my-feature.md --verbose
 
 ---
 
+### Auto-merge reports MERGE_FAILED on a passing story
+
+**Symptom:** A story passes gate and review but ends in `MERGE_FAILED` when
+`--auto-merge` is on.
+
+**Cause:** The most common cause is a dirty project root, not a real merge
+conflict. Merge steps run in the base checkout; uncommitted changes there
+(often a `forge.yaml` or config edit made mid-sprint) block the merge.
+
+**Fix:**
+```bash
+git status                        # in the project root, not the worktree
+git add -A && git commit -m "config edits"
+# or: git stash
+```
+
+Commit or stash config edits before starting a sprint. The story's branch is
+intact — re-run the merge after cleaning the root.
+
+---
+
 ### Resume confusion
 
 **Symptom:** `--resume` restarts from an unexpected phase, or repeats work.
@@ -435,6 +495,25 @@ review pools.
   [inputs reference](inputs-reference.md#cost-governance-vs-per-story-estimates-converged-model))
 - Use `--dry-run` to estimate prompt sizes before running
 - Use a smaller/cheaper model for dev (sonnet instead of opus)
+
+---
+
+### Sprint halts with unmeasured spend / unverifiable budget
+
+**Symptom:** A multi-story sprint stops dispatching with
+`spend unmeasured for N source(s) ... the cap cannot be verified`, while the
+same stories pass as single-story runs.
+
+**Cause:** When any story's spend could not be measured, the sprint's
+accumulated cost is only a lower bound, so the budget cap comparison is
+unanswerable — the sprint stops rather than launching more work against a
+total it knows is understated (#1992). One unmeasured story is enough, which
+is why the failure hides: single-story runs don't aggregate against a sprint
+cap, so they pass (#2215).
+
+**Fix:** The halt message names the unmeasured source(s). Check their
+per-story audit records under `.forge/audits/runs/` to see why cost went
+unrecorded, then diagnose that story's run.
 
 ---
 

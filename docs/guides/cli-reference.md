@@ -15,6 +15,13 @@ forge init
 **Use this when:** Starting a new project with TheForge for the first time.
 **Avoid this when:** You already have a `forge.yaml` and want to keep it.
 
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--shared-memory` | Track project memory (audit runs + knowledge summaries) in git (default) |
+| `--local-memory` | Keep project memory local — omit the project-memory `.gitignore` re-includes |
+
 **Creates:**
 - `forge.yaml` — starter config with Claude dev + review defaults
 - `stories/TEMPLATE.md` — annotated story template
@@ -140,6 +147,7 @@ manifest argument is optional when using `--milestone` or `--label`.
 | `--budget <usd>` | Budget ceiling in USD — required when using `--milestone`, `--label`, or `--issues` |
 | `--name <name>` | Override the sprint name (default: milestone or label value) |
 | `--parallel <N>` | Run up to N stories concurrently (default: 1) |
+| `--dry-run` | Print the resolved issue list without executing |
 | `--base-branch <branch>` | Override the target base branch for this run |
 | `--config <path>` | Path to `forge.yaml` |
 | `--no-notify` | Suppress notifications |
@@ -160,9 +168,14 @@ auto_merge: true
 stories:
   - stories/story-one.md
   - stories/story-two.md
-  - {issue: 123}             # source from GitHub issue #123
-  - {issue: 124, slug: my-slug, depends_on: [my-slug]}
+  - {issue: 123, slug: add-schema}
+  - {issue: 124, slug: use-schema, depends_on: [add-schema]}
 ```
+
+`depends_on` lists the slugs of sibling stories that must complete first; the
+scheduler orders stories along these edges (a story cannot depend on itself).
+Collision-derived edges — from preflight predicting overlapping `likely_files`
+— are added automatically on top of explicit `depends_on`.
 
 > **Note:** `specs:` is a deprecated alias for `stories:` and still works.
 
@@ -225,7 +238,7 @@ forge check-config [forge.yaml]
 ```
 
 **Use this when:** After editing config, before a release, or when debugging model wiring.
-In v0.8, this is the quickest way to inspect the role table derived from `models:`.
+This is the quickest way to inspect the role table derived from `models:`.
 
 ---
 
@@ -316,12 +329,25 @@ forge telemetry [flags]
 Show active detached runs and pending decisions.
 
 ```bash
-forge status
+forge status [run-id] [flags]
 ```
 
 For an active sprint run, `forge status` includes the per-story sprint status
 view. The old standalone `forge sprint-status` command is no longer exposed by
 the top-level parser.
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `run-id` (positional) | Show status for one run (default: active or most recent run) |
+| `--recent` | Show recent runs in compact list form |
+| `--last` | Show the most recent completed or failed run |
+| `--watch [SECONDS]` | Live-update mode: re-render every SECONDS (default 2); falls back to a single snapshot when stdout is not a TTY |
+| `--no-color` | Disable ANSI color in watch mode (`NO_COLOR` env var also honored) |
+| `--operator-actions` | List open operator-action issues with readiness derived from `depends_on` |
+| `--ready` | List open `ready`-labeled issues, checked against the sprint shape gate |
+| `--milestone <name>` | Scope `--ready` to one GitHub milestone |
 
 ### Run dispositions
 
@@ -564,7 +590,25 @@ cannot be labeled `ready` (see `forge groom` below).
 ```bash
 forge diagnose --issue <issue>          # investigate one issue
 forge diagnose --issue <issue> --interactive
+forge diagnose --issue 101,102 --parallel 2
 ```
+
+**Flags:**
+
+| Flag | Description |
+|------|-------------|
+| `--issue <N>` | Issue number(s) to diagnose — comma-separated or repeat the flag (required) |
+| `--interactive` | Operator-in-the-loop: confirm before landing the artifact |
+| `--autonomous` | Land the artifact without operator confirmation (overrides config default) |
+| `--output <dest>` | Where to land the diagnosis artifact (overrides `forge.yaml` `diagnose.output_destination`) |
+| `--parallel <N>` | Maximum concurrent issue diagnoses (default: serial) |
+| `--timeout <seconds>` | Per-invocation timeout override (overrides `forge.yaml` `diagnose.timeout_seconds`) |
+| `--dry-run` | Run the investigation but do not land the artifact |
+| `--verbose`, `-v` | Enable verbose logging |
+| `--config <path>` | Path to `forge.yaml` |
+
+Whether landing requires confirmation defaults from config; `--interactive`
+and `--autonomous` override it per invocation.
 
 `forge diagnose` is the third step of the mid-sprint capture flow — see
 [Mid-sprint workflow](authoring.md#mid-sprint-workflow) for the full
@@ -612,6 +656,11 @@ forge groom <issue>            # show proposed body diff (exit 2 if changes need
 forge groom <issue> --apply    # commit the restructure via `gh issue edit`
 forge groom <issue> --next     # also print a recommended next operator command
 ```
+
+`--confirm-diagnosis-current` is the operator's assertion that a bug's
+diagnosis is still valid against the current base even if the recorded
+baseline is stale; the assertion is recorded in the audit substrate so the
+decision is auditable rather than silent.
 
 `<issue>` is a GitHub issue number (`1503` or `#1503`) or a local issue
 body file path.
@@ -703,7 +752,10 @@ lists open drafts; pass title text to create one, or a subcommand to triage.
 
 ```bash
 forge todo                       # list open todo:draft issues
+forge todo list                  # same as above, explicit
 forge todo "tighten gate scrub"  # create a draft todo
+forge todo triage <n>            # triage draft issue #n
+forge todo promote <n>           # promote draft issue #n
 ```
 
 Optional flags record provenance: `--from-sprint`, `--issue`, `--run-id`.
@@ -767,6 +819,21 @@ forge audits skips                        # query shape-gate skip / stuck events
 forge audits export-assignment-history    # write a human-readable snapshot
 ```
 
+**Subcommand flags:**
+
+| Subcommand | Flag | Description |
+|------------|------|-------------|
+| `rebuild` | `--include-legacy-history` | Also backfill from `.forge/audits/history.jsonl` |
+| `show` | `--slug <slug>` | Filter to a single slug (e.g. `issue-1325`) |
+| `show` | `--limit <N>` | Maximum rows to render (default: 20) |
+| `skips` | `--code <code>` | Filter to a single skip reason code |
+| `skips` | `--issue <N>` | Filter to a single issue id |
+| `skips` | `--category <cat>` | Filter to a taxonomy category |
+| `skips` | `--since <ts>` / `--until <ts>` | ISO-8601 bounds on `emitted_at` |
+| `skips` | `--stuck` | List repeated-block patterns (same code >= threshold times) |
+| `skips` | `--threshold <N>` | Stuck-pattern threshold when `--stuck` is set (default: 3) |
+| `export-assignment-history` | `--output <path>` | Output path (default: `.forge/assignment_history.yaml`) |
+
 ---
 
 ## `forge profiles`
@@ -778,6 +845,19 @@ counters adaptive routing reads).
 forge profiles list                          # show current profile counters
 forge profiles reset --model <model-id>      # reset counters for one canonical model ID
 ```
+
+**Subcommand flags:**
+
+| Subcommand | Flag | Description |
+|------------|------|-------------|
+| `list` | `--model <id>` | Show only one canonical model ID |
+| `list` | `--role <role>` | Show only one role |
+| `reset` | `--model <id>` | Canonical model ID to reset (required) |
+| `reset` | `--role <role>` | Reset only one role's history |
+| `reset` | `--complexity <band>` | Reset only one dev complexity bucket |
+| `reset` | `--reason <text>` | Operator-supplied reason recorded in the reset audit log |
+
+Both subcommands also accept `--project-root <path>` (default: cwd).
 
 ---
 
