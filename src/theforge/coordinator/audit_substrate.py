@@ -29,7 +29,15 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-SUBSTRATE_SCHEMA_VERSION = 4
+from .agent_identity import dev_model_identity
+
+# Substrate (SQLite) schema version. Bumped to 5 by #2201, which added
+# ``audit_records.dev_model_source`` and repaired the dev-model projection:
+# substrates written under version <= 4 carry an empty ``dev_model`` on every
+# row, so opening an older one re-derives both columns from the stored
+# ``raw_json`` (see :func:`_reindex_dev_model_identity`) instead of leaving the
+# repaired projection unapplied to already-indexed history.
+SUBSTRATE_SCHEMA_VERSION = 5
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -153,6 +161,7 @@ CREATE TABLE IF NOT EXISTS audit_records (
     milestone TEXT,
     issue_id INTEGER,
     dev_model TEXT,
+    dev_model_source TEXT,
     verdict TEXT,
     raw_json TEXT NOT NULL
 );
@@ -255,6 +264,7 @@ CREATE INDEX IF NOT EXISTS idx_inline_remediation_events_action
 
 def _apply_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(_SCHEMA)
+    prior_version = _stored_schema_version(conn)
     # Idempotent column adds for substrates created under an older schema.
     # SQLite < 3.35 lacks ADD COLUMN IF NOT EXISTS, so swallow the duplicate
     # error from re-runs.
@@ -267,6 +277,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE audit_records ADD COLUMN milestone TEXT",
         "ALTER TABLE audit_records ADD COLUMN issue_id INTEGER",
         "ALTER TABLE audit_records ADD COLUMN dev_model TEXT",
+        "ALTER TABLE audit_records ADD COLUMN dev_model_source TEXT",
         "ALTER TABLE audit_records ADD COLUMN verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
@@ -293,12 +304,74 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
             conn.execute(idx_stmt)
         except sqlite3.OperationalError:
             pass
+    # A substrate indexed under an older schema carries values derived by the
+    # older projection — for dev_model that meant "empty on every row" (#2201).
+    # Re-derive from the stored raw_json so the repair reaches history rather
+    # than only new writes.
+    if prior_version is not None and prior_version < SUBSTRATE_SCHEMA_VERSION:
+        _reindex_dev_model_identity(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         ("schema_version", str(SUBSTRATE_SCHEMA_VERSION)),
     )
     conn.commit()
+
+
+def _stored_schema_version(conn: sqlite3.Connection) -> int | None:
+    """Return the substrate schema version recorded in ``meta``, if any.
+
+    ``None`` means a freshly created substrate (nothing indexed under an older
+    projection), which needs no re-derivation.
+    """
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
+    except sqlite3.OperationalError:
+        return None
+    if row is None:
+        return None
+    value = row[0] if not isinstance(row, sqlite3.Row) else row["value"]
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
+def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
+    """Re-derive ``dev_model``/``dev_model_source`` from each row's raw_json.
+
+    The canonical per-run JSON is not needed — ``raw_json`` is the record, so
+    rows imported from legacy history are repaired alongside native ones. Rows
+    whose record carries no trustworthy invocation identity are left alone:
+    the projection has nothing truthful to write for them, and clearing an
+    existing value would destroy data the record still justifies.
+
+    Returns the number of rows updated (used by tests and callers that want to
+    report the repair).
+    """
+    try:
+        rows = conn.execute("SELECT run_id, raw_json FROM audit_records").fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    updated = 0
+    for row in rows:
+        run_id = row[0] if not isinstance(row, sqlite3.Row) else row["run_id"]
+        raw = row[1] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        identity, source = dev_model_identity(record)
+        if not identity:
+            continue
+        conn.execute(
+            "UPDATE audit_records SET dev_model = ?, dev_model_source = ? WHERE run_id = ?",
+            (identity, source, run_id),
+        )
+        updated += 1
+    return updated
 
 
 # ── Connection management ────────────────────────────────────────────────
@@ -625,6 +698,8 @@ def _flat_fields(record: dict) -> dict:
     else:
         issue_id = None
 
+    dev_model, dev_model_source = dev_model_identity(record)
+
     return {
         "slug": task.get("slug"),
         "started_at": timing.get("started_at"),
@@ -638,7 +713,8 @@ def _flat_fields(record: dict) -> dict:
         "record_schema_version": record_schema_version,
         "milestone": milestone,
         "issue_id": issue_id,
-        "dev_model": _derive_dev_model(record),
+        "dev_model": dev_model,
+        "dev_model_source": dev_model_source,
         "verdict": _derive_record_verdict(record),
     }
 
@@ -667,31 +743,6 @@ def _derive_record_verdict(record: dict) -> str | None:
         return None
     verdict = last.get("verdict")
     return verdict if isinstance(verdict, str) and verdict else None
-
-
-def _derive_dev_model(record: dict) -> str | None:
-    """Return the canonical dev model identity recorded for this run.
-
-    Mirrors the `cost.agents` parsing logic in :func:`_derive_escalation` so
-    the indexed `dev_model` column matches the model the adaptive router
-    treats as authoritative (the one that actually ran).
-    """
-    cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
-    agents = cost_block.get("agents") if isinstance(cost_block.get("agents"), list) else []
-    for entry in agents:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("phase") != "dev" and entry.get("role") != "dev":
-            continue
-        provider = (entry.get("provider") or "").strip()
-        model = (entry.get("model") or "").strip()
-        cli = (entry.get("cli") or "").strip()
-        if model and provider:
-            transport = "cli" if cli else "api"
-            return f"{provider}/{model}/{transport}"
-        if entry.get("name"):
-            return str(entry["name"])
-    return None
 
 
 # ── Per-record schema migration ──────────────────────────────────────────
@@ -1302,6 +1353,7 @@ def upsert_run_record(
         flat["milestone"],
         flat["issue_id"],
         flat["dev_model"],
+        flat["dev_model_source"],
         flat["verdict"],
         raw_json,
     )
@@ -1310,8 +1362,8 @@ def upsert_run_record(
         "(run_id, slug, started_at, finished_at, total_cost_usd, final_phase, "
         "outcome_success, branch, landing_status, provenance, source_path, "
         "source_mtime, complexity_score, record_schema_version, milestone, "
-        "issue_id, dev_model, verdict, raw_json) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+        "issue_id, dev_model, dev_model_source, verdict, raw_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
         "ON CONFLICT(run_id) DO UPDATE SET "
         "slug=excluded.slug, started_at=excluded.started_at, "
         "finished_at=excluded.finished_at, total_cost_usd=excluded.total_cost_usd, "
@@ -1322,7 +1374,8 @@ def upsert_run_record(
         "complexity_score=excluded.complexity_score, "
         "record_schema_version=excluded.record_schema_version, "
         "milestone=excluded.milestone, issue_id=excluded.issue_id, "
-        "dev_model=excluded.dev_model, verdict=excluded.verdict, "
+        "dev_model=excluded.dev_model, "
+        "dev_model_source=excluded.dev_model_source, verdict=excluded.verdict, "
         "raw_json=excluded.raw_json",
         params,
     )
@@ -1877,26 +1930,11 @@ def derive_assignment_history(
         # Fallback: when the audit record lacks the preflight.complexity_routing
         # block (older audits, or audits seeded by tests that bypass routing),
         # derive the canonical dev model from cost.agents — the model that
-        # actually ran. provider/model/transport gives the same canonical_id
-        # shape the routing block would have provided.
+        # actually ran, canonicalized to the same provider/model/transport shape
+        # the routing block would have provided. Shares the one reading of the
+        # agent-entry identity contract (#2201).
         if not (isinstance(dev_model, str) and dev_model):
-            cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
-            agents = cost_block.get("agents") if isinstance(cost_block.get("agents"), list) else []
-            for entry in agents:
-                if not isinstance(entry, dict):
-                    continue
-                if entry.get("phase") != "dev" and entry.get("role") != "dev":
-                    continue
-                provider = (entry.get("provider") or "").strip()
-                model = (entry.get("model") or "").strip()
-                cli = (entry.get("cli") or "").strip()
-                if model and provider:
-                    transport = "cli" if cli else "api"
-                    dev_model = f"{provider}/{model}/{transport}"
-                    break
-                if entry.get("name"):
-                    dev_model = str(entry["name"])
-                    break
+            dev_model = dev_model_identity(record)[0]
         if not isinstance(dev_model, str) or not dev_model:
             continue
         timing = record.get("timing") or {}
@@ -1996,25 +2034,8 @@ def _derive_escalation(record: dict) -> dict | None:
     complexity = _normalize_complexity_band(raw_complexity)
 
     # Canonical dev model identity, derived from the cost.agents block when
-    # present (carries provider/model/cli identity per phase).
-    dev_model = ""
-    cost_block = record.get("cost") if isinstance(record.get("cost"), dict) else {}
-    agents = cost_block.get("agents") if isinstance(cost_block.get("agents"), list) else []
-    for entry in agents:
-        if not isinstance(entry, dict):
-            continue
-        if entry.get("phase") != "dev" and entry.get("role") != "dev":
-            continue
-        provider = (entry.get("provider") or "").strip()
-        model = (entry.get("model") or "").strip()
-        cli = (entry.get("cli") or "").strip()
-        if model and provider:
-            transport = "cli" if cli else "api"
-            dev_model = f"{provider}/{model}/{transport}"
-            break
-        if entry.get("name"):
-            dev_model = str(entry["name"])
-            break
+    # present, through the one shared reading of that contract (#2201).
+    dev_model = dev_model_identity(record)[0] or ""
 
     raw_score = preflight.get("complexity_score") if isinstance(preflight, dict) else None
     if isinstance(raw_score, bool):
