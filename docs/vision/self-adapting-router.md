@@ -152,6 +152,26 @@ starved by the accident of being listed second. That first dispatch is what
 lets a zero-history model accrue a profile entry, after which normal
 evidence-based ranking takes over (issue #1617).
 
+A price only participates in that tie-break — and in cost banding — when the
+registry records what identity it was true of. An entry named by a vendor
+shorthand (the Claude CLI's `opus`/`sonnet`) resolves to whichever concrete
+version the vendor currently ships, so its stored figure can describe a model
+that has since moved; those entries carry no pricing attribution and the router
+treats their price as unknown rather than authoritative (issue #2203).
+Attribution comes from pinning the entry to the version its figures describe,
+or from an operator declaring the price for that identity in `forge.yaml`.
+`forge check-config` lists any enabled model whose price is being ignored.
+
+The cost band (`cost_rank`, which decides the tier a role is filled from) is the
+other price-shaped routing input, so it is held to the same standard: every
+registry entry records what its band is derived from. A band that matches the
+entry's attributable price is attributed to that price; any other band has to
+name a non-price basis — the Claude shorthands' bands restate the vendor's own
+tier naming, which stays true when the shorthand resolves to a new version.
+Building an entry whose band can be traced to neither raises at import, so a
+band cannot quietly be a number copied off an untraceable literal.
+`forge check-config` prints each enabled model's band and its basis.
+
 ## What Stays in forge.yaml
 
 Only what forge cannot discover:
