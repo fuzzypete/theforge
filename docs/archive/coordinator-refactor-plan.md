@@ -1,5 +1,7 @@
 # Coordinator Refactor — Comprehensive Plan
 
+Status: record (2026-03-15) — the coordinator split this plans has long shipped (`dev_phase.py`/`review_phase.py`/`validate_phase.py`); retained as history.
+
 Generated 2026-03-15. Covers the full refactoring scope: coordinator split,
 code dedup, type safety, and structural cleanup.
 

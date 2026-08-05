@@ -1,5 +1,7 @@
 # Proposal: Compounding Engineering Memory for TheForge
 
+Status: living — feeds the v0.14 knowledge feed-forward milestone.
+
 From deterministic orchestration to a system that learns from its own work.
 
 ---
