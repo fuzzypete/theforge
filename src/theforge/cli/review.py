@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from theforge.cli.shared import _build_task, _find_config, _write_audit
@@ -11,21 +12,46 @@ from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
+from theforge.sprint.sources import GitHubIssueSource, IssueClosedError
 
 
 def cmd_review(args: object) -> int:
     """Run only the review pool on an existing worktree."""
-    story_path = Path(args.story).resolve()
-    if not story_path.exists():
-        print(f"Story file not found: {story_path}", file=sys.stderr)
+    issue = getattr(args, "issue", None)
+    story_arg = getattr(args, "story", None)
+    if (issue is None) == (story_arg is None):
+        print(
+            "forge review needs exactly one story source: a story file path, "
+            "or --issue N for a GitHub-issue-backed story.",
+            file=sys.stderr,
+        )
         return 1
+
+    story_path: Path | None = None
+    if story_arg is not None:
+        story_path = Path(story_arg).resolve()
+        if not story_path.exists():
+            print(f"Story file not found: {story_path}", file=sys.stderr)
+            return 1
+        # A worktree is the thing being reviewed, not the story describing it —
+        # a directory here is almost always someone reaching for --worktree or
+        # --issue, so name both rather than letting read_text() raise IsADirectoryError.
+        if story_path.is_dir():
+            print(
+                f"{story_path} is a directory, not a story file.\n"
+                "  To review a GitHub-issue-backed story:  forge review --issue N\n"
+                "  To point at a worktree explicitly:      forge review <story> "
+                "--worktree <path>",
+                file=sys.stderr,
+            )
+            return 1
 
     # Find config
     config_path: Path | None = None
     if args.config:
         config_path = Path(args.config).resolve()
     else:
-        config_path = _find_config(story_path.parent)
+        config_path = _find_config(story_path.parent if story_path is not None else Path.cwd())
 
     if config_path is None or not config_path.exists():
         print(
@@ -40,7 +66,22 @@ def cmd_review(args: object) -> int:
         runner_set_log_level(LogLevel.VERBOSE)
 
     config = load_config(config_path)
-    task = _build_task(story_path, slug=args.slug)
+    if story_path is not None:
+        task = _build_task(story_path, slug=args.slug)
+    else:
+        # Same fetch the sprint path uses, so a re-review reads the issue exactly
+        # as the run that produced the worktree did — including the slug, which is
+        # what derives the default worktree path.
+        try:
+            task = GitHubIssueSource().fetch(str(issue), config.project_root)
+        except IssueClosedError as exc:
+            print(f"✗ {exc}", file=sys.stderr)
+            return 1
+        except (RuntimeError, ValueError) as exc:
+            print(f"✗ could not read issue #{issue}: {exc}", file=sys.stderr)
+            return 1
+        if args.slug:
+            task = replace(task, slug=args.slug)
 
     # Resolve workspace path
     if args.worktree:
@@ -91,7 +132,16 @@ def register_parser(subparsers: object) -> None:
     review_parser = subparsers.add_parser(
         "review", help="Run only the review pool on an existing worktree"
     )
-    review_parser.add_argument("story", help="Path to the story file")
+    review_parser.add_argument(
+        "story",
+        nargs="?",
+        help="Path to the story file (omit when using --issue)",
+    )
+    review_parser.add_argument(
+        "--issue",
+        type=int,
+        help="Review a GitHub-issue-backed story by number, as the sprint path builds it",
+    )
     review_parser.add_argument("--slug", help="Workspace slug (default: story filename stem)")
     review_parser.add_argument("--config", help="Path to forge.yaml (default: auto-detect)")
     review_parser.add_argument(
