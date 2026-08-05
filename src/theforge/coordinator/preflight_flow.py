@@ -42,6 +42,7 @@ from .agent_failure import (
     record_invocation_failure,
 )
 from .audit import has_review_approve
+from .audit_render import build_invocation_ledger
 from .log_tee import _write_log_artifact
 from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
@@ -346,6 +347,22 @@ def _run_preflight_phase(
                 # parse-degraded narration both fail; the fold attributes this to
                 # the model that actually ran the attempt.
                 "completed": not _attempt_failed(result),
+                # Full invocation ledger for THIS attempt (#2205). Only the final
+                # attempt reaches ``state.preflight_result`` and therefore
+                # ``cost.agents``; a parse-retry or a fallback that ran and was
+                # superseded exists nowhere else. Without this the earlier
+                # attempts would keep the collapsed profile_name/model pair while
+                # every other invocation in the run carried configured, resolved,
+                # and billed identities separately.
+                "ledger": build_invocation_ledger(
+                    result,
+                    "preflight",
+                    profile.name or "preflight",
+                    # Complexity is what preflight is running to determine, so
+                    # there is nothing truthful to stamp here.
+                    complexity=None,
+                    complexity_score=None,
+                ),
             }
         )
 

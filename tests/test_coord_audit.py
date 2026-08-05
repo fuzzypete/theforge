@@ -656,7 +656,10 @@ class TestCoordinatorAuditAgentBreakdown:
         audit = generate_audit_log(config, task, result)
 
         agents = audit["cost"]["agents"]
-        assert len(agents) == 2  # 1 dev + 1 review
+        # Every agent-invoking phase is listed, not just dev + review (#2205):
+        # "every invocation records its ledger" has to be a property of this
+        # list, so preflight is here too.
+        assert [a["role"] for a in agents] == ["preflight", "dev", "review"]
 
         dev_entry = next(a for a in agents if a["role"] == "dev")
         assert dev_entry["profile"] == "dev"
