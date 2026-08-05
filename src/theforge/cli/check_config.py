@@ -249,6 +249,28 @@ def _provider_label(
     return f"{provider_label} {transport_label}"
 
 
+def _unattributed_pricing_models(
+    model_keys: list[str],
+    registry: dict | None = None,
+) -> list[str]:
+    """Return enabled models that record a price routing is not allowed to use.
+
+    These entries carry per-MTok figures whose attribution is unknown (typically
+    a vendor-shorthand identity that resolves elsewhere at invocation time), so
+    the cost band and price tie-break ignore them — see config/pricing.py.
+    """
+    flagged: list[str] = []
+    for model_key in model_keys:
+        try:
+            spec = resolve_agent_spec(model_key, registry=registry)
+        except ValueError:
+            continue  # unresolvable keys are already reported elsewhere
+        has_price = spec.input_cost_per_mtok is not None or spec.output_cost_per_mtok is not None
+        if has_price and not spec.pricing_attributable:
+            flagged.append(model_key)
+    return flagged
+
+
 def _ref_transport_label(
     provider: str | None,
     model: str,
@@ -429,6 +451,18 @@ def _format_config(
                 lines.append(f"  {'selected builtin:':<18}{', '.join(builtin_models)}")
             if forge_yaml_models:
                 lines.append(f"  {'selected forge.yaml:':<18}{', '.join(forge_yaml_models)}")
+            # Prices that cannot be attributed to the identity they describe do
+            # not band or break ties (#2203). Say so, or the operator reads the
+            # registry literal as the figure routing used.
+            unattributed = _unattributed_pricing_models(
+                config.models, registry=config.model_registry
+            )
+            if unattributed:
+                lines.append(f"  {'unattributed price:':<18}{', '.join(unattributed)}")
+                lines.append(
+                    "    (recorded price is not attributable to the resolved model — "
+                    "ignored for cost banding and price tie-breaks)"
+                )
         if config.custom_models:
             custom_details = []
             for model_id in config.custom_models:
