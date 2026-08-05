@@ -138,6 +138,51 @@ def test_identity_metadata_takes_precedence():
     assert canonical_id_for_legacy_key("legacy-name", entry) == "anthropic/sonnet/cli"
 
 
+def test_concrete_anthropic_cli_version_resolves_to_the_family_shorthand():
+    # #2225: the CLI reports dated concrete versions; the registry slot is the
+    # family shorthand, so both must land on one identity.
+    assert canonical_id_for_legacy_key("claude-sonnet-4-6") == "anthropic/sonnet/cli"
+    assert canonical_id_for_legacy_key("claude-opus-4-6") == "anthropic/opus/cli"
+
+
+def test_family_match_is_gated_on_the_registry_slot_existing():
+    # No ``anthropic/haiku/cli`` slot in the catalog → unresolved, not guessed.
+    assert canonical_id_for_legacy_key("claude-haiku-4-5") is None
+    # An API hint contradicts the CLI-only heuristic.
+    assert canonical_id_for_legacy_key("claude-sonnet-4-6", {"transport_used": "api"}) is None
+
+
+def test_transport_hint_resolves_an_otherwise_ambiguous_bare_name():
+    # ``gpt-5.4`` is registered over both CLI and API.
+    assert canonical_id_for_legacy_key("gpt-5.4") is None
+    assert (
+        canonical_id_for_legacy_key("gpt-5.4", {"transport_used": "cli"}) == "openai/gpt-5.4/cli"
+    )
+    assert canonical_id_for_legacy_key("gpt-5.4", {"transport": "api"}) == "openai/gpt-5.4/api"
+
+
+def test_key_suffix_outranks_a_contradicting_transport_hint():
+    assert canonical_id_for_legacy_key("gpt-5.4-cli", {"transport_used": "api"}) == (
+        "openai/gpt-5.4/cli"
+    )
+
+
+def test_newly_resolving_key_merges_rather_than_displaces_its_collision():
+    """#2225 makes ``claude-sonnet-4-6`` resolve onto an id another key already owns."""
+    data = {
+        "models": {
+            "claude-sonnet-4-6": {"dev": {"runs": 3, "_successes": 1}},
+            "sonnet-cli": {"dev": {"runs": 7, "_successes": 2}},
+        }
+    }
+    migrated, _report = migrate_profiles_data(data)
+    assert list(migrated["models"]) == ["anthropic/sonnet/cli"]
+    assert migrated["models"]["anthropic/sonnet/cli"]["dev"]["runs"] == 10
+    # Still idempotent with the wider resolver.
+    again, _ = migrate_profiles_data(migrated)
+    assert again["models"]["anthropic/sonnet/cli"]["dev"]["runs"] == 10
+
+
 # ── migrate_profiles_data ──────────────────────────────────────────────
 
 

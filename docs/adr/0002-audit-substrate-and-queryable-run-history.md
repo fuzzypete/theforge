@@ -154,6 +154,12 @@ The substrate evolves over the project's lifetime. The contract that keeps that 
 - New per-run records are written at `schema_version=2` (`CURRENT_RECORD_SCHEMA_VERSION` in `audit_substrate.py`). Pre-slice records without a `schema_version` field are read as version 1.
 - `audit_substrate._migrate_record(record, from_version=...)` is the reader-side seam. It is a no-op today (no breaking field changes have shipped) but every reader (`iter_records`, `tail_records`, `iter_escalation_records`, `has_review_approve_in_substrate`) now consults the indexed `record_schema_version` and routes the parsed record through it. Future breaking changes register translations there.
 
+**Landed in #2225 (one identity namespace for `dev_model`):**
+
+- `dev_model` had indexed whatever spelling the runner recorded (`anthropic/sonnet/cli`, `sonnet`, `claude-sonnet-4-6`), so `GROUP BY dev_model` — a clause-3 query dimension — returned several partial populations for one model. Identities are now canonicalized at the shared `coordinator.agent_identity` projection, using the `transport_used` the renderer records to disambiguate bare model names the catalog offers over both transports.
+- A spelling that still cannot be resolved is kept verbatim, which is the truthful record, but `audit_records.dev_model_resolution` now says whether the stored value is `canonical` or `unresolved`, so a consumer can tell an unrecognized identity from a normalized one instead of treating both as equally authoritative.
+- `SUBSTRATE_SCHEMA_VERSION` is 6. Opening a version-5 substrate re-derives the `dev_model*` columns from each row's `raw_json`, so the normalization reaches already-indexed history rather than only new writes.
+
 **Writer-side guard (tracked in #1528):**
 
 - A CI check refuses a `schema_version` bump on the writer side without a matching migration-helper entry. This is the writer-side counterpart to #1522's reader-side dispatch; the two issues are sized to land independently.
