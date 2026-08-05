@@ -1,5 +1,7 @@
 # Flake Register
 
+Status: living.
+
 A flaky gate is a direct trust violation for a project whose thesis is
 trustworthy gates. A red-when-it-should-be-green (or green-when-it-should-be-red)
 gate is the gate lying, and it has teeth: on 2026-07-17 a flaky `gate (3.13)`
@@ -37,7 +39,7 @@ for the rules that govern entries here.
 
 ### 1. `test_process_group.py::test_kill_process_group_reaps_the_whole_tree`
 
-- **Status:** absent
+- **Status:** fixed
 - **Symptom:** Process-reap timing race — the test asserts the whole process
   tree is reaped, but the reap has not always completed when the assertion runs,
   producing intermittent `gate (3.13)` failures.
@@ -46,10 +48,20 @@ for the rules that govern entries here.
   (notably 3.13 in the CI matrix) the reap lags the assertion.
 - **Owning issue:** #1649 (process-group isolation, held for v0.12).
 - **Notes:** The `process_group.py` implementation and this test were reverted
-  by #1719 as out-of-scope for rc1, so neither is in the tree today. When #1649
-  reintroduces subprocess isolation, the reaper test **must synchronize on the
-  observed absence of every child PID** (poll until no descendant remains, with
-  a bounded timeout) instead of sleeping or assuming the reap has finished.
+  by #1719 as out-of-scope for rc1. When #1649 reintroduces subprocess
+  isolation, the reaper test **must synchronize on the observed absence of
+  every child PID** (poll until no descendant remains, with a bounded timeout)
+  instead of sleeping or assuming the reap has finished.
+- **Update (2026-08-05):** Reintroduced. `src/theforge/process_group.py` and
+  `tests/test_process_group.py` are back in the tree via PR #1791 (commit
+  `aa2d8a6c`, 2026-07-18, closing #1649) and hardened since (#2013, #2118).
+  The new suite follows this entry's prescription: reap assertions synchronize
+  on observed PID absence via a `_wait_until(predicate)` poll (50 ms interval,
+  bounded 5 s deadline) — e.g.
+  `test_surviving_descendants_are_still_reaped_after_the_leader_exits` polls
+  until the orphaned grandchild PID is gone rather than assuming the reap
+  finished. The original flaky test name does not exist in the new suite.
+  Status absent → fixed; kept for provenance per the legend.
 
 ### 2. `test_apply_branch_protection.py` — fake-`gh` SIGPIPE race
 
@@ -78,9 +90,19 @@ for the rules that govern entries here.
   timeout even though the tests themselves are green. This is a scheduling
   race, not a per-test race — the "flake" is the timeout, not an assertion.
 - **Owning issue:** #1722 (this register); burndown tracked here.
-- **Notes:** The current mitigation (`gate_timeout: 60`) is a timeout bump, not a
-  determinism fix. A real fix removes the contention rather than widening the
-  window: cap concurrent gate CPU (e.g. bound `-n auto` worker count per gate, or
-  scale `--parallel` to `cores / gate_worker_budget`) so N parallel gates cannot
-  oversubscribe the host. Until then, do **not** raise `gate_timeout` further to
-  chase this — a wider timeout hides the contention instead of removing it.
+- **Notes:** The 45→60 bump was a timeout bump, not a determinism fix. A real
+  fix removes the contention rather than widening the window: cap concurrent
+  gate CPU (e.g. bound `-n auto` worker count per gate, or scale `--parallel`
+  to `cores / gate_worker_budget`) so N parallel gates cannot oversubscribe the
+  host. Until then, do **not** raise `gate_timeout` to chase *contention* — a
+  wider timeout hides the contention instead of removing it. Raises that track
+  measured alone-time suite growth are a different thing and are fine (see
+  update below).
+- **Update (2026-08-05):** `gate_timeout` is now **180**, raised 60→180 by
+  commit `135e8c7` (2026-07-27). Cause was suite growth, not this contention
+  flake: `make gate` measured 71.4 s wall clock *alone* (6224 tests) against a
+  60 s budget, so `--parallel 1` sprints failed the baseline gate
+  deterministically — parallelism's adaptive scaling was the only thing masking
+  it. Set to ~2.5x measured alone-time (rationale inline in `forge.yaml`); the
+  timeout exists to catch a hung gate, not to bound normal growth. Re-measure
+  when the suite grows. The contention fix above is still owed.

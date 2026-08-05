@@ -123,29 +123,29 @@ checkout are genuinely unaffected.
   gh pr merge <N> --auto --squash --delete-branch
   ```
 
-## 3. The `base_branch` trap (issue #1928) — read this
+## 3. The `base_branch` trap (issue #1928, fixed) — historical note
 
 `workspace.base_branch` defaults to `main`. After every merged PR, forge's
-"best-effort local cleanup" (`coordinator/completion.py`) runs, in the
-**project-root checkout**:
+"best-effort local cleanup" (`coordinator/completion.py`) fast-forwards the
+**project-root checkout** to `origin/<base_branch>`. Before #1928 (closed
+2026-07-25) it did so unconditionally: sitting on a release branch while
+`base_branch` was still `main` silently dragged the release branch up to
+`origin/main` — main's dev version, its `[Unreleased]` changelog, its
+forward-port merge commits — with no error (failures were swallowed as
+"non-fatal").
 
-```
-git fetch origin
-git merge --ff-only origin/<base_branch>
-```
+Fixed by #1928: `_step_cleanup` now checks the checked-out branch first and
+**skips** the fast-forward when it doesn't match the configured base, logging
+`skipped local base branch sync after merge because checked-out branch … does
+not match configured base …`; fetch/merge failures warn instead of being
+swallowed.
 
-If you are checked out on a **release branch** while `base_branch` is still
-`main`, that fast-forward silently drags your release branch up to
-`origin/main` — importing main's dev version, its `[Unreleased]` changelog, and
-main's forward-port merge commits. It corrupts the release branch **with no
-error** (the step swallows failures as "non-fatal").
-
-Until #1928 lands:
-
-- Keep `--base-branch` matching the branch you have checked out, **or** don't
-  sit on a release branch in the project root while a sprint runs.
-- Symptom to watch for: `git show release/vX.Y:pyproject.toml` reads main's dev
-  version instead of the branch's `rc` version.
+Standing hygiene (still good practice): keep `--base-branch` matching the
+branch you have checked out — the guard only skips the local sync, while PR
+targets and the collision DAG still follow the configured base. Symptom of the
+pre-fix corruption, if auditing old history: `git show
+release/vX.Y:pyproject.toml` reads main's dev version instead of the branch's
+`rc` version.
 
 ## 4. Cutting a release candidate
 
@@ -164,7 +164,7 @@ scripts/cut-rc.sh X.Y.Z n      # explicit override
 - `cut-rc.sh` only `pull --ff-only`s the *release* branch and creates it from
   `main` when it doesn't exist yet; it **never** merges `main` into an existing
   release branch. (So cut-rc is never the cause of a release branch picking up
-  main's history — see §3 for what is.)
+  main's history — see §3 for what was, pre-#1928.)
 - `--resume` skips bump/commit/tag/push when the tag already exists on origin.
 - **Floor doctrine:** cut when the release is "solid enough to be the dev
   substrate for the next release," not when every issue is closed. Non-floor
