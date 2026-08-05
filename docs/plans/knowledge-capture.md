@@ -262,8 +262,17 @@ schema-enforced, auditable, stored in the run record.
 
 ```yaml
 knowledge:
-  run_summaries: true    # default: false initially
+  run_summaries: true       # produce and accumulate summaries
+  prior_run_context: false  # inject them into future agent prompts
 ```
+
+Generation and consumption are **separate knobs with separate readiness
+points**, and both ship disabled. `run_summaries` can be enabled as soon as
+Layer 2 lands, so a corpus accumulates while nothing consumes it.
+`prior_run_context` gates Layer 3 injection and stays off until the
+admissibility classifier exists — see ADR-0002 clause 5. One switch
+controlling both would make it impossible to build the corpus that retrieval
+and admissibility have to be tested against.
 
 Cost is minimal: one bounded agent call with constrained output. Estimated
 $0.10-0.30 per run using a mid-tier model. The summary phase is **not
