@@ -415,3 +415,76 @@ def test_export_assignment_history_parser_wired_under_audits(tmp_path: Path, cap
     rc = audits_cli.cmd_audits(args)
     assert rc == 0
     assert out_path.exists()
+
+
+# ── #2201: cost.agents fallback reads the keys the renderer writes ───────
+
+
+def _record_without_routing(*, run_id: str, slug: str, agent_entry: dict) -> dict:
+    """Audit record with no preflight routing block — forces the cost.agents fallback."""
+    return {
+        "run_id": run_id,
+        "task": {"slug": slug},
+        "outcome": {"success": True, "final_phase": "DONE"},
+        "timing": {"started_at": "2026-05-08T09:00:00+00:00"},
+        "preflight": {"verdict": "PROCEED", "complexity": "medium", "complexity_score": 5},
+        "cost": {"total_usd": 1.0, "agents": [agent_entry]},
+    }
+
+
+def test_assignment_history_fallback_reads_renderer_model_used(tmp_path: Path) -> None:
+    """The fallback must read ``model_used`` — the key ``_agent_entry`` actually writes.
+
+    Pre-#2201 it read provider/model/cli/name, which the renderer never emits,
+    so a record with a recorded dev identity dropped out of the history entirely.
+    """
+    from theforge.agent_types import AgentResult
+    from theforge.coordinator import audit_render
+
+    entry = audit_render._agent_entry(
+        AgentResult(
+            success=True,
+            output="ok",
+            session_id=None,
+            cost_usd=1.0,
+            exit_code=0,
+            raw={},
+            profile_name="dev",
+            model_used="sonnet",
+        ),
+        "dev",
+        "dev",
+        12.0,
+    )
+    _seed_substrate(
+        tmp_path,
+        [_record_without_routing(run_id="r-fallback", slug="fallback", agent_entry=entry)],
+    )
+    conn = sub.require_substrate(tmp_path)
+    try:
+        derived = sub.derive_assignment_history(conn)
+    finally:
+        conn.close()
+
+    assert [(d["story"], d["dev_model"]) for d in derived] == [
+        ("fallback", "anthropic/sonnet/cli")
+    ]
+
+
+def test_assignment_history_prefers_routing_assignment_over_executed_identity(
+    tmp_path: Path,
+) -> None:
+    """The CLI/export view still reports the *assigned* model when routing recorded one."""
+    rec = _audit_record(run_id="r-assigned", slug="assigned", success=True)
+    rec["cost"] = {
+        "total_usd": 1.0,
+        "agents": [{"role": "dev", "model_used": "opus"}],
+    }
+    _seed_substrate(tmp_path, [rec])
+    conn = sub.require_substrate(tmp_path)
+    try:
+        derived = sub.derive_assignment_history(conn)
+    finally:
+        conn.close()
+
+    assert [d["dev_model"] for d in derived] == ["anthropic/sonnet/cli"]
