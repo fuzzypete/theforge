@@ -900,6 +900,14 @@ class CoordinatorState:
     # this exact record first so it cannot re-price a cycle differently after
     # seating already granted it.
     adaptive_review_cycle_planning: dict | None = None
+    # The portion of the allocation seating committed to verification (#2258).
+    # Set from the seating reconciliation; keys mirror its reservation fields
+    # (reserved_review_usd, reserved_review_cycles, review_cycle_cost_usd,
+    # allocation_usd, action). REVIEW funds from this balance and DEV is refused
+    # further attempts once the rest of the allocation is spent, so the seating
+    # decision binds when it is exceeded rather than only when it is computed.
+    # None/empty on runs where the reconciliation reserved nothing.
+    review_funding_reservation: dict | None = None
     adaptive_limits_audit: dict = field(default_factory=dict)
     review_early_terminated: bool = False  # True when early-termination triggered
     workspace_hygiene_audit: list[dict] = field(default_factory=list)

@@ -634,10 +634,18 @@ def _run_review_pool(
                 composition=[p.name for p in pool],
             ).as_dict()
             state.adaptive_review_cycle_planning = review_cycle_planning
-        _shortfall = _story_budget.phase_funding_shortfall(
+        # A cycle the seating reconciliation reserved is funded from that
+        # reservation, not from whatever an overrunning dev phase happened to
+        # leave behind (#2258). Cycles beyond the reserved ones still draw the
+        # general pool, so a story whose dev phase stayed within its estimate
+        # keeps every cycle it has always had. Runs with no reservation —
+        # configured-fallback allocations, no band history — fall through to the
+        # pre-existing whole-allocation check unchanged.
+        _shortfall = _story_budget.reserved_review_shortfall(
+            state.review_funding_reservation,
             state.story_allocation,
-            state.total_cost_measured,
-            phase="review",
+            observed_usd=state.total_cost_measured,
+            review_observed_usd=state.total_review_cost_measured,
             participants=[p.name for p in pool],
             planned_usd=float(review_cycle_planning["planned_cost_usd"]),
         )

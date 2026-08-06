@@ -823,3 +823,317 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         assert mock_pool.called is True
         assert sorted(meta.successful) == ["a", "b", "c"]
         assert [float(profile.budget_usd) for profile in config.review_pool] == [5.85, 5.85, 5.85]
+
+
+class TestTheSeatedReviewReservationIsHeldAcrossPhases:
+    """Money committed to review is not spendable by dev (#2258).
+
+    The seating reconciliation (#2238) was a projection evaluated once against
+    a dev ESTIMATE. Nothing held its conclusion, so a dev phase that overran
+    spent the money review had been seated with and the panel was refused at
+    dispatch anyway — run ``9b3fa1bf44a4`` / story ``issue-2252``, seated with
+    an affordable $1.01 cycle against a $4.12 allocation, dev observed $4.00,
+    review refused with ``needs $1.01, $0.12 left``. These tests pin both
+    halves of the fix at the seam: review funds from the reservation, and a
+    later dev attempt is refused once the rest of the allocation is gone.
+    """
+
+    def _config(self, tmp_path: Path):
+        from coord_test_helpers import _make_config, _make_review_profile
+
+        from theforge.config.types import AssignmentConfig, RetryPolicy
+
+        config = _make_config(tmp_path)
+        return dataclasses.replace(
+            config,
+            # The dev band's p90 — the estimate seating reconciles against.
+            dev_profile=dataclasses.replace(config.dev_profile, budget_usd=2.38),
+            # One reviewer at the issue's $1.01 cycle price (no review-cycle
+            # history here, so the ceiling sum is the planning price).
+            review_pool=[_make_review_profile("openai-gpt-5.5-cli", budget_usd=1.01)],
+            synthesis_profile=None,
+            retry=RetryPolicy(
+                max_dev_iterations=3,
+                max_review_cycles=5,
+                max_dev_iterations_cap=6,
+                max_review_cycles_cap=5,
+                adaptive_iterations=True,
+            ),
+            assignment=AssignmentConfig(enabled=True, adaptive_enabled=True),
+        )
+
+    def _seated_state(self, tmp_path: Path):
+        """State as issue-2252 was seated: $4.12 against a 20-run band."""
+        state = CoordinatorState(log_dir=tmp_path / "logs")
+        state.preflight_complexity = "medium"
+        state.preflight_complexity_score = 3
+        state.workspace_path = tmp_path
+        state.branch_name = "feat/issue-2252"
+        state.story_allocation = {
+            "allocation_usd": 4.12,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 3,
+            "median_usd": 0.94,
+            "p90_usd": 2.38,
+            "max_usd": 3.30,
+            "sample_count": 20,
+        }
+        return state
+
+    def _seat(self, tmp_path: Path, config, task):
+        """Run the loop as far as the first DEV dispatch and return the state."""
+        from theforge.coordinator.engine import _coordinator_loop
+
+        state = self._seated_state(tmp_path)
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+        return state
+
+    def test_seating_reserves_the_cycle_it_granted_before_dev_runs(self, tmp_path: Path) -> None:
+        from coord_test_helpers import _make_task
+
+        state = self._seat(tmp_path, self._config(tmp_path), _make_task(tmp_path))
+
+        reservation = state.review_funding_reservation
+        assert reservation is not None
+        assert reservation["reserved_review_cycles"] == state.adaptive_review_max
+        assert reservation["reserved_review_usd"] == round(state.adaptive_review_max * 1.01, 4)
+        # What is left for everything that is not review is the allocation
+        # minus the reservation — the number the dev guard binds on.
+        assert reservation["nonreview_allocation_usd"] == round(
+            4.12 - reservation["reserved_review_usd"], 4
+        )
+
+    def test_the_reservation_reaches_the_run_audit(self, tmp_path: Path) -> None:
+        """An operator can see which dollars were withheld, and on what price."""
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.audit import generate_audit_log
+        from theforge.coordinator.state import CoordinatorResult
+
+        config = self._config(tmp_path)
+        task = _make_task(tmp_path)
+        state = self._seat(tmp_path, config, task)
+
+        audit = generate_audit_log(
+            config,
+            task,
+            CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message="x"),
+        )
+        block = audit["iterations"]["adaptive_limits"]["review_funding_reservation"]
+        assert block["allocation_usd"] == 4.12
+        assert block["review_cycle_cost_usd"] == 1.01
+        assert (
+            block["reserved_review_usd"] == state.review_funding_reservation["reserved_review_usd"]
+        )
+        assert block["reserved_review_cycles"] == state.adaptive_review_max
+        assert block["action"] in (sb.RECONCILE_AFFORDABLE, sb.RECONCILE_REDUCED)
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_a_dev_overrun_no_longer_defunds_the_seated_review_cycle(
+        self, mock_pool, _mock_log, tmp_path: Path
+    ) -> None:
+        """The issue's exact shape: $4.00 of a $4.12 allocation spent by dev."""
+        from coord_test_helpers import _make_agent_result, _make_task
+
+        from tests.test_coord_routing_recovery import APPROVE_YAML
+        from theforge.coordinator.review_pool import _run_review_pool
+        from theforge.coordinator.state import ReviewCycleMetadata
+
+        config = self._config(tmp_path)
+        task = _make_task(tmp_path)
+        state = self._seat(tmp_path, config, task)
+
+        # Dev overruns its $2.38 estimate and the band's $3.30 observed max.
+        state.dev_results.append(_make_agent_result(cost_usd=4.00, profile_name="dev"))
+        assert state.total_cost_measured == 4.00
+        # Under the old whole-allocation check this is the refusal the issue
+        # reports: $0.12 left against a $1.01 panel.
+        assert (
+            sb.phase_funding_shortfall(
+                state.story_allocation,
+                state.total_cost_measured,
+                phase="review",
+                participants=["openai-gpt-5.5-cli"],
+                planned_usd=1.01,
+            )
+            is not None
+        )
+
+        mock_pool.return_value = [
+            _make_agent_result(
+                success=True,
+                output=APPROVE_YAML,
+                profile_name="openai-gpt-5.5-cli",
+                cost_usd=0.98,
+            )
+        ]
+        meta = ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
+        workspace = tmp_path / "ws"
+        workspace.mkdir(exist_ok=True)
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=True,
+        )
+
+        # The full planned panel runs, funded from the reservation.
+        assert state.allocation_exhausted is None
+        assert state.phase != Phase.ESCALATE
+        assert mock_pool.called is True
+        assert meta.successful == ["openai-gpt-5.5-cli"]
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_a_panel_neither_pool_can_fund_is_still_refused(
+        self, mock_pool, _mock_log, tmp_path: Path
+    ) -> None:
+        """The reservation is a floor under verification, not a blank cheque."""
+        from coord_test_helpers import _make_agent_result, _make_task
+
+        from theforge.coordinator.review_pool import _run_review_pool
+        from theforge.coordinator.state import ReviewCycleMetadata
+
+        config = self._config(tmp_path)
+        task = _make_task(tmp_path)
+        state = self._seat(tmp_path, config, task)
+
+        # The reserved cycles have all been spent AND the allocation is gone.
+        reserved = float(state.review_funding_reservation["reserved_review_usd"])
+        state.review_agent_results.append(
+            _make_agent_result(cost_usd=reserved, profile_name="openai-gpt-5.5-cli")
+        )
+        state.dev_results.append(_make_agent_result(cost_usd=4.05 - reserved, profile_name="dev"))
+
+        meta = ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
+        workspace = tmp_path / "ws"
+        workspace.mkdir(exist_ok=True)
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=True,
+        )
+
+        assert mock_pool.called is False
+        assert state.error_type == "allocation_exhausted"
+        assert state.allocation_exhausted["reserved_review_usd"] == round(reserved, 4)
+        assert state.allocation_exhausted["reserved_review_remaining_usd"] == 0.0
+
+    def test_a_later_dev_attempt_is_refused_once_non_review_funds_are_gone(
+        self, tmp_path: Path
+    ) -> None:
+        """The other half: the overrunning phase is stopped, not the checker."""
+        from coord_test_helpers import _make_agent_result, _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+        from theforge.coordinator.state import RetryReason
+
+        config = self._config(tmp_path)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path)
+        calls: list[float | None] = []
+
+        def _overrunning_dev(_state, *_args, **_kwargs):
+            calls.append(_state.total_cost_measured)
+            # Spend nearly the whole allocation, then ask for another attempt.
+            _state.dev_results.append(_make_agent_result(cost_usd=4.00, profile_name="dev"))
+            _state.retry_reason = RetryReason.TIMEOUT_RESUME
+            return None
+
+        with patch("theforge.coordinator.engine._run_dev_phase", _overrunning_dev):
+            result = _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        # The first attempt ran — seating had already ruled it fundable. The
+        # retry did not: it would have drawn down the reserved review cycle.
+        assert calls == [0.0]
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert state.error_type == "allocation_exhausted"
+        assert state.allocation_exhausted["nonreview_exhausted"] is True
+        assert state.allocation_exhausted["phase"] == "dev"
+        assert "reserved for the" in state.error
+        # The reserved money is still there for the review that never ran.
+        assert state.total_review_cost_measured == 0.0
+
+    def test_a_dev_retry_within_the_non_review_pool_is_untouched(self, tmp_path: Path) -> None:
+        """A story that stays inside its estimate keeps every attempt it had."""
+        from coord_test_helpers import _make_agent_result, _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+        from theforge.coordinator.state import RetryReason
+
+        config = self._config(tmp_path)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path)
+        calls: list[float | None] = []
+
+        class _StopAtSecondDev(Exception):
+            pass
+
+        def _modest_dev(_state, *_args, **_kwargs):
+            if calls:
+                raise _StopAtSecondDev()
+            calls.append(_state.total_cost_measured)
+            _state.dev_results.append(_make_agent_result(cost_usd=0.40, profile_name="dev"))
+            _state.retry_reason = RetryReason.TIMEOUT_RESUME
+            return None
+
+        with patch("theforge.coordinator.engine._run_dev_phase", _modest_dev):
+            with pytest.raises(_StopAtSecondDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        assert state.allocation_exhausted is None
+
+    def test_a_configured_fallback_run_keeps_the_pre_existing_dispatch_check(
+        self, tmp_path: Path
+    ) -> None:
+        """No band history reserves nothing, so nothing changes for those runs."""
+        from coord_test_helpers import _make_agent_result, _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+        from theforge.coordinator.state import RetryReason
+
+        config = self._config(tmp_path)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path)
+        state.story_allocation = {
+            **state.story_allocation,
+            "basis": sb.BASIS_CONFIGURED_FALLBACK,
+        }
+        calls: list[int] = []
+
+        class _StopAtSecondDev(Exception):
+            pass
+
+        def _overrunning_dev(_state, *_args, **_kwargs):
+            if calls:
+                raise _StopAtSecondDev()
+            calls.append(1)
+            _state.dev_results.append(_make_agent_result(cost_usd=4.00, profile_name="dev"))
+            _state.retry_reason = RetryReason.TIMEOUT_RESUME
+            return None
+
+        with patch("theforge.coordinator.engine._run_dev_phase", _overrunning_dev):
+            with pytest.raises(_StopAtSecondDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        assert state.review_funding_reservation["reserved_review_usd"] == 0.0
+        assert state.allocation_exhausted is None
