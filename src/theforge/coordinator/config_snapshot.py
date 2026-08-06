@@ -270,7 +270,7 @@ def active_snapshot() -> "SprintConfigSnapshot | None":
     return _ACTIVE
 
 
-def pinned_forge_yaml() -> Path | None:
+def pinned_forge_yaml(project_root: Path | None = None) -> Path | None:
     """The pinned forge.yaml to prepare worktrees from, or None for standalone runs.
 
     Read from the environment so it survives ``os.execv`` and reaches child
@@ -286,6 +286,15 @@ def pinned_forge_yaml() -> Path | None:
             return None
     except OSError:
         return None
+    if project_root is not None:
+        try:
+            resolved_root = Path(project_root).resolve()
+            resolved_path = path.resolve()
+        except OSError:
+            return None
+        expected_parent = resolved_root / ".forge" / "sprints"
+        if expected_parent not in resolved_path.parents:
+            return None
     return path
 
 
@@ -317,12 +326,13 @@ def sync_forge_yaml_into_worktree(
     """
     from . import util as _cu  # noqa: PLC0415 - avoids an import cycle at module load
 
-    source = pinned_forge_yaml() or (Path(project_root) / "forge.yaml")
+    pinned = pinned_forge_yaml(project_root)
+    source = pinned or (Path(project_root) / "forge.yaml")
     destination = Path(workspace_path) / "forge.yaml"
     if not source.exists():
         return
 
-    origin = "sprint-pinned snapshot" if pinned_forge_yaml() else "project root"
+    origin = "sprint-pinned snapshot" if pinned else "project root"
     existed = destination.exists()
     try:
         shutil.copy2(source, destination)

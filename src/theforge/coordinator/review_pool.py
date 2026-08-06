@@ -609,6 +609,13 @@ def _run_review_pool(
             state.error = "All reviewers demoted due to parse failures."
             return [], [], None, [], []
 
+    # The panel recorded against this cycle is the one that will actually be
+    # attempted, not the one that was configured. A demoted reviewer never
+    # runs and never bills, so a cycle costed at two reviewers must not be
+    # recorded as three — downstream pricing joins observed cost to this list
+    # and would otherwise attribute a smaller panel's spend to a larger one.
+    meta.pool_models = [profile.name for profile in pool]
+
     pool_size = len(pool)
 
     # ── Story-allocation funding check (#2169) ────────────────────────────────
@@ -618,14 +625,24 @@ def _run_review_pool(
     # out of reach. The check is skipped when spend is unmeasured (a lower
     # bound is not a number to refuse work on).
     if enforce_budgets and state.story_allocation:
+        configured_ceiling_usd = sum(float(p.budget_usd) for p in pool)
+        review_cycle_planning = state.adaptive_review_cycle_planning
+        if not isinstance(review_cycle_planning, dict) or not review_cycle_planning:
+            review_cycle_planning = _story_budget.derive_review_cycle_planning_price(
+                config.project_root,
+                configured_ceiling_usd=configured_ceiling_usd,
+                composition=[p.name for p in pool],
+            ).as_dict()
+            state.adaptive_review_cycle_planning = review_cycle_planning
         _shortfall = _story_budget.phase_funding_shortfall(
             state.story_allocation,
             state.total_cost_measured,
             phase="review",
             participants=[p.name for p in pool],
-            planned_usd=sum(float(p.budget_usd) for p in pool),
+            planned_usd=float(review_cycle_planning["planned_cost_usd"]),
         )
         if _shortfall is not None:
+            _shortfall["review_cycle_planning"] = dict(review_cycle_planning)
             state.allocation_exhausted = _shortfall
             state.phase = Phase.ESCALATE
             state.error = _story_budget.format_shortfall(_shortfall, story=task.slug)
