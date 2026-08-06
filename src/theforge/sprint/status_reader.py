@@ -497,6 +497,38 @@ def _render_intake_drop_detail(final_outcome: str, detail_data: dict) -> str:
     return " ".join(parts)
 
 
+#: Stage reported for a story the scheduler is deliberately holding at its plan
+#: gate because its planned files overlap another story's. A held story emits no
+#: events, so without this the wait reads as a stall (#2235).
+COLLISION_GATE_STAGE = "collision gate"
+
+#: How many overlapping paths to name before summarising the rest.
+_GATE_FILE_PREVIEW = 3
+
+
+def _collision_gate_detail(detail_data: dict) -> str | None:
+    """Describe a held collision gate, or None when no hold is recorded."""
+    blockers = detail_data.get("collision_gate_blockers")
+    if not isinstance(blockers, list):
+        return None
+    blocker_names = [b for b in blockers if isinstance(b, str) and b]
+    if not blocker_names:
+        return None
+
+    files = detail_data.get("collision_gate_files")
+    paths = [f for f in files if isinstance(f, str) and f] if isinstance(files, list) else []
+
+    text = f"held behind {', '.join(blocker_names)}"
+    if paths:
+        shown = [Path(p).name for p in paths[:_GATE_FILE_PREVIEW]]
+        remaining = len(paths) - len(shown)
+        files_str = ", ".join(shown)
+        if remaining > 0:
+            files_str += f" +{remaining} more"
+        text += f" on {files_str}"
+    return text
+
+
 def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None]:
     phase_val = story.get("phase")
     status_val = story.get("status", "waiting")
@@ -566,6 +598,13 @@ def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None
         if status_val == "failed" and phase_val:
             return "", phase_val, complexity
         return "", "—", complexity
+
+    if phase_val == "PLAN_DONE":
+        # The scheduler chose this wait and recorded why. Say so, rather than
+        # letting the story age out as generic inactivity (#2235).
+        gate_detail = _collision_gate_detail(detail_data)
+        if gate_detail:
+            return COLLISION_GATE_STAGE, gate_detail, complexity
 
     if phase_val == "PLAN":
         current = detail_data.get("plan_attempt")

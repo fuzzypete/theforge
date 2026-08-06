@@ -1737,6 +1737,50 @@ CLAIM_PRESERVED = "preserved for operator decision"
 _QUEUED_CLAIM_PROBE_SECONDS = 30.0
 
 
+#: Live-state detail keys describing why a story's plan gate is being held.
+#: Written while the hold is in force and cleared when it ends, so the status
+#: view can tell a deliberate wait from a story that stopped moving (#2235).
+GATE_HOLD_BLOCKERS_KEY = "collision_gate_blockers"
+GATE_HOLD_FILES_KEY = "collision_gate_files"
+GATE_HOLD_CLAIMS_KEY = "collision_gate_claims"
+GATE_HOLD_DETAIL_KEYS = (
+    GATE_HOLD_BLOCKERS_KEY,
+    GATE_HOLD_FILES_KEY,
+    GATE_HOLD_CLAIMS_KEY,
+)
+
+
+def _make_gate_hold_publisher(
+    state_writer: "SprintStateWriter | None",
+) -> "Callable[[str, dict | None], None]":
+    """Return a ``gate_hold_fn`` that writes gate holds into the live state file.
+
+    Gate servicing runs on a 2s tick; only *changes* are written, so a hold that
+    lasts twenty minutes costs one state write, not six hundred. Updates go
+    through ``detail_updates``, which merges — writing ``detail`` would replace
+    the dict wholesale and erase co-resident keys such as the reviewer event
+    timestamp the EVENT AGE column reads (#2235).
+    """
+    published: dict[str, dict] = {}
+
+    def _publish(slug: str, payload: dict | None) -> None:
+        if state_writer is None:
+            return
+        if payload is None:
+            # Only clear a hold this publisher actually wrote: every opened gate
+            # calls through here, and most were never held.
+            if published.pop(slug, None) is None:
+                return
+            state_writer.update(slug, detail_updates=dict.fromkeys(GATE_HOLD_DETAIL_KEYS, None))
+            return
+        if published.get(slug) == payload:
+            return
+        published[slug] = payload
+        state_writer.update(slug, phase="PLAN_DONE", detail_updates=dict(payload))
+
+    return _publish
+
+
 def _release_plan_gates(
     plan_done: dict[str, str],
     file_footprints: dict[str, set[str]],
@@ -1744,11 +1788,19 @@ def _release_plan_gates(
     active: dict[str, object],
     phase_lock: threading.Lock,
     collision_claims: "dict[str, str] | None" = None,
+    gate_hold_fn: "Callable[[str, dict | None], None] | None" = None,
 ) -> list[str]:
     """Check newly-planned stories and release their gates if no file overlap.
 
     Called from the scheduling loop — both the poll interval and after a future
     completes — to avoid deadlock when gated workers block in _run_fresh.
+
+    *gate_hold_fn* publishes the reason a gate is being held into the story's
+    live state — ``fn(slug, payload)`` while the hold is in force, ``fn(slug,
+    None)`` once it ends. A gated worker emits no events of its own, so without
+    this the wait is indistinguishable from a hang in the status view (#2235).
+    It must never be called while *phase_lock* is held: the publisher writes
+    through the worker state path, which takes that same non-reentrant lock.
 
     *collision_claims* maps slug -> claim reason for stories that are past their
     plan gate. A claim, not worker liveness, is what holds a file: a story that
@@ -1780,6 +1832,24 @@ def _release_plan_gates(
                 held[other_slug] = shared
         return held
 
+    def _publish_hold(slug: str, blockers: "dict[str, set[str]] | None") -> None:
+        """Record (or clear) why *slug*'s gate is held, for the status view."""
+        if gate_hold_fn is None:
+            return
+        if not blockers:
+            gate_hold_fn(slug, None)
+            return
+        gate_hold_fn(
+            slug,
+            {
+                GATE_HOLD_BLOCKERS_KEY: sorted(blockers),
+                GATE_HOLD_FILES_KEY: sorted(set().union(*blockers.values())),
+                GATE_HOLD_CLAIMS_KEY: {
+                    blocker: claims.get(blocker, CLAIM_IN_DEV) for blocker in sorted(blockers)
+                },
+            },
+        )
+
     with phase_lock:
         pd_snapshot = dict(plan_done)
 
@@ -1798,11 +1868,13 @@ def _release_plan_gates(
                     f"WARNING: {pd_slug} overlaps with active stories on: "
                     f"{', '.join(sorted(overlap))}"
                 )
+                _publish_hold(pd_slug, blockers)
             else:
                 gate = plan_gates.pop(pd_slug, None)
                 if gate is not None:
                     gate.set()
                 claims[pd_slug] = CLAIM_IN_DEV
+                _publish_hold(pd_slug, None)
 
     # Re-check deferred gates (conflicting story may have finished)
     stood_down: list[str] = []
@@ -1814,6 +1886,7 @@ def _release_plan_gates(
             gate.set()
             del plan_gates[deferred_slug]
             claims[deferred_slug] = CLAIM_IN_DEV
+            _publish_hold(deferred_slug, None)
             continue
         # Every blocker is preserved, undecided work that no longer has a
         # worker or a landing path in this run: the gate cannot open here.
@@ -1830,7 +1903,10 @@ def _release_plan_gates(
                 f"work from {', '.join(sorted(blockers))} on {', '.join(overlap)} — "
                 "the collision gate cannot open in this run"
             )
+            _publish_hold(deferred_slug, None)
             stood_down.append(deferred_slug)
+            continue
+        _publish_hold(deferred_slug, blockers)
     return stood_down
 
 
@@ -5475,6 +5551,8 @@ def run_sprint(
         _log(f"✗ {slug}: queued PR {poll_result['status']} ({context})")
         return "failed"
 
+    _publish_gate_hold = _make_gate_hold_publisher(_state_writer)
+
     def _service_plan_gates() -> None:
         """Release openable plan gates and stand down the unopenable ones."""
         # A CLAIM_PENDING_LANDING claim is resolvable *in this run*, but only
@@ -5500,7 +5578,13 @@ def run_sprint(
                 _resolve_queued_pr(_q_slug, blocking=False, context="holding a collision gate")
 
         for _sd_slug in _release_plan_gates(
-            plan_done, file_footprints, plan_gates, active, phase_lock, collision_claims
+            plan_done,
+            file_footprints,
+            plan_gates,
+            active,
+            phase_lock,
+            collision_claims,
+            gate_hold_fn=_publish_gate_hold,
         ):
             _sd_gate = plan_gates.pop(_sd_slug, None)
             gate_stood_down[_sd_slug] = (
