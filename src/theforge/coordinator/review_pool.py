@@ -624,6 +624,7 @@ def _run_review_pool(
             review_cycle_planning = _story_budget.derive_review_cycle_planning_price(
                 config.project_root,
                 configured_ceiling_usd=configured_ceiling_usd,
+                composition=[p.name for p in pool],
             ).as_dict()
             state.adaptive_review_cycle_planning = review_cycle_planning
         _shortfall = _story_budget.phase_funding_shortfall(

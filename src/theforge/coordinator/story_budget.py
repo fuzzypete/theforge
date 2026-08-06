@@ -40,8 +40,19 @@ REVIEW_COST_HISTORY_TAIL = 50
 
 BASIS_SUBSTRATE_BAND = "substrate_band"
 BASIS_CONFIGURED_FALLBACK = "configured_fallback"
+BASIS_OBSERVED_COMPOSITION = "observed_composition"
 BASIS_OBSERVED_REVIEW_CYCLE = "observed_review_cycle"
+BASIS_OBSERVED_SPARSE = "observed_sparse"
 BASIS_REVIEW_CEILING_FALLBACK = "ceiling_fallback"
+
+# The rungs of the review-cycle pricing ladder, most specific first. A price is
+# "observed" on any of the first three: all describe measured spend, and differ
+# only in which population was measurable. The ceiling is not a price at all —
+# it is a permission — so it sits outside this set and is reached only when
+# nothing has ever been observed.
+OBSERVED_REVIEW_CYCLE_BASES = frozenset(
+    {BASIS_OBSERVED_COMPOSITION, BASIS_OBSERVED_REVIEW_CYCLE, BASIS_OBSERVED_SPARSE}
+)
 
 STATUS_WITHIN = "within_allocation"
 STATUS_EXCEEDED = "allocation_exceeded"
@@ -109,10 +120,11 @@ class ReviewCyclePlanningPrice:
     headroom_multiplier: float = REVIEW_CYCLE_PRICE_HEADROOM
     reason: str = ""
     excluded_for_taint: int = 0
+    composition: tuple[str, ...] | None = None
 
     @property
     def derived(self) -> bool:
-        return self.basis == BASIS_OBSERVED_REVIEW_CYCLE
+        return self.basis in OBSERVED_REVIEW_CYCLE_BASES
 
     def as_dict(self) -> dict:
         return {
@@ -126,6 +138,7 @@ class ReviewCyclePlanningPrice:
             "headroom_multiplier": round(self.headroom_multiplier, 4),
             "reason": self.reason,
             "excluded_for_taint": self.excluded_for_taint,
+            "composition": list(self.composition) if self.composition else None,
         }
 
 
@@ -271,29 +284,73 @@ def review_cycle_planning_from_samples(
     excluded_for_taint: int = 0,
     min_samples: int = REVIEW_CYCLE_PRICE_MIN_SAMPLES,
     headroom_multiplier: float = REVIEW_CYCLE_PRICE_HEADROOM,
+    derived_basis: str = BASIS_OBSERVED_REVIEW_CYCLE,
+    scope_suffix: str = "",
+    composition: tuple[str, ...] | None = None,
 ) -> ReviewCyclePlanningPrice:
-    """Return the deterministic planning price for one review cycle."""
+    """Return the deterministic planning price for one review cycle.
+
+    Three outcomes, and which one applies is decided only by how much has been
+    measured — never by how the money is permitted to be spent:
+
+    * at or above ``min_samples``, the median of observed spend plus headroom;
+    * with fewer but at least one observation, the observed *maximum* plus
+      headroom, capped at the ceiling. A one- or two-sample median understates
+      the spread it was drawn from, and under-reserving is the failure that
+      refuses a granted cycle at dispatch, so the sparse rung leans high — but
+      it still describes cost, and it is still bounded by what the panel could
+      possibly spend;
+    * with nothing observed at all, the configured ceiling. That is a genuinely
+      unobserved installation, which is the only circumstance in which a
+      permission is the best available description of a cost.
+    """
     usable = [float(s) for s in samples if s is not None and float(s) > 0.0]
-    if len(usable) < min_samples:
-        fallback_reason = (
-            f"only {len(usable)} measured review cycle(s), below the {min_samples}-cycle floor"
-        )
+    if not usable:
         return ReviewCyclePlanningPrice(
             planned_cost_usd=round(configured_ceiling_usd, 4),
             basis=BASIS_REVIEW_CEILING_FALLBACK,
             fallback_configured_usd=configured_ceiling_usd,
-            sample_count=len(usable),
-            reason=fallback_reason,
+            sample_count=0,
+            reason=(
+                "no measured review cycle in recorded history — "
+                "priced at the reviewer ceiling sum as an unobserved installation"
+            ),
             excluded_for_taint=excluded_for_taint,
+            composition=composition,
         )
 
     median = percentile(usable, 0.5)
     p90 = percentile(usable, 0.9)
     observed_max = max(usable)
+
+    if len(usable) < min_samples:
+        planned = min(
+            max(observed_max * headroom_multiplier, MIN_REVIEW_CYCLE_PRICE_USD),
+            configured_ceiling_usd,
+        )
+        return ReviewCyclePlanningPrice(
+            planned_cost_usd=round(planned, 4),
+            basis=BASIS_OBSERVED_SPARSE,
+            fallback_configured_usd=configured_ceiling_usd,
+            sample_count=len(usable),
+            median_usd=median,
+            p90_usd=p90,
+            max_usd=observed_max,
+            headroom_multiplier=headroom_multiplier,
+            reason=(
+                f"derived from maximum observed review-cycle spend ${observed_max:.2f} "
+                f"x {headroom_multiplier} headroom over {len(usable)} cycle(s)"
+                f"{scope_suffix}, below the {min_samples}-cycle floor "
+                f"(capped at the ceiling sum)"
+            ),
+            excluded_for_taint=excluded_for_taint,
+            composition=composition,
+        )
+
     planned = max(median * headroom_multiplier, MIN_REVIEW_CYCLE_PRICE_USD)
     return ReviewCyclePlanningPrice(
         planned_cost_usd=round(planned, 4),
-        basis=BASIS_OBSERVED_REVIEW_CYCLE,
+        basis=derived_basis,
         fallback_configured_usd=configured_ceiling_usd,
         sample_count=len(usable),
         median_usd=median,
@@ -302,14 +359,59 @@ def review_cycle_planning_from_samples(
         headroom_multiplier=headroom_multiplier,
         reason=(
             f"derived from median observed review-cycle spend ${median:.2f} "
-            f"x {headroom_multiplier} headroom over {len(usable)} cycle(s)"
+            f"x {headroom_multiplier} headroom over {len(usable)} cycle(s){scope_suffix}"
         ),
         excluded_for_taint=excluded_for_taint,
+        composition=composition,
     )
 
 
-def _extract_review_cycle_cost_samples(records: list[dict]) -> tuple[list[float], int]:
-    """Return measured per-cycle review costs from prior audit records."""
+def composition_key(names: list[str] | tuple[str, ...] | None) -> tuple[str, ...] | None:
+    """Return the order-independent identity of a reviewer panel.
+
+    A panel is the set of participants, not the order they were listed in, so
+    the key is sorted. ``None`` when no panel is identifiable, which keeps an
+    unknown composition from silently colliding with an empty one.
+    """
+    if not names:
+        return None
+    cleaned = sorted(str(n).strip() for n in names if str(n or "").strip())
+    return tuple(cleaned) or None
+
+
+def _record_cycle_compositions(rec: dict) -> dict:
+    """Map cycle number → panel identity for one audit record.
+
+    The per-cycle review entries carry the panel that actually ran that cycle,
+    which is what makes this a join rather than an assumption: a story whose
+    panel changed between cycles contributes each cycle to its own composition.
+    """
+    compositions: dict = {}
+    reviews = rec.get("reviews")
+    if not isinstance(reviews, list):
+        return compositions
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+        key = composition_key(review.get("pool_models"))
+        if key is not None:
+            compositions[review.get("cycle")] = key
+    return compositions
+
+
+def _extract_review_cycle_cost_samples(
+    records: list[dict],
+    *,
+    composition: tuple[str, ...] | None = None,
+) -> tuple[list[float], int]:
+    """Return measured per-cycle review costs from prior audit records.
+
+    With ``composition``, only cycles run by that exact panel are returned. A
+    cycle whose panel cannot be identified is excluded from a composition query
+    — an unjoinable cycle is not evidence about any particular panel — but is
+    still counted in the unfiltered population, where it remains evidence about
+    review as an activity.
+    """
     samples: list[float] = []
     excluded_for_taint = 0
     for rec in records:
@@ -324,6 +426,7 @@ def _extract_review_cycle_cost_samples(records: list[dict]) -> tuple[list[float]
         review_loop = iterations.get("review_loop")
         if not isinstance(review_loop, list):
             continue
+        compositions = _record_cycle_compositions(rec) if composition is not None else {}
         for cycle in review_loop:
             if not isinstance(cycle, dict):
                 continue
@@ -331,8 +434,11 @@ def _extract_review_cycle_cost_samples(records: list[dict]) -> tuple[list[float]
                 cost = float(cycle.get("cost_usd"))
             except (TypeError, ValueError):
                 continue
-            if cost > 0.0:
-                samples.append(cost)
+            if cost <= 0.0:
+                continue
+            if composition is not None and compositions.get(cycle.get("iteration")) != composition:
+                continue
+            samples.append(cost)
     return samples, excluded_for_taint
 
 
@@ -340,10 +446,19 @@ def derive_review_cycle_planning_price(
     project_root: Path,
     *,
     configured_ceiling_usd: float,
+    composition: list[str] | tuple[str, ...] | None = None,
     min_samples: int = REVIEW_CYCLE_PRICE_MIN_SAMPLES,
     headroom_multiplier: float = REVIEW_CYCLE_PRICE_HEADROOM,
 ) -> ReviewCyclePlanningPrice:
-    """Read observed review-cycle spend from the substrate and derive one price."""
+    """Read observed review-cycle spend from the substrate and derive one price.
+
+    Descends the ladder most-specific first. The panel a story will actually
+    seat is the best predictor of what its cycles cost — a three-reviewer panel
+    and a two-reviewer panel are different quantities, and averaging them
+    misprices both — so that history governs whenever it can support a price.
+    Below the floor the same phase's cost across every panel still describes
+    review, and only a total absence of observation reaches the ceiling.
+    """
     from theforge.coordinator import audit_substrate  # noqa: PLC0415
 
     records: list[dict] = []
@@ -366,14 +481,36 @@ def derive_review_cycle_planning_price(
             finally:
                 conn.close()
 
-    samples, excluded = _extract_review_cycle_cost_samples(records)
-    planning = review_cycle_planning_from_samples(
-        samples,
-        configured_ceiling_usd,
-        excluded_for_taint=excluded,
-        min_samples=min_samples,
-        headroom_multiplier=headroom_multiplier,
-    )
+    panel = composition_key(composition)
+    planning: ReviewCyclePlanningPrice | None = None
+
+    if panel is not None:
+        panel_samples, panel_excluded = _extract_review_cycle_cost_samples(
+            records, composition=panel
+        )
+        if len(panel_samples) >= min_samples:
+            planning = review_cycle_planning_from_samples(
+                panel_samples,
+                configured_ceiling_usd,
+                excluded_for_taint=panel_excluded,
+                min_samples=min_samples,
+                headroom_multiplier=headroom_multiplier,
+                derived_basis=BASIS_OBSERVED_COMPOSITION,
+                scope_suffix=" run by this exact panel",
+                composition=panel,
+            )
+
+    if planning is None:
+        samples, excluded = _extract_review_cycle_cost_samples(records)
+        planning = review_cycle_planning_from_samples(
+            samples,
+            configured_ceiling_usd,
+            excluded_for_taint=excluded,
+            min_samples=min_samples,
+            headroom_multiplier=headroom_multiplier,
+            composition=panel,
+        )
+
     if reason_prefix:
         from dataclasses import replace  # noqa: PLC0415
 
@@ -526,6 +663,7 @@ def reconcile_review_cycles(
         "review_cycle_cost_max_usd": None,
         "review_cycle_cost_headroom_multiplier": None,
         "review_cycle_cost_reason": None,
+        "review_cycle_cost_composition": None,
         "action": RECONCILE_AFFORDABLE,
     }
     try:
@@ -573,6 +711,7 @@ def reconcile_review_cycles(
             "headroom_multiplier"
         )
         record["review_cycle_cost_reason"] = review_cycle_planning.get("reason")
+        record["review_cycle_cost_composition"] = review_cycle_planning.get("composition")
 
     if requested_review_max <= 0:
         record["action"] = RECONCILE_AFFORDABLE
@@ -600,18 +739,34 @@ def reconcile_review_cycles(
 
 
 def _review_cycle_basis_text(record: dict) -> str:
+    """Name the rung a review-cycle price came from, for the operator line.
+
+    An operator reading a reservation needs to know whether it was measured on
+    the panel that will run, inferred from review at large, stretched from one
+    or two observations, or defaulted — because that is what decides whether
+    the number is worth trusting.
+    """
     basis = record.get("review_cycle_cost_basis")
-    if basis == BASIS_OBSERVED_REVIEW_CYCLE:
+    headroom = record.get("review_cycle_cost_headroom_multiplier")
+    sample_count = record.get("review_cycle_cost_sample_count")
+    sample_text = ""
+    if isinstance(sample_count, (int, float)):
+        sample_text = f" over {int(sample_count)} cycle(s)"
+
+    if basis in (BASIS_OBSERVED_COMPOSITION, BASIS_OBSERVED_REVIEW_CYCLE):
         median = record.get("review_cycle_cost_median_usd")
-        headroom = record.get("review_cycle_cost_headroom_multiplier")
-        sample_count = record.get("review_cycle_cost_sample_count")
         if median is not None and headroom is not None:
-            sample_text = ""
-            if isinstance(sample_count, (int, float)):
-                sample_text = f" over {int(sample_count)} cycle(s)"
+            scope = "this panel" if basis == BASIS_OBSERVED_COMPOSITION else "review at large"
             return (
                 f" (observed median ${float(median):.2f} x "
-                f"{float(headroom):.2f} headroom{sample_text})"
+                f"{float(headroom):.2f} headroom{sample_text}, {scope})"
+            )
+    if basis == BASIS_OBSERVED_SPARSE:
+        observed_max = record.get("review_cycle_cost_max_usd")
+        if observed_max is not None and headroom is not None:
+            return (
+                f" (sparse history: observed max ${float(observed_max):.2f} x "
+                f"{float(headroom):.2f} headroom{sample_text}, capped at the ceiling sum)"
             )
     if basis == BASIS_REVIEW_CEILING_FALLBACK:
         reason = str(record.get("review_cycle_cost_reason") or "").strip()

@@ -433,6 +433,7 @@ def _coordinator_loop(
         _review_cycle_planning = _story_budget.derive_review_cycle_planning_price(
             config.project_root,
             configured_ceiling_usd=sum(float(p.budget_usd) for p in config.review_pool),
+            composition=_reviewer_names,
         ).as_dict()
         _reconciliation = _story_budget.reconcile_review_cycles(
             state.story_allocation,

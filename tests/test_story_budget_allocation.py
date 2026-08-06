@@ -27,6 +27,7 @@ def _record(
     cost: float | None,
     trust_status: str | None = None,
     review_cycle_costs: list[float | None] | None = None,
+    review_pools: list[list[str] | None] | None = None,
 ) -> dict:
     rec: dict = {
         "run_id": run_id,
@@ -48,6 +49,12 @@ def _record(
             ],
             "review_cycles_total": len(review_cycle_costs),
         }
+    if review_pools is not None:
+        rec["reviews"] = [
+            {"cycle": index + 1, "pool_models": pool}
+            for index, pool in enumerate(review_pools)
+            if pool is not None
+        ]
     return rec
 
 
@@ -253,13 +260,42 @@ class TestReviewCyclePlanningPrice:
         assert planning.planned_cost_usd == round(3.64 * 1.25, 4)
         assert "median observed review-cycle spend $3.64 x 1.25" in planning.reason
 
-    def test_insufficient_history_falls_back_to_the_reviewer_ceiling_sum(self) -> None:
+    def test_sparse_history_still_prices_from_observation_not_the_ceiling(self) -> None:
+        """One or two observations are sparse, not absent — the ceiling is for absent."""
         planning = sb.review_cycle_planning_from_samples([3.10, 3.64], 17.55)
 
-        assert planning.basis == sb.BASIS_REVIEW_CEILING_FALLBACK
+        assert planning.basis == sb.BASIS_OBSERVED_SPARSE
+        assert planning.derived is True
         assert planning.sample_count == 2
-        assert planning.planned_cost_usd == 17.55
+        # Leans on the observed maximum, not the median: a two-sample median
+        # understates the spread, and under-reserving refuses a granted cycle
+        # at dispatch.
+        assert planning.planned_cost_usd == round(3.64 * 1.25, 4)
         assert "below the 3-cycle floor" in planning.reason
+
+    def test_a_single_observation_is_enough_to_price_from(self) -> None:
+        planning = sb.review_cycle_planning_from_samples([4.00], 17.55)
+
+        assert planning.basis == sb.BASIS_OBSERVED_SPARSE
+        assert planning.sample_count == 1
+        assert planning.planned_cost_usd == 5.0
+
+    def test_sparse_price_never_exceeds_the_ceiling_sum(self) -> None:
+        """The ceiling still bounds: reserving above what the panel may spend is waste."""
+        planning = sb.review_cycle_planning_from_samples([20.00], 17.55)
+
+        assert planning.basis == sb.BASIS_OBSERVED_SPARSE
+        assert planning.planned_cost_usd == 17.55
+
+    def test_no_observation_at_all_falls_back_to_the_reviewer_ceiling_sum(self) -> None:
+        """The only circumstance a permission describes a cost: nothing observed."""
+        planning = sb.review_cycle_planning_from_samples([], 17.55)
+
+        assert planning.basis == sb.BASIS_REVIEW_CEILING_FALLBACK
+        assert planning.derived is False
+        assert planning.sample_count == 0
+        assert planning.planned_cost_usd == 17.55
+        assert "unobserved installation" in planning.reason
 
     def test_substrate_reader_collects_per_cycle_review_costs(self, tmp_path: Path) -> None:
         _seed_substrate(
@@ -283,6 +319,122 @@ class TestReviewCyclePlanningPrice:
         assert planning.sample_count == 3
         assert planning.excluded_for_taint == 1
         assert planning.planned_cost_usd == round(3.64 * 1.25, 4)
+
+
+_TRIO = ["anthropic-haiku-cli", "google-gemini-3.5-flash-api", "openai-gpt-5.5-cli"]
+_PAIR = ["google-gemini-3.5-flash-api", "openai-gpt-5.5-cli"]
+
+
+class TestReviewCyclePricingLadder:
+    """The panel that will run governs before review-at-large does."""
+
+    def test_composition_key_is_order_independent(self) -> None:
+        assert sb.composition_key(_TRIO) == sb.composition_key(list(reversed(_TRIO)))
+        assert sb.composition_key([]) is None
+        assert sb.composition_key(None) is None
+
+    def test_seated_panel_history_governs_over_the_broader_population(
+        self, tmp_path: Path
+    ) -> None:
+        """A 3-reviewer panel is not priced from a 2-reviewer population."""
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="trio",
+                    score=5,
+                    cost=9.0,
+                    review_cycle_costs=[4.00, 4.00, 4.00],
+                    review_pools=[_TRIO, _TRIO, _TRIO],
+                ),
+                _record(
+                    run_id="pair",
+                    score=5,
+                    cost=4.0,
+                    review_cycle_costs=[1.00, 1.00, 1.00, 1.00],
+                    review_pools=[_PAIR, _PAIR, _PAIR, _PAIR],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, composition=_TRIO
+        )
+
+        assert planning.basis == sb.BASIS_OBSERVED_COMPOSITION
+        assert planning.sample_count == 3
+        assert planning.composition == tuple(sorted(_TRIO))
+        assert planning.planned_cost_usd == round(4.00 * 1.25, 4)
+        # Pooling all seven cycles would have priced this panel at the blended
+        # median of $1.00 — under half what it actually costs.
+        assert planning.planned_cost_usd > 1.00 * 1.25
+
+    def test_panel_below_the_floor_falls_to_review_at_large_not_the_ceiling(
+        self, tmp_path: Path
+    ) -> None:
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="trio",
+                    score=5,
+                    cost=9.0,
+                    review_cycle_costs=[4.00],
+                    review_pools=[_TRIO],
+                ),
+                _record(
+                    run_id="pair",
+                    score=5,
+                    cost=4.0,
+                    review_cycle_costs=[1.00, 2.00, 3.00],
+                    review_pools=[_PAIR, _PAIR, _PAIR],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, composition=_TRIO
+        )
+
+        assert planning.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert planning.sample_count == 4
+        assert planning.planned_cost_usd < 17.55
+
+    def test_an_unidentifiable_panel_still_counts_toward_review_at_large(
+        self, tmp_path: Path
+    ) -> None:
+        """A cycle with no recorded panel is evidence about review, not about a panel."""
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="unlabelled",
+                    score=5,
+                    cost=9.0,
+                    review_cycle_costs=[2.00, 2.00, 2.00],
+                    review_pools=None,
+                ),
+            ],
+        )
+
+        panel = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, composition=_TRIO
+        )
+        assert panel.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert panel.sample_count == 3
+
+    def test_no_history_whatsoever_reaches_the_ceiling(self, tmp_path: Path) -> None:
+        _seed_substrate(
+            tmp_path,
+            [_record(run_id="r1", score=5, cost=4.0, review_cycle_costs=[])],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, composition=_TRIO
+        )
+
+        assert planning.basis == sb.BASIS_REVIEW_CEILING_FALLBACK
+        assert planning.planned_cost_usd == 17.55
 
 
 class TestScaleRoleBudgets:
