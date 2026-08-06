@@ -425,18 +425,25 @@ def _coordinator_loop(
         # at review dispatch, where the only options left are escalate or
         # accept unverified work.
         #
-        # The per-cycle cost is the full configured pool sum: an upper bound
-        # (demotion only ever removes reviewers) and the same number the
-        # dispatch-time funding check plans against.
+        # Price one review cycle from observed prior review-cycle spend plus
+        # explicit headroom, not from the reviewers' execution ceilings. The
+        # exact seated figure is persisted on state so dispatch cannot silently
+        # re-price the same granted cycle later in the run.
         _reviewer_names = [profile.name for profile in config.review_pool]
+        _review_cycle_planning = _story_budget.derive_review_cycle_planning_price(
+            config.project_root,
+            configured_ceiling_usd=sum(float(p.budget_usd) for p in config.review_pool),
+        ).as_dict()
         _reconciliation = _story_budget.reconcile_review_cycles(
             state.story_allocation,
             dev_cost_estimate_usd=_limits.dev_cost_estimate_usd,
-            review_cycle_cost_usd=sum(float(p.budget_usd) for p in config.review_pool),
+            review_cycle_cost_usd=float(_review_cycle_planning["planned_cost_usd"]),
+            review_cycle_planning=_review_cycle_planning,
             requested_review_max=_limits.review_max,
             spent_so_far_usd=state.total_cost_measured,
         )
         _audit = dict(_limits.audit)
+        _audit["review_cycle_planning"] = _review_cycle_planning
         _audit["review_cycle_reconciliation"] = _reconciliation
         if _reconciliation["action"] in (
             _story_budget.RECONCILE_REDUCED,
@@ -458,6 +465,7 @@ def _coordinator_loop(
         state.adaptive_review_max = _limits.review_max
         state.adaptive_dev_timeout_seconds = _limits.dev_timeout_seconds
         state.adaptive_dev_cost_estimate_usd = _limits.dev_cost_estimate_usd
+        state.adaptive_review_cycle_planning = _review_cycle_planning
         state.adaptive_limits_audit = _limits.audit
 
         if _reconciliation["action"] == _story_budget.RECONCILE_UNFUNDABLE:

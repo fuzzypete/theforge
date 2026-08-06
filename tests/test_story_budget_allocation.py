@@ -26,6 +26,7 @@ def _record(
     score: int | None,
     cost: float | None,
     trust_status: str | None = None,
+    review_cycle_costs: list[float | None] | None = None,
 ) -> dict:
     rec: dict = {
         "run_id": run_id,
@@ -39,6 +40,14 @@ def _record(
     }
     if trust_status is not None:
         rec["trust_status"] = trust_status
+    if review_cycle_costs is not None:
+        rec["iterations"] = {
+            "review_loop": [
+                {"iteration": index + 1, "cost_usd": cycle_cost}
+                for index, cycle_cost in enumerate(review_cycle_costs)
+            ],
+            "review_cycles_total": len(review_cycle_costs),
+        }
     return rec
 
 
@@ -232,6 +241,50 @@ class TestDeriveStoryAllocation:
         assert allocation.reason.startswith("no audit substrate; ")
 
 
+class TestReviewCyclePlanningPrice:
+    def test_observed_review_cycle_price_uses_median_plus_explicit_headroom(self) -> None:
+        planning = sb.review_cycle_planning_from_samples([3.10, 3.64, 4.20], 17.55)
+
+        assert planning.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert planning.sample_count == 3
+        assert planning.median_usd == 3.64
+        assert planning.p90_usd == 4.2
+        assert planning.max_usd == 4.2
+        assert planning.planned_cost_usd == round(3.64 * 1.25, 4)
+        assert "median observed review-cycle spend $3.64 x 1.25" in planning.reason
+
+    def test_insufficient_history_falls_back_to_the_reviewer_ceiling_sum(self) -> None:
+        planning = sb.review_cycle_planning_from_samples([3.10, 3.64], 17.55)
+
+        assert planning.basis == sb.BASIS_REVIEW_CEILING_FALLBACK
+        assert planning.sample_count == 2
+        assert planning.planned_cost_usd == 17.55
+        assert "below the 3-cycle floor" in planning.reason
+
+    def test_substrate_reader_collects_per_cycle_review_costs(self, tmp_path: Path) -> None:
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(run_id="r1", score=5, cost=4.0, review_cycle_costs=[3.10, 3.64]),
+                _record(run_id="r2", score=5, cost=5.0, review_cycle_costs=[4.20]),
+                _record(
+                    run_id="r3",
+                    score=5,
+                    cost=99.0,
+                    trust_status="tainted",
+                    review_cycle_costs=[9.99],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(tmp_path, configured_ceiling_usd=17.55)
+
+        assert planning.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert planning.sample_count == 3
+        assert planning.excluded_for_taint == 1
+        assert planning.planned_cost_usd == round(3.64 * 1.25, 4)
+
+
 class TestScaleRoleBudgets:
     def test_shares_scale_proportionally_to_the_allocation(self) -> None:
         current = {"dev": 6.0, "preflight": 1.0, "review_pool[0]": 3.0}
@@ -327,6 +380,9 @@ class TestReviewCycleReconciliation:
             self._allocation(),
             dev_cost_estimate_usd=25.0428,
             review_cycle_cost_usd=17.55,
+            review_cycle_planning=sb.review_cycle_planning_from_samples(
+                [17.55], 17.55, min_samples=1
+            ).as_dict(),
             requested_review_max=5,
             spent_so_far_usd=0.0,
         )
@@ -344,6 +400,7 @@ class TestReviewCycleReconciliation:
         message = sb.format_reconciliation(record)
         assert "5 → 1" in message
         assert "$48.02" in message
+        assert "observed median $17.55 x 1.25 headroom" in message
 
     def test_spend_already_incurred_counts_against_the_remainder(self) -> None:
         """Preflight/plan spend is real money and is not affordable twice."""

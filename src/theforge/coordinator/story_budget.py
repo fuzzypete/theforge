@@ -33,9 +33,15 @@ BAND_HEADROOM = 1.25
 # Never derive an allocation below this, regardless of how cheap the band is.
 # A single retry on the cheapest band would otherwise trip the allocation.
 MIN_ALLOCATION_USD = 1.0
+MIN_REVIEW_CYCLE_PRICE_USD = 0.01
+REVIEW_CYCLE_PRICE_MIN_SAMPLES = 3
+REVIEW_CYCLE_PRICE_HEADROOM = 1.25
+REVIEW_COST_HISTORY_TAIL = 50
 
 BASIS_SUBSTRATE_BAND = "substrate_band"
 BASIS_CONFIGURED_FALLBACK = "configured_fallback"
+BASIS_OBSERVED_REVIEW_CYCLE = "observed_review_cycle"
+BASIS_REVIEW_CEILING_FALLBACK = "ceiling_fallback"
 
 STATUS_WITHIN = "within_allocation"
 STATUS_EXCEEDED = "allocation_exceeded"
@@ -87,6 +93,40 @@ class StoryAllocation:
             f"max ${self.max_usd:.2f} over {self.sample_count} run(s) "
             f"at complexity score {self.complexity_score}"
         )
+
+
+@dataclass(frozen=True)
+class ReviewCyclePlanningPrice:
+    """Planned per-cycle review price plus the evidence it was derived from."""
+
+    planned_cost_usd: float
+    basis: str
+    fallback_configured_usd: float
+    sample_count: int = 0
+    median_usd: float | None = None
+    p90_usd: float | None = None
+    max_usd: float | None = None
+    headroom_multiplier: float = REVIEW_CYCLE_PRICE_HEADROOM
+    reason: str = ""
+    excluded_for_taint: int = 0
+
+    @property
+    def derived(self) -> bool:
+        return self.basis == BASIS_OBSERVED_REVIEW_CYCLE
+
+    def as_dict(self) -> dict:
+        return {
+            "planned_cost_usd": round(self.planned_cost_usd, 4),
+            "basis": self.basis,
+            "fallback_configured_usd": round(self.fallback_configured_usd, 4),
+            "sample_count": self.sample_count,
+            "median_usd": _round_opt(self.median_usd),
+            "p90_usd": _round_opt(self.p90_usd),
+            "max_usd": _round_opt(self.max_usd),
+            "headroom_multiplier": round(self.headroom_multiplier, 4),
+            "reason": self.reason,
+            "excluded_for_taint": self.excluded_for_taint,
+        }
 
 
 def _round_opt(value: float | None) -> float | None:
@@ -224,6 +264,123 @@ def derive_story_allocation(
     return allocation
 
 
+def review_cycle_planning_from_samples(
+    samples: list[float],
+    configured_ceiling_usd: float,
+    *,
+    excluded_for_taint: int = 0,
+    min_samples: int = REVIEW_CYCLE_PRICE_MIN_SAMPLES,
+    headroom_multiplier: float = REVIEW_CYCLE_PRICE_HEADROOM,
+) -> ReviewCyclePlanningPrice:
+    """Return the deterministic planning price for one review cycle."""
+    usable = [float(s) for s in samples if s is not None and float(s) > 0.0]
+    if len(usable) < min_samples:
+        return ReviewCyclePlanningPrice(
+            planned_cost_usd=round(configured_ceiling_usd, 4),
+            basis=BASIS_REVIEW_CEILING_FALLBACK,
+            fallback_configured_usd=configured_ceiling_usd,
+            sample_count=len(usable),
+            reason=(
+                f"only {len(usable)} measured review cycle(s), below the "
+                f"{min_samples}-cycle floor"
+            ),
+            excluded_for_taint=excluded_for_taint,
+        )
+
+    median = percentile(usable, 0.5)
+    p90 = percentile(usable, 0.9)
+    observed_max = max(usable)
+    planned = max(median * headroom_multiplier, MIN_REVIEW_CYCLE_PRICE_USD)
+    return ReviewCyclePlanningPrice(
+        planned_cost_usd=round(planned, 4),
+        basis=BASIS_OBSERVED_REVIEW_CYCLE,
+        fallback_configured_usd=configured_ceiling_usd,
+        sample_count=len(usable),
+        median_usd=median,
+        p90_usd=p90,
+        max_usd=observed_max,
+        headroom_multiplier=headroom_multiplier,
+        reason=(
+            f"derived from median observed review-cycle spend ${median:.2f} "
+            f"x {headroom_multiplier} headroom over {len(usable)} cycle(s)"
+        ),
+        excluded_for_taint=excluded_for_taint,
+    )
+
+
+def _extract_review_cycle_cost_samples(records: list[dict]) -> tuple[list[float], int]:
+    """Return measured per-cycle review costs from prior audit records."""
+    samples: list[float] = []
+    excluded_for_taint = 0
+    for rec in records:
+        if not isinstance(rec, dict):
+            continue
+        if str(rec.get("trust_status") or "").lower() == "tainted":
+            excluded_for_taint += 1
+            continue
+        iterations = rec.get("iterations")
+        if not isinstance(iterations, dict):
+            continue
+        review_loop = iterations.get("review_loop")
+        if not isinstance(review_loop, list):
+            continue
+        for cycle in review_loop:
+            if not isinstance(cycle, dict):
+                continue
+            try:
+                cost = float(cycle.get("cost_usd"))
+            except (TypeError, ValueError):
+                continue
+            if cost > 0.0:
+                samples.append(cost)
+    return samples, excluded_for_taint
+
+
+def derive_review_cycle_planning_price(
+    project_root: Path,
+    *,
+    configured_ceiling_usd: float,
+    min_samples: int = REVIEW_CYCLE_PRICE_MIN_SAMPLES,
+    headroom_multiplier: float = REVIEW_CYCLE_PRICE_HEADROOM,
+) -> ReviewCyclePlanningPrice:
+    """Read observed review-cycle spend from the substrate and derive one price."""
+    from theforge.coordinator import audit_substrate  # noqa: PLC0415
+
+    records: list[dict] = []
+    reason_prefix = ""
+    substrate = audit_substrate.substrate_path(project_root)
+    if not substrate.exists() and not audit_substrate.has_audit_inputs(project_root):
+        reason_prefix = "no audit substrate; "
+    else:
+        try:
+            conn = audit_substrate.require_substrate(project_root)
+        except audit_substrate.SubstrateError as exc:
+            reason_prefix = f"substrate unreadable ({type(exc).__name__}); "
+        else:
+            try:
+                records = [
+                    rec
+                    for rec in audit_substrate.tail_records(conn, REVIEW_COST_HISTORY_TAIL)
+                    if isinstance(rec, dict)
+                ]
+            finally:
+                conn.close()
+
+    samples, excluded = _extract_review_cycle_cost_samples(records)
+    planning = review_cycle_planning_from_samples(
+        samples,
+        configured_ceiling_usd,
+        excluded_for_taint=excluded,
+        min_samples=min_samples,
+        headroom_multiplier=headroom_multiplier,
+    )
+    if reason_prefix:
+        from dataclasses import replace  # noqa: PLC0415
+
+        planning = replace(planning, reason=reason_prefix + planning.reason)
+    return planning
+
+
 def evaluate_allocation_dict(allocation: dict | None, observed_usd: float | None) -> dict | None:
     """Return the reportable allocation-vs-observed block for a story.
 
@@ -324,6 +481,7 @@ def reconcile_review_cycles(
     *,
     dev_cost_estimate_usd: float | None,
     review_cycle_cost_usd: float | None,
+    review_cycle_planning: dict | None = None,
     requested_review_max: int,
     spent_so_far_usd: float | None = 0.0,
 ) -> dict:
@@ -361,6 +519,13 @@ def reconcile_review_cycles(
         else round(float(spent_so_far_usd), 4),
         "dev_cost_estimate_usd": None,
         "review_cycle_cost_usd": None,
+        "review_cycle_cost_basis": None,
+        "review_cycle_cost_sample_count": None,
+        "review_cycle_cost_median_usd": None,
+        "review_cycle_cost_p90_usd": None,
+        "review_cycle_cost_max_usd": None,
+        "review_cycle_cost_headroom_multiplier": None,
+        "review_cycle_cost_reason": None,
         "action": RECONCILE_AFFORDABLE,
     }
     try:
@@ -398,6 +563,16 @@ def reconcile_review_cycles(
         record["action"] = RECONCILE_NO_REVIEW_COST
         return record
     record["review_cycle_cost_usd"] = round(cycle_cost, 4)
+    if isinstance(review_cycle_planning, dict):
+        record["review_cycle_cost_basis"] = review_cycle_planning.get("basis")
+        record["review_cycle_cost_sample_count"] = review_cycle_planning.get("sample_count")
+        record["review_cycle_cost_median_usd"] = review_cycle_planning.get("median_usd")
+        record["review_cycle_cost_p90_usd"] = review_cycle_planning.get("p90_usd")
+        record["review_cycle_cost_max_usd"] = review_cycle_planning.get("max_usd")
+        record["review_cycle_cost_headroom_multiplier"] = review_cycle_planning.get(
+            "headroom_multiplier"
+        )
+        record["review_cycle_cost_reason"] = review_cycle_planning.get("reason")
 
     if requested_review_max <= 0:
         record["action"] = RECONCILE_AFFORDABLE
@@ -424,22 +599,40 @@ def reconcile_review_cycles(
     return record
 
 
+def _review_cycle_basis_text(record: dict) -> str:
+    basis = record.get("review_cycle_cost_basis")
+    if basis == BASIS_OBSERVED_REVIEW_CYCLE:
+        median = record.get("review_cycle_cost_median_usd")
+        headroom = record.get("review_cycle_cost_headroom_multiplier")
+        sample_count = record.get("review_cycle_cost_sample_count")
+        if median is not None and headroom is not None:
+            sample_text = (
+                f" over {int(sample_count)} cycle(s)" if isinstance(sample_count, (int, float)) else ""
+            )
+            return f" (observed median ${float(median):.2f} x {float(headroom):.2f} headroom{sample_text})"
+    if basis == BASIS_REVIEW_CEILING_FALLBACK:
+        reason = str(record.get("review_cycle_cost_reason") or "").strip()
+        return f" (ceiling fallback{': ' + reason if reason else ''})"
+    return ""
+
+
 def format_reconciliation(record: dict) -> str:
     """One-line operator-facing summary of a seating reconciliation."""
     action = record.get("action")
+    basis = _review_cycle_basis_text(record)
     if action == RECONCILE_REDUCED:
         return (
             f"review_max reduced {record['requested_review_max']} → "
             f"{record['reconciled_review_max']}: the "
             f"${float(record['allocation_usd']):.2f} allocation funds "
             f"{record['affordable_review_cycles']} review cycle(s) at "
-            f"${float(record['review_cycle_cost_usd']):.2f} each after a "
+            f"${float(record['review_cycle_cost_usd']):.2f} each{basis} after a "
             f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate."
         )
     if action == RECONCILE_UNFUNDABLE:
         return (
             f"the ${float(record['allocation_usd']):.2f} allocation cannot fund one "
-            f"${float(record['review_cycle_cost_usd']):.2f} review cycle after a "
+            f"${float(record['review_cycle_cost_usd']):.2f} review cycle{basis} after a "
             f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate "
             f"(short ${float(record['shortfall_usd']):.2f})."
         )
