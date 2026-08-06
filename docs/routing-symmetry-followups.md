@@ -1,5 +1,7 @@
 # Routing-symmetry follow-ups (catalogue)
 
+Status: living — open-asymmetry catalogue for #1389.
+
 Companion catalogue for the routing-symmetry invariant (**#1389**). The invariant
 requires every adaptive, history-driven routing promotion path to have a
 corresponding demotion/re-inclusion path with defined conditions, audit

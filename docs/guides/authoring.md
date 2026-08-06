@@ -59,7 +59,7 @@ Storage is incidental; shape is what matters.
 | Use case | Required sections | Optional but recommended |
 |----------|------------------|--------------------------|
 | Feature / enhancement | Title, Why, Acceptance criteria, Example | Notes |
-| Bug report | Title, What happened, What was expected | (nothing) |
+| Bug report | Title, What happened, What was expected, Diagnosis (landed by `forge diagnose`) | (nothing) |
 | Refactor / mechanical change | Title, Why, Acceptance criteria, Example (before/after) | Notes |
 | Rollup | Title, Why, Acceptance criteria (one per child), Example | Notes |
 | Docs / chore | Title, Why, Acceptance criteria, Example | Notes |
@@ -168,6 +168,25 @@ truth.
 You observed behavior that contradicts what TheForge should do. You want it
 fixed.
 
+### Lifecycle: capture, then diagnose, then groom
+
+A bug goes through two states, and the shape gate enforces the boundary:
+
+1. **Capture** the symptom: file the issue with `## What happened` and
+   `## What was expected`. This is a valid capture, but it is *symptom-only*
+   — the sprint-entry gate hard-blocks it (`needs_diagnosis`: "Bug has no
+   Diagnosis section — not fix-ready").
+2. **Diagnose**: run `forge diagnose --issue <N>` (or investigate manually).
+   The diagnosis lands as a `## Diagnosis` section **in the issue body**, with
+   the required components listed in
+   [the bug shape reference](../reference/bug-shape.md): observed symptom,
+   evidence, confirmed cause, affected code path, fix-success criterion. A
+   confirmed cause of `unknown` / `not yet identified` is admissible — the bug
+   is then investigation-ready but still not implementation-runnable.
+3. **Groom and ready**: `forge groom <N>` repairs any remaining shape issues,
+   then apply the `ready` label. Only a bug whose Diagnosis asserts a
+   confirmed cause can reach the runnable verdict.
+
 ### Required sections
 
 - **Title** — names the misbehavior, not the suspected cause.
@@ -177,24 +196,30 @@ fixed.
   the **category-level rule** that was violated, written as prose. The
   expected behavior should generalize past the single triggering case so the
   fix has a defined scope.
+- **Diagnosis** — heading literally `## Diagnosis`, required in the body
+  before sprint entry. Normally landed by `forge diagnose`, not written at
+  capture time. See the [bug shape reference](../reference/bug-shape.md) for
+  the exact component labels and a fileable skeleton.
 
 ### What to leave out
 
 - **No acceptance criteria.** Bug reports use the observed/expected shape
   instead. Adding an AC checklist turns a bug into a feature spec and pushes
   the dev agent toward fixing the symptom rather than the cause.
-- **No implementation hints.** No file paths, no "probably in
-  `coordinator/foo.py`", no suggested patch.
+- **No implementation hints in the symptom capture.** No file paths, no
+  "probably in `coordinator/foo.py`", no suggested patch. Cause claims and
+  the affected code path belong in the `## Diagnosis` section, backed by
+  investigation evidence — not guessed at capture time.
 - **No test requirements.** "Add a regression test" is implementation, not
   expected behavior.
 - **No anchoring to one provider, one model, or one issue number.** The rule
   in *What was expected* should hold across the category.
 
-If the bug needs root-cause analysis before it can be implemented (a
-"symptom-only" bug), the diagnosis lives in a follow-up comment on the issue —
-not in the original body. See `CONVENTIONS.md` for the diagnosis checklist.
-
 ### Worked example
+
+The example below is a fully diagnosed bug — the state an issue must reach
+before sprint entry. At capture time you would file only the first two
+sections; the `## Diagnosis` section is what `forge diagnose` adds.
 
 ````markdown
 # `forge sprint --resume` re-runs already-merged stories
@@ -213,11 +238,23 @@ terminal merged state. A story whose branch has been merged into the base
 branch is finished from the sprint runner's perspective, regardless of which
 phase the audit log last recorded for it. Resume should advance only stories
 that are still in flight.
+
+## Diagnosis
+
+- **Observed symptom:** sprint resume re-enters already-merged stories at the
+  dev phase, producing duplicate commits for landed work.
+- **Evidence:** run id `1ff6b0bb7992` — resume log shows both merged stories
+  re-entering dev.
+- **Confirmed cause:** `_is_already_merged` requires at least one commit
+  ahead, so a zero-delta APPROVE is misclassified as unmerged.
+- **Affected code path:** `sprint.runner._is_already_merged`.
+- **Fix-success criterion:** resume identifies a zero-delta APPROVE story as
+  already merged and does not re-dispatch it.
 ````
 
-This issue uses the bug-label OR the observed/expected heading pair, so the
-sprint-entry validator exempts it from acceptance-criteria and example
-requirements.
+The bug label OR the observed/expected heading pair exempts this issue from
+the acceptance-criteria and example requirements; the complete `## Diagnosis`
+section with an asserted confirmed cause is what makes it fix-ready.
 
 ---
 
@@ -481,7 +518,8 @@ The canonical step sequence, in order:
 
 1. **Capture** — file the issue (`gh issue create`).
 2. **Shape** — classify it into a typed work object (`forge shape`).
-3. **Diagnose** — for bug-typed items that need root cause (`forge diagnose`).
+3. **Diagnose** — for bug-typed items that need root cause
+   (`forge diagnose --issue <N>`).
 4. **Groom** — repair the body to a runnable verdict (`forge groom`).
 5. **Ready** — apply the `ready` label so the next sprint is eligible to select
    it (`gh issue edit --add-label ready`).
@@ -489,7 +527,7 @@ The canonical step sequence, in order:
 ```bash
 gh issue create --label bug --title "..." --body "..."   # capture → returns #1512
 forge shape 1512                                          # classify (often immediate)
-forge diagnose 1512                                       # if bug-typed and needs a cause
+forge diagnose --issue 1512                               # if bug-typed and needs a cause
 forge groom 1512                                          # repair body → runnable verdict
 gh issue edit 1512 --add-label ready                      # eligible for the next sprint
 ```
@@ -562,7 +600,7 @@ $ forge sprint --verbose --issues 1326,1471 --budget 50 --parallel=3
 [forge] 1 issue(s) deliberately non-dispatched (operator-action):
   - #1471 (label): operator-action — Validate v0.11 substrate
 [sprint] "issues-1326" 1 story budget=$50.00 parallel=3
-$ forge sprint-status <run-id>
+$ forge status <run-id>
   ⊘ Issue #1471            operator-action       —         ...   not sprintable; operator deliverable
 ```
 

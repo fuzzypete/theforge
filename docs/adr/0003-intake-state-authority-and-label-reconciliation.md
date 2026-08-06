@@ -1,6 +1,6 @@
 # ADR-0003: Intake State Authority and Label Reconciliation
 
-- **Status:** Proposed
+- **Status:** Accepted (2026-08-05; implemented incrementally through v0.13 — see the as-built divergence note below)
 - **Date:** 2026-05-11 (proposed)
 - **Deciders:** Peter Wickersham (project lead), with iterative review by Claude and Codex
 - **Affected milestones:** v0.10.0 (#1550 is the v0.10 instance), v0.11.x (intake-readiness substrate emission consequences)
@@ -8,6 +8,20 @@
 - **Related ADRs:** ADR-0001 (intake readiness workflow — defines the operator/product lifecycle but not the state-authority model), ADR-0002 (audit substrate — defines what's authoritative in run history)
 
 ---
+
+> **As-built divergence (2026-08-05).** The shipped admissibility path does not
+> match clause 2. `src/theforge/admissibility.py` refuses on the
+> `needs-grooming` label alone: it returns `admissible=False` with
+> `source="label"` even when the live local shape check is `RUNNABLE`, falling
+> back to `NEEDS_GROOMING_LABEL_CODE` when no local blocking findings exist.
+> The only suppression is for issues the same sprint run just remediated
+> (`intake_remediated_numbers` in `sprint/shape_gate.py`) — i.e., shipped code
+> trusts the label except for same-run remediations, where clause 2 says a
+> label-only refusal is invalid. Clause 4's persist-body-hash mechanism was
+> never built (no `body_hash` persistence exists in `src/`); the #1550 race is
+> instead mitigated by the same-run suppression above. Whether to amend this
+> ADR to match the code or fix the code to match the ADR is an open operator
+> decision. The clauses below are preserved as written.
 
 ## Context
 

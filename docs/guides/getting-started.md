@@ -55,7 +55,7 @@ derived from the list using **complexity-aware routing** (see below).
 ```yaml
 project: my-project
 
-# v0.8 simple config: list your models, set a budget, done.
+# Simple config: list your models, set a budget, done.
 models:
   - anthropic/sonnet/cli   # cheap tier  — dev for small stories
   - anthropic/opus/cli     # strong tier — dev for large stories, reviewers
@@ -63,7 +63,7 @@ models:
 budget_usd: 30.0
 
 workspace:
-  create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} main"
+  create_command: "git worktree add .forge/worktrees/{slug} -b forge/{slug} {base_branch}"
   setup_command: "pip install -e ."    # your dependency install command
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "forge/{slug}"
@@ -82,17 +82,13 @@ validation:
 
 ### How complexity-aware routing works
 
-When preflight classifies a story as small/medium/large, TheForge
-automatically selects the appropriate model tier for each phase:
-
-| Phase | small | medium | large |
-|-------|-------|--------|-------|
-| dev | cheap | mid | strong |
-| plan | mid | strong | strong |
-| preflight | fast/cheap | (static) | (static) |
-| code review | 1 mid reviewer | pool + synthesis | pool + synthesis |
-
-This is the v0.8 behavior described in [#807](https://github.com/fuzzypete/theforge/issues/807).
+Preflight assigns each story a complexity score (1–10). The score selects the
+dev/plan model tier, reviewer count, and reasoning effort through coarse
+buckets, and adaptive assignment then picks preferred models within the
+eligible pool from recorded run evidence. See the
+[Routing Policy guide](routing-policy.md) for what the score controls and the
+[Adaptive Assignment guide](adaptive-assignment.md) for how preference,
+exploration, and taint exclusion work.
 Run `forge check-config` to see the full derived role table for your model list.
 
 ### Advanced: partial overrides
@@ -188,8 +184,13 @@ load balancer probes.
 ## 7. Run it
 
 ```bash
-forge run stories/my-feature.md --verbose
+forge run stories/my-feature.md --verbose --fg
 ```
+
+> **Runs detach by default.** Without `--fg`, `forge run` returns immediately
+> and the run continues in the background — use `forge status` to check
+> progress and `forge logs` to tail output. `--fg` keeps the run in the
+> foreground so you can watch it live, which is what this walkthrough assumes.
 
 You'll see the pipeline in real time:
 
@@ -216,11 +217,16 @@ The implementation lives on a feature branch:
 # See what was created
 git log forge/add-health-check --oneline
 
-# See the full audit trail (worktree copy)
-cat .forge/worktrees/add-health-check/forge_audit.yaml
-# Or the persistent audit in .forge/audits/
+# See the full audit trail for the last run
 cat .forge/audits/forge_audit.yaml
+# Or the per-run record
+cat .forge/audits/runs/<run_id>.json
 ```
+
+`forge explain` summarizes the last run's decisions, and `forge audits show`
+queries the audit history. (A worktree copy at
+`.forge/worktrees/<slug>/forge_audit.yaml` is written only when a run
+ESCALATEs, to preserve state for diagnosis.)
 
 The audit shows:
 - Every phase timing and cost
@@ -271,8 +277,15 @@ forge sprint --label "sprint-1" --budget 20 --verbose
 
 TheForge fetches open issues from the milestone or label and runs them in order.
 
-Stories run sequentially. Each one goes through the full pipeline. Failed stories
-don't block the rest.
+### Ordering and parallelism
+
+Stories run in DAG order, not strictly sequentially. Edges come from two
+sources: explicit `depends_on` entries in the manifest, and automatic
+collision-derived edges — when preflight predicts two stories will touch the
+same files (`likely_files`), the later story waits for the earlier one.
+`--parallel N` runs up to N independent stories concurrently. Each story goes
+through the full pipeline, and failed stories don't block unrelated ones. See
+the [Inputs Reference](inputs-reference.md) for manifest semantics.
 
 ## What things cost
 
@@ -317,21 +330,32 @@ hooks:
 ```json
 {
   "event": "post_run",
-  "verdict": "APPROVE | REQUEST_CHANGES | ESCALATE",
+  "project": "my-project",
   "slug": "my-feature",
-  "branch": "feat/my-feature",
+  "branch": "forge/my-feature",
+  "run_id": "20260805-120000-my-feature",
+  "outcome": "done | escalate",
+  "verdict": "APPROVE | REQUEST_CHANGES | ESCALATE",
   "summary": "one-line review summary",
+  "total_cost_usd": 1.23,
+  "duration_seconds": 222.0,
   "findings": [
     {
       "severity": "P1 | P2",
       "file": "src/foo.py",
       "line": 42,
-      "description": "what is wrong",
+      "observed": "what the code does",
+      "expected": "what it should do",
+      "evidence": "why the reviewer believes this",
       "suggestion": "how to fix"
     }
   ]
 }
 ```
+
+The payload also carries `story`, `cycles`, `dev_iterations`, `gate_decisions`,
+`gate_runs`, `review_pool`, `pr_number`, and per-reviewer `reviewers`
+attribution — pipe stdin through `jq .` in a hook to see the full shape.
 
 Hooks exit 0 to signal success. A non-zero exit prints a warning but does not
 abort the forge run. See `.forge/hooks/README.md` for full documentation.

@@ -1,5 +1,7 @@
 # Issue #796 — Dogfood Git-Policy Verification Record
 
+Status: record (2026-07-20, issue #796).
+
 Companion evidence for the story *"Dogfood: align TheForge's own git policy with
 the canonical template."* This is the committed, auditable record the acceptance
 criteria call for. It covers the redaction-audit spot-check, the end-to-end

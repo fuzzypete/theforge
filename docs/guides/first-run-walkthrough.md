@@ -19,11 +19,16 @@ what normal looks like before running on your own project.
 ## The command
 
 ```bash
-forge run specs/add-greeting.md --verbose
+forge run specs/add-greeting.md --verbose --fg
 ```
 
 `--verbose` shows tool activity in real time. Without it you see only phase
 headers and the final result — useful for unattended runs.
+
+`--fg` keeps the run in the foreground. Runs detach by default: without
+`--fg`, `forge run` returns immediately and the run continues in the
+background — watch it with `forge status` and `forge logs <run-id>`. The
+transcript below assumes `--fg`.
 
 ---
 
@@ -194,7 +199,7 @@ are included in the audit but don't trigger retries.
 [forge]   Branch: forge/add-greeting
 [forge]   Duration: 5m 14s
 [forge]   Cost: $1.10 total ($0.48 dev, $0.62 review)
-[forge]   Audit: .forge/worktrees/add-greeting/forge_audit.yaml
+[forge]   Audit: .forge/audits/forge_audit.yaml
 
 [forge] ═══════════════════════════════════════════════
 [forge]   APPROVE — ready to merge
@@ -212,7 +217,7 @@ git diff main forge/add-greeting
 git merge forge/add-greeting
 
 # Or auto-merge on the next run
-forge run stories/add-greeting.md --auto-merge
+forge run stories/add-greeting.md --auto-merge --fg
 ```
 
 ---
@@ -246,7 +251,7 @@ forge review stories/add-greeting.md --verbose
 # Or clean up and start fresh
 git worktree remove .forge/worktrees/add-greeting --force
 git branch -D forge/add-greeting
-forge run stories/add-greeting.md --verbose
+forge run stories/add-greeting.md --verbose --fg
 ```
 
 ---
@@ -256,7 +261,7 @@ forge run stories/add-greeting.md --verbose
 If the run is interrupted (Ctrl+C, crash, timeout):
 
 ```bash
-forge run stories/add-greeting.md --resume --verbose
+forge run stories/add-greeting.md --resume --verbose --fg
 ```
 
 The coordinator detects the existing worktree state and resumes from the last
@@ -279,8 +284,12 @@ the full state recovery matrix.
 After any run (successful or not), inspect the full trace:
 
 ```bash
-forge audit .forge/worktrees/add-greeting/forge_audit.yaml
+forge audit .forge/audits/forge_audit.yaml
 ```
+
+Per-run JSON records live under `.forge/audits/runs/<run_id>.json`, and
+`forge explain` summarizes the last run's decisions. (On ESCALATE a copy is
+also written to `.forge/worktrees/<slug>/forge_audit.yaml`.)
 
 The audit contains:
 - Story name, slug, branch
