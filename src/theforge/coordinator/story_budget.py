@@ -563,6 +563,20 @@ def evaluate_allocation(allocation: StoryAllocation, observed_usd: float | None)
     return evaluate_allocation_dict(allocation.as_dict(), observed_usd) or {}
 
 
+def _balance(value: float) -> float:
+    """Round a dollar balance to the precision the funding payloads report.
+
+    Every one of these checks subtracts one dollar figure from another and then
+    decides whether work runs. In binary floating point ``4.12 - 1.01`` is
+    ``3.1100000000000003``, so a phase that has spent its pool to the cent is
+    left holding ``3e-16`` — and a balance of nothing reads as a balance
+    remaining. Comparing at the 4-decimal precision the records already report
+    makes the boundary land where the operator sees it land: exactly-exhausted
+    is exhausted (#2258).
+    """
+    return round(float(value), 4)
+
+
 def phase_funding_shortfall(
     allocation: dict | None,
     observed_usd: float | None,
@@ -588,8 +602,8 @@ def phase_funding_shortfall(
         allocation_usd = float(allocation.get("allocation_usd"))
     except (TypeError, ValueError):
         return None
-    remaining = allocation_usd - float(observed_usd)
-    if remaining >= planned_usd:
+    remaining = _balance(allocation_usd - float(observed_usd))
+    if remaining >= _balance(planned_usd):
         return None
     return {
         "phase": phase,
@@ -597,13 +611,142 @@ def phase_funding_shortfall(
         "planned_usd": round(planned_usd, 4),
         "observed_usd": round(float(observed_usd), 4),
         "allocation_usd": round(allocation_usd, 2),
-        "remaining_usd": round(remaining, 4),
+        "remaining_usd": remaining,
         "basis": allocation.get("basis"),
         "complexity_score": allocation.get("complexity_score"),
         "median_usd": allocation.get("median_usd"),
         "p90_usd": allocation.get("p90_usd"),
         "max_usd": allocation.get("max_usd"),
         "sample_count": allocation.get("sample_count"),
+    }
+
+
+# ── Holding the seated review reservation across phases (#2258) ───────────────
+# The seating reconciliation commits part of the allocation to verification.
+# These two helpers are the halves of enforcing that commitment: REVIEW funds
+# from the reserved balance, and DEV stops once everything that was NOT reserved
+# has been spent. Both keep the cost-unknown rule the dispatch-time check
+# already holds — an unmeasured total is a lower bound, and refusing work on a
+# number the run does not have would be a guess.
+
+
+def _reserved_review_usd(reservation: dict | None) -> float:
+    """The reserved review balance on a reservation record, or 0.0."""
+    if not isinstance(reservation, dict):
+        return 0.0
+    try:
+        return max(0.0, float(reservation.get("reserved_review_usd") or 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def reserved_review_shortfall(
+    reservation: dict | None,
+    allocation: dict | None,
+    *,
+    observed_usd: float | None,
+    review_observed_usd: float | None,
+    participants: list[str],
+    planned_usd: float,
+) -> dict | None:
+    """Return a shortfall when a review panel can be funded from neither pool.
+
+    A seated reservation is a floor under verification, not a ceiling on it: the
+    panel runs if the reserved balance still covers it, and — for cycles beyond
+    the reserved ones — if what is left of the whole allocation covers it. Only
+    when both are short is the panel refused, so a story whose dev phase stayed
+    within its estimate keeps every review cycle it has always had.
+
+    ``review_observed_usd`` of ``None`` leaves the reserved balance unknowable,
+    and ``observed_usd`` of ``None`` does the same for the general pool; neither
+    refuses the panel.
+    """
+    reserved = _reserved_review_usd(reservation)
+    if reserved <= 0.0 or not participants:
+        # No reservation to draw on: the caller's pre-existing dispatch-time
+        # check against the whole allocation is the honest answer.
+        return phase_funding_shortfall(
+            allocation,
+            observed_usd,
+            phase="review",
+            participants=participants,
+            planned_usd=planned_usd,
+        )
+    if review_observed_usd is None:
+        return None
+    reserved_remaining = _balance(reserved - float(review_observed_usd))
+    if reserved_remaining >= _balance(planned_usd):
+        return None
+    shortfall = phase_funding_shortfall(
+        allocation,
+        observed_usd,
+        phase="review",
+        participants=participants,
+        planned_usd=planned_usd,
+    )
+    if shortfall is None:
+        return None
+    shortfall["reserved_review_usd"] = _balance(reserved)
+    shortfall["reserved_review_cycles"] = (reservation or {}).get("reserved_review_cycles")
+    shortfall["reserved_review_remaining_usd"] = reserved_remaining
+    return shortfall
+
+
+def nonreview_funding_exhausted(
+    reservation: dict | None,
+    allocation: dict | None,
+    *,
+    observed_usd: float | None,
+    review_observed_usd: float | None,
+    participants: list[str],
+    phase: str = "dev",
+) -> dict | None:
+    """Return a shortfall when the non-reserved part of the allocation is gone.
+
+    The other half of holding a reservation: money committed to review must not
+    be spendable by an earlier phase, so once non-review spend has reached
+    ``allocation - reserved``, no further attempt at ``phase`` is funded. The
+    reserved balance is deliberately excluded — it is still there, and it is
+    still review's.
+
+    Returns ``None`` — funded — whenever there is no reservation to protect or
+    spend is unmeasured. The payload reuses the :func:`phase_funding_shortfall`
+    shape so every existing consumer reads it unchanged, and carries
+    ``nonreview_exhausted`` so the operator line can say which pool ran out.
+    """
+    reserved = _reserved_review_usd(reservation)
+    if reserved <= 0.0 or observed_usd is None or review_observed_usd is None:
+        return None
+    try:
+        allocation_usd = float((allocation or {}).get("allocation_usd"))
+    except (TypeError, ValueError, AttributeError):
+        return None
+    nonreview_observed = _balance(max(0.0, float(observed_usd) - float(review_observed_usd)))
+    ceiling = _balance(allocation_usd - reserved)
+    remaining = _balance(ceiling - nonreview_observed)
+    # Strictly greater: a non-review pool spent to the cent has nothing left to
+    # fund another attempt with, and admitting one would spend the reserved
+    # review balance — the whole point of holding it.
+    if remaining > 0:
+        return None
+    return {
+        "phase": phase,
+        "participants": list(participants),
+        "planned_usd": 0.0,
+        "observed_usd": nonreview_observed,
+        "allocation_usd": round(allocation_usd, 2),
+        "remaining_usd": remaining,
+        "nonreview_exhausted": True,
+        "nonreview_allocation_usd": ceiling,
+        "reserved_review_usd": _balance(reserved),
+        "reserved_review_cycles": (reservation or {}).get("reserved_review_cycles"),
+        "total_observed_usd": round(float(observed_usd), 4),
+        "basis": (allocation or {}).get("basis"),
+        "complexity_score": (allocation or {}).get("complexity_score"),
+        "median_usd": (allocation or {}).get("median_usd"),
+        "p90_usd": (allocation or {}).get("p90_usd"),
+        "max_usd": (allocation or {}).get("max_usd"),
+        "sample_count": (allocation or {}).get("sample_count"),
     }
 
 
@@ -637,6 +780,16 @@ def reconcile_review_cycles(
     adaptive dev cost estimate, and the per-cycle cost of the review panel the
     run plans to seat. Returns the audit record of the decision; the caller
     applies it.
+
+    ``reserved_review_usd`` is the portion of the allocation the reconciliation
+    commits to verification: the reconciled cycles priced at the seated
+    per-cycle figure. A projection that nothing withholds is an intention, not a
+    guarantee — an earlier phase that overruns spends the money review was
+    seated with and review is refused anyway (#2258). Reserving it here gives
+    the caller a number to hold: REVIEW funds from it, and further DEV attempts
+    are refused once the rest of the allocation is gone. Nothing is reserved on
+    the no-op actions or on ``review_unfundable`` — there is no decision to
+    hold in the first place.
 
     ``reconciled_review_max`` is the number of review cycles the allocation can
     actually fund. It equals ``requested_review_max`` whenever the inputs do not
@@ -672,6 +825,8 @@ def reconcile_review_cycles(
         "review_cycle_cost_headroom_multiplier": None,
         "review_cycle_cost_reason": None,
         "review_cycle_cost_composition": None,
+        "reserved_review_cycles": 0,
+        "reserved_review_usd": 0.0,
         "action": RECONCILE_AFFORDABLE,
     }
     try:
@@ -725,9 +880,14 @@ def reconcile_review_cycles(
         record["action"] = RECONCILE_AFFORDABLE
         return record
 
-    remaining = allocation_usd - float(spent_so_far_usd) - dev_estimate
-    record["remaining_after_dev_usd"] = round(remaining, 4)
-    affordable = 0 if remaining < cycle_cost else int(remaining // cycle_cost)
+    remaining = _balance(allocation_usd - float(spent_so_far_usd) - dev_estimate)
+    record["remaining_after_dev_usd"] = remaining
+    # Counted in whole units of the reported precision rather than by float
+    # division: a remainder that covers a cycle exactly must count as a cycle,
+    # or seating refuses to reserve money the allocation demonstrably holds.
+    _remaining_units = int(round(remaining * 10000))
+    _cycle_units = int(round(cycle_cost * 10000))
+    affordable = 0 if _remaining_units < _cycle_units else _remaining_units // _cycle_units
     record["affordable_review_cycles"] = affordable
     if affordable == 0:
         record["reconciled_review_max"] = int(requested_review_max)
@@ -736,9 +896,13 @@ def reconcile_review_cycles(
         return record
     if affordable >= requested_review_max:
         record["action"] = RECONCILE_AFFORDABLE
+        record["reserved_review_cycles"] = int(requested_review_max)
+        record["reserved_review_usd"] = round(requested_review_max * cycle_cost, 4)
         return record
     record["reconciled_review_max"] = affordable
     record["action"] = RECONCILE_REDUCED
+    record["reserved_review_cycles"] = affordable
+    record["reserved_review_usd"] = round(affordable * cycle_cost, 4)
     record["shortfall_usd"] = round(
         (requested_review_max - affordable) * cycle_cost - (remaining - affordable * cycle_cost),
         4,
@@ -843,6 +1007,19 @@ def seating_shortfall(
 def format_shortfall(shortfall: dict, *, story: str | None = None) -> str:
     """Render the operator-facing allocation-exhausted message."""
     story_label = f"story {story}" if story else "story"
+    if shortfall.get("nonreview_exhausted"):
+        cycles = shortfall.get("reserved_review_cycles")
+        return (
+            f"Story allocation exhausted: {story_label} has spent "
+            f"${float(shortfall['observed_usd']):.2f} of the "
+            f"${float(shortfall['nonreview_allocation_usd']):.2f} its "
+            f"${float(shortfall['allocation_usd']):.2f} allocation leaves for non-review "
+            f"work, so no further {shortfall['phase']} attempt is funded. The remaining "
+            f"${float(shortfall['reserved_review_usd']):.2f} is reserved for the "
+            f"{cycles} review cycle(s) this story was seated with and is not "
+            "available to spend here. Sprint headroom is reported alongside this "
+            "story in the sprint summary."
+        )
     expected = "no band history"
     if shortfall.get("median_usd") is not None:
         expected = (
