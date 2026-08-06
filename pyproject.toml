@@ -1,6 +1,6 @@
 [project]
 name = "theforge"
-version = "0.13.0rc19"
+version = "0.13.0rc20"
 description = "Deterministic multi-LLM development orchestrator"
 readme = "README.md"
 license = {text = "MIT"}
