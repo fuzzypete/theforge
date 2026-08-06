@@ -894,6 +894,71 @@ class TestReviewFundingReservation:
         assert "$3.11" in message
         assert "reserved for the 1 review cycle(s)" in message
 
+    def test_a_non_review_pool_spent_to_the_cent_refuses_the_next_attempt(self) -> None:
+        """The boundary binds where the operator sees it: $3.11 of $3.11 is gone.
+
+        ``4.12 - 1.01`` is ``3.1100000000000003`` in binary floating point, so an
+        exactly-exhausted pool used to read as three ten-thousandths of a cent
+        remaining — and the retry it funded would have spent the reserved cycle.
+        """
+        shortfall = sb.nonreview_funding_exhausted(
+            self._reservation(),
+            self._allocation(),
+            observed_usd=3.11,
+            review_observed_usd=0.0,
+            participants=["dev"],
+        )
+
+        assert shortfall is not None
+        assert shortfall["remaining_usd"] == 0.0
+        assert shortfall["nonreview_allocation_usd"] == 3.11
+        assert shortfall["observed_usd"] == 3.11
+        # One cent short of the ceiling is still a funded attempt.
+        assert (
+            sb.nonreview_funding_exhausted(
+                self._reservation(),
+                self._allocation(),
+                observed_usd=3.10,
+                review_observed_usd=0.0,
+                participants=["dev"],
+            )
+            is None
+        )
+
+    def test_a_panel_that_exactly_fits_its_reservation_is_funded(self) -> None:
+        """The same rounding, in the direction that must not refuse work.
+
+        ``3.03 - 2.02`` is ``1.0099999999999998``: a third reserved cycle that
+        fits its reservation to the cent must not be refused for float noise,
+        even when the general pool has nothing left to fall back on.
+        """
+        assert (
+            sb.reserved_review_shortfall(
+                {**self._reservation(), "reserved_review_usd": 3.03, "reserved_review_cycles": 3},
+                {**self._allocation(usd=3.03)},
+                observed_usd=2.02,
+                review_observed_usd=2.02,
+                participants=["a"],
+                planned_usd=1.01,
+            )
+            is None
+        )
+
+    def test_a_remainder_that_exactly_covers_a_cycle_reserves_it(self) -> None:
+        """Seating counts cycles in whole cents, not by float division."""
+        record = sb.reconcile_review_cycles(
+            self._allocation(usd=3.39),
+            dev_cost_estimate_usd=2.38,
+            review_cycle_cost_usd=1.01,
+            requested_review_max=1,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["remaining_after_dev_usd"] == 1.01
+        assert record["action"] == sb.RECONCILE_AFFORDABLE
+        assert record["affordable_review_cycles"] == 1
+        assert record["reserved_review_usd"] == 1.01
+
     def test_review_spend_does_not_count_against_the_dev_pool(self) -> None:
         """A cycle drawing its own reservation must not refuse the next dev attempt."""
         assert (

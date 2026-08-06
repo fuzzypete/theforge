@@ -563,6 +563,20 @@ def evaluate_allocation(allocation: StoryAllocation, observed_usd: float | None)
     return evaluate_allocation_dict(allocation.as_dict(), observed_usd) or {}
 
 
+def _balance(value: float) -> float:
+    """Round a dollar balance to the precision the funding payloads report.
+
+    Every one of these checks subtracts one dollar figure from another and then
+    decides whether work runs. In binary floating point ``4.12 - 1.01`` is
+    ``3.1100000000000003``, so a phase that has spent its pool to the cent is
+    left holding ``3e-16`` — and a balance of nothing reads as a balance
+    remaining. Comparing at the 4-decimal precision the records already report
+    makes the boundary land where the operator sees it land: exactly-exhausted
+    is exhausted (#2258).
+    """
+    return round(float(value), 4)
+
+
 def phase_funding_shortfall(
     allocation: dict | None,
     observed_usd: float | None,
@@ -588,8 +602,8 @@ def phase_funding_shortfall(
         allocation_usd = float(allocation.get("allocation_usd"))
     except (TypeError, ValueError):
         return None
-    remaining = allocation_usd - float(observed_usd)
-    if remaining >= planned_usd:
+    remaining = _balance(allocation_usd - float(observed_usd))
+    if remaining >= _balance(planned_usd):
         return None
     return {
         "phase": phase,
@@ -597,7 +611,7 @@ def phase_funding_shortfall(
         "planned_usd": round(planned_usd, 4),
         "observed_usd": round(float(observed_usd), 4),
         "allocation_usd": round(allocation_usd, 2),
-        "remaining_usd": round(remaining, 4),
+        "remaining_usd": remaining,
         "basis": allocation.get("basis"),
         "complexity_score": allocation.get("complexity_score"),
         "median_usd": allocation.get("median_usd"),
@@ -660,8 +674,8 @@ def reserved_review_shortfall(
         )
     if review_observed_usd is None:
         return None
-    reserved_remaining = reserved - float(review_observed_usd)
-    if reserved_remaining >= planned_usd:
+    reserved_remaining = _balance(reserved - float(review_observed_usd))
+    if reserved_remaining >= _balance(planned_usd):
         return None
     shortfall = phase_funding_shortfall(
         allocation,
@@ -672,9 +686,9 @@ def reserved_review_shortfall(
     )
     if shortfall is None:
         return None
-    shortfall["reserved_review_usd"] = round(reserved, 4)
+    shortfall["reserved_review_usd"] = _balance(reserved)
     shortfall["reserved_review_cycles"] = (reservation or {}).get("reserved_review_cycles")
-    shortfall["reserved_review_remaining_usd"] = round(reserved_remaining, 4)
+    shortfall["reserved_review_remaining_usd"] = reserved_remaining
     return shortfall
 
 
@@ -707,21 +721,24 @@ def nonreview_funding_exhausted(
         allocation_usd = float((allocation or {}).get("allocation_usd"))
     except (TypeError, ValueError, AttributeError):
         return None
-    nonreview_observed = max(0.0, float(observed_usd) - float(review_observed_usd))
-    ceiling = allocation_usd - reserved
-    remaining = ceiling - nonreview_observed
+    nonreview_observed = _balance(max(0.0, float(observed_usd) - float(review_observed_usd)))
+    ceiling = _balance(allocation_usd - reserved)
+    remaining = _balance(ceiling - nonreview_observed)
+    # Strictly greater: a non-review pool spent to the cent has nothing left to
+    # fund another attempt with, and admitting one would spend the reserved
+    # review balance — the whole point of holding it.
     if remaining > 0:
         return None
     return {
         "phase": phase,
         "participants": list(participants),
         "planned_usd": 0.0,
-        "observed_usd": round(nonreview_observed, 4),
+        "observed_usd": nonreview_observed,
         "allocation_usd": round(allocation_usd, 2),
-        "remaining_usd": round(remaining, 4),
+        "remaining_usd": remaining,
         "nonreview_exhausted": True,
-        "nonreview_allocation_usd": round(ceiling, 4),
-        "reserved_review_usd": round(reserved, 4),
+        "nonreview_allocation_usd": ceiling,
+        "reserved_review_usd": _balance(reserved),
         "reserved_review_cycles": (reservation or {}).get("reserved_review_cycles"),
         "total_observed_usd": round(float(observed_usd), 4),
         "basis": (allocation or {}).get("basis"),
@@ -863,9 +880,14 @@ def reconcile_review_cycles(
         record["action"] = RECONCILE_AFFORDABLE
         return record
 
-    remaining = allocation_usd - float(spent_so_far_usd) - dev_estimate
-    record["remaining_after_dev_usd"] = round(remaining, 4)
-    affordable = 0 if remaining < cycle_cost else int(remaining // cycle_cost)
+    remaining = _balance(allocation_usd - float(spent_so_far_usd) - dev_estimate)
+    record["remaining_after_dev_usd"] = remaining
+    # Counted in whole units of the reported precision rather than by float
+    # division: a remainder that covers a cycle exactly must count as a cycle,
+    # or seating refuses to reserve money the allocation demonstrably holds.
+    _remaining_units = int(round(remaining * 10000))
+    _cycle_units = int(round(cycle_cost * 10000))
+    affordable = 0 if _remaining_units < _cycle_units else _remaining_units // _cycle_units
     record["affordable_review_cycles"] = affordable
     if affordable == 0:
         record["reconciled_review_max"] = int(requested_review_max)

@@ -1073,6 +1073,54 @@ class TestTheSeatedReviewReservationIsHeldAcrossPhases:
         # The reserved money is still there for the review that never ran.
         assert state.total_review_cost_measured == 0.0
 
+    def test_a_dev_attempt_landing_exactly_on_the_ceiling_refuses_the_retry(
+        self, tmp_path: Path
+    ) -> None:
+        """Exactly-exhausted is exhausted, at the seam as well as in arithmetic.
+
+        The dev phase spends the non-review pool to the cent — $3.11 of the
+        $4.12 allocation, with $1.01 reserved. Float subtraction leaves that
+        looking like a positive balance, and the retry it admits spends the
+        reserved cycle.
+        """
+        from coord_test_helpers import _make_agent_result, _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+        from theforge.coordinator.state import RetryReason
+
+        config = self._config(tmp_path)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path)
+        calls: list[float | None] = []
+
+        def _exact_ceiling_dev(_state, *_args, **_kwargs):
+            calls.append(_state.total_cost_measured)
+            _state.dev_results.append(_make_agent_result(cost_usd=3.11, profile_name="dev"))
+            _state.retry_reason = RetryReason.TIMEOUT_RESUME
+            return None
+
+        with patch("theforge.coordinator.engine._run_dev_phase", _exact_ceiling_dev):
+            result = _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        assert state.review_funding_reservation["nonreview_allocation_usd"] == 3.11
+        assert calls == [0.0]
+        assert result.phase == Phase.ESCALATE
+        assert state.error_type == "allocation_exhausted"
+        assert state.allocation_exhausted["remaining_usd"] == 0.0
+        # The reserved cycle is intact — that is what the refusal bought.
+        assert state.total_review_cost_measured == 0.0
+        assert (
+            sb.reserved_review_shortfall(
+                state.review_funding_reservation,
+                state.story_allocation,
+                observed_usd=state.total_cost_measured,
+                review_observed_usd=state.total_review_cost_measured,
+                participants=["openai-gpt-5.5-cli"],
+                planned_usd=1.01,
+            )
+            is None
+        )
+
     def test_a_dev_retry_within_the_non_review_pool_is_untouched(self, tmp_path: Path) -> None:
         """A story that stays inside its estimate keeps every attempt it had."""
         from coord_test_helpers import _make_agent_result, _make_task
