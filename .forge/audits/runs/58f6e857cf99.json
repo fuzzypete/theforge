@@ -1,0 +1,3473 @@
+{
+  "schema_version": 21,
+  "run_id": "58f6e857cf99",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc20",
+  "task": {
+    "name": "Review funding is projected at seating but never withheld, so a phase that exceeds its estimate defunds verification anyway",
+    "slug": "issue-2258",
+    "story_path": null,
+    "story_text": "## Observed\n\nThe reconciliation that decides how many review cycles a story can afford is computed once, at\nseating, from an estimate. Nothing holds that money aside, so an earlier phase that exceeds its\nestimate consumes it and verification is refused anyway.\n\nStory `issue-2252` was seated at complexity 3 with a $4.12 allocation, against a historical band of\nmedian $0.94, p90 $2.38, max $3.30 over 20 runs. At those numbers the allocation comfortably funds\nits single-reviewer panel, so reconciliation had nothing to reduce and the story proceeded with its\npermitted cycles intact.\n\nDev then spent $4.00 \u2014 above the observed maximum for the band, and nearly the whole allocation. The\nreview panel was refused at dispatch: `cannot fund its planned review participants\n(openai-gpt-5.5-cli) \u2014 needs $1.01, $0.12 left of the $4.12 allocation`. The story escalated, its\nescalate gate timed out, and it was dropped with one iteration of completed work preserved and never\nreviewed.\n\nThe reconciliation was correct when it ran and irrelevant by the time it mattered. It answered\n\"can this allocation fund the permitted cycles, assuming dev costs what dev usually costs\" \u2014 a\nquestion whose answer stops holding the moment dev does something unusual. The phase that overruns\nis drawing from the same undifferentiated pool as the phase that would have caught the overrun.\n\n## Diagnosis\n\n- **Observed symptom:** a story whose permitted review cycles were reconciled as affordable at\n  seating is nonetheless refused its review panel at dispatch, because an earlier phase consumed the\n  allocation.\n- **Evidence:** run `9b3fa1bf44a4`, story `issue-2252`. Seated at complexity 3 with a $4.12\n  allocation and a band of median $0.94 / p90 $2.38 / max $3.30 over 20 runs. Dev observed $4.00.\n  Review refused with `needs $1.01, $0.12 left of the $4.12 allocation`. Outcome: escalated,\n  gate timed out, work preserved and unreviewed.\n- **Ruled out:** not the seating-arithmetic defect fixed previously \u2014 `reconcile_review_cycles`\n  ran and correctly found the permitted cycles affordable against the estimate it was given, and\n  reduced nothing because nothing needed reducing.\n- **Ruled out:** not a mis-estimated band \u2014 the band was derived from 20 prior runs and the story\n  exceeded its maximum, so this is the tail the estimate cannot describe rather than a wrong\n  estimate.\n- **Confirmed cause:** the reconciliation is a projection evaluated once against an estimate, and\n  the allocation it reasons about is a single undifferentiated pool. No portion of it is withheld\n  from the phases that run first, so the projection's conclusion is unenforced from the moment it\n  is computed.\n- **Affected code path:** the seating reconciliation in `coordinator.story_budget` and the\n  allocation it projects over, together with the dispatch-time funding check that refuses a panel.\n- **Fix-success criterion:** a story that was seated with affordable review cycles still has the\n  funds to run one when it reaches review, whatever earlier phases actually cost.\n\n## Expected\n\nMoney committed to a phase should not be spendable by an earlier one. Deciding at the start that a\nbudget covers verification, and then letting generation draw freely from the same pool, means the\ndecision describes an intention rather than a guarantee \u2014 and the intention fails in exactly the\ncase it was meant for, because a story that overruns is a story with more to check.\n\nWhere an estimate is used to decide affordability, something has to hold the conclusion when the\nestimate proves wrong, or the check will keep passing at seating and failing at dispatch. The\nalternative to withholding funds is to stop the overrunning phase at the point the projection would\nbe invalidated \u2014 either way the constraint has to bind at the time it is exceeded rather than only\nat the time it is computed.\n",
+    "github_issue": 2258,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": {
+    "status": "recovered",
+    "reason": "story_content_match",
+    "recovered_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "source_run_id": "e0a7f13982f4",
+    "recorded_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ]
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Review funding is projected at seating but never withheld, so a phase that exceeds its estimate defunds verification anyway' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2258",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "2cafdfc22ad12b14f41947a4da6794dc166f4dd4ad9569bbaa0527a27d73664d",
+    "resolved_sha256": "79cbb04bde2b5270751b4b4aa1213931d2bfbc4fc860c5bec7c778deeb6c94d0",
+    "source_sha256_at_finish": "2cafdfc22ad12b14f41947a4da6794dc166f4dd4ad9569bbaa0527a27d73664d",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-06T19:11:10.016187+00:00",
+    "finished_at": "2026-08-06T19:34:50.105983+00:00",
+    "duration_seconds": 1420.089796
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2258",
+    "branch": "feat/issue-2258",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 4.670117999999999,
+        "duration_s": 665.71,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/engine.py",
+          "src/theforge/coordinator/review_pool.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/coordinator/story_budget.py",
+          "tests/test_story_budget_allocation.py",
+          "tests/test_story_budget_seam.py"
+        ],
+        "files_changed_count": 6,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 2.7095449999999994,
+        "duration_s": 241.27,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/story_budget.py",
+          "tests/test_story_budget_allocation.py",
+          "tests/test_story_budget_seam.py"
+        ],
+        "files_changed_count": 3,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 3.171749,
+        "duration_s": 206.85
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 2.331035,
+        "duration_s": 171.8
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 5.849,
+      "static_dev_max": 3,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 117,
+      "profile_avg_iterations": 1.8547,
+      "profile_avg_cost_usd": 10.055414,
+      "profile_raw_dev_max": 2.782,
+      "estimate_headroom_factor": 2.5,
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 25.1385,
+      "review_history_sample_size": 23,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 117 large-band profile runs with 1.5x iteration headroom and 2.5x cost-estimate headroom; timeout floored on observed run duration+headroom (4948s). review history stayed within the complexity-derived review base.",
+      "review_cycle_planning": {
+        "planned_cost_usd": 3.884,
+        "basis": "observed_composition",
+        "fallback_configured_usd": 17.547,
+        "sample_count": 10,
+        "median_usd": 3.1072,
+        "p90_usd": 4.526,
+        "max_usd": 7.807,
+        "headroom_multiplier": 1.25,
+        "reason": "derived from median observed review-cycle spend $3.11 x 1.25 headroom over 10 cycle(s) run by this exact panel",
+        "excluded_for_taint": 3,
+        "composition": [
+          "anthropic-haiku-cli",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ]
+      },
+      "review_cycle_reconciliation": {
+        "requested_review_max": 5,
+        "reconciled_review_max": 5,
+        "affordable_review_cycles": 5,
+        "allocation_usd": 48.02,
+        "spent_so_far_usd": 0.3983,
+        "dev_cost_estimate_usd": 25.1385,
+        "review_cycle_cost_usd": 3.884,
+        "review_cycle_cost_basis": "observed_composition",
+        "review_cycle_cost_sample_count": 10,
+        "review_cycle_cost_median_usd": 3.1072,
+        "review_cycle_cost_p90_usd": 4.526,
+        "review_cycle_cost_max_usd": 7.807,
+        "review_cycle_cost_headroom_multiplier": 1.25,
+        "review_cycle_cost_reason": "derived from median observed review-cycle spend $3.11 x 1.25 headroom over 10 cycle(s) run by this exact panel",
+        "review_cycle_cost_composition": [
+          "anthropic-haiku-cli",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ],
+        "action": "within_allocation",
+        "basis": "substrate_band",
+        "remaining_after_dev_usd": 22.4832
+      }
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-06T19:11:11.137880+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-08-06T19:26:45.197885+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 13.280727599999997,
+    "dev_usd": 7.379662999999998,
+    "review_usd": 5.5027840999999995,
+    "dev_invocations": 2,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "preflight",
+        "profile": "preflight",
+        "cost_usd": 0.39828050000000004,
+        "duration_seconds": 60.82567754201591,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.39828050000000004,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 5908,
+            "output_tokens": 3463,
+            "cache_read_tokens": 555305,
+            "cache_creation_tokens": 28993,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 5884,
+              "output_tokens": 17,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.005969,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/sonnet/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 24,
+              "output_tokens": 3446,
+              "cache_read_tokens": 555305,
+              "cache_creation_tokens": 28993,
+              "thinking_tokens": 0,
+              "cost_usd": 0.39231150000000004,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 5884,
+            "output_tokens": 17,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.005969
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": 24,
+            "output_tokens": 3446,
+            "cache_read_tokens": 555305,
+            "cache_creation_tokens": 28993,
+            "cost_usd": 0.39231150000000004
+          }
+        ],
+        "model_used": "sonnet",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 4.670117999999999,
+        "duration_seconds": 665.706447040895,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 4.670117999999999,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 11607,
+            "output_tokens": 35929,
+            "cache_read_tokens": 5496764,
+            "cache_creation_tokens": 99002,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 6046,
+              "output_tokens": 18,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.006136,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/opus/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 5561,
+              "output_tokens": 35911,
+              "cache_read_tokens": 5496764,
+              "cache_creation_tokens": 99002,
+              "thinking_tokens": 0,
+              "cost_usd": 4.663981999999999,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 6046,
+            "output_tokens": 18,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.006136
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 5561,
+            "output_tokens": 35911,
+            "cache_read_tokens": 5496764,
+            "cache_creation_tokens": 99002,
+            "cost_usd": 4.663981999999999
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 2.7095449999999994,
+        "duration_seconds": 241.2723479999695,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 2.7095449999999994,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 33,
+            "output_tokens": 13401,
+            "cache_read_tokens": 2280950,
+            "cache_creation_tokens": 123388,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/opus/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 33,
+              "output_tokens": 13401,
+              "cache_read_tokens": 2280950,
+              "cache_creation_tokens": 123388,
+              "thinking_tokens": 0,
+              "cost_usd": 2.7095449999999994,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 33,
+            "output_tokens": 13401,
+            "cache_read_tokens": 2280950,
+            "cache_creation_tokens": 123388,
+            "cost_usd": 2.7095449999999994
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.232664,
+        "duration_seconds": 68.83410950005054,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": "high",
+          "cost_usd": 1.232664,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "gpt-5.5",
+            "resolution": "unresolved"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "gpt-5.5",
+            "resolution": "unresolved"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1132002,
+            "output_tokens": 8825,
+            "cache_read_tokens": 1042688,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 5510
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "gpt-5.5",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 1132002,
+              "output_tokens": 8825,
+              "cache_read_tokens": 1042688,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 5510,
+              "cost_usd": 1.232664,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 1132002,
+            "output_tokens": 8825,
+            "cache_read_tokens": 1042688,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.232664
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.7385419999999998,
+        "duration_seconds": 68.83410950005054,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 1.7385419999999998,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "gemini-3.5-flash",
+            "resolution": "unresolved"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "gemini-3.5-flash",
+            "resolution": "unresolved"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1098752,
+            "output_tokens": 1645,
+            "cache_read_tokens": 922569,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 8401
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "gemini-3.5-flash",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 1098752,
+              "output_tokens": 1645,
+              "cache_read_tokens": 922569,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 8401,
+              "cost_usd": 1.7385419999999998,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 1098752,
+            "output_tokens": 1645,
+            "cache_read_tokens": 922569,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.7385419999999998
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-haiku-cli",
+        "cost_usd": 0.2005428,
+        "duration_seconds": 68.83410950005054,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-haiku-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.2005428,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "haiku",
+            "resolution": "unresolved"
+          },
+          "resolved_primary_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "haiku",
+            "resolution": "unresolved"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 33526,
+            "output_tokens": 15435,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 43982,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 33526,
+              "output_tokens": 15435,
+              "cache_read_tokens": 18778,
+              "cache_creation_tokens": 43982,
+              "thinking_tokens": 0,
+              "cost_usd": 0.2005428,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 33526,
+            "output_tokens": 15435,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 43982,
+            "cost_usd": 0.2005428
+          }
+        ],
+        "model_used": "haiku",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.1525260000000002,
+        "duration_seconds": 57.20434783329256,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": "high",
+          "cost_usd": 1.1525260000000002,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "gpt-5.5",
+            "resolution": "unresolved"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "gpt-5.5",
+            "resolution": "unresolved"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 820796,
+            "output_tokens": 7871,
+            "cache_read_tokens": 708352,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 4164
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "gpt-5.5",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 820796,
+              "output_tokens": 7871,
+              "cache_read_tokens": 708352,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 4164,
+              "cost_usd": 1.1525260000000002,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 820796,
+            "output_tokens": 7871,
+            "cache_read_tokens": 708352,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.1525260000000002
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 0.9552615,
+        "duration_seconds": 57.20434783329256,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.9552615,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "gemini-3.5-flash",
+            "resolution": "unresolved"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "gemini-3.5-flash",
+            "resolution": "unresolved"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 569485,
+            "output_tokens": 892,
+            "cache_read_tokens": 457744,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 10334
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "gemini-3.5-flash",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 569485,
+              "output_tokens": 892,
+              "cache_read_tokens": 457744,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 10334,
+              "cost_usd": 0.9552615,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 569485,
+            "output_tokens": 892,
+            "cache_read_tokens": 457744,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.9552615
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-haiku-cli",
+        "cost_usd": 0.2232478,
+        "duration_seconds": 57.20434783329256,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-haiku-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.2232478,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "haiku",
+            "resolution": "unresolved"
+          },
+          "resolved_primary_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "haiku",
+            "resolution": "unresolved"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 9,
+            "output_tokens": 4555,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 99293,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 9,
+              "output_tokens": 4555,
+              "cache_read_tokens": 18778,
+              "cache_creation_tokens": 99293,
+              "thinking_tokens": 0,
+              "cost_usd": 0.2232478,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 9,
+            "output_tokens": 4555,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 99293,
+            "cost_usd": 0.2232478
+          }
+        ],
+        "model_used": "haiku",
+        "transport_used": "cli"
+      }
+    ],
+    "story_allocation": {
+      "allocation_usd": 48.02,
+      "basis": "substrate_band",
+      "complexity_score": 8,
+      "excluded_for_taint": 2,
+      "fallback_configured_usd": 50.0,
+      "max_usd": 38.4162,
+      "median_usd": 9.0675,
+      "p90_usd": 23.2297,
+      "reason": "derived from 41 admissible run(s) at complexity score 8 (max $38.42 x 1.25)",
+      "sample_count": 41,
+      "scaled_profiles": {
+        "preflight": 5.849,
+        "plan": 0.4094,
+        "dev": 5.849,
+        "review_pool[0]": 5.849,
+        "review_pool[1]": 5.849,
+        "review_pool[2]": 5.849,
+        "plan_agent_review[0]": 5.849,
+        "plan_agent_review[1]": 5.849,
+        "plan_agent_review[2]": 5.849,
+        "synthesis": 0.8189
+      },
+      "carried": true,
+      "observed_usd": 13.2807,
+      "status": "within_allocation",
+      "exceeded": false
+    },
+    "allocation_exhausted": null,
+    "reviewer_budget_overruns": []
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed the architecture the spec describes: reconcile_review_cycles (engine.py:438) is a one-shot seating-time projection over dev_cost_estimate_usd (an estimate) against a single undifferentiated allocation pool; dev then spends freely from state.total_cost_measured with no reservation tied to the review cycles the reconciliation deemed affordable, and phase_funding_shortfall (review_pool.py:637) only re-checks affordability at dispatch time. No withholding/reservation mechanism exists anywhere in story_budget.py, engine.py, or review_pool.py.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "concurrency"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.39828050000000004,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "9d1f94975c13",
+    "cache_snapshot": {
+      "worktree_head": "227c3487d6d38ed328c3be96c6ccac4fde033328",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "227c3487d6d38ed328c3be96c6ccac4fde033328",
+      "story_content_hash": "965d10a5156a25131485905c44b60c0c1fb82641e0b40185a4a24bba84154f5f"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "227c3487d6d38ed328c3be96c6ccac4fde033328",
+      "current_worktree_head": "227c3487d6d38ed328c3be96c6ccac4fde033328",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "227c3487d6d38ed328c3be96c6ccac4fde033328",
+      "current_evaluation_base_branch_head": "227c3487d6d38ed328c3be96c6ccac4fde033328",
+      "cached_story_content_hash": "965d10a5156a25131485905c44b60c0c1fb82641e0b40185a4a24bba84154f5f",
+      "current_story_content_hash": "965d10a5156a25131485905c44b60c0c1fb82641e0b40185a4a24bba84154f5f",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.39828050000000004,
+        "duration_s": 60.83,
+        "success": true,
+        "exit_code": 0,
+        "completed": true,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": null,
+          "complexity_score": null,
+          "reasoning_effort": null,
+          "cost_usd": 0.39828050000000004,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 5908,
+            "output_tokens": 3463,
+            "cache_read_tokens": 555305,
+            "cache_creation_tokens": 28993,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 5884,
+              "output_tokens": 17,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.005969,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/sonnet/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 24,
+              "output_tokens": 3446,
+              "cache_read_tokens": 555305,
+              "cache_creation_tokens": 28993,
+              "thinking_tokens": 0,
+              "cost_usd": 0.39231150000000004,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        }
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "haiku",
+            "source": "forge.yaml",
+            "canonical_id": "anthropic/haiku/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.81 \u2265 threshold 0.60 over 117 admissible runs \u2014 pre-promotion held) (profile success_rate=0.81 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($7.14)",
+        "planner": "complexity score 8 \u2192 tier strong ($7.14); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8 [value check: evaluated 6 reviewer(s), all below the 5-sample floor \u2014 ordering unchanged]; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 64.29,
+        "final_total_usd": 64.29,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 7.14
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 7.14
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 7.14
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "haiku",
+              "budget_usd": 7.14
+            }
+          ],
+          "total_usd": 64.29
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      },
+      "story_allocation": {
+        "allocation_usd": 48.02,
+        "basis": "substrate_band",
+        "complexity_score": 8,
+        "excluded_for_taint": 2,
+        "fallback_configured_usd": 50.0,
+        "max_usd": 38.4162,
+        "median_usd": 9.0675,
+        "p90_usd": 23.2297,
+        "reason": "derived from 41 admissible run(s) at complexity score 8 (max $38.42 x 1.25)",
+        "sample_count": 41,
+        "scaled_profiles": {
+          "preflight": 5.849,
+          "plan": 0.4094,
+          "dev": 5.849,
+          "review_pool[0]": 5.849,
+          "review_pool[1]": 5.849,
+          "review_pool[2]": 5.849,
+          "plan_agent_review[0]": 5.849,
+          "plan_agent_review[1]": 5.849,
+          "plan_agent_review[2]": 5.849,
+          "synthesis": 0.8189
+        },
+        "carried": true
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2258/iter_1.yaml",
+      "handoff": {
+        "summary": "Made the seating-time review-cycle reconciliation produce an auditable reservation and enforced it across phases. reconcile_review_cycles now records reserved_review_cycles/reserved_review_usd (the reconciled cycles at the seated per-cycle price; nothing reserved on no-op or review_unfundable outcomes). The engine persists that reservation on state.review_funding_reservation and into adaptive_limits_audit['review_funding_reservation'] so the allocation, reserved amount, reserved cycles, cycle price, reconciliation action and derived non-review ceiling are all visible in the run audit. Two new pure helpers in story_budget: reserved_review_shortfall() lets REVIEW fund from the reserved balance and only falls back to the general-allocation check for cycles beyond the reservation (or when nothing was reserved), and nonreview_funding_exhausted() refuses a dev attempt once non-review spend has reached allocation - reserved. Both preserve the existing cost-unknown rule: an unmeasured total never refuses work. review_pool dispatch calls the reservation-aware check; the engine calls the dev check via a new _refuse_dev_without_nonreview_funds() helper immediately before each _run_dev_phase dispatch, on retry attempts only. format_shortfall renders a dedicated operator line for the non-review-exhausted case naming both pools.",
+        "commits": [
+          {
+            "sha": "e1e5ec62",
+            "message": "fix(coordinator): hold the seated review reservation across phases"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Money committed to a phase should not be spendable by an earlier one \u2014 a story seated with affordable review cycles still has the funds to run one when it reaches review, whatever earlier phases actually cost.",
+            "status": "MET",
+            "notes": "reserved_review_shortfall() funds the panel from the reservation rather than from the residual allocation. Seam test test_a_dev_overrun_no_longer_defunds_the_seated_review_cycle reproduces the issue's exact numbers ($4.12 allocation, $1.01 cycle, dev observes $4.00) and asserts the full planned panel dispatches, while also asserting the old phase_funding_shortfall check would have refused it."
+          },
+          {
+            "criterion": "The constraint has to bind at the time it is exceeded rather than only at the time it is computed \u2014 either withhold the funds or stop the overrunning phase.",
+            "status": "MET",
+            "notes": "Both halves implemented. Withholding: the reservation is held for review. Stopping the overrunning phase: nonreview_funding_exhausted() escalates with error_type=allocation_exhausted before a retry dev attempt spends into the reserved money (seam test test_a_later_dev_attempt_is_refused_once_non_review_funds_are_gone)."
+          },
+          {
+            "criterion": "Existing behavior for runs the reconciliation cannot decide (configured fallback, no band history, cost-unknown) is unchanged.",
+            "status": "MET",
+            "notes": "Those actions reserve nothing, so both new checks return None / fall through to the pre-existing phase_funding_shortfall path. Covered by unit tests (test_undecided_and_unfundable_seatings_reserve_nothing, test_no_reservation_falls_through_to_the_whole_allocation_check, test_unmeasured_spend_never_refuses_a_review_panel, test_dev_is_never_refused_without_a_reservation_or_a_measured_total) and a seam test (test_a_configured_fallback_run_keeps_the_pre_existing_dispatch_check)."
+          },
+          {
+            "criterion": "Data flowing between coordinator phases is instrumented in the audit trail (CONVENTIONS 6).",
+            "status": "MET",
+            "notes": "adaptive_limits_audit['review_funding_reservation'] carries allocation_usd, reserved_review_usd, reserved_review_cycles, review_cycle_cost_usd, nonreview_allocation_usd and the reconciliation action; both refusal payloads carry the reserved/non-review figures; the DEV refusal emits a structured allocation_exhausted event. Seam test test_the_reservation_reaches_the_run_audit pins it through generate_audit_log."
+          },
+          {
+            "criterion": "Cross-phase state handoff has seam-level integration tests (CONVENTIONS 8).",
+            "status": "MET",
+            "notes": "New class TestTheSeatedReviewReservationIsHeldAcrossPhases in tests/test_story_budget_seam.py drives the real _coordinator_loop and _run_review_pool across the SEATING\u2192DEV\u2192REVIEW boundary: reservation set before dev, dev overrun vs reserved panel, panel neither pool funds, dev retry refused, dev retry within budget untouched, configured-fallback unchanged. Unit arithmetic lives in TestReviewFundingReservation in tests/test_story_budget_allocation.py."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Plan step 1/4 said reserve reconciled_review_max * cycle_cost and fund REVIEW strictly from that balance. Implemented the reservation as a FLOOR rather than a ceiling: review draws the reserved balance first and may still draw the general allocation for cycles beyond the reserved ones. Funding strictly from the reservation would have refused later review cycles that current code funds today, which is a regression the story does not ask for. Flagged as P2 by the plan reviewer.",
+          "Plan step 3 said 'before each _run_dev_phase dispatch'. The guard binds on RETRY attempts only (state.dev_trace_count > 0). The first attempt's fundability is already ruled on by the RECONCILE_UNFUNDABLE path at seating, and binding on it here would refuse a story before it did any work. Flagged as P2 by the plan reviewer.",
+          "Plan-review P1-impl predicted an audit-schema-version bump would be needed for tests/test_audit_schema_guard.py. It is not: iterations.adaptive_limits serializes as NoneType in the canonical fixture, so keys nested inside it are not pinned by the guard. No SCHEMA_VERSION bump, migration helper, or new fixture was added; the guard passes unchanged.",
+          "Plan-review P1-impl asked that the new state field survive --resume. Verified that coordinator/resume_persistence.py rehydrates no adaptive_* seating fields at all \u2014 the seating block re-derives them (and now the reservation) on every attempt because state.adaptive_dev_max starts at 0. No resume_persistence change was needed."
+        ],
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2258/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 2 fixes the one P1 from cycle 1. The finding was float noise at the funding boundary, not a wrong comparison operator: `4.12 - 1.01` is `3.1100000000000003` in binary floating point, so a non-review pool spent exactly to its ceiling held `3e-16` and `remaining > 0` admitted a retry dev attempt that would then spend the reserved review balance. Rather than patch the cited line, I swept the file for every comparison of this shape and routed all four through one new `_balance()` helper that rounds to the 4 decimals the funding payloads already report: `nonreview_funding_exhausted` (the cited line \u2014 exactly-exhausted now refuses), `reserved_review_shortfall` (the same noise in the opposite direction, where `3.03 - 2.02` = `1.0099999999999998` would refuse a reserved cycle that fits exactly once the general pool was empty), the pre-existing `phase_funding_shortfall` my reserved path falls through to, and `reconcile_review_cycles`, whose affordable-cycle count now divides in whole 4-decimal units instead of by float floor-division so a remainder that exactly covers a cycle still reserves it. Payload fields now carry the already-rounded balances rather than re-rounding. No behavior change beyond the boundary; no redesign.",
+        "commits": [
+          {
+            "sha": "e1e5ec62",
+            "message": "fix(coordinator): hold the seated review reservation across phases"
+          },
+          {
+            "sha": "244aeff3",
+            "message": "fix(coordinator): make the reservation boundary bind at the exact cent"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Money committed to a phase should not be spendable by an earlier one \u2014 a story seated with affordable review cycles still has the funds to run one when it reaches review, whatever earlier phases actually cost.",
+            "status": "MET",
+            "notes": "reserved_review_shortfall() funds the panel from the reservation rather than the residual allocation. Seam test test_a_dev_overrun_no_longer_defunds_the_seated_review_cycle reproduces the issue's numbers ($4.12 allocation, $1.01 cycle, dev observes $4.00) and asserts the full planned panel dispatches, while asserting the old phase_funding_shortfall check would have refused it."
+          },
+          {
+            "criterion": "The constraint has to bind at the time it is exceeded rather than only at the time it is computed.",
+            "status": "MET",
+            "notes": "Both halves implemented, and as of this iteration the DEV half binds at the exact cent. nonreview_funding_exhausted() escalates with error_type=allocation_exhausted before a retry dev attempt spends into the reserved money. New seam test test_a_dev_attempt_landing_exactly_on_the_ceiling_refuses_the_retry drives _coordinator_loop with dev spending $3.11 of the $3.11 non-review pool, asserts the retry is refused with remaining_usd == 0.0, and then asserts the reserved cycle is still fundable."
+          },
+          {
+            "criterion": "Existing behavior for runs the reconciliation cannot decide (configured fallback, no band history, cost-unknown) is unchanged.",
+            "status": "MET",
+            "notes": "Those actions reserve nothing, so both checks return None / fall through to the pre-existing phase_funding_shortfall path. Unchanged this iteration; still covered by four unit tests and seam test test_a_configured_fallback_run_keeps_the_pre_existing_dispatch_check."
+          },
+          {
+            "criterion": "Data flowing between coordinator phases is instrumented in the audit trail (CONVENTIONS 6).",
+            "status": "MET",
+            "notes": "adaptive_limits_audit['review_funding_reservation'] carries allocation_usd, reserved_review_usd, reserved_review_cycles, review_cycle_cost_usd, nonreview_allocation_usd and the reconciliation action; both refusal payloads carry the reserved/non-review figures; the DEV refusal emits a structured allocation_exhausted event. Pinned through generate_audit_log by test_the_reservation_reaches_the_run_audit."
+          },
+          {
+            "criterion": "Cross-phase state handoff has seam-level integration tests (CONVENTIONS 8).",
+            "status": "MET",
+            "notes": "TestTheSeatedReviewReservationIsHeldAcrossPhases in tests/test_story_budget_seam.py drives the real _coordinator_loop and _run_review_pool across SEATING\u2192DEV\u2192REVIEW: reservation set before dev, dev overrun vs reserved panel, panel neither pool funds, dev retry refused, dev retry at the exact ceiling refused (new), dev retry within budget untouched, configured-fallback unchanged."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Plan step 1/4 said reserve reconciled_review_max * cycle_cost and fund REVIEW strictly from that balance. Implemented the reservation as a FLOOR rather than a ceiling: review draws the reserved balance first and may still draw the general allocation for cycles beyond the reserved ones. Funding strictly from the reservation would refuse later review cycles that current code funds today. Flagged as P2 by the plan reviewer.",
+          "Plan step 3 said 'before each _run_dev_phase dispatch'. The guard binds on RETRY attempts only (state.dev_trace_count > 0). The first attempt's fundability is already ruled on by the RECONCILE_UNFUNDABLE path at seating, and binding on it here would refuse a story before it did any work. Flagged as P2 by the plan reviewer.",
+          "This iteration's fix also touches two functions outside the plan's four steps: phase_funding_shortfall and reconcile_review_cycles' affordable-cycle count. Both carry the identical float-comparison defect the P1 describes, phase_funding_shortfall is the fallback path reserved_review_shortfall delegates to, and the reconciliation is what produces the reservation being enforced \u2014 so both are in scope under the pattern-bug and adjacent-code rules. No semantics changed other than the exact-boundary case.",
+          "Plan-review P1-impl predicted an audit-schema-version bump for tests/test_audit_schema_guard.py. Not needed: iterations.adaptive_limits serializes as NoneType in the canonical fixture, so keys nested inside it are not pinned. The guard passes unchanged.",
+          "Plan-review P1-impl asked that the new state field survive --resume. coordinator/resume_persistence.py rehydrates no adaptive_* seating fields at all, so the seating block re-derives them (and the reservation) on every attempt because state.adaptive_dev_max starts at 0. No resume_persistence change needed."
+        ],
+        "deferred_items": "none"
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "44a8fb0789f52b30"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "e1e5ec62ed9e0d61f82f6b8ee4fa474ee66e72f7",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "e1e5ec62ed9e0d61f82f6b8ee4fa474ee66e72f7",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded",
+        "anthropic-haiku-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5-cli] The main reservation path is covered, but the non-review exhaustion check misses the exact zero-remaining boundary. | [google-gemini-3.5-flash-api] Successfully implemented review funding reservation across phases, preventing dev overruns from defunding seated review cycles. | [anthropic-haiku-cli] Implementation correctly holds the seating reconciliation's review funding reservation across phases, preventing dev overruns from defunding verification. All acceptance criteria verified via unit and seam-level tests covering the issue's exact failure scenario.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/story_budget.py",
+          "line": 713,
+          "description": "When non-review spend lands exactly at the allocation minus the reserved review dollars, a retry dev dispatch is still treated as funded, so the next dev attempt can spend from the reserved review balance.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Money committed to a phase should not be spendable by an earlier one \u2014 a story seated with affordable review cycles still has the funds to run one when it reaches review, whatever earlier phases actually cost.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/engine.py:508-545 stores the seated review reservation on state, src/theforge/coordinator/review_pool.py:644-651 invokes the reservation-aware dispatch check, and src/theforge/coordinator/story_budget.py:629-678 funds review from the reserved balance; tests/test_story_budget_seam.py:943-994 reproduces the $4.12 allocation, $1.01 review cycle, and $4.00 dev spend symptom.; src/theforge/coordinator/review_pool.py:644-651 calls reserved_review_shortfall which funds the panel from the reservation rather than from the residual allocation. Covered by seam test test_a_dev_overrun_no_longer_defunds_the_seated_review_cycle in tests/test_story_budget_seam.py:939-997 which reproduces the exact numbers ($4.12 allocation, $1.01 cycle, dev observes $4.00) and asserts the full planned panel dispatches.; src/theforge/coordinator/story_budget.py reserved_review_shortfall() (line 638) funds REVIEW from state.review_funding_reservation first, falling back to general allocation only for cycles beyond the reservation. Test test_a_dev_overrun_no_longer_defunds_the_seated_review_cycle (test_story_budget_seam.py line 950) reproduces issue-2252's exact scenario ($4.12 allocation, dev $4.00, $1.01 cycle reserved) and asserts full panel dispatches using the reserved balance while old phase_funding_shortfall check would have refused."
+        },
+        {
+          "criterion": "The constraint has to bind at the time it is exceeded rather than only at the time it is computed \u2014 either withhold the funds or stop the overrunning phase.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/coordinator/engine.py:629-638 calls the non-review funding check before retry dev dispatches and tests/test_story_budget_seam.py:1043-1074 covers a retry after $4.00 of spend, but src/theforge/coordinator/story_budget.py:710-714 treats an exact zero non-review balance as funded because the raw float remaining value is still slightly positive.; src/theforge/coordinator/engine.py:633-638 calls _refuse_dev_without_nonreview_funds which uses nonreview_funding_exhausted to stop the overrunning phase before a retry dev attempt spends into the reserved money. Covered by seam test test_a_later_dev_attempt_is_refused_once_non_review_funds_are_gone in tests/test_story_budget_seam.py:1040-1075.; (1) Withholding: reconcile_review_cycles() (story_budget.py line 876-877, 878-879) records reserved_review_usd and reserved_review_cycles on RECONCILE_AFFORDABLE and RECONCILE_REDUCED outcomes. (2) Stopping: _refuse_dev_without_nonreview_funds() (engine.py line 309) calls nonreview_funding_exhausted() before _run_dev_phase dispatch on retry attempts (dev_trace_count > 0, line 634), refusing further dev attempts once allocation - reserved is exhausted. Test test_a_later_dev_attempt_is_refused_once_non_review_funds_are_gone (test_story_budget_seam.py line 1068) verifies retry refusal with calls == [0.0] (only first attempt ran) and state.error_type == \"allocation_exhausted\"."
+        },
+        {
+          "criterion": "Existing behavior for runs the reconciliation cannot decide (configured fallback, no band history, cost-unknown) is unchanged.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/story_budget.py:651-660 falls through to the existing whole-allocation check when no reservation exists and src/theforge/coordinator/story_budget.py:661-662 and 703-705 preserve cost-unknown as funded; tests/test_story_budget_allocation.py:831-861 and 913-929 cover no-reservation and unmeasured-spend behavior, and tests/test_story_budget_seam.py:1109-1138 covers configured fallback.; src/theforge/coordinator/story_budget.py:650-660 and 691-705 return None or fall through to the pre-existing phase_funding_shortfall path when there is no reservation or spend is unmeasured. Covered by unit tests test_undecided_and_unfundable_seatings_reserve_nothing, test_no_reservation_falls_through_to_the_whole_allocation_check, test_unmeasured_spend_never_refuses_a_review_panel, test_dev_is_never_refused_without_a_reservation_or_a_measured_total in tests/test_story_budget_allocation.py and seam test test_a_configured_fallback_run_keeps_the_pre_existing_dispatch_check in tests/test_story_budget_seam.py:1105-1139.; No reservation is recorded on RECONCILE_AFFORDABLE when allocation is None, BASIS_CONFIGURED_FALLBACK, or estimate is zero (story_budget.py line 755-760 default record sets reserved_review_cycles: 0, reserved_review_usd: 0.0). reserved_review_shortfall() (line 643) falls through to phase_funding_shortfall() when no reservation. nonreview_funding_exhausted() (line 698) returns None (funded) when no reservation or spend unmeasured. Unit tests test_undecided_and_unfundable_seatings_reserve_nothing, test_no_reservation_falls_through_to_the_whole_allocation_check, test_unmeasured_spend_never_refuses_a_review_panel verify no-op cases. Seam test test_a_configured_fallback_run_keeps_the_pre_existing_dispatch_check (line 1132) confirms CONFIGURED_FALLBACK runs with reserved_review_usd == 0.0 and no new refusals."
+        },
+        {
+          "criterion": "Data flowing between coordinator phases is instrumented in the audit trail (CONVENTIONS 6).",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/engine.py:520-546 adds review_funding_reservation to adaptive limits audit and state, src/theforge/coordinator/engine.py:342-357 emits structured DEV refusal fields, src/theforge/coordinator/review_pool.py:652-657 records review refusal payloads, and tests/test_story_budget_seam.py:914-936 verifies generate_audit_log exposes the reservation.; src/theforge/coordinator/engine.py:508-523 records review_funding_reservation on state and into adaptive_limits_audit['review_funding_reservation']. Covered by seam test test_the_reservation_reaches_the_run_audit in tests/test_story_budget_seam.py:923-936.; engine.py line 522 adds _audit[\"review_funding_reservation\"] = _reservation carrying allocation_usd, reserved_review_usd, reserved_review_cycles, review_cycle_cost_usd, action, and nonreview_allocation_usd. state.review_funding_reservation persists this (line 545). Both refusal dicts (reserved_review_shortfall() line 672-673, nonreview_funding_exhausted() line 722-728) embed reserved/nonreview figures. engine.py line 344 emits structured allocation_exhausted event with allocation_usd, nonreview_allocation_usd, reserved_review_usd, reserved_review_cycles, observed_usd. Seam test test_the_reservation_reaches_the_run_audit (line 999) calls generate_audit_log and verifies audit[\"iterations\"][\"adaptive_limits\"][\"review_funding_reservation\"] contains allocation_usd, review_cycle_cost_usd, reserved_review_usd, reserved_review_cycles, action."
+        },
+        {
+          "criterion": "Cross-phase state handoff has seam-level integration tests (CONVENTIONS 8).",
+          "status": "VERIFIED",
+          "evidence": "tests/test_story_budget_seam.py:891-907 verifies seating stores the reservation before DEV, tests/test_story_budget_seam.py:943-994 drives the DEV overrun into REVIEW dispatch, tests/test_story_budget_seam.py:999-1037 covers a refused later review panel, tests/test_story_budget_seam.py:1043-1074 covers retry DEV refusal after overrun, and tests/test_story_budget_seam.py:1076-1107 covers a retry within the non-review pool.; New class TestTheSeatedReviewReservationIsHeldAcrossPhases in tests/test_story_budget_seam.py:827-1139 drives the real _coordinator_loop and _run_review_pool across the SEATING to DEV to REVIEW boundary.; New test class TestTheSeatedReviewReservationIsHeldAcrossPhases (test_story_budget_seam.py line 827) drives real _coordinator_loop and _run_review_pool across SEATING\u2192DEV\u2192REVIEW boundary. Covers: reservation set before dev (test_seating_reserves_the_cycle_it_granted_before_dev_runs), dev overrun vs reserved panel (test_a_dev_overrun_no_longer_defunds_the_seated_review_cycle), panel neither pool funds (test_a_panel_neither_pool_can_fund_is_still_refused), dev retry refused (test_a_later_dev_attempt_is_refused_once_non_review_funds_are_gone), retry within budget untouched (test_a_dev_retry_within_the_non_review_pool_is_untouched), configured-fallback unchanged (test_a_configured_fallback_run_keeps_the_pre_existing_dispatch_check). Unit arithmetic in TestReviewFundingReservation."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "244aeff3d39ca8be806b20aad51caa7f71af7f5b",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "244aeff3d39ca8be806b20aad51caa7f71af7f5b",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded",
+        "anthropic-haiku-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] Cycle 1's exact-boundary P1 is resolved, and I found no blocking regressions in the reservation, dispatch, or audit paths. | [google-gemini-3.5-flash-api] The implementation successfully holds the seated review reservation across phases and ensures the boundary binds at the exact cent, resolving the prior P1 finding. | [anthropic-haiku-cli] Cycle 1 P1 on floating-point boundary condition is fixed via _balance() helper applied consistently to all four funding comparisons. No regressions detected.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Money committed to a phase should not be spendable by an earlier one \u2014 a story seated with affordable review cycles still has the funds to run one when it reaches review, whatever earlier phases actually cost.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/engine.py:508 records the seated reservation on state, src/theforge/coordinator/review_pool.py:644 consumes it at review dispatch through reserved_review_shortfall, and src/theforge/coordinator/story_budget.py:643 funds review from the reserved balance before falling back to the general allocation. tests/test_story_budget_seam.py:939 reproduces the issue-2252 shape with a $4.12 allocation, $4.00 dev spend, and $1.01 review panel, asserts the old whole-allocation check would refuse it, and asserts the planned reviewer dispatches.; src/theforge/coordinator/review_pool.py:644-651, src/theforge/coordinator/story_budget.py:643-692, tests/test_story_budget_seam.py:911-964; Cycle 1 P1 resolved: nonreview_funding_exhausted() (story_budget.py line 723-725) now uses _balance() helper to round comparisons to 4-decimal precision before checking if non-review pool is exhausted. Test test_a_dev_attempt_landing_exactly_on_the_ceiling_refuses_the_retry (test_story_budget_seam.py line 1076) reproduces the exact boundary condition where dev spends $3.11 of a $3.11 non-review pool, asserts retry refusal, and verifies reserved cycle is still fundable."
+        },
+        {
+          "criterion": "The constraint has to bind at the time it is exceeded rather than only at the time it is computed.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/engine.py:629 invokes the non-review funding guard before retry DEV dispatches, and src/theforge/coordinator/story_budget.py:695 returns an allocation_exhausted payload when non-review spend reaches allocation minus reserved review funds. tests/test_story_budget_seam.py:1040 verifies a retry after a $4.00 dev overrun is refused, and tests/test_story_budget_seam.py:1076 verifies the cycle-1 exact-cent boundary where $3.11 of a $3.11 non-review pool refuses the retry while the reserved review cycle remains fundable.; src/theforge/coordinator/engine.py:633-638, src/theforge/coordinator/story_budget.py:695-750, tests/test_story_budget_seam.py:1011-1085; Binding now occurs at exact cent boundaries. _balance() helper (story_budget.py line 567-577) rounds to 4-decimal precision matching audit payloads. Applied to all four comparisons: nonreview_funding_exhausted() line 723-725 (remaining = _balance(ceiling - nonreview_observed); if remaining > 0), reserved_review_shortfall() line 677-678 (reserved_remaining = _balance(...); if reserved_remaining >= _balance(planned_usd)), phase_funding_shortfall() line 605-606 (remaining >= _balance(planned_usd)), reconcile_review_cycles() line 888-893 (cycle count in whole 10000ths rather than float division). Unit tests test_a_non_review_pool_spent_to_the_cent_refuses_the_next_attempt and test_a_panel_that_exactly_fits_its_reservation_is_funded verify rounding in both directions."
+        },
+        {
+          "criterion": "Existing behavior for runs the reconciliation cannot decide (configured fallback, no band history, cost-unknown) is unchanged.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/story_budget.py:840 leaves non-band allocations undecided with no reservation, src/theforge/coordinator/story_budget.py:664 falls through to the existing phase_funding_shortfall path when no reservation exists, and src/theforge/coordinator/story_budget.py:717 leaves DEV funded when no reservation or measured spend is available. tests/test_story_budget_allocation.py:748 covers undecided and unfundable seatings reserving nothing, tests/test_story_budget_allocation.py:835 and tests/test_story_budget_allocation.py:975 cover fallback and unmeasured cases, and tests/test_story_budget_seam.py:1153 verifies configured-fallback retry behavior remains unchanged.; src/theforge/coordinator/story_budget.py:664-674, src/theforge/coordinator/story_budget.py:718-719, tests/test_story_budget_seam.py:1101-1135; No reservation set when allocation is None, BASIS_CONFIGURED_FALLBACK, or estimate is zero. Both new checks return None and fall through to pre-existing phase_funding_shortfall path. Seam test test_a_configured_fallback_run_keeps_the_pre_existing_dispatch_check (line 1132) confirms configured-fallback runs unchanged."
+        },
+        {
+          "criterion": "Data flowing between coordinator phases is instrumented in the audit trail (CONVENTIONS 6).",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/engine.py:520 adds review_funding_reservation to the adaptive-limits audit record, src/theforge/coordinator/engine.py:540 stores the adaptive limits and reservation on state, src/theforge/coordinator/audit.py:758 renders state.adaptive_limits_audit into the run audit, and src/theforge/coordinator/engine.py:340 emits structured allocation_exhausted fields for DEV refusals. tests/test_story_budget_seam.py:912 verifies generate_audit_log exposes allocation_usd, review_cycle_cost_usd, reserved_review_usd, reserved_review_cycles, and action.; src/theforge/coordinator/engine.py:508-523, tests/test_story_budget_seam.py:881-909; adaptive_limits_audit['review_funding_reservation'] carries all reservation fields. Refusal payloads in nonreview_funding_exhausted() return dict (line 734-747) embeds reserved/nonreview figures with _balance()-rounded values. Seam test test_the_reservation_reaches_the_run_audit (line 999) verifies fields in generated audit log."
+        },
+        {
+          "criterion": "Cross-phase state handoff has seam-level integration tests (CONVENTIONS 8).",
+          "status": "VERIFIED",
+          "evidence": "tests/test_story_budget_seam.py:897 verifies the reservation exists before DEV runs, tests/test_story_budget_seam.py:939 drives DEV overrun into REVIEW dispatch, tests/test_story_budget_seam.py:1040 and tests/test_story_budget_seam.py:1076 drive _coordinator_loop across DEV retry refusal paths, and tests/test_story_budget_seam.py:1153 covers the no-reservation fallback seam. I also ran pytest tests/test_story_budget_allocation.py tests/test_story_budget_seam.py, which passed 89 tests.; tests/test_story_budget_seam.py:827-1135; New seam test test_a_dev_attempt_landing_exactly_on_the_ceiling_refuses_the_retry (line 1076) drives _coordinator_loop with dev spending exactly to ceiling ($3.11 of $3.11 non-review pool), asserts retry refused and reserved cycle remains fundable. Complements existing seam tests covering overrun, within-budget, and configured-fallback paths."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "anthropic-haiku-cli",
+      "provider": null,
+      "model": "haiku",
+      "cli": "claude",
+      "canonical_id": "anthropic/haiku/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "anthropic-haiku-cli",
+      "provider": null,
+      "model": "haiku",
+      "cli": "claude",
+      "canonical_id": "anthropic/haiku/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [anthropic-opus-cli] Step 2 adds a new state field but does not say whether it survives a --resume. If the reservation is absent after resume, Step 4's fallback silently reverts to the old phase_funding_shortfall behavior \u2014 i.e. the bug \u2014 on exactly the runs most likely to be resumed.\n  Suggestion: Ensure the new field is included wherever adaptive_* seating state is rehydrated (coordinator/resume_persistence.py), or recompute the reservation from state.adaptive_review_cycle_planning + state.adaptive_review_max when it is missing.\n- [P2] [anthropic-opus-cli] Step 1 reserves reconciled_review_max * review_cycle_cost_usd \u2014 the full permitted-cycle count, not one cycle. With review_max > 1 this shrinks the dev-usable pool well below the historical band max, so Step 3 could refuse dev attempts on stories that would have completed normally today.\n  Suggestion: Consider reserving one cycle as a hard floor and treating additional cycles as soft (reduce review_max at dispatch rather than blocking dev), or at minimum log the non-review ceiling in the audit so the new refusal reason is legible to the operator.\n- [P2] [anthropic-opus-cli] Step 3 says 'before each _run_dev_phase dispatch' without naming the loop; the dispatch is inside the while loop at engine.py:555 and the first iteration is also guarded by that placement, which would refuse a story before any dev work if prior-phase spend already exceeded the non-review pool.\n  Suggestion: Decide explicitly whether the first dev attempt is exempt; the seating RECONCILE_UNFUNDABLE path (engine.py:472+) already covers the pre-dev refusal case, so the new guard should probably only bind on retry attempts.\n- [P1-impl] [openai-gpt-5.4-cli] Step 2 adds new keys under audit['iterations']['adaptive_limits'], but that serialized shape is schema-pinned by tests/test_audit_schema_guard.py and the versioned fixtures in tests/fixtures/audit_record_schema_v*.json. If the implementation only updates src/theforge/coordinator/audit.py and the listed tests, the audit-schema guard will fail.\n  Suggestion: Expand Step 2/5 to include the required audit schema version bump/migration metadata in src/theforge/coordinator/audit_substrate.py and a new tests/fixtures/audit_record_schema_v*.json fixture.\n- [P1-impl] [openai-gpt-5.4-cli] Step 4 replaces the existing phase_funding_shortfall() path in src/theforge/coordinator/review_pool.py:637 with reservation arithmetic, but the current shortfall helper in src/theforge/coordinator/story_budget.py:566 deliberately treats cost-unknown (None) as 'do not refuse work'. The plan calls out that measured-cost rule for Step 3 only, so the new review-reservation check needs the same guard or it can mis-handle runs where prior review spend is unmeasured (CoordinatorState.total_review_cost_measured in src/theforge/coordinator/state.py:1056).\n  Suggestion: Make the new reservation-backed helper in story_budget.py explicitly preserve the existing None semantics for both DEV and REVIEW checks, and cover that path in Step 5.",
+    "cost_usd": 0,
+    "plan_finding_registry": [],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2269",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2258",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2269",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2269",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-06T19:34:50.105983+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_budget_seam.py",
+      "detail": "tests/test_story_budget_seam.py has 1187 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "44a8fb0789f52b30",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/story_budget.py",
+      "line": 713,
+      "severity": "P1",
+      "description": "When non-review spend lands exactly at the allocation minus the reserved review dollars, a retry dev dispatch is still treated as funded, so the next dev attempt can spend from the reserved review balance.",
+      "reporter": "openai-gpt-5.5-cli",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 7,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": true,
+      "enabled": true,
+      "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+      "phases": {
+        "plan": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "plan",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            }
+          ],
+          "provider_support": "supported_metered",
+          "varies_by_provider": false
+        },
+        "dev": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "dev",
+          "applied": false,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        },
+        "review": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "review",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 24576
+            },
+            {
+              "name": "openai-gpt-5.4-cli",
+              "model": "gpt-5.4",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 24576
+            },
+            {
+              "name": "anthropic-haiku-cli",
+              "model": "haiku",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "mixed",
+          "varies_by_provider": false
+        }
+      },
+      "applied": true
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 7,
+            "selected": true
+          },
+          "anthropic-haiku-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 6,
+            "completed": 5,
+            "raw": 0.8333,
+            "weighted": 0.8345,
+            "rate": 0.8345,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($7.14)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 14,
+            "completed": 14,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 1,
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($7.14); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8547,
+              "weighted": 0.8061,
+              "runs": 117,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.8061
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "concurrency"
+              ],
+              "raw": 0.913,
+              "weighted": 0.9,
+              "runs": 92,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.9,
+              "by_domain": {
+                "backend": {
+                  "runs": 75,
+                  "raw": 0.8933,
+                  "weighted": 0.85,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 17,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "concurrency"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                },
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "concurrency"
+        ],
+        "influenced": false,
+        "complexity_only_head": "anthropic-opus-cli",
+        "domain_head": "anthropic-opus-cli",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "concurrency"
+          ],
+          "raw": 0.913,
+          "weighted": 0.9,
+          "runs": 92,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.9,
+          "by_domain": {
+            "backend": {
+              "runs": 75,
+              "raw": 0.8933,
+              "weighted": 0.85,
+              "tainted_runs": 0
+            },
+            "concurrency": {
+              "runs": 17,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0
+            }
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "anthropic-opus-cli",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8547,
+        "weighted_success_rate": 0.8061,
+        "sample_size": 117,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.8061,
+          "threshold": 0.6,
+          "sample_size": 117,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+concurrency",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "anthropic-haiku-cli",
+          "google-gemini-3.5-flash-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "concurrency"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.81 \u2265 threshold 0.60 over 117 admissible runs \u2014 pre-promotion held) (profile success_rate=0.81 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 136,
+            "completed": 129,
+            "raw": 0.9485,
+            "weighted": 0.9738,
+            "rate": 0.9738,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 94,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "attempted": 10,
+            "completed": 9,
+            "raw": 0.9,
+            "weighted": 0.9048,
+            "rate": 0.9048,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli"
+          ],
+          "checked_detail": {
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 94,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-haiku-cli": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "plan_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.5,
+              "weighted": 0.5,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 64.545,
+              "weighted": 64.545,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 1,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 82.0533,
+              "weighted": 82.0533,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 4,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 69.6963,
+              "weighted": 69.6963,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli"
+          ],
+          "checked_detail": {
+            "anthropic-opus-cli": {
+              "raw": 0.5,
+              "weighted": 0.5,
+              "runs": 2,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 1,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "runs": 4,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-haiku-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 159,
+            "completed": 158,
+            "raw": 0.9937,
+            "weighted": 0.9923,
+            "rate": 0.9923,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 50,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 136,
+            "completed": 129,
+            "raw": 0.9485,
+            "weighted": 0.9738,
+            "rate": 0.9738,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 94,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "attempted": 10,
+            "completed": 9,
+            "raw": 0.9,
+            "weighted": 0.9048,
+            "rate": 0.9048,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 50,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 94,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-haiku-cli": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "code_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "runs": 4,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 77.5238,
+              "weighted": 77.5238,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "runs": 1,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 48.67,
+              "weighted": 48.67,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 4,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-haiku-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 1,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "haiku"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8 [value check: evaluated 6 reviewer(s), all below the 5-sample floor \u2014 ordering unchanged]; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.398281,
+      "duration_s": 60.83,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": {
+      "cost_usd": 0,
+      "duration_s": 281.89,
+      "iterations": 0,
+      "outcome": "approve"
+    },
+    "dev": {
+      "cost_usd": 7.379663,
+      "duration_s": 906.98,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 123.94,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 5.502784,
+      "duration_s": 378.12,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 2.38519,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 2.693803,
+          "verdict": "APPROVE"
+        },
+        "anthropic-haiku-cli": {
+          "cost": 0.423791,
+          "verdict": "APPROVE"
+        }
+      },
+      "per_reviewer_value": [
+        {
+          "cycle": 1,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "unique_p1_count": 1,
+          "total_p1_count": 1,
+          "latency_s": 68.83,
+          "latency_per_p1_s": 68.83,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 68.83,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "anthropic-haiku-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 68.83,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 57.2,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 57.2,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "anthropic-haiku-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 57.2,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        }
+      ]
+    }
+  },
+  "totals": {
+    "cost_usd": 13.280728,
+    "duration_s": 1751.75,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "be815cb6aa2c",
+  "sprint_name": "issues-2258,2222,2235"
+}
