@@ -61,6 +61,36 @@ def _seed_band(project_root: Path, score: int, costs: list[float]) -> None:
         conn.close()
 
 
+def _seed_review_cycle_history(project_root: Path, cycle_costs: list[float]) -> None:
+    runs = sub.runs_dir(project_root)
+    runs.mkdir(parents=True, exist_ok=True)
+    records = []
+    for index, cycle_cost in enumerate(cycle_costs):
+        rec = {
+            "run_id": f"review-cycle-{index}",
+            "task": {"slug": f"review-cycle-{index}", "name": "seed"},
+            "outcome": {"success": True, "final_phase": "DONE"},
+            "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
+            "cost": {"total_usd": cycle_cost},
+            "totals": {"cost_usd": cycle_cost, "duration_s": 60.0},
+            "preflight": {"complexity": "medium", "complexity_score": 5},
+            "iterations": {
+                "review_cycles_total": 1,
+                "review_loop": [{"iteration": 1, "cost_usd": cycle_cost}],
+            },
+            "reviews": [{"cycle": 1, "verdict": "APPROVE"}],
+        }
+        (runs / f"{rec['run_id']}.json").write_text(json.dumps(rec), encoding="utf-8")
+        records.append(rec)
+    conn = sub.create_or_open(project_root)
+    try:
+        for rec in records:
+            sub.upsert_run_record(conn, rec, provenance="native")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _config(tmp_path: Path, budget_usd: float = 50.0):
     cfg_path = tmp_path / "forge.yaml"
     cfg_path.write_text(
@@ -556,10 +586,13 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         assert record["requested_review_max"] > 1
         assert record["reconciled_review_max"] == 1
         assert record["review_cycle_cost_usd"] == 17.55
+        assert record["review_cycle_cost_basis"] == sb.BASIS_REVIEW_CEILING_FALLBACK
         assert record["allocation_usd"] == 48.02
         # The reduction is in force before dev spends a cent, not afterwards.
         assert seen["review_max_at_dev"] == 1
         assert state.adaptive_review_max == 1
+        assert state.adaptive_review_cycle_planning["planned_cost_usd"] == 17.55
+        assert state.adaptive_review_cycle_planning["basis"] == sb.BASIS_REVIEW_CEILING_FALLBACK
         assert "review_max reduced" in state.adaptive_limits_audit["rationale"]
 
     def test_an_allocation_that_cannot_fund_one_cycle_escalates_before_dev(
@@ -590,6 +623,36 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         assert (
             state.adaptive_limits_audit["review_cycle_reconciliation"]["action"]
             == sb.RECONCILE_UNFUNDABLE
+        )
+
+    def test_seating_uses_observed_review_cycle_price_plus_headroom(self, tmp_path: Path) -> None:
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        _seed_review_cycle_history(tmp_path, [3.10, 3.64, 4.20])
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 48.02)
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        planning = state.adaptive_review_cycle_planning
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert planning is not None
+        assert planning["basis"] == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert planning["planned_cost_usd"] == round(3.64 * 1.25, 4)
+        assert record["review_cycle_cost_usd"] == round(3.64 * 1.25, 4)
+        assert record["review_cycle_cost_basis"] == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert record["review_cycle_cost_sample_count"] == 3
+        assert state.adaptive_review_max == record["requested_review_max"]
+        assert state.adaptive_limits_audit["review_cycle_planning"]["reason"] == (
+            "derived from median observed review-cycle spend $3.64 x 1.25 headroom over 3 cycle(s)"
         )
 
     def test_a_sufficient_allocation_leaves_the_permitted_cycles_intact(
@@ -691,3 +754,72 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         block = audit["iterations"]["adaptive_limits"]["review_cycle_reconciliation"]
         assert block["action"] == sb.RECONCILE_REDUCED
         assert block["reconciled_review_max"] == 1
+        assert (
+            audit["iterations"]["adaptive_limits"]["review_cycle_planning"]["basis"]
+            == sb.BASIS_REVIEW_CEILING_FALLBACK
+        )
+
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_dispatch_uses_the_seated_review_cycle_price_without_repricing(
+        self, mock_pool, _mock_log, tmp_path: Path
+    ) -> None:
+        from tests.test_coord_routing_recovery import APPROVE_YAML, _make_agent_result
+        from theforge.coordinator.review_pool import _run_review_pool
+        from theforge.coordinator.state import ReviewCycleMetadata
+        from theforge.task import TaskStory
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = TaskStory(name="Story", story_path=tmp_path / "spec.md", slug="issue-2260")
+        task.story_path.write_text("# Story\n\nBody.\n", encoding="utf-8")
+        workspace = tmp_path / "ws"
+        workspace.mkdir(exist_ok=True)
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_YAML, profile_name=name, cost_usd=0.01)
+            for name in ("a", "b", "c")
+        ]
+
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+        state.story_allocation = {
+            "allocation_usd": 5.0,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 5,
+            "median_usd": 3.0,
+            "p90_usd": 4.0,
+            "max_usd": 4.2,
+            "sample_count": 8,
+        }
+        state.adaptive_review_cycle_planning = {
+            "planned_cost_usd": round(3.64 * 1.25, 4),
+            "basis": sb.BASIS_OBSERVED_REVIEW_CYCLE,
+            "fallback_configured_usd": 17.55,
+            "sample_count": 3,
+            "median_usd": 3.64,
+            "p90_usd": 4.2,
+            "max_usd": 4.2,
+            "headroom_multiplier": 1.25,
+            "reason": "seated from observed history",
+            "excluded_for_taint": 0,
+        }
+
+        meta = ReviewCycleMetadata(pool_models=[], successful=[], failed=[], synthesized=False)
+        with patch(
+            "theforge.coordinator.review_pool._story_budget.derive_review_cycle_planning_price",
+            side_effect=AssertionError("dispatch should use the seated planning price"),
+        ):
+            _run_review_pool(
+                state,
+                config,
+                task,
+                "story",
+                workspace,
+                "branch",
+                meta,
+                notify=False,
+                enforce_budgets=True,
+            )
+
+        assert state.allocation_exhausted is None
+        assert mock_pool.called is True
+        assert sorted(meta.successful) == ["a", "b", "c"]
+        assert [float(profile.budget_usd) for profile in config.review_pool] == [5.85, 5.85, 5.85]

@@ -895,6 +895,11 @@ class CoordinatorState:
     # budget. Informs routing/timeout scaling/telemetry; post-hoc dollar
     # governance lives at the sprint level (forge.yaml budget_usd), not here.
     adaptive_dev_cost_estimate_usd: float = 0.0
+    # Deterministic per-cycle review planning price derived at seating from
+    # observed review-cycle spend plus explicit headroom. REVIEW dispatch reads
+    # this exact record first so it cannot re-price a cycle differently after
+    # seating already granted it.
+    adaptive_review_cycle_planning: dict | None = None
     adaptive_limits_audit: dict = field(default_factory=dict)
     review_early_terminated: bool = False  # True when early-termination triggered
     workspace_hygiene_audit: list[dict] = field(default_factory=list)
