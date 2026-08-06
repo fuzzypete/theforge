@@ -280,7 +280,10 @@ def review_cycle_planning_from_samples(
             basis=BASIS_REVIEW_CEILING_FALLBACK,
             fallback_configured_usd=configured_ceiling_usd,
             sample_count=len(usable),
-            reason=f"only {len(usable)} measured review cycle(s), below the {min_samples}-cycle floor",
+            reason=(
+                f"only {len(usable)} measured review cycle(s), "
+                f"below the {min_samples}-cycle floor"
+            ),
             excluded_for_taint=excluded_for_taint,
         )
 
