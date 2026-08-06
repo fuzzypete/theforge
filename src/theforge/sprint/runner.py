@@ -1760,6 +1760,12 @@ def _make_gate_hold_publisher(
     through ``detail_updates``, which merges — writing ``detail`` would replace
     the dict wholesale and erase co-resident keys such as the reviewer event
     timestamp the EVENT AGE column reads (#2235).
+
+    This writes straight to ``SprintStateWriter``, which serializes on its own
+    lock. It deliberately does *not* route through ``_make_worker_phase_fn``:
+    that path takes the scheduler's ``phase_lock``, and a publisher that did so
+    would couple every gate-service tick to the worker-state lock. See
+    ``_release_plan_gates`` for the ordering rule that keeps this true.
     """
     published: dict[str, dict] = {}
 
@@ -1799,8 +1805,15 @@ def _release_plan_gates(
     live state — ``fn(slug, payload)`` while the hold is in force, ``fn(slug,
     None)`` once it ends. A gated worker emits no events of its own, so without
     this the wait is indistinguishable from a hang in the status view (#2235).
-    It must never be called while *phase_lock* is held: the publisher writes
-    through the worker state path, which takes that same non-reentrant lock.
+
+    Ordering rule: *gate_hold_fn* is never invoked while *phase_lock* is held.
+    This function takes *phase_lock* only around the ``plan_done`` snapshot; all
+    publish calls sit outside it. ``phase_lock`` is a plain non-reentrant
+    ``Lock``, and the worker state path (``_make_worker_phase_fn``) takes it to
+    write live state — so a publisher wired through that path, or a publish call
+    moved under the snapshot's ``with`` block, would deadlock the scheduler.
+    ``test_publisher_may_take_phase_lock_without_deadlocking`` enforces this
+    mechanically rather than leaving it to this comment.
 
     *collision_claims* maps slug -> claim reason for stories that are past their
     plan gate. A claim, not worker liveness, is what holds a file: a story that
