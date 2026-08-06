@@ -423,6 +423,51 @@ class TestReviewCyclePricingLadder:
         assert panel.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
         assert panel.sample_count == 3
 
+    def test_dense_panel_history_above_the_current_ceiling_is_capped(self, tmp_path: Path) -> None:
+        """History from a pricier era cannot reserve spend this panel cannot make."""
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="trio",
+                    score=5,
+                    cost=30.0,
+                    review_cycle_costs=[9.00, 9.00, 9.00],
+                    review_pools=[_TRIO, _TRIO, _TRIO],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=3.00, composition=_TRIO
+        )
+
+        assert planning.basis == sb.BASIS_OBSERVED_COMPOSITION
+        assert planning.planned_cost_usd == 3.00
+
+    def test_dense_population_history_above_the_current_ceiling_is_capped(
+        self, tmp_path: Path
+    ) -> None:
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="pair",
+                    score=5,
+                    cost=30.0,
+                    review_cycle_costs=[9.00, 9.00, 9.00],
+                    review_pools=[_PAIR, _PAIR, _PAIR],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=3.00, composition=_TRIO
+        )
+
+        assert planning.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert planning.planned_cost_usd == 3.00
+
     def test_no_history_whatsoever_reaches_the_ceiling(self, tmp_path: Path) -> None:
         _seed_substrate(
             tmp_path,

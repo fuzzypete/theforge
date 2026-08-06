@@ -609,6 +609,13 @@ def _run_review_pool(
             state.error = "All reviewers demoted due to parse failures."
             return [], [], None, [], []
 
+    # The panel recorded against this cycle is the one that will actually be
+    # attempted, not the one that was configured. A demoted reviewer never
+    # runs and never bills, so a cycle costed at two reviewers must not be
+    # recorded as three — downstream pricing joins observed cost to this list
+    # and would otherwise attribute a smaller panel's spend to a larger one.
+    meta.pool_models = [profile.name for profile in pool]
+
     pool_size = len(pool)
 
     # ── Story-allocation funding check (#2169) ────────────────────────────────

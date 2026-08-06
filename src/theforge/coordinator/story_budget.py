@@ -290,6 +290,11 @@ def review_cycle_planning_from_samples(
 ) -> ReviewCyclePlanningPrice:
     """Return the deterministic planning price for one review cycle.
 
+    Every observed price is capped at the ceiling of the panel about to run.
+    History can carry costs from larger or formerly pricier panels, and a panel
+    that cannot spend more than $3 must never reserve $5 — that reservation is
+    for spend which is not merely unlikely but impossible.
+
     Three outcomes, and which one applies is decided only by how much has been
     measured — never by how the money is permitted to be spent:
 
@@ -347,7 +352,10 @@ def review_cycle_planning_from_samples(
             composition=composition,
         )
 
-    planned = max(median * headroom_multiplier, MIN_REVIEW_CYCLE_PRICE_USD)
+    planned = min(
+        max(median * headroom_multiplier, MIN_REVIEW_CYCLE_PRICE_USD),
+        configured_ceiling_usd,
+    )
     return ReviewCyclePlanningPrice(
         planned_cost_usd=round(planned, 4),
         basis=derived_basis,
