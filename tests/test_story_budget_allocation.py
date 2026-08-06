@@ -705,3 +705,287 @@ class TestReviewCycleReconciliation:
             spent_so_far_usd=0.0,
         )
         assert sb.seating_shortfall(allocation, record, participants=["a"]) is None
+
+
+class TestReviewFundingReservation:
+    """A seated review cycle is money held, not money hoped for (#2258)."""
+
+    def _allocation(self, usd: float = 4.12) -> dict:
+        # The band from run 9b3fa1bf44a4 / story issue-2252.
+        return {
+            "allocation_usd": usd,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 3,
+            "median_usd": 0.94,
+            "p90_usd": 2.38,
+            "max_usd": 3.30,
+            "sample_count": 20,
+        }
+
+    def _reconcile(self, *, usd: float = 4.12, review_max: int = 1) -> dict:
+        return sb.reconcile_review_cycles(
+            self._allocation(usd),
+            dev_cost_estimate_usd=2.38,
+            review_cycle_cost_usd=1.01,
+            requested_review_max=review_max,
+            spent_so_far_usd=0.0,
+        )
+
+    def test_an_affordable_seating_reserves_the_cycles_it_granted(self) -> None:
+        record = self._reconcile()
+
+        assert record["action"] == sb.RECONCILE_AFFORDABLE
+        assert record["reserved_review_cycles"] == 1
+        assert record["reserved_review_usd"] == 1.01
+
+    def test_a_reduced_seating_reserves_only_what_it_left_permitted(self) -> None:
+        record = self._reconcile(review_max=5)
+
+        assert record["action"] == sb.RECONCILE_REDUCED
+        assert record["reconciled_review_max"] == record["reserved_review_cycles"]
+        assert record["reserved_review_usd"] == round(record["reconciled_review_max"] * 1.01, 4)
+
+    def test_undecided_and_unfundable_seatings_reserve_nothing(self) -> None:
+        base = dict(
+            dev_cost_estimate_usd=2.38,
+            review_cycle_cost_usd=1.01,
+            requested_review_max=1,
+            spent_so_far_usd=0.0,
+        )
+        unfundable = sb.reconcile_review_cycles(self._allocation(usd=3.0), **base)
+        assert unfundable["action"] == sb.RECONCILE_UNFUNDABLE
+        for record in (
+            unfundable,
+            sb.reconcile_review_cycles(None, **base),
+            sb.reconcile_review_cycles(
+                {**self._allocation(), "basis": sb.BASIS_CONFIGURED_FALLBACK}, **base
+            ),
+            sb.reconcile_review_cycles(self._allocation(), **{**base, "spent_so_far_usd": None}),
+            sb.reconcile_review_cycles(self._allocation(), **{**base, "dev_cost_estimate_usd": 0}),
+        ):
+            assert record["reserved_review_cycles"] == 0
+            assert record["reserved_review_usd"] == 0.0
+
+    # ── The reserved balance funds review ────────────────────────────────────
+
+    def _reservation(self, reserved_usd: float = 1.01, cycles: int = 1) -> dict:
+        return {
+            "allocation_usd": 4.12,
+            "reserved_review_usd": reserved_usd,
+            "reserved_review_cycles": cycles,
+            "review_cycle_cost_usd": 1.01,
+            "action": sb.RECONCILE_AFFORDABLE,
+        }
+
+    def test_the_issue_2252_dev_overrun_no_longer_defunds_the_panel(self) -> None:
+        """Dev spent $4.00 of a $4.12 allocation; the reserved cycle still runs."""
+        assert (
+            sb.reserved_review_shortfall(
+                self._reservation(),
+                self._allocation(),
+                observed_usd=4.00,
+                review_observed_usd=0.0,
+                participants=["openai-gpt-5.5-cli"],
+                planned_usd=1.01,
+            )
+            is None
+        )
+        # Without the reservation this is the refusal the issue reports.
+        assert (
+            sb.phase_funding_shortfall(
+                self._allocation(),
+                4.00,
+                phase="review",
+                participants=["openai-gpt-5.5-cli"],
+                planned_usd=1.01,
+            )
+            is not None
+        )
+
+    def test_a_cycle_beyond_the_reservation_may_still_draw_the_general_pool(self) -> None:
+        """The reservation is a floor under verification, not a ceiling on it."""
+        assert (
+            sb.reserved_review_shortfall(
+                self._reservation(),
+                self._allocation(),
+                observed_usd=1.51,  # $0.50 dev + $1.01 of review already run
+                review_observed_usd=1.01,  # the reserved cycle is spent
+                participants=["a"],
+                planned_usd=1.01,
+            )
+            is None
+        )
+
+    def test_a_panel_neither_pool_funds_is_refused_with_the_reserved_figures(self) -> None:
+        shortfall = sb.reserved_review_shortfall(
+            self._reservation(),
+            self._allocation(),
+            observed_usd=4.05,
+            review_observed_usd=1.01,
+            participants=["a"],
+            planned_usd=1.01,
+        )
+
+        assert shortfall is not None
+        assert shortfall["phase"] == "review"
+        assert shortfall["planned_usd"] == 1.01
+        assert shortfall["reserved_review_usd"] == 1.01
+        assert shortfall["reserved_review_remaining_usd"] == 0.0
+
+    def test_no_reservation_falls_through_to_the_whole_allocation_check(self) -> None:
+        for reservation in (None, {}, {"reserved_review_usd": 0.0}):
+            shortfall = sb.reserved_review_shortfall(
+                reservation,
+                self._allocation(),
+                observed_usd=4.00,
+                review_observed_usd=0.0,
+                participants=["a"],
+                planned_usd=1.01,
+            )
+            assert shortfall is not None
+            assert "reserved_review_usd" not in shortfall
+
+    def test_unmeasured_spend_never_refuses_a_review_panel(self) -> None:
+        for observed, review_observed in ((None, 0.0), (4.0, None), (None, None)):
+            assert (
+                sb.reserved_review_shortfall(
+                    self._reservation(),
+                    self._allocation(),
+                    observed_usd=observed,
+                    review_observed_usd=review_observed,
+                    participants=["a"],
+                    planned_usd=1.01,
+                )
+                is None
+            )
+
+    # ── The rest of the allocation is what dev may spend ─────────────────────
+
+    def test_dev_is_funded_while_non_review_money_remains(self) -> None:
+        assert (
+            sb.nonreview_funding_exhausted(
+                self._reservation(),
+                self._allocation(),
+                observed_usd=2.50,
+                review_observed_usd=0.0,
+                participants=["dev"],
+            )
+            is None
+        )
+
+    def test_dev_is_refused_once_only_the_reserved_money_is_left(self) -> None:
+        shortfall = sb.nonreview_funding_exhausted(
+            self._reservation(),
+            self._allocation(),
+            observed_usd=4.00,
+            review_observed_usd=0.0,
+            participants=["dev"],
+        )
+
+        assert shortfall is not None
+        assert shortfall["phase"] == "dev"
+        assert shortfall["nonreview_exhausted"] is True
+        assert shortfall["nonreview_allocation_usd"] == 3.11
+        assert shortfall["observed_usd"] == 4.00
+        assert shortfall["reserved_review_usd"] == 1.01
+
+        message = sb.format_shortfall(shortfall, story="issue-2252")
+        assert "issue-2252" in message
+        assert "$3.11" in message
+        assert "reserved for the 1 review cycle(s)" in message
+
+    def test_a_non_review_pool_spent_to_the_cent_refuses_the_next_attempt(self) -> None:
+        """The boundary binds where the operator sees it: $3.11 of $3.11 is gone.
+
+        ``4.12 - 1.01`` is ``3.1100000000000003`` in binary floating point, so an
+        exactly-exhausted pool used to read as three ten-thousandths of a cent
+        remaining — and the retry it funded would have spent the reserved cycle.
+        """
+        shortfall = sb.nonreview_funding_exhausted(
+            self._reservation(),
+            self._allocation(),
+            observed_usd=3.11,
+            review_observed_usd=0.0,
+            participants=["dev"],
+        )
+
+        assert shortfall is not None
+        assert shortfall["remaining_usd"] == 0.0
+        assert shortfall["nonreview_allocation_usd"] == 3.11
+        assert shortfall["observed_usd"] == 3.11
+        # One cent short of the ceiling is still a funded attempt.
+        assert (
+            sb.nonreview_funding_exhausted(
+                self._reservation(),
+                self._allocation(),
+                observed_usd=3.10,
+                review_observed_usd=0.0,
+                participants=["dev"],
+            )
+            is None
+        )
+
+    def test_a_panel_that_exactly_fits_its_reservation_is_funded(self) -> None:
+        """The same rounding, in the direction that must not refuse work.
+
+        ``3.03 - 2.02`` is ``1.0099999999999998``: a third reserved cycle that
+        fits its reservation to the cent must not be refused for float noise,
+        even when the general pool has nothing left to fall back on.
+        """
+        assert (
+            sb.reserved_review_shortfall(
+                {**self._reservation(), "reserved_review_usd": 3.03, "reserved_review_cycles": 3},
+                {**self._allocation(usd=3.03)},
+                observed_usd=2.02,
+                review_observed_usd=2.02,
+                participants=["a"],
+                planned_usd=1.01,
+            )
+            is None
+        )
+
+    def test_a_remainder_that_exactly_covers_a_cycle_reserves_it(self) -> None:
+        """Seating counts cycles in whole cents, not by float division."""
+        record = sb.reconcile_review_cycles(
+            self._allocation(usd=3.39),
+            dev_cost_estimate_usd=2.38,
+            review_cycle_cost_usd=1.01,
+            requested_review_max=1,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["remaining_after_dev_usd"] == 1.01
+        assert record["action"] == sb.RECONCILE_AFFORDABLE
+        assert record["affordable_review_cycles"] == 1
+        assert record["reserved_review_usd"] == 1.01
+
+    def test_review_spend_does_not_count_against_the_dev_pool(self) -> None:
+        """A cycle drawing its own reservation must not refuse the next dev attempt."""
+        assert (
+            sb.nonreview_funding_exhausted(
+                self._reservation(),
+                self._allocation(),
+                observed_usd=3.01,  # $2.00 dev + $1.01 review
+                review_observed_usd=1.01,
+                participants=["dev"],
+            )
+            is None
+        )
+
+    def test_dev_is_never_refused_without_a_reservation_or_a_measured_total(self) -> None:
+        for reservation, observed, review_observed in (
+            (None, 4.0, 0.0),
+            ({"reserved_review_usd": 0.0}, 4.0, 0.0),
+            (self._reservation(), None, 0.0),
+            (self._reservation(), 4.0, None),
+        ):
+            assert (
+                sb.nonreview_funding_exhausted(
+                    reservation,
+                    self._allocation(),
+                    observed_usd=observed,
+                    review_observed_usd=review_observed,
+                    participants=["dev"],
+                )
+                is None
+            )

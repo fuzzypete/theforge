@@ -306,6 +306,60 @@ def _maybe_recover_failed_challenger(
     return dataclasses.replace(config, dev_profile=winner_profile)
 
 
+def _refuse_dev_without_nonreview_funds(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    log_fn: "Callable[[str], None]",
+    logger: StructuredLogger | None,
+) -> CoordinatorResult | None:
+    """Refuse a dev attempt the non-reserved allocation can no longer fund (#2258).
+
+    Money the seating reconciliation committed to verification is not spendable
+    by dev. Once everything the allocation left for non-review work is gone,
+    another dev attempt would draw down the reserved review cycles and leave the
+    work unreviewed — precisely the failure the reservation exists to prevent.
+    Returns ``None`` when the attempt is funded, when no reservation was seated,
+    or when spend is unmeasured; otherwise records the refusal on ``state`` and
+    returns the escalation result the caller must return.
+    """
+    exhausted = _story_budget.nonreview_funding_exhausted(
+        state.review_funding_reservation,
+        state.story_allocation,
+        observed_usd=state.total_cost_measured,
+        review_observed_usd=state.total_review_cost_measured,
+        participants=[config.dev_profile.name],
+    )
+    if exhausted is None:
+        return None
+    state.allocation_exhausted = exhausted
+    state.error = _story_budget.format_shortfall(exhausted, story=task.slug)
+    state.error_type = "allocation_exhausted"
+    state.phase = Phase.ESCALATE
+    log_fn(f"  ⚠ {state.error}")
+    if logger:
+        logger._safe_emit(
+            "allocation_exhausted",
+            phase="DEV",
+            **{
+                key: exhausted.get(key)
+                for key in (
+                    "allocation_usd",
+                    "nonreview_allocation_usd",
+                    "reserved_review_usd",
+                    "reserved_review_cycles",
+                    "observed_usd",
+                )
+            },
+        )
+    return CoordinatorResult(
+        success=False,
+        phase=Phase.ESCALATE,
+        state=state,
+        message=state.error,
+    )
+
+
 def _coordinator_loop(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -443,9 +497,30 @@ def _coordinator_loop(
             requested_review_max=_limits.review_max,
             spent_so_far_usd=state.total_cost_measured,
         )
+        # ── Hold the seated reservation across the phases (#2258) ────────────
+        # The reconciliation above is a projection over an estimate. Nothing
+        # held its conclusion, so a dev phase that overran its estimate spent
+        # the money review had been seated with and review was refused anyway —
+        # in exactly the case verification was most wanted. Record the reserved
+        # portion of the allocation on state: REVIEW funds from it, and DEV is
+        # refused further attempts once the rest of the allocation is gone, so
+        # the decision binds when it is exceeded and not only when it is made.
+        _reservation = {
+            "allocation_usd": _reconciliation.get("allocation_usd"),
+            "reserved_review_usd": _reconciliation.get("reserved_review_usd") or 0.0,
+            "reserved_review_cycles": _reconciliation.get("reserved_review_cycles") or 0,
+            "review_cycle_cost_usd": _reconciliation.get("review_cycle_cost_usd"),
+            "action": _reconciliation.get("action"),
+        }
+        if _reservation["allocation_usd"] is not None and _reservation["reserved_review_usd"]:
+            _reservation["nonreview_allocation_usd"] = round(
+                float(_reservation["allocation_usd"]) - float(_reservation["reserved_review_usd"]),
+                4,
+            )
         _audit = dict(_limits.audit)
         _audit["review_cycle_planning"] = _review_cycle_planning
         _audit["review_cycle_reconciliation"] = _reconciliation
+        _audit["review_funding_reservation"] = _reservation
         if _reconciliation["action"] in (
             _story_budget.RECONCILE_REDUCED,
             _story_budget.RECONCILE_UNFUNDABLE,
@@ -467,6 +542,7 @@ def _coordinator_loop(
         state.adaptive_dev_timeout_seconds = _limits.dev_timeout_seconds
         state.adaptive_dev_cost_estimate_usd = _limits.dev_cost_estimate_usd
         state.adaptive_review_cycle_planning = _review_cycle_planning
+        state.review_funding_reservation = _reservation
         state.adaptive_limits_audit = _limits.audit
 
         if _reconciliation["action"] == _story_budget.RECONCILE_UNFUNDABLE:
@@ -550,6 +626,16 @@ def _coordinator_loop(
                         },
                     }
                 )
+            # ── Non-review funds exhausted (#2258) ────────────────────────
+            # Binds on RETRY attempts only: the first attempt is the one seating
+            # already ruled on, and refusing it here would refuse a story before
+            # it did any work at all.
+            if state.dev_trace_count > 0:
+                _dev_refusal = _refuse_dev_without_nonreview_funds(
+                    state, config, task, _log, logger
+                )
+                if _dev_refusal is not None:
+                    return _dev_refusal
             state.budget.consume(review_cycle=state.review_cycle)
             state.dev_trace_count += 1
             escalation = _run_dev_phase(
