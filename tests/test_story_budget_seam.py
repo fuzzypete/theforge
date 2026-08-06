@@ -625,9 +625,7 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
             == sb.RECONCILE_UNFUNDABLE
         )
 
-    def test_seating_uses_observed_review_cycle_price_plus_headroom(
-        self, tmp_path: Path
-    ) -> None:
+    def test_seating_uses_observed_review_cycle_price_plus_headroom(self, tmp_path: Path) -> None:
         from coord_test_helpers import _make_task
 
         from theforge.coordinator.engine import _coordinator_loop
@@ -653,12 +651,8 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         assert record["review_cycle_cost_basis"] == sb.BASIS_OBSERVED_REVIEW_CYCLE
         assert record["review_cycle_cost_sample_count"] == 3
         assert state.adaptive_review_max == record["requested_review_max"]
-        assert (
-            state.adaptive_limits_audit["review_cycle_planning"]["reason"]
-            == (
-                "derived from median observed review-cycle spend "
-                "$3.64 x 1.25 headroom over 3 cycle(s)"
-            )
+        assert state.adaptive_limits_audit["review_cycle_planning"]["reason"] == (
+            "derived from median observed review-cycle spend $3.64 x 1.25 headroom over 3 cycle(s)"
         )
 
     def test_a_sufficient_allocation_leaves_the_permitted_cycles_intact(
