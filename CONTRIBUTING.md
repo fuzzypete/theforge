@@ -6,11 +6,11 @@ development orchestrator, and we welcome contributions that improve the platform
 ## Getting Started
 
 ```bash
-git clone https://github.com/pwickersham/theforge.git
+git clone https://github.com/fuzzypete/theforge.git
 cd theforge
 python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
-make test   # 900+ tests, should all pass
+make test   # several thousand tests, should all pass
 ```
 
 ## Development Workflow
@@ -26,7 +26,9 @@ make test   # 900+ tests, should all pass
 make fmt        # auto-format with ruff
 make lint       # check formatting + lint (no auto-fix)
 make test       # pytest tests/ -v
-make gate       # full gate: test + write handoff.yaml
+make gate       # full gate: forge index + check-story-config + lint +
+                # format check + tests, under a scrubbed env (exit code
+                # only, no file written)
 ```
 
 ## Code Conventions
@@ -64,7 +66,8 @@ Rules:
 ## What to Contribute
 
 **High-value areas:**
-- New provider adapters (see `runner_api.py` for the pattern)
+- New provider adapters (see `src/theforge/runners/api.py` and the existing
+  adapters under `src/theforge/runners/adapters/` for the pattern)
 - Gate command integrations for different ecosystems (npm, cargo, go test)
 - Bug fixes with reproducing test cases
 - Documentation improvements

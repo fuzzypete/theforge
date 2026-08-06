@@ -1,6 +1,6 @@
 # ADR-0004: Execution Substrate — GitHub Agentic Workflows (gh-aw) vs CLI Runners
 
-- **Status:** Proposed — recommended verdict: **Defer** (re-entry conditions below); Codex design review concurs (2026-07-16); operator decision pending
+- **Status:** Accepted — verdict: **Defer** (re-entry conditions below); Codex design review concurs (2026-07-16). Pending-decision marker closed 2026-08-05: ADR-0007 (Accepted 2026-07-29) proceeds on the defer as settled.
 - **Date:** 2026-07-16 (proposed; live evidence collected same day)
 - **Deciders:** Peter Wickersham (project lead); spike executed by Claude, design review by Codex
 - **Affected milestones:** v0.11.0 (execution-substrate decision), v0.12.x (runner maintenance consequences)

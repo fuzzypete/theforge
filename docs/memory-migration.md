@@ -1,5 +1,7 @@
 # Memory Migration Audit
 
+Status: record (2026-05-01) — one-time migration audit.
+
 This document records the migration of project-level lessons out of
 `~/.claude/projects/-Users-pwickersham-src-theforge/memory/` into
 repo-versioned guidance.

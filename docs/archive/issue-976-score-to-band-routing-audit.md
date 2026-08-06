@@ -1,5 +1,7 @@
 # Issue #976 audit: score-to-band flattening at routing decision points
 
+Status: record (2026-04-24, issue #976) — point-in-time code audit; `file:line` references have rotted.
+
 ## score_to_band() callers
 
 1. `src/theforge/coordinator/preflight_flow.py:313`
