@@ -40,10 +40,10 @@ title (or overridden in the sprint manifest), and the issue title supplies
 
 | Field | Required | Default | Description |
 |-------|----------|---------|-------------|
-| `name` | Yes | — | Human-readable title. Shows in logs and audit. |
-| `slug` | Yes | — | Branch name (`forge/{slug}`), worktree path. Lowercase-with-dashes. |
+| `name` | No | title-cased file stem | Human-readable title. Shows in logs and audit. |
+| `slug` | No | file stem | Branch name (`forge/{slug}`), worktree path. Lowercase-with-dashes. |
 | `test_target` | No | `.` | Stack-neutral test target substituted for `{test_target}` in the gate command. |
-| `gate` | No | project default | Override gate: `"none"` (skip), `"lint"`, or custom command. |
+| `gate` | No | project default | Override gate: `"none"` skips the gate; any other string is executed verbatim as the gate command. |
 | `depends_on` | No | `[]` | Slugs that must be merged before this story runs (sprint mode). |
 
 ---
@@ -59,7 +59,6 @@ run sprints without a manifest using `forge sprint --milestone` or `--label`
 ```yaml
 name: "Sprint Name — brief description"
 budget_usd: 50
-auto_merge: true    # optional: merge each APPROVED story automatically
 stories:
   - stories/story-one.md           # local story file
   - stories/story-two.md
@@ -68,6 +67,9 @@ stories:
 ```
 
 > **Note:** `specs:` is a deprecated alias for `stories:` and still works.
+>
+> **Note:** auto-merge is a CLI decision: pass `--auto-merge` to `forge sprint`
+> (it is not a manifest key).
 
 ### Fields
 
@@ -75,8 +77,9 @@ stories:
 |-------|----------|---------|-------------|
 | `name` | Yes | — | Human-readable sprint name |
 | `budget_usd` | Yes | — | Total budget ceiling across all stories |
-| `auto_merge` | No | `false` | Auto-merge approved stories to main |
 | `stories` | Yes | — | Ordered list of stories — local file paths or `{issue: N}` dicts |
+| `max_parallel` | No | unset | Parallel story workers for this sprint. Integer >= 1; unset falls back to `sprint.max_parallel` in forge.yaml (default 1). |
+| `worker_timeout_seconds` | No | unset | Per-worker timeout. Integer >= 1; unset falls back to `sprint.worker_timeout_seconds` in forge.yaml (default 3600). |
 
 ### Cost governance vs. per-story estimates (converged model)
 
@@ -513,7 +516,11 @@ load, but they are rewritten to their canonical identity at the parse boundary
 and never appear in loaded config, telemetry, or audit records. Write the
 canonical form.
 
-### Full config reference
+### Config reference (common surface)
+
+This block covers the commonly used surface, not every key `forge.yaml`
+loading supports — `src/theforge/config/` (`load.py` and `types.py`) is
+authoritative.
 
 ```yaml
 project: my-project                # project name for logging/audit
@@ -558,6 +565,9 @@ workspace:
   path_pattern: ".forge/worktrees/{slug}"
   branch_pattern: "forge/{slug}"
   base_branch: "main"                 # default: "main"
+  auto_push: false                    # push base_branch to origin after successful auto-merge;
+                                      # required true when on_approve is "merge-pr"
+  stale_worktree_days: 1              # remove leftover worktrees older than N days; 0 = always remove
   on_approve: "none"                  # "none" | "merge" | "pr" | "merge-pr"
   merge_strategy: "squash"            # "squash" | "merge" | "rebase" (used by merge-pr)
   pr_labels: []                       # labels applied when on_approve is "pr" or "merge-pr"
@@ -604,6 +614,74 @@ retry:
   max_plan_regen_attempts: 3 # plan review reject → regeneration cycles
   plan_escalation_threshold: 2 # consecutive plan rejections before the planner
                              # model is escalated to a stronger one
+  max_dev_transport_retries: 1 # per-iteration retries on transient dev
+                             # transport/provider failure
+  adaptive_iterations: true  # scale per-story iteration limits from preflight
+                             # complexity; the max_* fields above act as the floor
+  max_dev_iterations_cap: 0  # hard ceiling for adaptive growth; 0 = same as
+  max_review_cycles_cap: 0   # floor (no growth). Set explicitly to opt in.
+  # More retry knobs exist (plan/plan-review/review transport retries, quorum,
+  # degrade policy, …) — see RetryPolicy in src/theforge/config/types.py.
+
+# ── CLI→API transport fallback, keyed by provider family ──
+# The provider never changes across a fallback — only the transport does. When
+# a CLI transport fails in a retryable way (quota exhaustion, model-not-found),
+# the run continues on the same provider's API transport with the model named
+# here.
+auto_transport_fallback: true      # derive fallbacks automatically; explicit
+                                   # entries below win over derived ones
+transport_fallback:
+  openai:
+    model: gpt-5.4
+    timeout_seconds: 600
+
+# ── Sprint defaults ────────────────────────────────────────
+sprint:
+  max_parallel: 1                  # parallel story workers (manifest key wins)
+  worker_timeout_seconds: 3600     # per-worker timeout (manifest key wins)
+  # batch: — see "Batch groups" above
+
+# ── Stuck-agent detection (dev phase only) ─────────────────
+stuck_detection:
+  enabled: true
+  no_progress_iterations: 5        # iterations without file modification → stuck
+  repeat_threshold: 4              # consecutive identical tool calls → stuck
+  error_threshold: 4               # consecutive identical error results → stuck
+  post_nudge_iterations: 3         # iterations after the nudge before termination
+
+# ── forge diagnose (separate budget from the sprint pipeline) ──
+diagnose:
+  output_destination: body_section # "body_section" | "comment" | "pr_to_body"
+  budget_usd: 1.50
+  timeout_seconds: 600
+  autonomous_default: true         # default mode when --interactive is not passed
+
+# ── Lifecycle hooks ────────────────────────────────────────
+hooks:
+  pre_run: .forge/hooks/pre_run.sh    # each key optional; commands run at the
+  post_run: .forge/hooks/post_run.sh  # named forge event
+  post_merge: .forge/hooks/post_merge.sh
+  post_sprint: .forge/hooks/post_sprint.sh
+  timeout_seconds: 30
+
+# ── Conventions ────────────────────────────────────────────
+conventions:
+  hard:                            # mechanically enforced; omit section = no checks
+    max_module_lines: 500
+    max_test_file_lines: 1000
+    no_circular_imports: true
+    test_mirrors_source: true
+    no_scratch_files: true
+    stack: python                  # string or list; enables stack-specific root-file rules
+  soft:                            # list of prose rules injected into agent prompts
+    - "Coordinator is pure Python — no LLM calls for routing decisions"
+  advisory:                        # aggregation of non-blocking convention debt
+    artifact_path: ".forge/conventions/advisory.yaml"
+    summary_top_n: 10
+    noteworthy_threshold_percent: 10.0
+    commit_shared_artifact: false
+    issue_filing:
+      enabled: false
 
 # ── Classic manual profiles (LEGACY — mutually exclusive with models:) ─────
 # This path predates first-class transport: it spells dispatch as a pair of
@@ -770,6 +848,46 @@ Controls how the dev agent treats P2 review findings during the current run.
 (`docs/adr/0001-intake-readiness-workflow.md`), "Inline intake remediation
 posture". `forge init` and generated templates emit no `intake.grooming` line
 (so it resolves to `false`); there is no migration path.
+
+### Adaptive assignment (`assignment:`)
+
+Config mechanics for the v0.13 adaptive routing surface. Behavior and doctrine
+live in [Adaptive assignment](adaptive-assignment.md) and
+[Routing policy](routing-policy.md); source of truth is `AssignmentConfig` in
+`src/theforge/config/types.py` and `_parse_assignment` in
+`src/theforge/config/models.py`.
+
+| Field | Type | Default | Meaning |
+|-------|------|---------|---------|
+| `enabled` | bool | `false` | Master switch: derive and route roles adaptively from the `models:` pool. Load fails if true and no reviewer-eligible agent has working auth. |
+| `min_reviewers` | int | `1` | Minimum reviewers per story (reviewer-count axis floor). |
+| `max_reviewers` | int | `3` | Maximum reviewers per story (reviewer-count axis ceiling). |
+| `prefer_cross_provider` | bool | `true` | Greedily pick reviewers from different providers when filling the panel. |
+| `max_cost_per_story_usd` | float or null | `null` | Pre-run routing cost target: downgrades tiers so the estimated per-story routing cost stays under it. Not a spend cap — see "Cost governance" above. |
+| `escalation_memory` | bool | `true` | Record per-story escalation outcomes (via the audit substrate) so later runs on the same story route from the escalated tier. |
+| `adaptive_enabled` | bool | `true` | Allow historical performance signals to move routing. `false` = static band-only routing (complexity → tier table, no profile consultation). |
+| `recency` | block | — | Recency weighting of historical outcomes — see [Recency weighting](#recency-weighting-assignmentrecency). |
+| `exploration.explore_every_n` | int >= 1 | `5` | Per-routing-key challenger cadence: every Nth run for a key may race a challenger instead of the cached winner. |
+| `exploration.min_sample_size` | int >= 1 | `3` | Admissible (non-tainted) runs required before a winner is declared for a routing key. |
+| `exploration.per_sprint_cap` | int >= 0 | `1` | Max exploration runs per sprint across all routing keys; `0` disables exploration. |
+| `exploration.performance_cache_path` | str | `.forge/performance_table.yaml` | Rebuildable, gitignored derived view of per-key aggregates, for operator inspection only — never read as authoritative. |
+| `reviewer_completion_threshold` | float | `0.5` | A reviewer whose recency-weighted completion rate (returned a parseable verdict) falls below this sorts after higher-completion candidates. Sort-after, not filter-out. |
+| `reviewer_completion_min_runs` | int | `5` | Attempts a reviewer must accumulate before completion sorting applies (cold-start protection). |
+| `reviewer_value_enabled` | bool | `false` | Opt in to plan-reviewer P1-uniqueness routing: low-uniqueness reviewers sort after higher-value candidates. Strict bool — non-boolean values are a config error. |
+| `reviewer_value_uniqueness_threshold` | float in [0,1] | `0.34` | Uniqueness rate (fraction of blocking findings no peer corroborated) below which a plan reviewer is deprioritized. |
+| `reviewer_value_min_runs` | int >= 1 | `5` | Admissible P1-bearing samples required before plan-reviewer value reordering fires. |
+| `code_review_value_enabled` | bool | `false` | Same mechanism for code-review reviewer selection, over its own independently accumulated profile section. Strict bool. |
+| `code_review_value_uniqueness_threshold` | float in [0,1] | `0.34` | Code-review counterpart of the uniqueness threshold. |
+| `code_review_value_min_runs` | int >= 1 | `5` | Code-review counterpart of the sample floor. |
+| `dev_promotion_threshold` | float in [0,1] | `0.60` | Below this recency-weighted success rate at the story's complexity band, the dev tier is pre-promoted one step before the first iteration. |
+| `dev_promotion_min_runs` | int >= 1 | `5` | Admissible (non-tainted) runs required before pre-promotion can fire; below the floor, routing falls through to the static tier. |
+| `plan_tier_reduction` | bool | `true` | A clean plan review on a medium-complexity story may step the dev tier down one level (strong→mid, mid→cheap). `false` always honors the preflight-assigned tier. |
+| `reasoning_effort` | block | — | Score-driven reasoning-effort overrides — see [Reasoning effort](#reasoning-effort-assignmentreasoning_effort). |
+
+The value-routing and promotion fields validate strictly at load: thresholds
+must be numbers in `[0.0, 1.0]`, min-runs must be integers at or above the
+minimum, enable flags must be actual booleans. Out-of-range values are a config
+error, never a silent clamp.
 
 ### Sandbox capability profiles (`sandbox.capability_profile`)
 
@@ -953,24 +1071,51 @@ verdict: APPROVE | REQUEST_CHANGES
 summary: "One-line description of findings"
 findings:
   - severity: P1 | P2         # P1 = blocker, P2 = advisory
-    file: "src/foo.py"
-    line: 42
-    description: "What is wrong"
-    suggestion: "How to fix it"
+    file: "src/foo.py"        # null allowed for architectural P1s
+    line: 42                  # null allowed for file-scope findings
+    observed: "What the code actually does"
+    expected: "What it should do"
+    evidence: "Pointer proving the observation (diff hunk, test, trace)"
 story_compliance:
   matches_spec: true | false
   mismatches: []
 test_coverage:
   adequate: true | false
   gaps: []
+ac_verification:              # one entry per acceptance criterion
+  - criterion: "The criterion text (or 'Symptom resolution' for bugs)"
+    status: VERIFIED | PARTIAL | NOT_VERIFIED
+    evidence: "Diff hunks + test pointers for VERIFIED, reason otherwise"
+criteria_enumerable: true     # optional; false requires criteria_enumerable_rationale
 ```
 
-**Schema enforcement rules:**
-- `APPROVE` with any P1 → overridden to `REQUEST_CHANGES`
-- `REQUEST_CHANGES` with no P1 → schema error
-- Invalid YAML → treated as `REQUEST_CHANGES`
+Every finding requires non-empty `observed`, `expected`, and `evidence`
+strings. `file` may be null for architectural findings; `line` may be null for
+file-scope findings (a P1 with `file` set must have a non-empty path).
+
+**Contract enforcement (`src/theforge/schemas.py`):** violations are tagged by
+stage (`YAML_SYNTAX`, `STRUCTURE`, `SCHEMA_VALIDATION`,
+`CONTRACT_CROSS_VALIDATION`) and trigger a corrective retry prompt to the same
+reviewer, up to `retry.max_review_parse_retries` (default 2). Nothing is
+silently rewritten.
+
+- `APPROVE` with any P1 → `CONTRACT_CROSS_VALIDATION` error → parse retry
+- `REQUEST_CHANGES` with no P1 → error (must have a P1 to justify it)
+- `APPROVE` with empty `ac_verification` → error, unless the reviewer declares
+  `criteria_enumerable: false` with a non-empty
+  `criteria_enumerable_rationale`
+- `APPROVE` with any `PARTIAL`/`NOT_VERIFIED` entry → error
+- Output still unparseable after retries → that reviewer's verdict is recorded
+  as `REQUEST_CHANGES` with `matches_spec: false`
 - `spec_compliance` is accepted as a backward-compatible alias, but new
   reviewers should emit `story_compliance`.
+
+After parsing, findings pass through mechanical disposition classification
+(`coordinator/review_phase.py`): a P1 asserting a test/build failure that a
+PASS gate mechanically disproves is downgraded (`gate_contradicted`) unless
+that reviewer also reported `matches_spec: false`. Plan review is a separate
+contract with its own corroboration rule — single-reviewer, first-occurrence
+plan P1s are downgraded to advisory `P1-impl` (`src/theforge/review.py`).
 
 ---
 

@@ -153,6 +153,16 @@ Choose the storage based on the kind of decision:
 
 Do not rely on user memory as the default sink for project policy.
 
+Historical records under `docs/` must be identifiable as records without
+reading them: either they live in a record directory (`docs/archive/`,
+`docs/postmortems/`, `docs/post-release-reviews/`), or they open with a status
+line — `Status: record (YYYY-MM-DD[, issue #N])`, or the older
+`Status: Shipped (vX.Y) … retained for historical context` form. A short
+qualifier after the form is fine. Living documents need no marker; add
+`Status: living` only where a document could otherwise be mistaken for a
+record (the flake register, an active plan in `docs/plans/`).
+`docs/README.md` indexes the living-vs-record classification.
+
 Source: `feedback_capture_decisions.md`
 
 ### Push back on alternatives with evidence, not adjectives
@@ -417,10 +427,10 @@ Sources: `MEMORY.md`, `docs/memory-migration.md`
 
 ## Current State - Start Here
 
-To understand what's in progress and what's next, run:
+To understand what's in progress and what's next, check the open milestone on
+GitHub (https://github.com/fuzzypete/theforge/milestones), then:
 ```bash
-gh milestone list                              # see milestones
-gh issue list --milestone "v0.9.0"             # current priority after v0.8.0
+gh issue list --milestone "<open milestone>"   # issues in the current milestone
 gh project item-list 1 --owner fuzzypete       # full project board
 ```
 
@@ -479,7 +489,7 @@ those directories, especially:
 is deterministic Python code. Agents only write code and write reviews. The coordinator
 validates boundaries mechanically.
 
-State machine: `INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE`
+State machine: `INIT → WORKSPACE → PREFLIGHT → PLAN → PLAN_REVIEW → DEV → VALIDATE → REVIEW → DONE/ESCALATE`, plus `HUMAN_REVIEW` (interactive operator pause after review) and `MERGE_FAILED` (auto-merge could not land the story) — see the `Phase` enum in `src/theforge/coordinator/state.py` for the full set.
 
 Key modules:
 - `src/theforge/coordinator/engine.py` — state machine, the heart of the system
@@ -565,8 +575,10 @@ work is heavy. It must:
 
 1. **Read the codebase** and verify every acceptance criterion against actual code
    to determine PROCEED / ALREADY_DONE / BLOCKED
-2. **Assess complexity** (small/medium/large) — this drives adaptive model selection
-   for all downstream phases
+2. **Assess complexity** — emit a 1–10 `complexity_score`; the small/medium/large
+   bands are derived from the score via a compat shim (`score_to_band` in
+   `coordinator/preflight.py`) for consumers that still read the string enum.
+   This drives adaptive model selection for all downstream phases
 3. **Classify sufficiency** (implementation_ready/needs_planning) — controls whether
    the plan phase runs at all
 4. **Classify work type** (feature/refactor/mechanical/bug) — feeds prompt construction
@@ -610,7 +622,15 @@ story_compliance:
 test_coverage:
   adequate: true | false
   gaps: []
+ac_verification:            # APPROVE requires a non-empty table, all VERIFIED
+  - criterion: "<acceptance criterion text, or 'Symptom resolution' for bugs>"
+    status: VERIFIED | PARTIAL | NOT_VERIFIED
+    evidence: "<diff hunks + test pointers for VERIFIED; reason otherwise>"
 ```
+
+The one escape valve: an APPROVE with an empty `ac_verification` table is legal
+only when the reviewer declares `criteria_enumerable: false` with a non-empty
+`criteria_enumerable_rationale` (see `schemas.py`).
 
 ### Writing stories
 Stories describe WHAT and WHY — never HOW. The plan phase produces the HOW.

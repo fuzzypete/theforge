@@ -83,14 +83,20 @@ this invocation — fix the env-state issue they describe, then `--resume`.
 
 - prints the open issues remaining in milestone `vX.Y.Z` (informational only —
   RC cuts deliberately do **not** require a clean milestone)
-- creates or fast-forwards `release/vX.Y` from `main`
+- fast-forwards an existing `release/vX.Y` from `origin/release/vX.Y` only, and
+  creates it from `main` when it doesn't exist yet — it never fast-forwards or
+  merges `main` into an existing release branch
 - bumps `pyproject.toml` to `X.Y.ZrcN` (PEP 440)
 - runs `make gate`
 - commits, tags `vX.Y.ZrcN`, pushes branch and tag
+- applies branch protection to `release/vX.Y` (via
+  `scripts/apply-branch-protection.sh`, idempotent) — GitHub's auto-merge
+  mutation requires a protection rule on the target branch, so without this
+  every RC-ladder fix lands in `MERGE_FAILED`
 - creates an isolated venv at `.forge/rc-envs/vX.Y.ZrcN/` and installs the
   RC into it (no other Python environment is touched)
 - repoints the managed `forge` launcher at the new RC venv, so plain
-  `forge --version` reports the just-cut RC
+  `forge version` reports the just-cut RC
 - prints the test ladder using plain `forge`
 
 The launcher repoint is intentional: cutting an RC and dogfooding it are
@@ -152,16 +158,37 @@ scripts/promote-rc.sh --dry-run X.Y.Z
 - creates the GitHub release from the CHANGELOG section
 - files the post-release doc-review issue against the next milestone
 
-After promotion, the script prints reminders for the manual follow-ups it
-intentionally does **not** automate:
+After promotion, the script prints reminders for manual follow-ups:
 
-1. Forward-port any RC fixes from `release/vX.Y` to `main` if main has diverged.
+1. Verify the forward-port PR to `main` merged (it is opened automatically —
+   see "Forward-port to main" below; the script's printed reminder to
+   cherry-pick by hand predates that automation and should be ignored).
 2. Run the post-release doc review.
 
 (The managed `forge` launcher continues to point at the last-cut RC venv,
 which contains the same code as the just-promoted final tag. If you want
 plain `forge` to track the final tag specifically, cut a fresh venv from
 `vX.Y.Z` and `ln -snf` the managed launcher at it.)
+
+### Forward-port to main (automatic)
+
+`main` receives release-line work automatically — never hand-port:
+
+- **Fixes land on `release/vX.Y`.** Every push to a `release/*` branch triggers
+  `.github/workflows/forward-port.yml`, which opens a PR from a bot branch to
+  `main` using a GitHub App token and arms auto-merge (merges on green CI). The
+  port is a real **merge commit**, not a squash — the merge-base advances with
+  each port, so already-ported files never re-conflict — and `main` stays a
+  strict superset of every release line.
+- The port preserves main's `pyproject.toml` version and its `[Unreleased]`
+  changelog section (`scripts/forward_port_guard.py`); any conflict it cannot
+  resolve mechanically aborts the port and files an issue rather than guessing.
+- **Release-mechanics files must land on `release/*` first.**
+  `.github/workflows/guard-release-mechanics.yml` rejects any direct-to-main PR
+  touching `scripts/cut-rc.sh`, `scripts/promote-rc.sh`,
+  `scripts/apply-branch-protection.sh`, or `forward-port.yml` itself (only
+  `forward-port/*` bot branches are exempt) — a competing direct edit forks the
+  file's history and the port can no longer reconcile it (#1653, #1662).
 
 ### Direct release from main (legacy)
 
@@ -334,36 +361,28 @@ Then: `forge sprint --base-branch release/vX.Y --milestone vX.Y.Z+1 --budget 20`
 
 PR targets `release/vX.Y`. Merge when approved.
 
-### 5. Bump version and tag
+### 5. Bump version, tag, and release
 
-On `release/vX.Y`:
-
-```bash
-# edit pyproject.toml: version = "X.Y.Z+1"
-# update CHANGELOG: rename [Unreleased] to [X.Y.Z+1] — YYYY-MM-DD
-git add CHANGELOG.md pyproject.toml
-git commit -m "chore: release vX.Y.Z+1"
-git tag vX.Y.Z+1
-git push origin release/vX.Y
-git push origin vX.Y.Z+1
-```
-
-### 6. Cherry-pick to main
+Use the RC flow on `release/vX.Y` rather than hand-editing:
 
 ```bash
-git checkout main
-git cherry-pick <fix-commit-sha>
-git push origin main
+scripts/cut-rc.sh X.Y.Z+1
+scripts/promote-rc.sh X.Y.Z+1
 ```
 
-If the fix does not apply cleanly (main has diverged significantly), port it
-manually and open a PR against main.
+`promote-rc.sh` derives the `[X.Y.Z+1]` CHANGELOG section from milestone
+`vX.Y.Z+1` (see "CHANGELOG (derived automatically)"), bumps `pyproject.toml`,
+tags, pushes, and creates the GitHub release. Do **not** hand-rename
+`[Unreleased]` — it is a scratchpad and is never consulted for release notes.
 
-### 7. Create GitHub Release
+### 6. Forward-port to main (automatic)
 
-```bash
-gh release create vX.Y.Z+1 --title "vX.Y.Z+1 — hotfix" --notes "..."
-```
+The merge to `release/vX.Y` in step 4 — and the promote commit in step 5 —
+auto-port to `main` via `forward-port.yml` (see "Forward-port to main"). Do
+**not** cherry-pick to `main` or `git push origin main` directly: `main` is
+protected and receives release-line work only through the forward-port PR.
+Verify that PR merged; if the port aborted, it filed an issue with the
+conflict.
 
 ---
 
