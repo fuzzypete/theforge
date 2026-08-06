@@ -1,10 +1,10 @@
 # Model Reference
 
 > **Dated guidance.** These recommendations reflect vendor positioning as of
-> **April 2026**, and the registry/tier surface described here is being
-> replaced by a unified model catalog (#2204). Treat the tables as historical
-> guidance; the repo's `forge.yaml` and
-> [`routing-policy.md`](routing-policy.md) are current.
+> **April 2026**. The model set itself now lives in the data-backed catalog
+> shipped by #2204 (`src/theforge/config/data/models.yaml` — see below), so
+> treat the tables as historical guidance; the catalog, the repo's
+> `forge.yaml`, and [`routing-policy.md`](routing-policy.md) are current.
 
 Per-provider model recommendations for TheForge, organized by phase and
 complexity tier.
@@ -71,7 +71,7 @@ Source: Codex recommendation, April 2026.
 | Review | Sonnet | Sonnet | Sonnet |
 
 **Tier mapping:**
-- **cheap:** Haiku — cheap tier for preflight and review (TheForge's own config enables it for both as of v0.13); not dev-capable. Absent from the built-in registry, so it must be declared inline in `models.enabled` with `routing:` and `cost:`
+- **cheap:** Haiku — cheap tier for preflight and review (TheForge's own config enables it for both as of v0.13); not dev-capable. Absent from the shipped catalog (`config/data/models.yaml`), so it must be declared in `forge.yaml` with `routing:` and `cost:`
 - **mid:** Sonnet — strong all-rounder; handles most stories well
 - **strong:** Opus — highest capability; large planning and dev
 

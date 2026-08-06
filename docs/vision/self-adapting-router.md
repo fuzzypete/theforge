@@ -147,8 +147,8 @@ performance table; per-project overrides accumulate over time.
 
 *(Shipped-state note, 2026-08-05: the tie-break and provenance rules in the
 next three paragraphs landed as #1617/#2203 — they are current behavior, not
-vision — and sit on the registry surface the unified model catalog work
-(#2204) is replacing. Consult `forge check-config` and
+vision — and now live on the data-backed model catalog shipped by #2204.
+Consult `forge check-config` and
 [Routing Policy](../guides/routing-policy.md) for current behavior.)*
 
 When two models land in the same tier (same `cost_rank` and capability), the

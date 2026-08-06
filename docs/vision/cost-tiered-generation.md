@@ -11,8 +11,8 @@ Captured 2026-03-16 from analysis of phase-specific model economics.
 > in v0.8, and no aider/cline/opencode adapter was ever built. The current
 > routing contract is [Routing Policy](../guides/routing-policy.md) and
 > [Adaptive Assignment](../guides/adaptive-assignment.md); the model-registry
-> surface referenced here is being replaced by the unified model catalog
-> (#2204).
+> surface referenced here was replaced by the data-backed model catalog
+> (#2204, shipped in v0.13).
 
 ## Context
 
