@@ -275,15 +275,15 @@ def review_cycle_planning_from_samples(
     """Return the deterministic planning price for one review cycle."""
     usable = [float(s) for s in samples if s is not None and float(s) > 0.0]
     if len(usable) < min_samples:
+        fallback_reason = (
+            f"only {len(usable)} measured review cycle(s), below the {min_samples}-cycle floor"
+        )
         return ReviewCyclePlanningPrice(
             planned_cost_usd=round(configured_ceiling_usd, 4),
             basis=BASIS_REVIEW_CEILING_FALLBACK,
             fallback_configured_usd=configured_ceiling_usd,
             sample_count=len(usable),
-            reason=(
-                f"only {len(usable)} measured review cycle(s), "
-                f"below the {min_samples}-cycle floor"
-            ),
+            reason=fallback_reason,
             excluded_for_taint=excluded_for_taint,
         )
 
