@@ -606,10 +606,13 @@ def _review_cycle_basis_text(record: dict) -> str:
         headroom = record.get("review_cycle_cost_headroom_multiplier")
         sample_count = record.get("review_cycle_cost_sample_count")
         if median is not None and headroom is not None:
-            sample_text = (
-                f" over {int(sample_count)} cycle(s)" if isinstance(sample_count, (int, float)) else ""
+            sample_text = ""
+            if isinstance(sample_count, (int, float)):
+                sample_text = f" over {int(sample_count)} cycle(s)"
+            return (
+                f" (observed median ${float(median):.2f} x "
+                f"{float(headroom):.2f} headroom{sample_text})"
             )
-            return f" (observed median ${float(median):.2f} x {float(headroom):.2f} headroom{sample_text})"
     if basis == BASIS_REVIEW_CEILING_FALLBACK:
         reason = str(record.get("review_cycle_cost_reason") or "").strip()
         return f" (ceiling fallback{': ' + reason if reason else ''})"

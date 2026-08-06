@@ -655,7 +655,10 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         assert state.adaptive_review_max == record["requested_review_max"]
         assert (
             state.adaptive_limits_audit["review_cycle_planning"]["reason"]
-            == "derived from median observed review-cycle spend $3.64 x 1.25 headroom over 3 cycle(s)"
+            == (
+                "derived from median observed review-cycle spend "
+                "$3.64 x 1.25 headroom over 3 cycle(s)"
+            )
         )
 
     def test_a_sufficient_allocation_leaves_the_permitted_cycles_intact(
