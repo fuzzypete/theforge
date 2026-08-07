@@ -126,17 +126,22 @@ class TestPerDomainAggregation:
         _record(data, "A", True, domains=["api"], n=3)
         _record(data, "A", False, domains=["css"], n=3)
         sig = get_dev_domain_signal(data, "A", ["api", "css"])
+        # ``resolved_population`` (#2226) reports which concrete versions the
+        # slice describes; this fixture records none, so it is empty rather than
+        # a fabricated single-model claim.
         assert sig["by_domain"]["api"] == {
             "runs": 3,
             "raw": 1.0,
             "weighted": 1.0,
             "tainted_runs": 0,
+            "resolved_population": {},
         }
         assert sig["by_domain"]["css"] == {
             "runs": 3,
             "raw": 0.0,
             "weighted": 0.0,
             "tainted_runs": 0,
+            "resolved_population": {},
         }
 
     def test_recency_window_downweights_stale_history(self):

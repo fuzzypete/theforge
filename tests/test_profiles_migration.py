@@ -138,17 +138,24 @@ def test_identity_metadata_takes_precedence():
     assert canonical_id_for_legacy_key("legacy-name", entry) == "anthropic/sonnet/cli"
 
 
-def test_concrete_anthropic_cli_version_resolves_to_the_family_shorthand():
-    # #2225: the CLI reports dated concrete versions; the registry slot is the
-    # family shorthand, so both must land on one identity.
-    assert canonical_id_for_legacy_key("claude-sonnet-4-6") == "anthropic/sonnet/cli"
-    assert canonical_id_for_legacy_key("claude-opus-4-6") == "anthropic/opus/cli"
+def test_concrete_anthropic_cli_version_is_its_own_identity_not_the_shorthand():
+    # #2226 replaces the #2225 family fold: a served version and the family
+    # shorthand that selected it are different subjects, so the version resolves
+    # to its own pinned catalog entry and never onto ``anthropic/sonnet/cli``.
+    assert canonical_id_for_legacy_key("claude-sonnet-4-6") == "anthropic/claude-sonnet-4-6/cli"
+    assert canonical_id_for_legacy_key("claude-opus-4-6") == "anthropic/claude-opus-4-6/cli"
+    # The shorthands keep resolving to themselves — pinning is additive.
+    assert canonical_id_for_legacy_key("claude/sonnet") == "anthropic/sonnet/cli"
+    assert canonical_id_for_legacy_key("claude/opus") == "anthropic/opus/cli"
 
 
-def test_family_match_is_gated_on_the_registry_slot_existing():
-    # No ``anthropic/turbo/cli`` slot in the catalog → unresolved, not guessed.
+def test_unpinned_concrete_version_stays_unresolved_rather_than_folding():
+    # No pinned entry and no shorthand fold → unresolved, which is a fact the
+    # operator can act on. Folding it into ``anthropic/opus/cli`` would make an
+    # unknown version indistinguishable from the alias that selected it (#2226).
+    assert canonical_id_for_legacy_key("claude-opus-4-8") is None
     assert canonical_id_for_legacy_key("claude-turbo-4-5") is None
-    # An API hint contradicts the CLI-only heuristic.
+    # An API hint contradicts the CLI-only pinned entry.
     assert canonical_id_for_legacy_key("claude-sonnet-4-6", {"transport_used": "api"}) is None
 
 
@@ -167,8 +174,14 @@ def test_key_suffix_outranks_a_contradicting_transport_hint():
     )
 
 
-def test_newly_resolving_key_merges_rather_than_displaces_its_collision():
-    """#2225 makes ``claude-sonnet-4-6`` resolve onto an id another key already owns."""
+def test_migration_keeps_a_served_version_separate_from_the_alias():
+    """#2226: history under a version and under its alias are NOT merged.
+
+    The old contract folded ``claude-sonnet-4-6`` into ``anthropic/sonnet/cli``,
+    which is exactly the collapse that let an alias's evidence describe two
+    different models at once. They now migrate to two identities with their own
+    counts.
+    """
     data = {
         "models": {
             "claude-sonnet-4-6": {"dev": {"runs": 3, "_successes": 1}},
@@ -176,11 +189,16 @@ def test_newly_resolving_key_merges_rather_than_displaces_its_collision():
         }
     }
     migrated, _report = migrate_profiles_data(data)
-    assert list(migrated["models"]) == ["anthropic/sonnet/cli"]
-    assert migrated["models"]["anthropic/sonnet/cli"]["dev"]["runs"] == 10
-    # Still idempotent with the wider resolver.
+    assert sorted(migrated["models"]) == [
+        "anthropic/claude-sonnet-4-6/cli",
+        "anthropic/sonnet/cli",
+    ]
+    assert migrated["models"]["anthropic/claude-sonnet-4-6/cli"]["dev"]["runs"] == 3
+    assert migrated["models"]["anthropic/sonnet/cli"]["dev"]["runs"] == 7
+    # Idempotent.
     again, _ = migrate_profiles_data(migrated)
-    assert again["models"]["anthropic/sonnet/cli"]["dev"]["runs"] == 10
+    assert again["models"]["anthropic/sonnet/cli"]["dev"]["runs"] == 7
+    assert again["models"]["anthropic/claude-sonnet-4-6/cli"]["dev"]["runs"] == 3
 
 
 # ── migrate_profiles_data ──────────────────────────────────────────────

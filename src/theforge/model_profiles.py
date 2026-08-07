@@ -116,6 +116,12 @@ class ReviewerAttempt:
     provider: str | None = None
     cli: str | None = None
     failure_reason: str | None = None
+    # The concrete identity that actually served this attempt (#2226). Distinct
+    # from the identity fields above, which describe what was *selected*: when
+    # the selection names a family alias, the vendor picks the version and only
+    # this field records which one. ``None`` when the transport reported no
+    # resolved identity, which is not the same as "the same as configured".
+    resolved_model: str | None = None
 
 
 @dataclass
@@ -141,6 +147,9 @@ class RoleAttempt:
     provider: str | None = None
     cli: str | None = None
     cost_usd: float | None = None
+    # Concrete identity that served this attempt (#2226) — see
+    # :attr:`ReviewerAttempt.resolved_model`.
+    resolved_model: str | None = None
 
 
 @dataclass
@@ -181,9 +190,18 @@ class RunOutcome:
     dev_actual_model: str | None = None
     dev_provider: str | None = None
     dev_cli: str | None = None
+    # The concrete model that actually served the dev phase (#2226). When
+    # ``dev_model``/``dev_actual_model`` name a family alias, the vendor chooses
+    # the version at invocation time and this is the only field that records
+    # which one. Folding it beside the configured identity is what makes an
+    # alias's accumulated evidence attributable to the versions that produced
+    # it, instead of describing a subject that can move underneath the key.
+    dev_resolved_model: str | None = None
     preflight_actual_model: str | None = None
     preflight_provider: str | None = None
     preflight_cli: str | None = None
+    # Concrete identity that served the preflight phase (#2226).
+    preflight_resolved_model: str | None = None
     preflight_cost_usd: float | None = None  # None = cost unmeasured
     # Preflight reliability, one entry per native preflight invocation (#1489).
     # Unlike a single collapsed boolean, this carries a ``RoleAttempt`` for every
@@ -205,6 +223,8 @@ class RunOutcome:
     planner_actual_model: str | None = None
     planner_provider: str | None = None
     planner_cli: str | None = None
+    # Concrete identity that served the planner phase (#2226).
+    planner_resolved_model: str | None = None
     planner_cost_usd: float | None = None  # None = cost unmeasured
     planner_attempts: list[RoleAttempt] = field(default_factory=list)
     reviewers: dict[str, tuple[int, int, float | None]] = field(default_factory=dict)
@@ -516,6 +536,51 @@ def _fold_dev_bucket(
     _fold_duration(bucket, duration_s, timeout_killed, timeout_limit_s)
 
 
+RESOLVED_MODEL_BREAKDOWN_KEY = "by_resolved_model"
+"""Section key holding the per-served-version breakdown of a role's evidence."""
+
+ALIAS_DERIVED_KEY = "alias_derived"
+"""Section key holding evidence projected from an alias onto a concrete version."""
+
+
+def _fold_resolved_model(
+    section: dict,
+    resolved_model: str | None,
+    *,
+    success: bool | None,
+    tainted: bool,
+) -> None:
+    """Attribute one folded observation to the concrete version that produced it.
+
+    The population under a section's ``runs`` describes whatever the configured
+    identity meant at the time of each run. When that identity is a family
+    alias, "at the time of each run" is load-bearing: two observations under one
+    key can be observations of two different models, and nothing in the counters
+    says so. This breakdown says so.
+
+    Kept deliberately thin — counts only, no rates. It exists so a consumer can
+    answer *does this population describe one model or several*, which the
+    section's own aggregates cannot; recomputing every rate per version would
+    duplicate the whole bucket shape for a question nobody asks yet. Tainted
+    observations are tallied here too (never folded into ``runs``), mirroring
+    how every other aggregate keeps its exclusions visible rather than deleting
+    them.
+
+    A ``None`` ``resolved_model`` records nothing: "the transport reported no
+    resolved identity" is not evidence about a version.
+    """
+    if not resolved_model:
+        return
+    breakdown = section.setdefault(RESOLVED_MODEL_BREAKDOWN_KEY, {})
+    bucket = breakdown.setdefault(resolved_model, {})
+    if tainted:
+        bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + 1
+        return
+    bucket["runs"] = int(bucket.get("runs", 0)) + 1
+    if success is not None:
+        bucket["_successes"] = float(bucket.get("_successes", 0.0)) + (1.0 if success else 0.0)
+
+
 def _fold_dev_capability(
     bucket: dict,
     success: bool,
@@ -526,6 +591,7 @@ def _fold_dev_capability(
     timeout_limit_s: int | None,
     termination_cause: str | None,
     tainted: bool,
+    resolved_model: str | None = None,
 ) -> None:
     """Fold one dev run into a capability bucket, excluding tainted runs.
 
@@ -536,6 +602,7 @@ def _fold_dev_capability(
     accumulators (``runs``/``_successes``/…) and tallied under ``tainted_runs``
     so the exclusion stays visible in the record, never silently dropped.
     """
+    _fold_resolved_model(bucket, resolved_model, success=success, tainted=tainted)
     if tainted:
         bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + 1
         return
@@ -572,6 +639,7 @@ def _fold_domain_slice(
     timeout_limit_s: int | None,
     termination_cause: str | None,
     tainted: bool,
+    resolved_model: str | None = None,
 ) -> None:
     """Fold one dev run into a per-domain slice with recency + taint handling.
 
@@ -588,6 +656,7 @@ def _fold_domain_slice(
       from this window, so stale history decays out of relevance instead of
       permanently weighting a lifetime cumulative average.
     """
+    _fold_resolved_model(bucket, resolved_model, success=success, tainted=tainted)
     if tainted:
         bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + 1
         return
@@ -624,6 +693,7 @@ def _update_dev(
     termination_cause: str | None = None,
     domains: list[str] | None = None,
     tainted: bool = False,
+    resolved_model: str | None = None,
 ) -> None:
     # A tainted run is excluded from every capability accumulator (ADR-0006
     # clause 4), so it never records a cost either — suppress the cost-unmeasured
@@ -647,6 +717,7 @@ def _update_dev(
         timeout_limit_s,
         termination_cause,
         tainted,
+        resolved_model,
     )
 
     by = dev.setdefault("by_complexity", {})
@@ -661,6 +732,7 @@ def _update_dev(
         timeout_limit_s,
         termination_cause,
         tainted,
+        resolved_model,
     )
 
     if complexity_score is not None:
@@ -677,6 +749,7 @@ def _update_dev(
             timeout_limit_s,
             termination_cause,
             tainted,
+            resolved_model,
         )
 
     # Per-domain slice (issue #155): fold this run into a bucket for each domain
@@ -698,6 +771,7 @@ def _update_dev(
             timeout_limit_s,
             termination_cause,
             tainted,
+            resolved_model,
         )
         # Per-(domain, band) cross slice. by_domain and by_complexity are otherwise
         # independent marginals; the challenger-sampling router (#325) needs a
@@ -717,11 +791,17 @@ def _update_dev(
             timeout_limit_s,
             termination_cause,
             tainted,
+            resolved_model,
         )
 
 
 def _update_review(
-    entry: dict, cycles: int, findings: int, cost_usd: float | None, tainted: bool = False
+    entry: dict,
+    cycles: int,
+    findings: int,
+    cost_usd: float | None,
+    tainted: bool = False,
+    resolved_model: str | None = None,
 ) -> None:
     if cycles <= 0:
         return
@@ -732,6 +812,13 @@ def _update_review(
     if tainted:
         rev["tainted_runs"] = int(rev.get("tainted_runs", 0)) + cycles
         return
+    # Version attribution (#2226): the findings/cost population under this
+    # section is attributed to the concrete model that served, so an alias's
+    # review history can be told apart from one model's review history. Folded
+    # after the taint gate — this section tallies taint in cycles, and a
+    # per-version tally weighted differently from the section it breaks down
+    # would be a third number nobody could reconcile.
+    _fold_resolved_model(rev, resolved_model, success=None, tainted=False)
     if cost_usd is None:
         log.warning(
             "[model_profiles] Review run recorded cost-unmeasured (NOT $0.00): "
@@ -776,7 +863,12 @@ def _fold_completion_counters(section: dict, completed: bool) -> None:
         del ring[:-CAPABILITY_RECENCY_WINDOW]
 
 
-def _update_review_completion(entry: dict, completed: bool, tainted: bool = False) -> None:
+def _update_review_completion(
+    entry: dict,
+    completed: bool,
+    tainted: bool = False,
+    resolved_model: str | None = None,
+) -> None:
     """Fold one reviewer attempt-completion outcome into the review section (#1388).
 
     This is a separate fold from :func:`_update_review` (findings/cost) because it
@@ -788,6 +880,7 @@ def _update_review_completion(entry: dict, completed: bool, tainted: bool = Fals
     ``tainted_runs`` instead — never deleted, so the exclusion stays visible.
     """
     rev = entry.setdefault("review", {})
+    _fold_resolved_model(rev, resolved_model, success=completed, tainted=tainted)
     if tainted:
         rev["tainted_runs"] = int(rev.get("tainted_runs", 0)) + 1
         return
@@ -795,7 +888,11 @@ def _update_review_completion(entry: dict, completed: bool, tainted: bool = Fals
 
 
 def _update_role_completion(
-    entry: dict, role: str, completed: bool, tainted: bool = False
+    entry: dict,
+    role: str,
+    completed: bool,
+    tainted: bool = False,
+    resolved_model: str | None = None,
 ) -> None:
     """Fold one non-dev single-model invocation's completion into ``entry[role]``.
 
@@ -813,10 +910,19 @@ def _update_role_completion(
     if tainted:
         return
     section = entry.setdefault(role, {})
+    # Version attribution (#2226). No tainted tally here: this fold "only skips"
+    # (the per-phase fold owns the single tainted-run count), so recording one
+    # would count a tainted run once per attempt.
+    _fold_resolved_model(section, resolved_model, success=completed, tainted=False)
     _fold_completion_counters(section, completed)
 
 
-def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
+def _update_preflight(
+    entry: dict,
+    cost_usd: float | None,
+    tainted: bool = False,
+    resolved_model: str | None = None,
+) -> None:
     pf = entry.setdefault("preflight", {})
     # Taint gate (ADR-0006 clause 4): a tainted run is excluded from the preflight
     # capability aggregate and tallied under ``tainted_runs`` instead. This
@@ -825,6 +931,7 @@ def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False
     if tainted:
         pf["tainted_runs"] = int(pf.get("tainted_runs", 0)) + 1
         return
+    _fold_resolved_model(pf, resolved_model, success=None, tainted=False)
     if cost_usd is None:
         log.warning(
             "[model_profiles] Preflight run recorded cost-unmeasured (NOT $0.00): "
@@ -836,7 +943,12 @@ def _update_preflight(entry: dict, cost_usd: float | None, tainted: bool = False
     _fold_cost(pf, cost_usd)
 
 
-def _update_planner(entry: dict, cost_usd: float | None, tainted: bool = False) -> None:
+def _update_planner(
+    entry: dict,
+    cost_usd: float | None,
+    tainted: bool = False,
+    resolved_model: str | None = None,
+) -> None:
     """Fold one planner phase's runs + cost into the ``planner`` section (#1489).
 
     Parallel to :func:`_update_preflight`. Per-attempt reliability is folded
@@ -848,6 +960,7 @@ def _update_planner(entry: dict, cost_usd: float | None, tainted: bool = False) 
     if tainted:
         pl["tainted_runs"] = int(pl.get("tainted_runs", 0)) + 1
         return
+    _fold_resolved_model(pl, resolved_model, success=None, tainted=False)
     if cost_usd is None:
         log.warning(
             "[model_profiles] Planner run recorded cost-unmeasured (NOT $0.00): "
@@ -994,6 +1107,74 @@ def _recompute_dev_section(section: dict) -> None:
     }
 
 
+def _project_alias_derived(
+    data: dict,
+    *,
+    configured_key: str,
+    configured_entry: dict,
+    resolved_model: str | None,
+    role: str,
+    success: bool,
+    tainted: bool,
+    cost_usd: float | None,
+) -> None:
+    """Record an alias-served observation under the concrete version's profile.
+
+    Two candidates are involved in one run when the configured identity is a
+    family alias: the alias the router picked, and the version the vendor
+    actually served. Until #2226 only the first accumulated any history, which
+    is why a pinned candidate could never be ranked — it had no evidence, even
+    when hundreds of runs had been served *by exactly that model* under an
+    alias.
+
+    This projects the observation onto the served version's own profile entry so
+    that evidence exists. Three properties keep it honest:
+
+    * It lands in a **separate** ``alias_derived`` section, never in the
+      concrete entry's ``runs``/``_successes``. The run is already counted in
+      full under the configured candidate, so anything summing counts across
+      candidates (a fleet-wide sample floor, a cost cohort, a total-observation
+      read) sees it once, under the candidate that was actually selected.
+    * Each projected observation records **which** configured identity it came
+      from, under ``by_configured_model``. Evidence about a model gathered while
+      something else was selected is a weaker claim than evidence gathered under
+      the model's own name, and a consumer has to be able to tell them apart.
+    * Nothing is projected when the served identity **is** the configured one
+      (a pinned candidate, or a provider that does not resolve aliases): there
+      is no second candidate, and folding would double the entry's own history.
+
+    A tainted run projects nothing but its taint tally, on the same ADR-0006
+    clause-4 rule every other aggregate follows.
+    """
+    if not resolved_model:
+        return
+    configured_id = _resolve_storage_key(configured_key, configured_entry)
+    if resolved_model == configured_id or resolved_model == configured_key:
+        return
+    models = data.setdefault("models", {})
+    entry = models.setdefault(resolved_model, {})
+    section = entry.setdefault(ALIAS_DERIVED_KEY, {}).setdefault(role, {})
+    if tainted:
+        section["tainted_runs"] = int(section.get("tainted_runs", 0)) + 1
+        return
+    section["runs"] = int(section.get("runs", 0)) + 1
+    section["_successes"] = float(section.get("_successes", 0.0)) + (1.0 if success else 0.0)
+    by_configured = section.setdefault("by_configured_model", {})
+    source = by_configured.setdefault(configured_id, {})
+    source["runs"] = int(source.get("runs", 0)) + 1
+    source["_successes"] = float(source.get("_successes", 0.0)) + (1.0 if success else 0.0)
+    if cost_usd is None:
+        section["_cost_unknown_runs"] = int(section.get("_cost_unknown_runs", 0)) + 1
+    else:
+        section["_cost_sum"] = round(float(section.get("_cost_sum", 0.0)) + float(cost_usd), 6)
+
+
+def _resolve_storage_key(model_key: str, entry: dict | None) -> str:
+    """Return the canonical storage key an entry lives under, else the raw key."""
+    canonical = canonical_id_for_legacy_key(model_key, entry)
+    return canonical or model_key
+
+
 def apply_run(data: dict, outcome: RunOutcome) -> dict:
     """Pure: fold one run outcome into the profiles dict, returning it."""
     band = _normalize_band(outcome.complexity)
@@ -1017,6 +1198,23 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         termination_cause=outcome.dev_termination_cause,
         domains=outcome.domains,
         tainted=outcome.dev_tainted,
+        resolved_model=outcome.dev_resolved_model,
+    )
+    # Project the same dev observation onto the concrete version that served it
+    # (#2226), so a pinned candidate is rankable from history gathered while the
+    # alias was selected. Kept in its OWN section (``alias_derived``) rather than
+    # in the concrete entry's counters: the run is already counted in full under
+    # the configured candidate, and a cross-candidate aggregation that summed
+    # both would see it twice.
+    _project_alias_derived(
+        data,
+        configured_key=outcome.dev_model,
+        configured_entry=dev_entry,
+        resolved_model=outcome.dev_resolved_model,
+        role="dev",
+        success=outcome.dev_success,
+        tainted=outcome.dev_tainted,
+        cost_usd=outcome.dev_cost_usd,
     )
     if outcome.preflight_model:
         pf_entry = _ensure_model(
@@ -1026,7 +1224,12 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             provider=outcome.preflight_provider,
             cli=outcome.preflight_cli,
         )
-        _update_preflight(pf_entry, outcome.preflight_cost_usd, tainted=outcome.dev_tainted)
+        _update_preflight(
+            pf_entry,
+            outcome.preflight_cost_usd,
+            tainted=outcome.dev_tainted,
+            resolved_model=outcome.preflight_resolved_model,
+        )
     # Preflight reliability telemetry (#1489): fold one completion outcome per
     # native preflight invocation under the model that actually ran it, so a
     # parse-retry or fallback is attributed correctly (never collapsed onto the
@@ -1035,7 +1238,23 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         att_entry = _ensure_model(
             data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
         )
-        _update_role_completion(att_entry, "preflight", att.completed, tainted=outcome.dev_tainted)
+        _update_role_completion(
+            att_entry,
+            "preflight",
+            att.completed,
+            tainted=outcome.dev_tainted,
+            resolved_model=att.resolved_model,
+        )
+        _project_alias_derived(
+            data,
+            configured_key=att.name,
+            configured_entry=att_entry,
+            resolved_model=att.resolved_model,
+            role="preflight",
+            success=att.completed,
+            tainted=outcome.dev_tainted,
+            cost_usd=att.cost_usd,
+        )
     # Planner cost telemetry (#1489): fold the planner phase's runs + cost under its
     # canonical model ID. Per-attempt reliability is folded separately below.
     if outcome.planner_model:
@@ -1046,7 +1265,12 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             provider=outcome.planner_provider,
             cli=outcome.planner_cli,
         )
-        _update_planner(pl_entry, outcome.planner_cost_usd, tainted=outcome.dev_tainted)
+        _update_planner(
+            pl_entry,
+            outcome.planner_cost_usd,
+            tainted=outcome.dev_tainted,
+            resolved_model=outcome.planner_resolved_model,
+        )
     # Planner reliability telemetry (#1489): one completion outcome per native
     # plan-generation invocation, so transport-retry failures contribute failed
     # attempts rather than being hidden by a later successful plan output.
@@ -1054,7 +1278,23 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
         att_entry = _ensure_model(
             data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
         )
-        _update_role_completion(att_entry, "planner", att.completed, tainted=outcome.dev_tainted)
+        _update_role_completion(
+            att_entry,
+            "planner",
+            att.completed,
+            tainted=outcome.dev_tainted,
+            resolved_model=att.resolved_model,
+        )
+        _project_alias_derived(
+            data,
+            configured_key=att.name,
+            configured_entry=att_entry,
+            resolved_model=att.resolved_model,
+            role="planner",
+            success=att.completed,
+            tainted=outcome.dev_tainted,
+            cost_usd=att.cost_usd,
+        )
     # Reviewer identity from the attempt records (#1388) lets findings/cost and
     # completion telemetry fold under the SAME canonical model ID the router looks
     # a reviewer up by — otherwise findings would key by bare profile name while
@@ -1062,10 +1302,21 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
     _rev_identity = {
         att.name: (att.actual_model, att.provider, att.cli) for att in outcome.reviewer_attempts
     }
+    # Resolved (served) identity per reviewer, keyed the same way (#2226).
+    _rev_resolved = {
+        att.name: att.resolved_model for att in outcome.reviewer_attempts if att.resolved_model
+    }
     for name, (cycles, findings, cost) in outcome.reviewers.items():
         _am, _pv, _cl = _rev_identity.get(name, (None, None, None))
         rev_entry = _ensure_model(data, name, actual_model=_am, provider=_pv, cli=_cl)
-        _update_review(rev_entry, cycles, findings, cost, tainted=outcome.dev_tainted)
+        _update_review(
+            rev_entry,
+            cycles,
+            findings,
+            cost,
+            tainted=outcome.dev_tainted,
+            resolved_model=_rev_resolved.get(name),
+        )
     # Attempt-completion telemetry (#1388): one fold per reviewer invocation,
     # including failures, so the completion rate is complete over attempts.
     for att in outcome.reviewer_attempts:
@@ -1073,7 +1324,20 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             data, att.name, actual_model=att.actual_model, provider=att.provider, cli=att.cli
         )
         _update_review_completion(
-            rev_entry, att.completed_parseable_verdict, tainted=outcome.dev_tainted
+            rev_entry,
+            att.completed_parseable_verdict,
+            tainted=outcome.dev_tainted,
+            resolved_model=att.resolved_model,
+        )
+        _project_alias_derived(
+            data,
+            configured_key=att.name,
+            configured_entry=rev_entry,
+            resolved_model=att.resolved_model,
+            role="review",
+            success=att.completed_parseable_verdict,
+            tainted=outcome.dev_tainted,
+            cost_usd=None,
         )
     # Plan-reviewer mechanical value telemetry (#1443): fold each per-attempt
     # uniqueness / latency-per-P1 sample under the reviewer's canonical model ID,
@@ -1249,6 +1513,55 @@ def _weighted_rate(
     return round(num / den, 4) if den > 0 else fallback
 
 
+def _resolved_population(buckets: list[dict], *, total_key: str = "runs") -> dict:
+    """Summarize which concrete versions produced a signal's population (#2226).
+
+    Every routing signal below reports a rate over a population keyed by the
+    identity that was *configured*. When that identity is a family alias, the
+    population can span several concrete versions, and the rate is then an
+    average over observations of different models. This says which versions, in
+    what proportion, and — the one bit a consumer most needs — whether the
+    population is ``mixed`` at all.
+
+    Deliberately additive: it does not change the rate, the sample floor, or the
+    weighting. A population that spans two versions is not automatically wrong;
+    it is something the operator has to be able to *see* rather than infer from
+    a behavioural surprise. ``attributed``/``unattributed`` make the coverage
+    explicit, so a partly-pre-#2226 population cannot read as single-model just
+    because the older half recorded no served version.
+
+    Returns ``{}`` when nothing in the population carries a served version at
+    all — an empty mapping rather than a fabricated single-model claim.
+    """
+    by_model: dict[str, int] = {}
+    attributed = 0
+    total_runs = 0
+    for bucket in buckets:
+        if not isinstance(bucket, dict):
+            continue
+        total_runs += int(bucket.get(total_key, 0))
+        breakdown = bucket.get(RESOLVED_MODEL_BREAKDOWN_KEY)
+        if not isinstance(breakdown, dict):
+            continue
+        for model, counts in breakdown.items():
+            if not isinstance(counts, dict):
+                continue
+            runs = int(counts.get("runs", 0))
+            if runs <= 0:
+                continue
+            by_model[model] = by_model.get(model, 0) + runs
+            attributed += runs
+    if not by_model:
+        return {}
+    return {
+        "by_resolved_model": dict(sorted(by_model.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "distinct": len(by_model),
+        "mixed": len(by_model) > 1,
+        "attributed": attributed,
+        "unattributed": max(0, total_runs - attributed),
+    }
+
+
 def get_dev_signal(
     profiles: dict,
     model: str,
@@ -1284,6 +1597,12 @@ def get_dev_signal(
       ``"fail"``.
     - ``weighting``: the recency parameters actually applied (mode / half-life /
       window) so an operator can reproduce ``weighted`` from ``raw`` history.
+    - ``resolved_population``: which concrete versions produced this population
+      (#2226) — ``by_resolved_model`` counts, ``distinct``, and ``mixed``. A
+      candidate that names a family alias can accumulate observations of several
+      served versions under one key; this is what lets a consumer tell a
+      population describing one model from one describing several. Empty when no
+      consulted observation recorded a served version.
     """
     mode, half_life, window = _recency_params(recency)
     matching = _matching_profile_entries(
@@ -1297,12 +1616,14 @@ def get_dev_signal(
     successes = 0.0
     tainted = 0
     recent: list[int] = []
+    consulted: list[dict] = []
     if matching:
         if complexity is None:
             for _, entry in matching:
                 dev = entry.get("dev")
                 if not isinstance(dev, dict):
                     continue
+                consulted.append(dev)
                 tainted += int(dev.get("tainted_runs", 0))
                 ring = dev.get("_recent")
                 if isinstance(ring, list):
@@ -1321,6 +1642,7 @@ def get_dev_signal(
                 bc = (dev.get("by_complexity") or {}).get(band)
                 if not isinstance(bc, dict):
                     continue
+                consulted.append(bc)
                 tainted += int(bc.get("tainted_runs", 0))
                 ring = bc.get("_recent")
                 if isinstance(ring, list):
@@ -1353,6 +1675,7 @@ def get_dev_signal(
         "floor": "pass" if floor_ok else "fail",
         "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
         "rate": weighted if floor_ok else None,
+        "resolved_population": _resolved_population(consulted),
     }
 
 
@@ -1439,6 +1762,12 @@ def get_review_signal(
       and ``recovered`` (``True`` once the newest ``K`` attempts are all clean).
       This is reported unconditionally; the *threshold* comparison that decides
       whether recovery is relevant lives in the router, which owns the threshold.
+    - ``resolved_population``: which concrete versions produced this population
+      (#2226) — ``by_resolved_model`` counts, ``distinct``, and ``mixed``. A
+      candidate that names a family alias can accumulate observations of several
+      served versions under one key; this is what lets a consumer tell a
+      population describing one model from one describing several. Empty when no
+      consulted observation recorded a served version.
     """
     mode, half_life, window = _recency_params(recency)
     matching = _matching_profile_entries(
@@ -1452,10 +1781,12 @@ def get_review_signal(
     completed = 0
     tainted = 0
     recent: list[int] = []
+    consulted: list[dict] = []
     for _, entry in matching:
         rev = entry.get("review")
         if not isinstance(rev, dict):
             continue
+        consulted.append(rev)
         tainted += int(rev.get("tainted_runs", 0))
         attempted += int(rev.get("_attempted_count", 0))
         completed += int(rev.get("_completed_count", 0))
@@ -1488,6 +1819,7 @@ def get_review_signal(
             "clean_attempts_required": required_clean,
             "recovered": clean_streak >= required_clean,
         },
+        "resolved_population": _resolved_population(consulted, total_key="_attempted_count"),
     }
 
 
@@ -1528,6 +1860,12 @@ def get_role_reliability_signal(
     - ``schema_ok``: whether the section carried recognizable completion counters —
       ``False`` for a legacy/foreign section shape, which forces a cold-start
       result (schema stability, ADR-0006 clause 2).
+    - ``resolved_population``: which concrete versions produced this population
+      (#2226) — ``by_resolved_model`` counts, ``distinct``, and ``mixed``. A
+      candidate that names a family alias can accumulate observations of several
+      served versions under one key; this is what lets a consumer tell a
+      population describing one model from one describing several. Empty when no
+      consulted observation recorded a served version.
     """
     mode, half_life, window = _recency_params(recency)
     matching = _matching_profile_entries(
@@ -1542,10 +1880,12 @@ def get_role_reliability_signal(
     tainted = 0
     schema_ok = True
     recent: list[int] = []
+    consulted: list[dict] = []
     for _, entry in matching:
         section = entry.get(role)
         if not isinstance(section, dict):
             continue
+        consulted.append(section)
         tainted += int(section.get("tainted_runs", 0))
         # A section that carries runs/cost but no completion counters is an older
         # schema that predates #1489: it cannot answer the reliability question, so
@@ -1581,6 +1921,7 @@ def get_role_reliability_signal(
         "floor": "pass" if floor_ok else "fail",
         "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
         "rate": weighted if floor_ok else None,
+        "resolved_population": _resolved_population(consulted, total_key="_attempted_count"),
     }
 
 
@@ -1631,6 +1972,11 @@ def get_dev_domain_signal(
     story's domains. The per-domain breakdown is returned in ``by_domain`` so the
     routing_decision block can show the matching profile slice per tag.
 
+    ``resolved_population`` (#2226) reports which concrete versions produced the
+    population, both in aggregate and per domain, so an alias candidate's
+    per-domain rate is not read as describing one model when it describes
+    several.
+
     Returns ``rate=None`` with ``floor="fail"`` when ``domains`` is empty or no
     admissible domain data exists — an explicit no-signal status, never a
     negative score.
@@ -1648,11 +1994,13 @@ def get_dev_domain_signal(
     total_successes = 0.0
     total_tainted = 0
     recent_all: list[int] = []
+    consulted: list[dict] = []
     for domain in requested:
         d_runs = 0
         d_successes = 0.0
         d_tainted = 0
         d_recent: list[int] = []
+        d_consulted: list[dict] = []
         for _, entry in matching:
             dev = entry.get("dev")
             if not isinstance(dev, dict):
@@ -1660,6 +2008,7 @@ def get_dev_domain_signal(
             dd = (dev.get("by_domain") or {}).get(domain)
             if not isinstance(dd, dict):
                 continue
+            d_consulted.append(dd)
             d_tainted += int(dd.get("tainted_runs", 0))
             entry_runs = int(dd.get("runs", 0))
             if entry_runs <= 0:
@@ -1676,7 +2025,9 @@ def get_dev_domain_signal(
             "raw": d_raw,
             "weighted": d_weighted,
             "tainted_runs": d_tainted,
+            "resolved_population": _resolved_population(d_consulted),
         }
+        consulted.extend(d_consulted)
         total_runs += d_runs
         total_successes += d_successes
         total_tainted += d_tainted
@@ -1695,6 +2046,7 @@ def get_dev_domain_signal(
         "recency": "windowed",
         "rate": weighted if floor_ok else None,
         "by_domain": per_domain,
+        "resolved_population": _resolved_population(consulted),
     }
 
 
@@ -2256,14 +2608,18 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
          API spec), narrowed by a transport hint recorded on ``entry`` when the
          bare name alone is ambiguous (``gpt-5.4`` + ``transport_used: cli`` →
          ``openai/gpt-5.4/cli``).
-      6. Anthropic CLI concrete-version family match (``claude-sonnet-4-6`` →
-         ``anthropic/sonnet/cli``). This one is a *prefix heuristic*, not a
-         registry-derived rule: it holds only because the Anthropic registry
-         slots are the shorthands ``sonnet``/``opus`` while the runner reports
-         dated concrete versions. It is gated on the shorthand slot actually
-         existing in the registry, and applies only to Anthropic CLI, so a
-         future ``claude-<family>-*`` model with no matching shorthand stays
-         unresolved rather than being folded into the wrong slot.
+    A concrete served version resolves to *its own* identity or to nothing.
+    Until #2226 a sixth rule folded ``claude-sonnet-4-6`` onto
+    ``anthropic/sonnet/cli`` on a name-prefix heuristic, on the reasoning that
+    the shorthand was the only slot the version could live in. That is exactly
+    the collapse this resolver must not perform: a family shorthand and a
+    concrete version are different subjects, and merging them is what let
+    evidence accumulate against a moving target. The catalog now carries pinned
+    entries beside the shorthands, so ``claude-sonnet-4-6`` resolves through
+    rule 5 to ``anthropic/claude-sonnet-4-6/cli`` when that entry exists. A
+    version with no pinned entry — a release the catalog has not caught up to —
+    stays **unresolved**, which is a fact the operator can act on (see
+    ``forge audit alias-drift``), unlike a silent fold into the shorthand.
 
     ``entry`` is the optional record the key was read from — either a profiles
     storage entry (``_identity`` metadata) or an audit ``cost.agents`` entry
@@ -2321,10 +2677,6 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
     if spec is not None:
         return f"{spec.provider}/{spec.model}/{spec.transport.kind}"
 
-    family = _anthropic_cli_family_id(key, effective_hint)
-    if family is not None:
-        return family
-
     if transport_hint is None:
         # Try `<provider>-<model>` style: split at the first dash where the
         # prefix matches a known provider, e.g. ``deepseek-deepseek-reasoner``
@@ -2348,42 +2700,6 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
                         return f"{spec_obj.provider}/{spec_obj.model}/{spec_obj.transport.kind}"
 
     return None
-
-
-def _anthropic_cli_family_id(model_key: str, transport: str | None) -> str | None:
-    """Map a concrete Anthropic CLI model version onto its registry shorthand.
-
-    The Anthropic registry slots are family shorthands (``anthropic/sonnet/cli``,
-    ``anthropic/opus/cli``) while the Claude CLI reports dated concrete versions
-    (``claude-sonnet-4-6``). Without this the same model indexes under two
-    spellings (#2225).
-
-    Deliberately narrow, because this is the one prefix heuristic in the
-    resolver rather than a registry-derived rule:
-
-    * only ``claude-<family>-<version…>`` keys,
-    * only when ``anthropic/<family>/cli`` exists in the registry, and
-    * only when nothing hints at a non-CLI transport.
-
-    A future ``claude-<family>-*`` model with no matching shorthand slot
-    resolves to ``None`` and is reported unresolved, which is the behaviour a
-    catalog change should surface rather than silently mis-bucket.
-    """
-    if transport not in (None, "cli"):
-        return None
-    prefix = "claude-"
-    if not model_key.startswith(prefix):
-        return None
-    rest = model_key[len(prefix) :]
-    family, sep, version = rest.partition("-")
-    if not family or not sep or not version:
-        return None
-    try:
-        from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
-    except Exception:  # noqa: BLE001
-        return None
-    canonical = f"anthropic/{family}/cli"
-    return canonical if canonical in AGENT_REGISTRY else None
 
 
 def _unique_registry_spec(model_name: str, transport: str | None) -> Any | None:

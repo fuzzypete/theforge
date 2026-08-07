@@ -244,6 +244,8 @@ def _append_reviewer_attempt(
     """
     from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
 
+    from .agent_identity import resolved_identity_for_result  # noqa: PLC0415
+
     completed, outcome, reason = _classify_reviewer_attempt(result, parseable, config)
     if outcome_override is not None:
         outcome = outcome_override
@@ -260,6 +262,10 @@ def _append_reviewer_attempt(
                 provider=getattr(profile, "provider", None),
                 cli=getattr(profile, "cli", None),
             ),
+            # The concrete model that served THIS invocation (#2226). The
+            # identity fields above come off the profile — what was selected —
+            # which for a family alias does not say what ran.
+            "resolved_model": resolved_identity_for_result(result),
             "completed_parseable_verdict": bool(completed),
             "outcome": outcome,
             "failure_reason": reason,

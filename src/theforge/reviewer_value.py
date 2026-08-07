@@ -118,6 +118,10 @@ class ReviewerValueSample:
     actual_model: str | None = None
     provider: str | None = None
     cli: str | None = None
+    # Concrete identity that served this reviewer attempt (#2226). When the
+    # identity fields above name a family alias, this is the only record of
+    # which version produced the value measurement.
+    resolved_model: str | None = None
 
     def uniqueness_rate(self) -> float | None:
         """Fraction of this reviewer's P1s no peer corroborated; None if no P1s."""
@@ -330,7 +334,7 @@ def fold_reviewer_value(
     uniq = sample.uniqueness_rate()
     if uniq is None:
         return  # no P1s → uniqueness/latency-per-P1 undefined; nothing to learn
-    from theforge.model_profiles import _normalize_band  # noqa: PLC0415
+    from theforge.model_profiles import _fold_resolved_model, _normalize_band  # noqa: PLC0415
 
     band = _normalize_band(sample.complexity)
     section = entry.setdefault(section_for_phase(phase), {})
@@ -348,6 +352,10 @@ def fold_reviewer_value(
     lpp = sample.latency_per_p1()
     for bucket in (section, band_bucket):
         _fold_bucket(bucket, uniq, lpp)
+        # Version attribution (#2226): say which concrete model produced this
+        # value observation, so a population accumulated under a family alias is
+        # not read as describing one reviewer when it describes several.
+        _fold_resolved_model(bucket, sample.resolved_model, success=None, tainted=False)
 
 
 def fold_plan_reviewer_value(
@@ -431,8 +439,15 @@ def get_reviewer_value_signal(
       cost?" signal.
     - ``runs`` / ``tainted_runs``: admissible sample count and the count excluded
       for taint (#1852), surfaced so the exclusion stays auditable.
+    - ``resolved_population``: which concrete versions produced the samples
+      (#2226), so a value rate accumulated under a family alias is not read as
+      describing one reviewer when it describes several.
     """
-    from theforge.model_profiles import _matching_profile_entries, _normalize_band  # noqa: PLC0415
+    from theforge.model_profiles import (  # noqa: PLC0415
+        _matching_profile_entries,
+        _normalize_band,
+        _resolved_population,
+    )
 
     section_key = section_for_phase(phase)
     matching = _matching_profile_entries(
@@ -450,6 +465,7 @@ def get_reviewer_value_signal(
         UNIQUENESS_RING: [],
         LATENCY_RING: [],
     }
+    consulted: list[dict] = []
     for _, entry in matching:
         section = entry.get(section_key)
         if not isinstance(section, dict):
@@ -460,6 +476,7 @@ def get_reviewer_value_signal(
             bucket = (section.get(BY_COMPLEXITY) or {}).get(band)
             if not isinstance(bucket, dict):
                 continue
+        consulted.append(bucket)
         merged["runs"] += int(bucket.get("runs", 0))
         merged["tainted_runs"] += int(bucket.get("tainted_runs", 0))
         merged[UNIQUENESS_SUM] += float(bucket.get(UNIQUENESS_SUM, 0.0))
@@ -480,4 +497,5 @@ def get_reviewer_value_signal(
         "latency_per_p1": latency,
         "runs": int(merged["runs"]),
         "tainted_runs": int(merged["tainted_runs"]),
+        "resolved_population": _resolved_population(consulted),
     }

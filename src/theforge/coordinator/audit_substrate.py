@@ -29,7 +29,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
 
-from .agent_identity import dev_identity_ledger, dev_model_identity_detail
+from .agent_identity import (
+    dev_identity_ledger,
+    dev_model_identity_detail,
+    invocation_identity_rows,
+)
 
 # Substrate (SQLite) schema version. Bumped to 5 by #2201, which added
 # ``audit_records.dev_model_source`` and repaired the dev-model projection:
@@ -54,7 +58,20 @@ from .agent_identity import dev_identity_ledger, dev_model_identity_detail
 # resolved-identity compatibility column. A version-6 substrate is re-derived on
 # open so the new columns reach already-indexed history wherever the record
 # carries a ledger.
-SUBSTRATE_SCHEMA_VERSION = 7
+#
+# Bumped to 8 by #2226: the configured/resolved pair existed only for the dev
+# role and only one per run, so "what did this alias resolve to" was
+# unanswerable for every other phase and for a run whose phases resolved
+# differently. ``invocation_identities`` indexes that pair once per *recorded
+# invocation* (role-neutral, drawn from ``cost.agents`` and the earlier
+# ``preflight.attempts`` ledgers), leaving the ``dev_*`` columns in place as
+# compatibility projections. A version-7 substrate is re-derived on open so the
+# new table covers already-indexed history wherever the record carries ledgers.
+#
+# This is the DB-schema counter only: the new table is derived from the same
+# record fields readers already parse, so no per-record ``MIGRATION_HELPERS``
+# entry and no ``CURRENT_RECORD_SCHEMA_VERSION`` bump is implied.
+SUBSTRATE_SCHEMA_VERSION = 8
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -204,6 +221,30 @@ CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT
 );
+CREATE TABLE IF NOT EXISTS invocation_identities (
+    run_id TEXT NOT NULL,
+    seq INTEGER NOT NULL,
+    source TEXT NOT NULL,
+    role TEXT,
+    profile TEXT,
+    configured_model TEXT,
+    configured_model_resolution TEXT,
+    resolved_model TEXT,
+    resolved_model_resolution TEXT,
+    configured_differs_from_resolved INTEGER,
+    ledger_full INTEGER NOT NULL DEFAULT 0,
+    ledger_version INTEGER,
+    started_at TEXT,
+    PRIMARY KEY (run_id, seq)
+);
+CREATE INDEX IF NOT EXISTS idx_invocation_identities_configured
+    ON invocation_identities(configured_model);
+CREATE INDEX IF NOT EXISTS idx_invocation_identities_resolved
+    ON invocation_identities(resolved_model);
+CREATE INDEX IF NOT EXISTS idx_invocation_identities_role
+    ON invocation_identities(role);
+CREATE INDEX IF NOT EXISTS idx_invocation_identities_started
+    ON invocation_identities(started_at);
 CREATE TABLE IF NOT EXISTS readiness_events (
     event_id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL,
@@ -345,6 +386,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     # than only new writes.
     if prior_version is not None and prior_version < SUBSTRATE_SCHEMA_VERSION:
         _reindex_dev_model_identity(conn)
+        _reindex_invocation_identities(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -418,6 +460,98 @@ _DEV_IDENTITY_COLUMNS: tuple[str, ...] = (
     "dev_identity_ledger_version",
     "dev_identity_ledger_full",
 )
+
+
+_INVOCATION_IDENTITY_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "seq",
+    "source",
+    "role",
+    "profile",
+    "configured_model",
+    "configured_model_resolution",
+    "resolved_model",
+    "resolved_model_resolution",
+    "configured_differs_from_resolved",
+    "ledger_full",
+    "ledger_version",
+    "started_at",
+)
+
+
+def _invocation_identity_params(run_id: str, record: dict) -> list[tuple]:
+    """Project a record to the ``invocation_identities`` rows it justifies.
+
+    ``seq`` is assigned by the extraction order (``cost.agents`` first, then the
+    superseded ``preflight.attempts``), so it is stable for a given record and a
+    rewrite of the same run produces the same keys rather than accumulating.
+    """
+    started_at = (record.get("timing") or {}).get("started_at")
+    params: list[tuple] = []
+    for seq, row in enumerate(invocation_identity_rows(record)):
+        configured = row["configured"]
+        resolved = row["resolved"]
+        differs = row["differs"]
+        params.append(
+            (
+                run_id,
+                seq,
+                row["source"],
+                row["role"],
+                row["profile"],
+                configured[0] if configured else None,
+                configured[2] if configured else None,
+                resolved[0] if resolved else None,
+                resolved[2] if resolved else None,
+                None if differs is None else (1 if differs else 0),
+                1 if row["full_ledger"] else 0,
+                row["version"],
+                started_at if isinstance(started_at, str) else None,
+            )
+        )
+    return params
+
+
+def _write_invocation_identities(conn: sqlite3.Connection, run_id: str, record: dict) -> int:
+    """Rewrite the invocation-identity rows for one run. Returns rows written."""
+    conn.execute("DELETE FROM invocation_identities WHERE run_id = ?", (run_id,))
+    params = _invocation_identity_params(run_id, record)
+    if not params:
+        return 0
+    names = ", ".join(_INVOCATION_IDENTITY_COLUMNS)
+    placeholders = ", ".join(["?"] * len(_INVOCATION_IDENTITY_COLUMNS))
+    conn.executemany(
+        f"INSERT OR REPLACE INTO invocation_identities({names}) VALUES ({placeholders})",
+        params,
+    )
+    return len(params)
+
+
+def _reindex_invocation_identities(conn: sqlite3.Connection) -> int:
+    """Derive ``invocation_identities`` for every already-indexed run (#2226).
+
+    Modelled on :func:`_reindex_dev_model_identity`: ``raw_json`` is the record,
+    so a row imported from legacy history is covered alongside a native one, and
+    a record whose JSON carries no ledger simply contributes no rows rather than
+    contributing guessed ones. Returns the number of *runs* that produced rows.
+    """
+    try:
+        rows = conn.execute("SELECT run_id, raw_json FROM audit_records").fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    updated = 0
+    for row in rows:
+        run_id = row[0] if not isinstance(row, sqlite3.Row) else row["run_id"]
+        raw = row[1] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if _write_invocation_identities(conn, str(run_id), record):
+            updated += 1
+    return updated
 
 
 def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
@@ -1485,6 +1619,10 @@ def upsert_run_record(
         "raw_json=excluded.raw_json",
         params,
     )
+    # Rewrite the per-invocation identity rows for this run_id (#2226), on the
+    # same delete-then-insert discipline as reviews below so a re-upsert of the
+    # same run replaces rather than accumulates.
+    _write_invocation_identities(conn, run_id, record)
     # Rewrite reviews for this run_id.
     conn.execute("DELETE FROM reviews WHERE run_id = ?", (run_id,))
     review_rows = _extract_reviews(record)
@@ -1895,6 +2033,113 @@ def latest_record_for(
     else:
         raw, ver = row[0], row[1]
     return _load_migrated(raw, ver)
+
+
+# ── Alias-resolution drift ───────────────────────────────────────────────
+
+
+def iter_invocation_identities(
+    conn: sqlite3.Connection,
+    *,
+    configured_model: str | None = None,
+    role: str | None = None,
+) -> Iterable[dict]:
+    """Yield indexed invocation-identity rows, oldest first. Never writes."""
+    clauses: list[str] = []
+    params: list[object] = []
+    if configured_model is not None:
+        clauses.append("configured_model = ?")
+        params.append(configured_model)
+    if role is not None:
+        clauses.append("role = ?")
+        params.append(role)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    names = ", ".join(_INVOCATION_IDENTITY_COLUMNS)
+    try:
+        rows = conn.execute(
+            f"SELECT {names} FROM invocation_identities{where} "
+            "ORDER BY COALESCE(started_at, ''), run_id, seq",
+            tuple(params),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+    for row in rows:
+        yield {
+            name: (row[name] if isinstance(row, sqlite3.Row) else row[idx])
+            for idx, name in enumerate(_INVOCATION_IDENTITY_COLUMNS)
+        }
+
+
+def alias_resolution_timeline(conn: sqlite3.Connection) -> list[dict]:
+    """Group recorded invocations by configured identity and report drift (#2226).
+
+    Answers the question a family alias makes unanswerable from the identity
+    alone: *what did this actually run, and did that change?* Each returned entry
+    is one configured identity::
+
+        {
+          "configured_model": str,
+          "invocations": int,
+          "resolved_models": [            # ordered by first appearance
+              {"resolved_model": str,
+               "resolution": str | None,
+               "invocations": int,
+               "first_seen": str | None,
+               "last_seen": str | None,
+               "first_run_id": str,
+               "last_run_id": str},
+              ...
+          ],
+          "distinct_resolved": int,
+          "changed": bool,                # resolved to more than one identity
+          "current": str | None,          # newest resolved identity
+        }
+
+    ``changed`` is the detection this exists for: two runs naming the same alias
+    that resolved to different concrete versions produce ``changed: True``,
+    which is a recorded fact rather than a behavioural surprise. Entries are
+    ordered most-drifted first, then by invocation count, so the aliases whose
+    subject moved surface at the top. Rows with no configured identity (a
+    pre-ledger record, which could never name one) are skipped: they cannot
+    attest to what an alias resolved to.
+    """
+    grouped: dict[str, dict] = {}
+    for row in iter_invocation_identities(conn):
+        configured = row["configured_model"]
+        resolved = row["resolved_model"]
+        if not configured or not resolved:
+            continue
+        bucket = grouped.setdefault(
+            configured,
+            {"configured_model": configured, "invocations": 0, "_resolved": {}},
+        )
+        bucket["invocations"] += 1
+        seen = bucket["_resolved"].get(resolved)
+        started = row["started_at"]
+        if seen is None:
+            bucket["_resolved"][resolved] = {
+                "resolved_model": resolved,
+                "resolution": row["resolved_model_resolution"],
+                "invocations": 1,
+                "first_seen": started,
+                "last_seen": started,
+                "first_run_id": row["run_id"],
+                "last_run_id": row["run_id"],
+            }
+        else:
+            seen["invocations"] += 1
+            seen["last_seen"] = started
+            seen["last_run_id"] = row["run_id"]
+    out: list[dict] = []
+    for bucket in grouped.values():
+        resolved_models = list(bucket.pop("_resolved").values())
+        bucket["resolved_models"] = resolved_models
+        bucket["distinct_resolved"] = len(resolved_models)
+        bucket["changed"] = len(resolved_models) > 1
+        bucket["current"] = resolved_models[-1]["resolved_model"] if resolved_models else None
+        out.append(bucket)
+    out.sort(key=lambda b: (-b["distinct_resolved"], -b["invocations"], b["configured_model"]))
+    return out
 
 
 # ── Derived assignment-history view ──────────────────────────────────────

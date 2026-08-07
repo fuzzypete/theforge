@@ -15,8 +15,54 @@ from theforge.config import ForgeConfig
 from theforge.model_profiles import ReviewerAttempt, RoleAttempt, RunOutcome, update_from_run
 from theforge.reviewer_value import PlanReviewerValueSample, ReviewerValueSample
 
+from .agent_identity import resolved_identity_for_result
 from .state import CoordinatorState
 from .trust_status import derive_trust_status, is_tainted
+
+
+def _last_resolved_identity(results: object) -> str | None:
+    """Resolved identity of the newest invocation in a list of AgentResults.
+
+    The phase-level identity fold records one identity for a phase that may have
+    run several invocations. The newest one that reported a served model is the
+    truthful answer: it is what the phase most recently ran, and an earlier
+    attempt that reported nothing must not blank it out.
+    """
+    if not isinstance(results, list):
+        return None
+    for result in reversed(results):
+        resolved = resolved_identity_for_result(result)
+        if resolved:
+            return resolved
+    return None
+
+
+def _resolved_by_reviewer(state: CoordinatorState) -> dict[str, str]:
+    """Map reviewer profile name → the concrete identity that most recently served.
+
+    The value-telemetry captures (``plan_reviewer_value`` /
+    ``code_reviewer_value``) record the reviewer's *profile* identity, which for
+    a family alias does not name the version that produced the measurement.
+    Rather than plumbing the served identity through both pool loops, the join
+    happens here, against the two per-invocation captures that already carry it:
+    the reviewer-attempt records (code review) and the plan-review results
+    (plan review). Deterministic — keyed by profile name, newest wins — and it
+    keeps this module the single adapter between coordinator state and the
+    profile aggregator.
+    """
+    by_name: dict[str, str] = {}
+    for attempt in state.reviewer_attempts or []:
+        if not isinstance(attempt, dict):
+            continue
+        name, resolved = attempt.get("name"), attempt.get("resolved_model")
+        if name and resolved:
+            by_name[str(name)] = str(resolved)
+    for result in state.plan_review_results or []:
+        name = getattr(result, "profile_name", None)
+        resolved = resolved_identity_for_result(result)
+        if name and resolved:
+            by_name[str(name)] = resolved
+    return by_name
 
 
 def _extract_reviewers(
@@ -74,6 +120,7 @@ def _extract_reviewer_attempts(state: CoordinatorState) -> list[ReviewerAttempt]
                 provider=a.get("provider"),
                 cli=a.get("cli"),
                 failure_reason=a.get("failure_reason"),
+                resolved_model=a.get("resolved_model"),
             )
         )
     return attempts
@@ -88,6 +135,7 @@ def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerV
     identity so the value signal lands under the same model entry the router looks
     it up by.
     """
+    resolved_by_name = _resolved_by_reviewer(state)
     samples: list[PlanReviewerValueSample] = []
     for v in state.plan_reviewer_value or []:
         if not isinstance(v, dict) or not v.get("reviewer"):
@@ -102,6 +150,7 @@ def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerV
                 actual_model=v.get("actual_model"),
                 provider=v.get("provider"),
                 cli=v.get("cli"),
+                resolved_model=resolved_by_name.get(str(v["reviewer"])),
             )
         )
     return samples
@@ -116,6 +165,7 @@ def _extract_code_reviewer_values(state: CoordinatorState) -> list[ReviewerValue
     reviewer's canonical identity, so the value signal lands under the same model
     entry the router looks it up by.
     """
+    resolved_by_name = _resolved_by_reviewer(state)
     samples: list[ReviewerValueSample] = []
     for v in state.code_reviewer_value or []:
         if not isinstance(v, dict) or not v.get("reviewer"):
@@ -130,6 +180,7 @@ def _extract_code_reviewer_values(state: CoordinatorState) -> list[ReviewerValue
                 actual_model=v.get("actual_model"),
                 provider=v.get("provider"),
                 cli=v.get("cli"),
+                resolved_model=resolved_by_name.get(str(v["reviewer"])),
             )
         )
     return samples
@@ -167,9 +218,24 @@ def _extract_preflight_attempts(state: CoordinatorState) -> list[RoleAttempt]:
                 provider=a.get("provider"),
                 cli=a.get("cli"),
                 cost_usd=a.get("cost_usd"),
+                # Each attempt carries its own ledger (#2205), so a fallback
+                # attempt is attributed to the version that served IT rather than
+                # to whatever the final attempt resolved to.
+                resolved_model=_ledger_resolved_identity(a.get("ledger")),
             )
         )
     return attempts
+
+
+def _ledger_resolved_identity(ledger: object) -> str | None:
+    """Read ``resolved_primary_identity.identity`` out of a recorded ledger block."""
+    if not isinstance(ledger, dict):
+        return None
+    block = ledger.get("resolved_primary_identity")
+    if not isinstance(block, dict):
+        return None
+    identity = str(block.get("identity") or block.get("raw") or "").strip()
+    return identity or None
 
 
 def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[RoleAttempt]:
@@ -194,7 +260,7 @@ def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[
     provider = getattr(planner_profile, "provider", None)
     cli = getattr(planner_profile, "cli", None)
 
-    def _attempt(completed: bool, cost: float | None) -> RoleAttempt:
+    def _attempt(completed: bool, cost: float | None, resolved: str | None) -> RoleAttempt:
         return RoleAttempt(
             name=name,
             completed=completed,
@@ -202,14 +268,23 @@ def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[
             provider=provider,
             cli=cli,
             cost_usd=cost,
+            resolved_model=resolved,
         )
 
     attempts: list[RoleAttempt] = []
     for retry in state.plan_transport_retries or []:
         if isinstance(retry, dict):
-            attempts.append(_attempt(False, None))
+            # A transport failure produced no invocation identity to record: the
+            # call never reached a model that could report one.
+            attempts.append(_attempt(False, None, None))
     for r in state.plan_results or []:
-        attempts.append(_attempt(bool(getattr(r, "success", False)), getattr(r, "cost_usd", None)))
+        attempts.append(
+            _attempt(
+                bool(getattr(r, "success", False)),
+                getattr(r, "cost_usd", None),
+                resolved_identity_for_result(r),
+            )
+        )
     return attempts
 
 
@@ -294,6 +369,9 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         # Pass the cost-unknown signal through (None) instead of coercing to
         # $0.00, so unmeasured CLI-transport runs are recorded as unmeasured.
         dev_cost_usd=state.total_dev_cost_measured,
+        # The concrete model that served the dev phase (#2226) — distinct from
+        # ``dev_model``/``dev_actual_model``, which name what was selected.
+        dev_resolved_model=_last_resolved_identity(state.dev_results),
         preflight_model=config.preflight_profile.name
         if getattr(config, "preflight_profile", None)
         else None,
@@ -306,12 +384,14 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         preflight_cli=getattr(config.preflight_profile, "cli", None)
         if getattr(config, "preflight_profile", None)
         else None,
+        preflight_resolved_model=resolved_identity_for_result(state.preflight_result),
         preflight_cost_usd=state.total_preflight_cost_measured,
         preflight_attempts=preflight_attempts,
         planner_model=planner_model,
         planner_actual_model=planner_actual_model,
         planner_provider=planner_provider,
         planner_cli=planner_cli,
+        planner_resolved_model=_last_resolved_identity(state.plan_results),
         planner_cost_usd=planner_cost,
         planner_attempts=planner_attempts,
         reviewers=_extract_reviewers(state),

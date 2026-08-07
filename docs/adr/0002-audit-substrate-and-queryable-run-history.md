@@ -160,6 +160,13 @@ The substrate evolves over the project's lifetime. The contract that keeps that 
 - A spelling that still cannot be resolved is kept verbatim, which is the truthful record, but `audit_records.dev_model_resolution` now says whether the stored value is `canonical` or `unresolved`, so a consumer can tell an unrecognized identity from a normalized one instead of treating both as equally authoritative.
 - `SUBSTRATE_SCHEMA_VERSION` is 6. Opening a version-5 substrate re-derives the `dev_model*` columns from each row's `raw_json`, so the normalization reaches already-indexed history rather than only new writes.
 
+**Landed in #2226 (per-invocation configured/resolved identity):**
+
+- The `dev_configured_model*` / `dev_resolved_model*` pair was dev-role-only and one row per run, so "what did this alias actually run" was unanswerable for preflight, plan, plan_review, review and synthesis, and for a run whose phases resolved differently. A new `invocation_identities` table indexes the pair once per *recorded invocation*, keyed `(run_id, seq)` and carrying `role`, `profile`, `source`, both identities with their resolution status, `configured_differs_from_resolved`, and the ledger version/completeness markers. The `dev_*` columns stay as compatibility projections.
+- The index draws from `cost.agents` **and** `preflight.attempts[*].ledger`. Only the final preflight attempt reaches `cost.agents`, so a parse-retry or fallback that ran, resolved to a concrete version and was superseded exists nowhere else — the retry path is exactly where the served identity is most likely to differ from the configured one.
+- A concrete served version no longer folds onto its family shorthand (#2225's `claude-sonnet-4-6` → `anthropic/sonnet/cli` prefix heuristic is removed). The catalog carries pinned entries beside the shorthands, so a served version resolves to its own identity; one the catalog has not pinned stays `unresolved` rather than being merged into the alias that selected it.
+- `SUBSTRATE_SCHEMA_VERSION` is 8. Opening a version-7 substrate derives `invocation_identities` from each row's `raw_json`, so the new query surface — including `alias_resolution_timeline()`, behind `forge audits alias-drift` — covers already-indexed history. This is a DB-schema change only: no `CURRENT_RECORD_SCHEMA_VERSION` bump and no record-level migration helper, because the table is derived from record fields readers already parse.
+
 **Writer-side guard (tracked in #1528):**
 
 - A CI check refuses a `schema_version` bump on the writer side without a matching migration-helper entry. This is the writer-side counterpart to #1522's reader-side dispatch; the two issues are sized to land independently.

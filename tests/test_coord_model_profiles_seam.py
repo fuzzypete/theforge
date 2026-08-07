@@ -1205,3 +1205,59 @@ def test_seam_planner_transport_retry_folds_failed_attempt(tmp_path):
     pl = data["models"]["anthropic/opus/cli"]["planner"]
     assert pl["_attempted_count"] == 2
     assert pl["_completed_count"] == 1
+
+
+def test_seam_served_version_reaches_the_profile_beside_the_configured_alias(tmp_path):
+    """Seam (runner result → bridge → aggregator): #2226.
+
+    ``config.dev_profile`` names what was *selected*; the ``AgentResult`` carries
+    what actually served. Both have to cross the bridge, or the profile records a
+    population keyed to an identity that can move underneath it.
+    """
+    from dataclasses import replace
+
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+    from theforge.model_profiles import RESOLVED_MODEL_BREAKDOWN_KEY, apply_run
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state.dev_results = [
+        replace(
+            _make_agent_result(success=True),
+            model_used="claude-opus-4-6",
+            transport_used="cli",
+        )
+    ]
+
+    outcome = build_run_outcome(config, state, success=True)
+    assert outcome.dev_resolved_model == "anthropic/claude-opus-4-6/cli"
+    # The configured identity is untouched — this is additive, not a rename.
+    assert outcome.dev_model == config.dev_profile.name
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    dev_entry = next(entry for entry in data["models"].values() if "dev" in entry)
+    breakdown = dev_entry["dev"][RESOLVED_MODEL_BREAKDOWN_KEY]
+    assert breakdown == {"anthropic/claude-opus-4-6/cli": {"runs": 1, "_successes": 1.0}}
+
+
+def test_seam_a_reviewer_attempt_carries_the_version_that_served_it(tmp_path):
+    """Seam (review_pool capture → bridge → aggregator): #2226."""
+    from dataclasses import replace
+
+    from theforge.coordinator.model_profiles_bridge import _extract_reviewer_attempts
+    from theforge.coordinator.review_pool import _append_reviewer_attempt
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    profile = _planner_profile()
+    result = replace(
+        _make_agent_result(success=True),
+        model_used="claude-opus-5",
+        transport_used="cli",
+    )
+    _append_reviewer_attempt(state, config, profile, result, parseable=True, cycle_num=1)
+
+    assert state.reviewer_attempts[0]["resolved_model"] == "anthropic/claude-opus-5/cli"
+    attempts = _extract_reviewer_attempts(state)
+    assert attempts[0].resolved_model == "anthropic/claude-opus-5/cli"
