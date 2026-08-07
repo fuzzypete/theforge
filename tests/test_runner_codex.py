@@ -13,6 +13,7 @@ import pytest
 
 from theforge.config import ModelProfile
 from theforge.runners.runner_codex import (
+    CODEX_PACKAGE,
     _agent_text_from_events,
     _classify_codex_launch_failure,
     _CodexUsage,
@@ -163,7 +164,7 @@ class TestCodexSandboxFlag:
                 session_id="sess-abc123",
             )
         cmd = _extract_codex_cmd(mock_run)
-        assert cmd[:4] == ["npx", "@openai/codex", "exec", "resume"]
+        assert cmd[:4] == ["npx", CODEX_PACKAGE, "exec", "resume"]
         assert cmd[-2:] == ["sess-abc123", "-"]
 
     def test_uses_workspace_venv_env(self, tmp_path: Path) -> None:
@@ -463,6 +464,44 @@ class TestCodexResumeSandboxReassertion:
         assert "--full-auto" not in self._resume_cmd(tmp_path, "workspace-write")
         assert "--full-auto" not in self._resume_cmd(tmp_path, "read-only")
         assert "--full-auto" not in self._resume_cmd(tmp_path, "none")
+
+    def test_deprecated_full_auto_flag_dropped_on_fresh_exec(self, tmp_path: Path) -> None:
+        """The fresh path drops it too — 0.147.0 removed the alias outright.
+
+        Dropping it on resume alone left the fresh path passing a flag the CLI
+        later rejected at argv parsing, which fails every Codex agent before the
+        model is contacted, for $0.00 and with no budget signal. The flag was
+        already redundant here: --sandbox is set from the profile below, and the
+        alias only ever meant --sandbox workspace-write.
+        """
+        for mode in ("workspace-write", "read-only", "none"):
+            cmd = build_argv(
+                profile=_make_profile(sandbox_mode=mode),
+                working_dir=tmp_path,
+                output_file=tmp_path / "out.txt",
+                prompt="p",
+            )
+            assert "--full-auto" not in cmd, mode
+
+    def test_codex_package_spec_is_version_pinned(self, tmp_path: Path) -> None:
+        """Both argv paths carry a pinned spec, so npm cannot ship a change here.
+
+        An unpinned spec resolves at invocation time, so an upstream release
+        reaches production with no commit, no review and no gate.
+        """
+        assert "@" in CODEX_PACKAGE.removeprefix("@openai/codex")
+
+        fresh = build_argv(
+            profile=_make_profile(sandbox_mode="workspace-write"),
+            working_dir=tmp_path,
+            output_file=tmp_path / "out.txt",
+            prompt="p",
+        )
+        assert fresh[:2] == ["npx", CODEX_PACKAGE]
+        assert "@openai/codex" not in fresh, "bare unpinned spec must not survive"
+
+        resume = self._resume_cmd(tmp_path, "workspace-write")
+        assert resume[:2] == ["npx", CODEX_PACKAGE]
 
     def test_reassertion_coexists_with_reasoning_override(self, tmp_path: Path) -> None:
         """Both -c overrides are present and each is validated under --strict-config."""

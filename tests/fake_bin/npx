@@ -65,7 +65,7 @@ def _find_flag(flag: str) -> str | None:
     return None
 
 
-if "@openai/codex" in args:
+if any(a.startswith("@openai/codex") for a in args):
     mode = os.environ.get("FAKE_CODEX_MODE", "happy")
     output_file = _find_flag("-o")
     if mode == "happy":

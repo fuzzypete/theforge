@@ -14,7 +14,7 @@ import pytest
 from theforge.agent_types import AgentResult
 from theforge.config import ModelProfile, TransportFallbackConfig
 from theforge.log_level import LogLevel, set_log_level
-from theforge.runners import log_agent_result, run_agent
+from theforge.runners import log_agent_result, run_agent, runner_codex
 
 # Codex spawn seam patched by the tests below.
 _CODEX_RUN_TARGET = "theforge.runners.runner_codex.process_group.run_in_process_group"
@@ -88,9 +88,12 @@ class TestRunCodex:
 
         cmd = mock_run.call_args[0][0]
         assert "npx" in cmd
-        assert "@openai/codex" in cmd
+        assert runner_codex.CODEX_PACKAGE in cmd
         assert "exec" in cmd
-        assert "--full-auto" in cmd
+        # --full-auto was removed in codex 0.147.0. It was also redundant here:
+        # build_argv sets --sandbox from the profile a few lines later, and the
+        # alias only ever meant --sandbox workspace-write.
+        assert "--full-auto" not in cmd
         assert "-m" in cmd
         assert "o4-mini" in cmd
         assert "-C" in cmd
