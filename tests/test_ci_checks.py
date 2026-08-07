@@ -3,7 +3,14 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-from theforge.sprint.ci_checks import failing_required_pr_checks, poll_required_checks
+import pytest
+
+from theforge.sprint.ci_checks import poll_required_checks, required_pr_check_state
+
+
+def failing_required_pr_checks(project_root: Path, pr_url: str, base_branch: str) -> list[str]:
+    """Judged-failure names only — keeps the pre-#2270 assertions readable."""
+    return required_pr_check_state(project_root, pr_url, base_branch).failing
 
 
 class _Proc:
@@ -181,3 +188,103 @@ def test_failing_required_pr_checks_empty_when_branch_unprotected(tmp_path: Path
 
     with patch("theforge.sprint.ci_checks.subprocess.run", side_effect=responses):
         assert failing_required_pr_checks(tmp_path, "https://github.com/x/y/pull/1", "main") == []
+
+
+@pytest.mark.parametrize(
+    "conclusion", ["CANCELLED", "TIMED_OUT", "STALE", "STARTUP_FAILURE", "SKIPPED"]
+)
+def test_interrupted_required_check_is_unjudged_not_failing(
+    tmp_path: Path, conclusion: str
+) -> None:
+    """Issue #2270: a check that stopped without judging the change is an absence
+    of evidence about it, never evidence against it."""
+    rollup = (
+        f'[{{"__typename":"CheckRun","name":"gate","status":"COMPLETED",'
+        f'"conclusion":"{conclusion}"}},'
+        '{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]'
+    )
+
+    with patch(
+        "theforge.sprint.ci_checks.subprocess.run", side_effect=_pr_check_responses(rollup)
+    ):
+        state = required_pr_check_state(tmp_path, "https://github.com/x/y/pull/1", "main")
+
+    assert state.failing == []
+    assert state.unjudged == ["gate"]
+
+
+def test_unrecognised_conclusion_is_unjudged_not_failing(tmp_path: Path) -> None:
+    """An outcome the table does not know is not a verdict either: the safer
+    default in both directions is 'no judgement yet'."""
+    rollup = (
+        '[{"__typename":"CheckRun","name":"gate","status":"COMPLETED",'
+        '"conclusion":"SOME_NEW_GITHUB_OUTCOME"},'
+        '{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]'
+    )
+
+    with patch(
+        "theforge.sprint.ci_checks.subprocess.run", side_effect=_pr_check_responses(rollup)
+    ):
+        state = required_pr_check_state(tmp_path, "https://github.com/x/y/pull/1", "main")
+
+    assert state.failing == []
+    assert state.unjudged == ["gate"]
+
+
+def test_judged_failures_still_reported_as_failing(tmp_path: Path) -> None:
+    """The reclassification must not disarm the decided-red path: a check that
+    ran and rejected the change is still a failure."""
+    rollup = (
+        '[{"__typename":"CheckRun","name":"gate","status":"COMPLETED","conclusion":"FAILURE"},'
+        '{"__typename":"CheckRun","name":"lint","status":"COMPLETED",'
+        '"conclusion":"ACTION_REQUIRED"}]'
+    )
+
+    with patch(
+        "theforge.sprint.ci_checks.subprocess.run", side_effect=_pr_check_responses(rollup)
+    ):
+        state = required_pr_check_state(tmp_path, "https://github.com/x/y/pull/1", "main")
+
+    assert state.failing == ["gate", "lint"]
+    assert state.unjudged == []
+
+
+def test_running_check_is_pending_not_unjudged(tmp_path: Path) -> None:
+    """A check that has not stopped has not failed to judge — the wait budget,
+    not the unjudged bucket, covers it."""
+    rollup = (
+        '[{"__typename":"CheckRun","name":"gate","status":"IN_PROGRESS","conclusion":null},'
+        '{"__typename":"CheckRun","name":"lint","status":"COMPLETED","conclusion":"SUCCESS"}]'
+    )
+
+    with patch(
+        "theforge.sprint.ci_checks.subprocess.run", side_effect=_pr_check_responses(rollup)
+    ):
+        state = required_pr_check_state(tmp_path, "https://github.com/x/y/pull/1", "main")
+
+    assert state == ([], [])
+
+
+def test_poll_required_checks_cancelled_check_times_out_not_fails(tmp_path: Path) -> None:
+    """A cancelled required check on the base branch converges on the existing
+    wait-budget expiry, and the recorded message says no verdict was produced."""
+    responses = [
+        _Proc('{"nameWithOwner":"acme/repo"}'),
+        _Proc("deadbeef"),
+        _Proc('["tests"]'),
+        _Proc('[{"name":"tests","status":"completed","conclusion":"cancelled"}]'),
+        _Proc("[]"),
+    ]
+    monotonic_values = [0.0, 301.0]
+
+    with (
+        patch("theforge.sprint.ci_checks.subprocess.run", side_effect=responses),
+        patch("theforge.sprint.ci_checks.time.monotonic", side_effect=monotonic_values),
+        patch("theforge.sprint.ci_checks.time.sleep"),
+    ):
+        result = poll_required_checks(tmp_path, "main", 300)
+
+    assert result["status"] == "timeout"
+    assert result["failing_checks"] == []
+    assert result["unjudged_checks"] == ["tests"]
+    assert "No verdict was produced by: tests." in result["message"]
