@@ -30,6 +30,25 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from theforge.coordinator.story_budget import (
+    BAND_HEADROOM as _ALLOCATION_HEADROOM,
+)
+from theforge.coordinator.story_budget import (
+    DEV_ESTIMATE_HEADROOM_BASIS_ALLOCATION as ESTIMATE_HEADROOM_BASIS_ALLOCATION,
+)
+from theforge.coordinator.story_budget import (
+    DEV_ESTIMATE_SCOPE_DEV_PHASE as ESTIMATE_SCOPE_DEV_PHASE,
+)
+from theforge.coordinator.story_budget import (
+    DEV_ESTIMATE_SOURCE_BAND as ESTIMATE_SOURCE_BAND,
+)
+from theforge.coordinator.story_budget import (
+    DEV_ESTIMATE_SOURCE_CONFIGURED as ESTIMATE_SOURCE_CONFIGURED,
+)
+from theforge.coordinator.story_budget import (
+    DEV_ESTIMATE_SOURCE_SCORE as ESTIMATE_SOURCE_SCORE,
+)
+
 if TYPE_CHECKING:
     from theforge.config.types import RetryPolicy
 
@@ -44,6 +63,16 @@ _HEADROOM_FACTOR = 1.5
 # Using a flat 1.5x average produced estimates ~2x too tight for LARGE stories.
 _ESTIMATE_HEADROOM_BY_BAND: dict[str, float] = {"small": 1.5, "medium": 2.0, "large": 2.5}
 _MIN_PROFILE_RUNS = 3
+
+# Where a dollar estimate came from. Only ``DEV_ESTIMATE_SOURCE_SCORE``
+# describes the same population as the per-story allocation (see
+# ``story_budget.derive_story_allocation``): one complexity score, all models.
+# The band-and-model estimate summarises a wider, differently-priced set of
+# runs, and the configured fallback summarises nothing observed at all — both
+# are recorded for audit but neither may be subtracted from the allocation.
+# ``ESTIMATE_SCOPE_DEV_PHASE`` records that this figure prices the dev phase
+# while the allocation prices the whole story: same population by score,
+# different phase scope, so the audit never implies one measurement.
 
 
 @dataclass(frozen=True)
@@ -172,6 +201,78 @@ def _percentile(values: list[int], pct: float) -> int:
     return ordered[idx]
 
 
+def _configured_estimate_basis(
+    *,
+    reason: str,
+    complexity_band: str | None,
+    complexity_score: int | None = None,
+) -> dict:
+    """Basis for an estimate that is the configured budget, not an observation."""
+    return {
+        "source": ESTIMATE_SOURCE_CONFIGURED,
+        "band": complexity_band,
+        "complexity_score": complexity_score,
+        "statistic": "configured_budget_usd",
+        "scope": ESTIMATE_SCOPE_DEV_PHASE,
+        "sample_count": 0,
+        "headroom_multiplier": None,
+        "headroom_basis": None,
+        "allocation_comparable": False,
+        "reason": reason,
+    }
+
+
+def _band_estimate_basis(
+    *,
+    complexity_band: str | None,
+    complexity_score: int | None,
+    headroom: float,
+    sample_count: int,
+    reason: str,
+) -> dict:
+    """Basis for the band-and-model estimate: audit-visible, not comparable.
+
+    A band spans several scores and the model filter narrows it to one
+    performer, so this average is drawn from a different and generally more
+    expensive population than the score-scoped allocation. It still sizes
+    nothing but itself here; ``allocation_comparable`` false is what stops it
+    being subtracted from the allocation at seating.
+    """
+    return {
+        "source": ESTIMATE_SOURCE_BAND,
+        "band": complexity_band,
+        "complexity_score": complexity_score,
+        "statistic": "avg_cost_usd",
+        "scope": ESTIMATE_SCOPE_DEV_PHASE,
+        "sample_count": int(sample_count),
+        "headroom_multiplier": headroom,
+        "headroom_basis": "band_headroom",
+        "allocation_comparable": False,
+        "reason": reason,
+    }
+
+
+def _score_estimate_basis(
+    *,
+    complexity_band: str | None,
+    complexity_score: int,
+    sample_count: int,
+) -> dict:
+    """Basis for the score-scoped estimate — the one seating may subtract."""
+    return {
+        "source": ESTIMATE_SOURCE_SCORE,
+        "band": complexity_band,
+        "complexity_score": int(complexity_score),
+        "statistic": "avg_cost_usd",
+        "scope": ESTIMATE_SCOPE_DEV_PHASE,
+        "sample_count": int(sample_count),
+        "headroom_multiplier": _ALLOCATION_HEADROOM,
+        "headroom_basis": ESTIMATE_HEADROOM_BASIS_ALLOCATION,
+        "allocation_comparable": True,
+        "reason": "profile_score_history",
+    }
+
+
 def derive_limits(
     complexity_score: int | None,
     complexity_band: str | None,
@@ -216,10 +317,15 @@ def derive_limits(
         "base_timeout_seconds": base_timeout_seconds,
         "base_dev_cost_estimate_usd": base_cost_estimate_usd,
         "static_dev_max": static_dev_max,
+        "estimate_headroom_factor": None,
     }
 
     if not retry_policy.adaptive_iterations:
         audit["rationale"] = "adaptive_iterations disabled; using static configured limits"
+        audit["dev_cost_estimate_basis"] = _configured_estimate_basis(
+            reason="adaptive_iterations_disabled",
+            complexity_band=complexity_band,
+        )
         return AdaptiveLimits(
             dev_max=static_dev_max,
             review_max=floor_review,
@@ -233,6 +339,10 @@ def derive_limits(
 
     if score is None:
         audit["rationale"] = "no complexity score available; using static configured limits"
+        audit["dev_cost_estimate_basis"] = _configured_estimate_basis(
+            reason="no_complexity_score",
+            complexity_band=complexity_band,
+        )
         return AdaptiveLimits(
             dev_max=static_dev_max,
             review_max=floor_review,
@@ -267,12 +377,34 @@ def derive_limits(
         round(float(profile_stats["avg_cost_usd"]), 6) if profile_stats is not None else None
     )
 
+    # Cost history at this story's own complexity score, across all models —
+    # the same population the per-story allocation is drawn from. Read
+    # independently of the band/model stats above, which keep sizing iterations
+    # and wall-clock.
+    score_cost_stats = None
+    if model_profiles:
+        from theforge.model_profiles import get_dev_score_cost_stats  # noqa: PLC0415
+
+        score_cost_stats = get_dev_score_cost_stats(
+            model_profiles, score, min_runs=_MIN_PROFILE_RUNS
+        )
+    score_runs = int(score_cost_stats["runs"]) if score_cost_stats is not None else 0
+    audit["score_cost_history_runs"] = score_runs
+    audit["score_cost_avg_usd"] = (
+        round(float(score_cost_stats["avg_cost_usd"]), 6) if score_cost_stats is not None else None
+    )
+
     if profile_stats is None:
         chosen_dev = static_dev_max
         chosen_timeout = base_timeout_seconds
         chosen_estimate = base_cost_estimate_usd
         dev_rationale = (
             "insufficient profile history for complexity band; using static configured dev limits"
+        )
+        audit["dev_cost_estimate_basis"] = _configured_estimate_basis(
+            reason="insufficient_profile_history",
+            complexity_band=complexity_band,
+            complexity_score=score,
         )
     else:
         raw_dev = profile_stats["avg_iterations"] * _HEADROOM_FACTOR
@@ -302,6 +434,13 @@ def derive_limits(
         chosen_estimate = _round_money(profile_stats["avg_cost_usd"] * _estimate_headroom)
         audit["profile_raw_dev_max"] = round(raw_dev, 4)
         audit["estimate_headroom_factor"] = _estimate_headroom
+        audit["dev_cost_estimate_basis"] = _band_estimate_basis(
+            complexity_band=complexity_band,
+            complexity_score=score,
+            headroom=_estimate_headroom,
+            sample_count=profile_runs,
+            reason="profile_history",
+        )
         audit["iteration_derived_timeout_seconds"] = iteration_timeout
         audit["profile_max_duration_s"] = round(float(profile_stats.get("max_duration_s", 0.0)), 4)
         audit["profile_max_killed_timeout_s"] = round(
@@ -315,8 +454,7 @@ def derive_limits(
         dev_rationale = (
             f"derived dev limits from {profile_runs} "
             f"{complexity_band or 'unknown'}-band profile runs with "
-            f"{_HEADROOM_FACTOR}x iteration headroom and {_estimate_headroom}x "
-            "cost-estimate headroom"
+            f"{_HEADROOM_FACTOR}x iteration headroom and {_estimate_headroom}x budget headroom"
         )
         if floored_on_kill:
             dev_rationale += (
@@ -332,6 +470,33 @@ def derive_limits(
             )
         else:
             dev_rationale += "; timeout scaled from static per-iteration baseline."
+
+    # The dollar estimate — and only the dollar estimate — prefers the
+    # score-scoped average. Iterations and timeout above stay on the band and
+    # model stats: those size the work the chosen model does. The dollar figure
+    # is reconciled against a score-scoped allocation at seating, so sourcing it
+    # from a wider band (or from one expensive model) makes the subtraction
+    # meaningless and lets the dev phase consume the budget of every phase
+    # after it (#2284).
+    if score_cost_stats is not None:
+        chosen_estimate = _round_money(score_cost_stats["avg_cost_usd"] * _ALLOCATION_HEADROOM)
+        audit["estimate_headroom_factor"] = _ALLOCATION_HEADROOM
+        audit["dev_cost_estimate_basis"] = _score_estimate_basis(
+            complexity_band=complexity_band,
+            complexity_score=score,
+            sample_count=score_runs,
+        )
+        dev_rationale += (
+            f" Dev cost estimate from {score_runs} score-{score} run(s) across all models "
+            f"(avg ${float(score_cost_stats['avg_cost_usd']):.2f} x {_ALLOCATION_HEADROOM}x "
+            "allocation headroom) — the population the story allocation is drawn from."
+        )
+    else:
+        dev_rationale += (
+            f" Dev cost estimate is not comparable with the story allocation "
+            f"(no score-{score} cost history); seating will not subtract it."
+        )
+
     audit["chosen_dev_max"] = chosen_dev
     audit["chosen_dev_timeout_seconds"] = chosen_timeout
     audit["chosen_dev_cost_estimate_usd"] = round(chosen_estimate, 4)

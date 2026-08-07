@@ -11,6 +11,7 @@ from theforge.model_profiles import (
     apply_run,
     backfill_from_history,
     get_dev_complexity_stats,
+    get_dev_score_cost_stats,
     get_dev_success_rate,
     get_review_signal,
     load_profiles,
@@ -102,6 +103,80 @@ def test_get_dev_complexity_stats_averages_cost_over_measured_runs():
     assert stats["runs"] == 3.0
     # $2.00 over the single measured run, not $2.00/3 = $0.67.
     assert stats["avg_cost_usd"] == 2.0
+
+
+def _score_run(data: dict, *, model: str, score: int, band: str, cost: float | None) -> None:
+    apply_run(
+        data,
+        RunOutcome(
+            complexity=band,
+            complexity_score=score,
+            dev_model=model,
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=cost,
+        ),
+    )
+
+
+def test_get_dev_score_cost_stats_spans_models_and_keeps_the_score():
+    """Score-scoped cost: one complexity score, every model (#2284).
+
+    The per-story allocation is drawn this way, so a dev estimate that will be
+    subtracted from it has to be drawn the same way — unlike
+    ``get_dev_complexity_stats``, which widens to a band and narrows to one
+    model's identity.
+    """
+    data: dict = {"models": {}}
+    _score_run(data, model="sonnet", score=4, band="medium", cost=2.0)
+    _score_run(data, model="sonnet", score=4, band="medium", cost=3.0)
+    _score_run(data, model="opus", score=4, band="medium", cost=4.0)
+    # Same band, different score — must not be folded in.
+    _score_run(data, model="sonnet", score=6, band="medium", cost=40.0)
+
+    stats = get_dev_score_cost_stats(data, 4, min_runs=3)
+
+    assert stats is not None
+    assert stats["runs"] == 3.0
+    assert stats["avg_cost_usd"] == 3.0
+    # The band-and-model reader over the same profiles sees a costlier set.
+    band_stats = get_dev_complexity_stats(data, "sonnet", "medium", min_runs=1)
+    assert band_stats is not None
+    assert band_stats["avg_cost_usd"] == 15.0
+
+
+def test_get_dev_score_cost_stats_averages_over_measured_runs_only():
+    data: dict = {"models": {}}
+    _score_run(data, model="sonnet", score=4, band="medium", cost=2.0)
+    _score_run(data, model="sonnet", score=4, band="medium", cost=None)
+    _score_run(data, model="sonnet", score=4, band="medium", cost=None)
+
+    stats = get_dev_score_cost_stats(data, 4, min_runs=1)
+
+    assert stats is not None
+    assert stats["runs"] == 3.0
+    assert stats["measured_runs"] == 1.0
+    # $2.00 over the one measured run, not $2.00/3.
+    assert stats["avg_cost_usd"] == 2.0
+
+
+def test_get_dev_score_cost_stats_returns_none_without_enough_history():
+    data: dict = {"models": {}}
+    _score_run(data, model="sonnet", score=4, band="medium", cost=2.0)
+
+    assert get_dev_score_cost_stats(data, 4, min_runs=3) is None
+    assert get_dev_score_cost_stats(data, 9, min_runs=1) is None
+    assert get_dev_score_cost_stats(data, None, min_runs=1) is None
+    assert get_dev_score_cost_stats({}, 4, min_runs=1) is None
+
+
+def test_get_dev_score_cost_stats_returns_none_when_no_run_had_a_measured_cost():
+    """An unmeasured population cannot be averaged into a dollar figure."""
+    data: dict = {"models": {}}
+    for _ in range(3):
+        _score_run(data, model="sonnet", score=4, band="medium", cost=None)
+
+    assert get_dev_score_cost_stats(data, 4, min_runs=1) is None
 
 
 def test_apply_run_averages_across_runs():
