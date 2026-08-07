@@ -229,4 +229,16 @@ notifications:
   backend: slack
   slack:
     webhook_url_env: SLACK_WEBHOOK_URL
-  human_review_timeout_seconds: 600
+  # 600→3600 (2026-08-07): 10m guarantees an auto-escalate on any sprint launched
+  # and left to run — three stories died on this gate in a week, none of them on
+  # merit. #2270's advisor could not even launch, so the gate expired having shown
+  # nothing. The timeout is a per-story worker wait, not a sprint-wide one, so it
+  # is bounded above by "still finishes overnight": at --parallel 3 a gate holds
+  # one slot, and a value in hours would let two or three contested stories
+  # deadlock the remaining work rather than leaving results to read in the
+  # morning. An hour is long enough to answer if awake and short enough that a
+  # sprint still completes if not. Expiry preserves the worktree and never
+  # auto-rejects, so the cost of expiring is the FAILED status and the wait —
+  # not the work. Revisit when #2279 lands: applying the advisory recommendation
+  # on expiry makes the wait itself the thing worth shortening.
+  human_review_timeout_seconds: 3600
