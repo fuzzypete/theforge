@@ -1472,8 +1472,18 @@ def _merge_failed_action(story: dict, ref: str) -> str:
     the recorded error text is the evidence that distinguishes them. Naming a
     merge conflict unconditionally (the prior behavior) is wrong whenever the PR
     was mergeable and merely red, or merely slow — issue #1946.
+
+    A check that stopped without judging the change is a fourth case, and the
+    opposite of a red one: nothing is known to be wrong with the code, so the
+    recovery is to dispatch the check again — issue #2270.
     """
     error = (_nonempty(story.get("error")) or "").lower()
+    if "never produced a verdict" in error:
+        return (
+            f"re-dispatch the required checks named in {ref}'s merge failure — they "
+            "stopped without judging the change (cancelled, superseded, or interrupted), "
+            "so the change itself is untested, not rejected"
+        )
     if "required checks failed" in error:
         return (
             f"fix the required checks named in {ref}'s merge failure, then re-run the "

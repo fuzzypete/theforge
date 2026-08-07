@@ -78,7 +78,7 @@ from .audit import (
 )
 from .auth_gate import enforce_sprint_auth_readiness
 from .budget import evaluate_budget
-from .ci_checks import failing_required_pr_checks, poll_required_checks
+from .ci_checks import PrCheckState, poll_required_checks, required_pr_check_state
 from .collision import (
     batch_group_id,
     compute_batch_groups,
@@ -2861,18 +2861,18 @@ def _abnormal_story_result(
     return CoordinatorResult(success=False, phase=phase, state=state, message=message)
 
 
-def _failing_required_pr_checks(pr_url: str, project_root: Path, base_branch: str) -> list[str]:
-    """Required checks on ``pr_url`` that have reached a terminal failing state.
+def _required_pr_check_state(pr_url: str, project_root: Path, base_branch: str) -> PrCheckState:
+    """Terminal state of ``pr_url``'s required checks, split by verdict.
 
     Thin seam over :mod:`theforge.sprint.ci_checks` so the queued-PR wait can be
-    tested without a live ``gh``. Never raises: an unanswerable probe returns no
-    failures, which keeps the caller waiting instead of abandoning a PR whose
+    tested without a live ``gh``. Never raises: an unanswerable probe returns an
+    empty state, which keeps the caller waiting instead of abandoning a PR whose
     check state we could not read.
     """
     try:
-        return failing_required_pr_checks(project_root, pr_url, base_branch)
+        return required_pr_check_state(project_root, pr_url, base_branch)
     except Exception:  # pragma: no cover - ci_checks already fails soft
-        return []
+        return PrCheckState([], [])
 
 
 def _poll_queued_pr(
@@ -2895,8 +2895,16 @@ def _poll_queued_pr(
     merge-wait budget and then misreports the outcome as a queue timeout (issue
     #1946); such a PR returns ``checks_failed`` immediately, carrying the names
     of the failing checks. The wait budget is reserved for *pending* checks.
+
+    Only a check that ran and rejected the change counts as decided-red. A check
+    that stopped without a verdict — cancelled by a platform incident, superseded,
+    or ended in an outcome we cannot recognise — is an absence of evidence about
+    the change, so it keeps the wait running and is named in the timeout result
+    instead. Abandoning such a PR as red sends the operator to debug a change that
+    was never tested (issue #2270).
     """
     deadline = time.monotonic() + timeout_seconds
+    unjudged_seen: dict[str, None] = {}  # ordered set of check names
     while True:
         try:
             proc = subprocess.run(
@@ -2919,14 +2927,20 @@ def _poll_queued_pr(
             elif state == "CLOSED":
                 return {"status": "closed"}
             elif base_branch is not None:
-                failing = _failing_required_pr_checks(pr_url, project_root, base_branch)
-                if failing:
+                checks = _required_pr_check_state(pr_url, project_root, base_branch)
+                if checks.failing:
                     return {
                         "status": "checks_failed",
-                        "failing_checks": ", ".join(failing),
+                        "failing_checks": ", ".join(checks.failing),
                     }
+                unjudged_seen.update(dict.fromkeys(checks.unjudged))
 
         if time.monotonic() >= deadline:
+            if unjudged_seen:
+                return {
+                    "status": "timeout",
+                    "unjudged_checks": ", ".join(unjudged_seen),
+                }
             return {"status": "timeout"}
         time.sleep(30)
 
@@ -2938,13 +2952,22 @@ def _queued_pr_failure_message(
 
     The cause string is the only evidence downstream RCA has, so each terminal
     status gets its own wording: "timed out" is reserved for an actual deadline
-    expiry, and a decided-red PR names the required checks that failed.
+    expiry, and a decided-red PR names the required checks that failed. A wait
+    that expired on checks which stopped without ever judging the change says so
+    explicitly, because that is recovered by dispatching the checks again rather
+    than by changing the code (issue #2270).
     """
     status = poll_result.get("status", "unknown")
     if status == "checks_failed":
         failing = poll_result.get("failing_checks") or "unknown"
         return f"Queued PR required checks failed ({failing}): {pr_url}"
     if status == "timeout":
+        unjudged = poll_result.get("unjudged_checks")
+        if unjudged:
+            return (
+                f"Queued PR required checks never produced a verdict ({unjudged}) "
+                f"within {timeout_seconds}s: {pr_url}"
+            )
         return f"Queued PR timed out after {timeout_seconds}s: {pr_url}"
     return f"Queued PR {status}: {pr_url}"
 
@@ -5700,10 +5723,15 @@ def run_sprint(
                 )
                 if ci_result["status"] in {"fail", "timeout"}:
                     failing = ", ".join(ci_result["failing_checks"]) or "pending required checks"
+                    # A check that stopped without a verdict is not a red result;
+                    # naming it keeps the halt reason honest about what is known
+                    # versus merely unknown (#2270).
+                    unjudged = ", ".join(ci_result.get("unjudged_checks") or [])
                     stopped_reason = (
                         "Required CI checks "
                         f"{ci_result['status']} after merging {slug} "
                         f"at {ci_result['sha']}: {failing}"
+                        + (f" (no verdict produced by: {unjudged})" if unjudged else "")
                     )
                     ci_halt_slug = slug
                     _log(

@@ -7,21 +7,49 @@ import logging
 import subprocess
 import time
 from pathlib import Path
+from typing import NamedTuple
 
 log = logging.getLogger(__name__)
 _POLL_INTERVAL_SECONDS = 15
 _PASS_CONCLUSIONS = {"success", "neutral"}
-_FAIL_CONCLUSIONS = {
+#: Conclusions that mean the check ran and judged the change against it. Only
+#: these are evidence *against* a change; everything else is an absence of
+#: evidence (issue #2270).
+_JUDGED_FAIL_CONCLUSIONS = {
     "failure",
-    "cancelled",
-    "timed_out",
     "action_required",
-    "startup_failure",
-    "stale",
     # GraphQL StatusContext state for a hard-errored legacy status.
     "error",
 }
+#: Terminal conclusions that end a check without judging the change: the run was
+#: interrupted, superseded, or never really started. Naming them is documentation
+#: — any conclusion outside the pass/judged-fail tables is treated the same way,
+#: because an unrecognised outcome is not a verdict either.
+_UNJUDGED_CONCLUSIONS = {
+    "cancelled",
+    "timed_out",
+    "stale",
+    "startup_failure",
+    "skipped",
+}
 _PENDING_STATUSES = {"queued", "in_progress", "pending", "waiting", "requested"}
+
+
+class CheckSummary(NamedTuple):
+    """Required-check state split by *what the check said about the change*.
+
+    ``failing`` holds checks that ran and rejected the change; ``unjudged`` holds
+    checks that reached a terminal state without producing a verdict. The two
+    call for opposite operator actions — change the code versus dispatch the
+    check again — so they must never collapse into one bucket. ``unjudged`` is a
+    subset of ``pending``: a check with no verdict is still something the caller
+    is waiting on, so the wait budget, not a merge failure, governs it.
+    """
+
+    status: str
+    failing: list[str]
+    pending: list[str]
+    unjudged: list[str]
 
 
 def _gh_json(project_root: Path, args: list[str]) -> object:
@@ -55,7 +83,7 @@ def _gh_text(project_root: Path, args: list[str]) -> str:
 
 def _summarize_required_checks(
     required_checks: list[str], check_runs: object, statuses: object
-) -> tuple[str, list[str], list[str]]:
+) -> CheckSummary:
     run_map: dict[str, tuple[str | None, str | None]] = {}
     for run in check_runs if isinstance(check_runs, list) else []:
         if not isinstance(run, dict):
@@ -77,28 +105,40 @@ def _summarize_required_checks(
     passing: list[str] = []
     failing: list[str] = []
     pending: list[str] = []
+    unjudged: list[str] = []
     for name in required_checks:
         run_status, run_conclusion = run_map.get(name, (None, None))
         legacy_state = status_map.get(name)
         if run_conclusion in _PASS_CONCLUSIONS or legacy_state in _PASS_CONCLUSIONS:
             passing.append(name)
             continue
-        if run_conclusion in _FAIL_CONCLUSIONS or legacy_state in _FAIL_CONCLUSIONS:
+        if run_conclusion in _JUDGED_FAIL_CONCLUSIONS or legacy_state in _JUDGED_FAIL_CONCLUSIONS:
             failing.append(name)
             continue
-        if (
-            run_status in _PENDING_STATUSES
-            or legacy_state in _PENDING_STATUSES
-            or name not in run_map
-            and name not in status_map
-        ):
-            pending.append(name)
-            continue
         pending.append(name)
-    return (
+        # A check that is merely queued or running has not stopped, so it is not
+        # unjudged yet — the wait budget covers it. A check that reached any
+        # other terminal outcome stopped without a verdict.
+        still_running = run_status in _PENDING_STATUSES or legacy_state in _PENDING_STATUSES
+        concluded = run_conclusion is not None or legacy_state is not None
+        if concluded and not still_running:
+            unjudged.append(name)
+            if (
+                run_conclusion not in _UNJUDGED_CONCLUSIONS
+                and legacy_state not in _UNJUDGED_CONCLUSIONS
+            ):
+                log.debug(
+                    "Unrecognised terminal outcome for required check %s "
+                    "(conclusion=%r legacy_state=%r); treating as unjudged",
+                    name,
+                    run_conclusion,
+                    legacy_state,
+                )
+    return CheckSummary(
         "pass" if len(passing) == len(required_checks) else "fail" if failing else "pending",
         failing,
         pending,
+        unjudged,
     )
 
 
@@ -169,29 +209,48 @@ def _normalize_rollup(rollup: object) -> tuple[list[dict], list[dict]]:
     return check_runs, statuses
 
 
-def failing_required_pr_checks(project_root: Path, pr_url: str, base_branch: str) -> list[str]:
-    """Names of ``pr_url``'s required checks that have terminally failed.
+class PrCheckState(NamedTuple):
+    """What ``pr_url``'s required checks have decided about the change so far."""
 
-    Returns an empty list when nothing is decided-red *and* when the required
-    check set or the PR's rollup cannot be resolved: an un-answerable probe must
-    leave the caller waiting rather than abandon a PR on missing information.
+    #: Checks that ran and rejected the change. A PR carrying any of these can
+    #: never merge, so the caller may abandon the wait.
+    failing: list[str]
+    #: Checks that stopped without a verdict (cancelled, superseded, interrupted,
+    #: or an outcome we cannot recognise). These say nothing about the change,
+    #: so the caller keeps waiting on the merge budget instead.
+    unjudged: list[str]
+
+
+def required_pr_check_state(project_root: Path, pr_url: str, base_branch: str) -> PrCheckState:
+    """Terminal state of ``pr_url``'s required checks, split by verdict.
+
+    Returns an empty state when nothing is decided *and* when the required check
+    set or the PR's rollup cannot be resolved: an un-answerable probe must leave
+    the caller waiting rather than abandon a PR on missing information.
     """
     try:
         owner_repo = _resolve_owner_repo(project_root)
         required_checks = _required_check_contexts(project_root, owner_repo, base_branch)
         if not required_checks:
-            return []
+            return PrCheckState([], [])
         rollup = _gh_json(
             project_root,
             ["pr", "view", pr_url, "--json", "statusCheckRollup", "--jq", ".statusCheckRollup"],
         )
     except Exception as exc:  # gh missing, network flake, unparseable payload
         log.debug("Unable to resolve required check status for %s: %s", pr_url, exc)
-        return []
+        return PrCheckState([], [])
 
     check_runs, statuses = _normalize_rollup(rollup)
-    _, failing, _ = _summarize_required_checks(required_checks, check_runs, statuses)
-    return failing
+    summary = _summarize_required_checks(required_checks, check_runs, statuses)
+    log.debug(
+        "PR check state %s failing=%s unjudged=%s pending=%s",
+        pr_url,
+        summary.failing,
+        summary.unjudged,
+        summary.pending,
+    )
+    return PrCheckState(summary.failing, summary.unjudged)
 
 
 def poll_required_checks(project_root: Path, base_branch: str, timeout_seconds: int) -> dict:
@@ -234,15 +293,16 @@ def poll_required_checks(project_root: Path, base_branch: str, timeout_seconds: 
             project_root,
             ["api", f"repos/{owner_repo}/commits/{sha}/status", "--jq", ".statuses"],
         )
-        summary, failing, pending = _summarize_required_checks(
+        summary, failing, pending, unjudged = _summarize_required_checks(
             required_checks, check_runs, statuses
         )
         log.debug(
-            "CI poll sha=%s required=%s failing=%s pending=%s",
+            "CI poll sha=%s required=%s failing=%s pending=%s unjudged=%s",
             sha,
             required_checks,
             failing,
             pending,
+            unjudged,
         )
         if summary == "pass":
             return {
@@ -260,14 +320,20 @@ def poll_required_checks(project_root: Path, base_branch: str, timeout_seconds: 
             }
         if time.monotonic() >= deadline:
             pending_checks = ", ".join(pending)
+            # An interrupted check never judged the change, so it is reported as
+            # an absent verdict to be re-dispatched, never as a red result.
+            unjudged_note = (
+                f" No verdict was produced by: {', '.join(unjudged)}." if unjudged else ""
+            )
             return {
                 "status": "timeout",
                 "sha": sha,
                 "failing_checks": [],
+                "unjudged_checks": unjudged,
                 "message": (
                     "Timed out after "
                     f"{timeout_seconds}s waiting for required CI checks on {sha}: "
-                    f"{pending_checks}."
+                    f"{pending_checks}.{unjudged_note}"
                 ),
             }
         time.sleep(_POLL_INTERVAL_SECONDS)
