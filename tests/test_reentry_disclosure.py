@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import yaml
 from coord_test_helpers import _make_agent_result, _make_config, patch_gate_shell
@@ -35,6 +35,11 @@ from theforge.coordinator.resume_persistence import (
     recover_phase_state,
     resume_record_path,
     save_resume_record,
+)
+from theforge.coordinator.run_setup import (
+    REENTRY_MODE_PIPELINE_RESUME,
+    REENTRY_MODE_REVIEW,
+    _report_reentry_impact,
 )
 from theforge.coordinator.state import CoordinatorState
 from theforge.review import ReviewResult
@@ -78,6 +83,21 @@ def _stopped_state(verdict: str = "REQUEST_CHANGES") -> CoordinatorState:
     state.escalate_selected_action = "land_core"
     state.escalate_reason = "review cycles exhausted"
     return state
+
+
+#: A recovery block carrying the impact, as ``recover_phase_state`` returns it.
+_RECOVERY = {
+    "status": "recovered",
+    "source_run_id": "prior-run",
+    "recovered_phases": ["escalation"],
+    "reentry_impact": {
+        "escalation_decision": "land_core_defer_edges",
+        "escalation_selected_action": "land_core",
+        "outstanding_review_cycle": 2,
+        "latest_review_verdict": "REQUEST_CHANGES",
+        "last_gate_decision": "PASS",
+    },
+}
 
 
 def _write_record(project_root: Path, slug: str, state: CoordinatorState) -> Path:
@@ -229,23 +249,8 @@ class TestResumeReportsThePathItTakes:
 
         assert recovery["reentry_impact"] is None
 
-    def test_report_names_both_paths(self, capsys) -> None:
-        from theforge.coordinator.run_setup import _report_reentry_impact
-
-        _report_reentry_impact(
-            {
-                "status": "recovered",
-                "source_run_id": "prior-run",
-                "recovered_phases": ["escalation"],
-                "reentry_impact": {
-                    "escalation_decision": "land_core_defer_edges",
-                    "escalation_selected_action": "land_core",
-                    "outstanding_review_cycle": 2,
-                    "latest_review_verdict": "REQUEST_CHANGES",
-                    "last_gate_decision": "PASS",
-                },
-            }
-        )
+    def test_pipeline_resume_report_says_review_will_not_run(self, capsys) -> None:
+        _report_reentry_impact(_RECOVERY, reentry_mode=REENTRY_MODE_PIPELINE_RESUME)
 
         out = capsys.readouterr().err
         assert "land_core_defer_edges / land_core" in out
@@ -255,10 +260,23 @@ class TestResumeReportsThePathItTakes:
         assert "will NOT run REVIEW" in out
         assert "`forge review` runs REVIEW cycle 2" in out
 
-    def test_report_is_silent_without_an_impact(self, capsys) -> None:
-        from theforge.coordinator.run_setup import _report_reentry_impact
+    def test_review_report_says_this_path_runs_the_cycle(self, capsys) -> None:
+        """The same recovered state, the other path. Telling the operator review
+        is being skipped by the command about to run it is worse than silence."""
+        _report_reentry_impact(_RECOVERY, reentry_mode=REENTRY_MODE_REVIEW)
 
-        _report_reentry_impact({"status": "recovered", "reentry_impact": None})
+        out = capsys.readouterr().err
+        assert "recovered escalation decision land_core_defer_edges / land_core" in out
+        assert "outstanding: REVIEW cycle 2 has not run" in out
+        assert "`forge review` runs REVIEW cycle 2 now" in out
+        assert "`forge sprint --resume` would continue from that decision and skip it" in out
+        assert "will NOT run REVIEW" not in out
+
+    def test_report_is_silent_without_an_impact(self, capsys) -> None:
+        _report_reentry_impact(
+            {"status": "recovered", "reentry_impact": None},
+            reentry_mode=REENTRY_MODE_PIPELINE_RESUME,
+        )
 
         assert capsys.readouterr().err == ""
 
@@ -273,14 +291,10 @@ def _shell(cmd: str, cwd, **kwargs):
 
 class TestResumeSeamReportsBeforeItSpends:
     """Seam test across the resume boundary: the disclosure has to reach the
-    operator from the real entry point, before the coordinator loop runs."""
+    operator from the real entry point, before the coordinator loop runs — and
+    it has to describe the path that is actually running."""
 
-    @patch("theforge.coordinator.review_pool.run_agent_pool")
-    @patch("theforge.coordinator.dev_phase.run_agent")
-    @patch_gate_shell(side_effect=_shell)
-    def test_run_from_review_discloses_the_skipped_review(
-        self, _mock_shell, _mock_dev, mock_pool, tmp_path: Path, capsys
-    ) -> None:
+    def _run(self, tmp_path: Path, mock_pool, **kwargs):
         spec = tmp_path / "spec.md"
         spec.write_text(STORY_CONTENT, encoding="utf-8")
         config = _make_config(tmp_path)
@@ -288,19 +302,87 @@ class TestResumeSeamReportsBeforeItSpends:
         workspace = tmp_path / "test-story"
         workspace.mkdir()
         _write_record(tmp_path, "test-story", _stopped_state())
-        mock_pool.side_effect = lambda **kwargs: [
+        mock_pool.side_effect = lambda **kw: [
             _make_agent_result(success=True, output=APPROVE_YAML, profile_name=p.name)
-            for p in kwargs["profiles"]
+            for p in kw["profiles"]
         ]
+        return run_from_review(config, task, workspace, cached_preflight_state=None, **kwargs)
 
-        result = run_from_review(config, task, workspace, cached_preflight_state=None)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell(side_effect=_shell)
+    def test_pipeline_resume_discloses_the_skipped_review(
+        self, _mock_shell, _mock_dev, mock_pool, tmp_path: Path, capsys
+    ) -> None:
+        result = self._run(tmp_path, mock_pool)
 
         out = capsys.readouterr().err
         assert "recovered phase record: escalation" in out
-        assert "acting on escalation decision land_core_defer_edges" in out
+        assert "recovered escalation decision land_core_defer_edges" in out
         assert "outstanding: REVIEW cycle 2 has not run" in out
         assert "will NOT run REVIEW" in out
-        assert result.state.phase_recovery["reentry_impact"] is not None
+        impact = result.state.phase_recovery["reentry_impact"]
+        assert impact is not None
+        assert impact["reentry_mode"] == REENTRY_MODE_PIPELINE_RESUME
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell(side_effect=_shell)
+    def test_forge_review_does_not_claim_it_skips_review(
+        self, _mock_shell, _mock_dev, mock_pool, tmp_path: Path, capsys
+    ) -> None:
+        """The reported symptom of the shared-setup bug: ``forge review`` enters
+        at REVIEW and runs the outstanding cycle, so it must never print the
+        pipeline resume's skip wording."""
+        result = self._run(tmp_path, mock_pool, reentry_mode=REENTRY_MODE_REVIEW)
+
+        out = capsys.readouterr().err
+        assert "outstanding: REVIEW cycle 2 has not run" in out
+        assert "`forge review` runs REVIEW cycle 2 now" in out
+        assert "will NOT run REVIEW" not in out
+        assert result.state.phase_recovery["reentry_impact"]["reentry_mode"] == (
+            REENTRY_MODE_REVIEW
+        )
+
+    def test_forge_review_command_declares_its_mode(self, tmp_path: Path) -> None:
+        """The wiring the disclosure depends on: ``cmd_review`` is the only
+        caller that is definitely the review path, so it is where the mode is
+        declared. A ``--resume`` triage reaching run_from_review is a resume."""
+        import argparse
+
+        from theforge.cli.review import cmd_review
+
+        config = MagicMock()
+        config.project_root = tmp_path
+        config.workspace.path_pattern = ".forge/worktrees/{slug}"
+        config.review_pool = [MagicMock(model="m", name="r")]
+        story = tmp_path / "story.md"
+        story.write_text(STORY_CONTENT, encoding="utf-8")
+        args = argparse.Namespace(
+            story=str(story),
+            issue=None,
+            slug="test-story",
+            config=None,
+            worktree=str(tmp_path / "test-story"),
+            auto_merge=False,
+            verbose=False,
+            no_notify=True,
+        )
+        result = MagicMock()
+        result.success = True
+        result.message = "APPROVE"
+        result.state.total_cost = 0.0
+
+        with (
+            patch("theforge.cli.review._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.review.load_config", return_value=config),
+            patch("theforge.cli.review._write_audit", return_value=tmp_path / "audit.yaml"),
+            patch("theforge.cli.review.run_from_review", return_value=result) as mock_run,
+            patch("pathlib.Path.exists", return_value=True),
+        ):
+            cmd_review(args)
+
+        assert mock_run.call_args.kwargs["reentry_mode"] == REENTRY_MODE_REVIEW
 
 
 def _write_sprint_summary(tmp_path: Path, slug: str) -> Path:

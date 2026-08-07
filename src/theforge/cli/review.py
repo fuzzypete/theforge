@@ -9,6 +9,7 @@ from pathlib import Path
 from theforge.cli.shared import _build_task, _find_config, _write_audit
 from theforge.config import load_config
 from theforge.coordinator.engine import run_from_review
+from theforge.coordinator.run_setup import REENTRY_MODE_REVIEW
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
@@ -110,6 +111,11 @@ def cmd_review(args: object) -> int:
         workspace_path,
         auto_merge=auto_merge,
         notify=not args.no_notify,
+        # This command runs the review phase. The shared resume setup would
+        # otherwise disclose the *pipeline resume's* behaviour — that a
+        # recovered escalation decision means REVIEW is skipped — from the one
+        # command that is about to run it (#2239).
+        reentry_mode=REENTRY_MODE_REVIEW,
     )
 
     # Write audit log

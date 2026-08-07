@@ -442,14 +442,30 @@ def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[boo
     return True, ""
 
 
-def _report_reentry_impact(recovery: dict) -> None:
+#: Which re-entry path is running.  Both reach this module through the same
+#: ``_setup_resume_entry``, and they do different things with the same recovered
+#: state, so the disclosure below has to know which one it is speaking for
+#: (#2239).
+#:
+#: * ``review``          — ``forge review``: enters at REVIEW and runs the cycle.
+#: * ``pipeline_resume`` — ``forge run --resume`` / ``forge sprint --resume``:
+#:   re-enters the pipeline and continues from whatever the recovered state says,
+#:   which for a recorded escalate-gate decision means landing, not REVIEW.
+REENTRY_MODE_REVIEW = "review"
+REENTRY_MODE_PIPELINE_RESUME = "pipeline_resume"
+
+
+def _report_reentry_impact(recovery: dict, *, reentry_mode: str) -> None:
     """State, before the loop spends anything, a recovery that changes what runs.
 
     The generic "recovered phase record: escalation" line above names *what* was
-    lifted off disk but not what acting on it costs the operator: a recovered
-    escalate-gate decision continues from that decision, so a review cycle that
-    never ran never will.  ``forge review`` is the path that runs it.  Split
-    across short lines to match the surrounding RESUME output (#2239).
+    lifted off disk but not what acting on it means for the outstanding review
+    cycle — and that differs by path.  ``forge review`` enters at REVIEW and runs
+    the cycle; a pipeline resume continues from the recovered decision, so a
+    cycle that never ran never will.  Reporting one path's behaviour from the
+    other would be worse than saying nothing: the operator would be told review
+    is being skipped by the very command about to run it.  Split across short
+    lines to match the surrounding RESUME output (#2239).
     """
     impact = recovery.get("reentry_impact")
     if not impact:
@@ -459,7 +475,7 @@ def _report_reentry_impact(recovery: dict) -> None:
     action = impact.get("escalation_selected_action")
     decision_str = f"{decision} / {action}" if action else str(decision)
     source = recovery.get("source_run_id") or "an earlier attempt"
-    _cu._log(f"  ↺ RESUME   acting on escalation decision {decision_str} (from {source})")
+    _cu._log(f"  ↺ RESUME   recovered escalation decision {decision_str} (from {source})")
 
     cycle = impact.get("outstanding_review_cycle")
     cycle_str = f"REVIEW cycle {cycle}" if cycle else "the next REVIEW cycle"
@@ -477,10 +493,17 @@ def _report_reentry_impact(recovery: dict) -> None:
     if context:
         outstanding = f"{outstanding} ({context})"
     _cu._log(outstanding)
-    _cu._log(
-        f"  ↺ RESUME   this resume continues from that decision and will NOT run REVIEW — "
-        f"`forge review` runs {cycle_str} instead"
-    )
+
+    if reentry_mode == REENTRY_MODE_REVIEW:
+        _cu._log(
+            f"  ↺ RESUME   `forge review` runs {cycle_str} now — "
+            f"`forge sprint --resume` would continue from that decision and skip it"
+        )
+    else:
+        _cu._log(
+            f"  ↺ RESUME   this resume continues from that decision and will NOT run REVIEW — "
+            f"`forge review` runs {cycle_str} instead"
+        )
 
 
 def _setup_resume_entry(
@@ -491,11 +514,18 @@ def _setup_resume_entry(
     initial_phase: Phase,
     notify: bool,
     run_id: str | None,
+    reentry_mode: str = REENTRY_MODE_PIPELINE_RESUME,
 ) -> tuple[CoordinatorState, StructuredLogger, str, str, float] | CoordinatorResult:
     """Shared setup for run_from_review / run_from_dev.
 
     Returns (state, logger, branch_name, story_content, task_start) on success,
     or a CoordinatorResult on failure (worktree missing).
+
+    ``reentry_mode`` names which operator-facing command is re-entering, because
+    the two do different things with the same recovered state.  It defaults to
+    the pipeline resume: the entry function alone cannot distinguish them (a
+    ``--resume`` triage can pick ``run_from_review`` too), so ``forge review``
+    declares itself and everything else is a resume.
     """
     # No preflight verdict is seeded here. A resumed attempt does not run
     # preflight, but "this process did not run it" is not the same claim as
@@ -598,13 +628,18 @@ def _setup_resume_entry(
         slug=task.slug,
         story_content=story_content,
     )
+    # Stamp the path onto the impact before it reaches the audit: which command
+    # re-entered decides what the recovered decision does to REVIEW, so an audit
+    # reader tracing the disclosure needs the same fact the disclosure used.
+    if isinstance(_recovery.get("reentry_impact"), dict):
+        _recovery["reentry_impact"]["reentry_mode"] = reentry_mode
     state.phase_recovery = _recovery
     logger._safe_emit("phase_recovery", phase="RESUME", **_recovery)
     if _recovery["status"] == "recovered":
         _cu._log(
             f"  ↺ RESUME   recovered phase record: {', '.join(_recovery['recovered_phases'])}"
         )
-        _report_reentry_impact(_recovery)
+        _report_reentry_impact(_recovery, reentry_mode=reentry_mode)
     elif _recovery["status"] == "rejected":
         _cu._log(
             f"  ⚠ RESUME   persisted phase record rejected ({_recovery['reason']}) — "

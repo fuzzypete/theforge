@@ -939,15 +939,27 @@ review cycle 1 returned REQUEST_CHANGES, cycle 2 never ran, escalation decision
 Neither is a default: choosing between them is choosing whether the work gets
 reviewed. Check `forge status` first — a story in this state prints an
 `outstanding:` line naming the unrun cycle and a `re-entry:` line naming what
-each path would do. Resume itself reports the same thing before it spends
-anything, on its `↺ RESUME` lines:
+each path would do. Whichever you run reports the same thing before it spends
+anything, on its `↺ RESUME` lines — stated for the path you actually invoked.
+
+`forge sprint --resume` / `forge run --resume`:
 
 ```
   ↺ RESUME   recovered phase record: escalation
-  ↺ RESUME   acting on escalation decision land_core / defer_edges (from run 20260807-...)
+  ↺ RESUME   recovered escalation decision land_core / defer_edges (from run 20260807-...)
   ↺ RESUME   outstanding: REVIEW cycle 2 has not run (last verdict REQUEST_CHANGES, gate PASS)
   ↺ RESUME   this resume continues from that decision and will NOT run REVIEW —
              `forge review` runs REVIEW cycle 2 instead
+```
+
+`forge review` — same recovered state, and it is the path that runs the cycle:
+
+```
+  ↺ RESUME   recovered phase record: escalation
+  ↺ RESUME   recovered escalation decision land_core / defer_edges (from run 20260807-...)
+  ↺ RESUME   outstanding: REVIEW cycle 2 has not run (last verdict REQUEST_CHANGES, gate PASS)
+  ↺ RESUME   `forge review` runs REVIEW cycle 2 now —
+             `forge sprint --resume` would continue from that decision and skip it
 ```
 
 **Force a clean restart:**
