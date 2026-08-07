@@ -34,6 +34,7 @@ from .model_catalog import (
     parse_transport_block,
     resolve_project,
 )
+from .model_duplicates import DuplicateDeclaration, compare_duplicate_declaration
 from .model_identity import MODEL_TIERS
 from .models import (
     AGENT_REGISTRY,
@@ -420,24 +421,69 @@ def _parse_custom_model_registry(
 def _merge_model_registry(
     custom_registry: dict[str, AgentSpec],
     override_ids: frozenset[str] = frozenset(),
-) -> dict[str, AgentSpec]:
+) -> tuple[dict[str, AgentSpec], tuple[DuplicateDeclaration, ...]]:
     """Merge built-in and forge.yaml model registries.
+
+    Returns ``(merged, duplicates)``. ``duplicates`` describes every canonical
+    identity defined on *both* sides, whether or not it was permitted, so a
+    duplicate declaration is never resolved silently — see
+    :mod:`theforge.config.model_duplicates` for why a duplicate is not assumed
+    inert.
 
     ``override_ids`` are canonical identities the operator is allowed to replace:
     a ``models.custom`` declaration carrying ``override: true``, or an inline
     ``models.enabled`` mapping (which names the model *and* selects it in one
     place, so refining a built-in entry there is unambiguous).
+
+    The guard is scoped to a duplicate that actually *changes dispatch*. That is
+    the case ``override: true`` exists to make deliberate, and refusing it is
+    what stops a project from redefining a shipped model by accident. A
+    declaration that resolves to the same routing as the shipped entry is not
+    redefining anything — it restates it, which is the state a configuration is
+    left in when a model it declared gets promoted into the catalog it already
+    matched. Refusing *that* would mean promoting a model breaks every
+    configuration that already declared it, so it loads and is reported instead.
     """
     merged = dict(AGENT_REGISTRY)
+    duplicates: list[DuplicateDeclaration] = []
     for canonical_id, spec in custom_registry.items():
-        if canonical_id in AGENT_REGISTRY and canonical_id not in override_ids:
-            raise ValueError(
-                f"forge.yaml 'models.custom' declares {canonical_id!r}, which duplicates a "
-                "built-in model identity. Set override: true to replace the built-in entry "
-                "explicitly."
-            )
+        builtin_spec = AGENT_REGISTRY.get(canonical_id)
+        if builtin_spec is not None:
+            duplicate = compare_duplicate_declaration(canonical_id, spec, builtin_spec)
+            duplicates.append(duplicate)
+            if duplicate.routing_differs and canonical_id not in override_ids:
+                differences = "; ".join(
+                    difference.describe() for difference in duplicate.routing_differences
+                )
+                raise ValueError(
+                    f"forge.yaml 'models.custom' declares {canonical_id!r}, which duplicates a "
+                    "built-in model identity and resolves to different routing "
+                    f"({differences}). Set override: true to replace the built-in entry "
+                    "explicitly."
+                )
         merged[canonical_id] = spec
-    return merged
+    return merged, tuple(sorted(duplicates, key=lambda d: d.canonical_id))
+
+
+def _log_duplicate_declarations(duplicates: tuple[DuplicateDeclaration, ...]) -> None:
+    """Warn about a duplicate declaration whose presence changes routing.
+
+    An operator deciding whether a declaration is safe to delete cannot see this
+    from the file: both halves name the same model with the same numbers, and the
+    difference is which identity those numbers are *attributed* to. Warning at
+    load time puts it in the log for every entry point, and ``check-config``
+    captures ``theforge.config`` warnings into its own WARNINGS section.
+    """
+    for duplicate in duplicates:
+        if not duplicate.routing_differs:
+            continue
+        log.warning(
+            "forge.yaml declares %s, which the shipped catalog also defines, and the two "
+            "resolve to different routing (%s). Removing the declaration would change "
+            "model selection.",
+            duplicate.canonical_id,
+            "; ".join(difference.describe() for difference in duplicate.routing_differences),
+        )
 
 
 def _validate_selected_models(models: list[str], registry: dict[str, AgentSpec]) -> None:
@@ -1001,6 +1047,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         key: {field: "builtin" for field in PROVENANCE_FIELDS} for key in AGENT_REGISTRY
     }
     custom_models: tuple[str, ...] = ()
+    model_registry_duplicates: tuple[DuplicateDeclaration, ...] = ()
     if "models" in raw:
         (
             models_list,
@@ -1029,7 +1076,10 @@ def load_config(config_path: Path) -> ForgeConfig:
             for decl_key, identity in overlay_aliases.items()
             if custom_raw.get(decl_key, {}).get("override", False)
         )
-        model_registry = _merge_model_registry(custom_registry, override_ids)
+        model_registry, model_registry_duplicates = _merge_model_registry(
+            custom_registry, override_ids
+        )
+        _log_duplicate_declarations(model_registry_duplicates)
         custom_models = tuple(sorted(custom_registry))
         model_registry_sources.update({key: "forge.yaml" for key in custom_registry})
         model_registry_field_sources.update({**overlay_field_sources, **inline_field_sources})
@@ -1735,6 +1785,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         model_registry=model_registry,
         model_registry_sources=model_registry_sources,
         model_registry_field_sources=model_registry_field_sources,
+        model_registry_duplicates=model_registry_duplicates,
         custom_models=custom_models,
         diagnose=diagnose_cfg,
     )
