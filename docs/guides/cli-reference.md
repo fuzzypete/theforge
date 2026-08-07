@@ -394,6 +394,18 @@ shows neither line). `re-entry:` appears only where the two paths disagree; see
 printed under a pending decision whose story is in that state, so the
 pending-decision surface cannot hide an unrun review cycle.
 
+A **completed** sprint renders the postmortem digest instead of the table, and
+carries the same facts as its own section — printed whether or not an RCA
+artifact exists, because what a story still owes is not a failure
+classification:
+
+```
+OUTSTANDING (1)
+  ✗ #2239  REVIEW cycle 2 not run
+       re-entry: forge review runs REVIEW cycle 2; forge sprint --resume recovers
+                 escalation decision land_core/defer_edges and skips REVIEW
+```
+
 ### Operator-action queue
 
 ```bash

@@ -480,6 +480,20 @@ def analyze_reentry(record: dict[str, Any] | None) -> dict[str, Any]:
     }
 
 
+def describe_outstanding_phases(analysis: dict[str, Any]) -> list[str]:
+    """Operator-facing names for the phases the story stopped still owing.
+
+    One phrasing, so the status table, the completed-sprint digest and the
+    pending-decision list cannot describe the same record differently.  Empty
+    when nothing is outstanding.
+    """
+    phases = list(analysis.get("outstanding_phases") or [])
+    cycle = analysis.get("outstanding_review_cycle")
+    if phases == ["REVIEW"] and cycle:
+        return [f"REVIEW cycle {cycle} not run"]
+    return phases
+
+
 def describe_reentry_paths(analysis: dict[str, Any]) -> str:
     """One-line operator-facing sentence naming each re-entry path's effect.
 

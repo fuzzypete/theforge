@@ -10,12 +10,14 @@ decision and never runs it.
 Both behaviours are defensible; neither was discoverable. These tests cover the
 one derivation of that fact (``classify_review_obligation`` /
 ``analyze_reentry``) and each surface that must state it before an operator
-spends anything: resume's own startup output, the sprint status view, and the
-pending-decision list (#2239).
+spends anything: resume's own startup output on both paths, the live sprint
+status view, the completed-sprint postmortem digest, and the pending-decision
+list (#2239).
 """
 
 from __future__ import annotations
 
+import io
 import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -452,6 +454,103 @@ class TestStatusDistinguishesUnrunReview:
         out = capsys.readouterr().out
         assert "outstanding: REVIEW cycle 2 not run" in out
         assert "re-entry: forge review runs REVIEW cycle 2" in out
+
+
+def _write_digest_summary(tmp_path: Path, slug: str, run_id: str, *, rca: bool) -> None:
+    """A completed sprint with one escalated story, optionally classified."""
+    log_dir = tmp_path / ".forge" / "logs" / "sprint-1"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    (log_dir / "sprint-summary.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "sprint": {"name": "sprint-1", "run_id": run_id, "total_cost_usd": 1.0},
+                "stories": [{"slug": slug, "path": "Issue #2239", "outcome": "ESCALATED"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+    if rca:
+        (log_dir / "sprint-rca.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "sprint_run_id": run_id,
+                    "stories": {slug: {"primary_failure_class": "review_unresolved"}},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+
+class TestCompletedSprintDigestDisclosesOutstandingReview:
+    """``forge status`` with no run id renders the postmortem digest for a
+    completed sprint. That is the default surface an operator reads before
+    choosing a re-entry path, so it cannot be the one that omits the choice."""
+
+    def _render(self, tmp_path: Path) -> str:
+        from theforge.cli.sprint_digest import display_sprint_digest
+
+        buf = io.StringIO()
+        with patch("sys.stdout", buf):
+            rc = display_sprint_digest("run-1", tmp_path)
+        assert rc == 0, buf.getvalue()
+        return buf.getvalue()
+
+    def test_digest_names_the_unrun_cycle_and_both_paths(self, tmp_path: Path) -> None:
+        _write_record(tmp_path, "issue-2239", _stopped_state())
+        _write_digest_summary(tmp_path, "issue-2239", "run-1", rca=True)
+
+        out = self._render(tmp_path)
+
+        assert "OUTSTANDING (1)" in out
+        assert "REVIEW cycle 2 not run" in out
+        assert "re-entry: forge review runs REVIEW cycle 2" in out
+        assert "skips REVIEW" in out
+
+    def test_disclosure_does_not_wait_on_an_rca_artifact(self, tmp_path: Path) -> None:
+        """A phase the story still owes is a fact about the story, not a failure
+        classification — the missing-RCA branch returns early, so the disclosure
+        has to be printed before it."""
+        _write_record(tmp_path, "issue-2239", _stopped_state())
+        _write_digest_summary(tmp_path, "issue-2239", "run-1", rca=False)
+
+        out = self._render(tmp_path)
+
+        assert "No RCA artifact yet" in out
+        assert "OUTSTANDING (1)" in out
+        assert "REVIEW cycle 2 not run" in out
+
+    def test_completed_review_adds_no_section(self, tmp_path: Path) -> None:
+        _write_record(tmp_path, "issue-2239", _stopped_state(verdict="APPROVE"))
+        _write_digest_summary(tmp_path, "issue-2239", "run-1", rca=True)
+
+        out = self._render(tmp_path)
+
+        assert "OUTSTANDING" not in out
+        assert "re-entry:" not in out
+
+    def test_no_resume_record_adds_no_section(self, tmp_path: Path) -> None:
+        _write_digest_summary(tmp_path, "issue-2239", "run-1", rca=True)
+
+        out = self._render(tmp_path)
+
+        assert "OUTSTANDING" not in out
+
+    def test_status_routes_a_completed_sprint_to_the_digest(self, tmp_path: Path, capsys) -> None:
+        """The seam the finding was about: `forge status` with no run id picks
+        the digest, not the telemetry table, for a completed sprint."""
+        from theforge.cli.status import _render_status_blocks
+
+        _write_record(tmp_path, "issue-2239", _stopped_state())
+        _write_digest_summary(tmp_path, "issue-2239", "run-1", rca=True)
+        (tmp_path / ".forge" / "runs").mkdir(parents=True, exist_ok=True)
+
+        with patch("theforge.cli.status._is_sprint_run", return_value=True):
+            _render_status_blocks(["run-1"], tmp_path)
+
+        out = capsys.readouterr().out
+        assert "OUTSTANDING (1)" in out
+        assert "REVIEW cycle 2 not run" in out
 
 
 class TestPendingDecisionsCarryTheSameWarning:

@@ -623,26 +623,9 @@ def _pending_reentry_lines(project_root: Path, story: str) -> list[str]:
     """
     if not story or story == "?":
         return []
-    try:
-        from theforge.coordinator.resume_persistence import (  # noqa: PLC0415
-            describe_reentry_paths,
-            load_reentry_analysis,
-        )
+    from theforge.cli.reentry_display import reentry_lines  # noqa: PLC0415
 
-        analysis = load_reentry_analysis(project_root, story)
-    except Exception:
-        return []
-    if not analysis:
-        return []
-    lines: list[str] = []
-    cycle = analysis.get("outstanding_review_cycle")
-    if analysis.get("outstanding_phases"):
-        cycle_str = f"REVIEW cycle {cycle} not run" if cycle else "REVIEW not run"
-        lines.append(f"    outstanding: {cycle_str}")
-    note = describe_reentry_paths(analysis)
-    if note:
-        lines.append(f"    re-entry: {note}")
-    return lines
+    return reentry_lines(project_root, story, indent="    ")
 
 
 def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:

@@ -58,6 +58,7 @@ def _reentry_display(project_root: Path | None, slug: str) -> tuple[list[str], s
         return [], ""
     try:
         from theforge.coordinator.resume_persistence import (  # noqa: PLC0415
+            describe_outstanding_phases,
             describe_reentry_paths,
             load_reentry_analysis,
         )
@@ -67,11 +68,7 @@ def _reentry_display(project_root: Path | None, slug: str) -> tuple[list[str], s
         return [], ""
     if not analysis:
         return [], ""
-    phases = list(analysis.get("outstanding_phases") or [])
-    cycle = analysis.get("outstanding_review_cycle")
-    if phases == ["REVIEW"] and cycle:
-        phases = [f"REVIEW cycle {cycle} not run"]
-    return phases, describe_reentry_paths(analysis)
+    return describe_outstanding_phases(analysis), describe_reentry_paths(analysis)
 
 
 def _follow_redirect_chain(run_id: str, project_root: Path, max_hops: int = 20) -> str:
