@@ -13,6 +13,26 @@ from pathlib import Path
 from theforge.coordinator import audit_substrate as sub
 from theforge.coordinator import story_budget as sb
 
+
+def _comparable_dev_estimate_basis(score: int = 8, *, sample_count: int = 12) -> dict:
+    """A dev estimate on the allocation's own population: score-scoped, all models.
+
+    ``score`` must match the allocation under test — a basis drawn at another
+    score is exactly what seating refuses to subtract (#2284).
+    """
+    return {
+        "source": sb.DEV_ESTIMATE_SOURCE_SCORE,
+        "band": "large",
+        "complexity_score": score,
+        "statistic": "avg_cost_usd",
+        "scope": sb.DEV_ESTIMATE_SCOPE_DEV_PHASE,
+        "sample_count": sample_count,
+        "headroom_basis": sb.DEV_ESTIMATE_HEADROOM_BASIS_ALLOCATION,
+        "headroom_multiplier": sb.BAND_HEADROOM,
+        "allocation_comparable": True,
+    }
+
+
 # Observed distribution for score 2 in the issue's table (n=24, median $0.46,
 # p90 $1.08, max $1.35), compressed to the sample floor.
 _SCORE_2_COSTS = [0.21, 0.30, 0.38, 0.46, 0.52, 0.61, 1.08, 1.35]
@@ -576,6 +596,7 @@ class TestReviewCycleReconciliation:
         record = sb.reconcile_review_cycles(
             self._allocation(),
             dev_cost_estimate_usd=25.0428,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
             review_cycle_planning=sb.review_cycle_planning_from_samples(
                 [17.55], 17.55, min_samples=1
@@ -604,6 +625,7 @@ class TestReviewCycleReconciliation:
         record = sb.reconcile_review_cycles(
             self._allocation(),
             dev_cost_estimate_usd=25.0428,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
             requested_review_max=5,
             spent_so_far_usd=6.0,
@@ -618,6 +640,7 @@ class TestReviewCycleReconciliation:
         record = sb.reconcile_review_cycles(
             self._allocation(usd=120.0),
             dev_cost_estimate_usd=25.0,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
             requested_review_max=5,
             spent_so_far_usd=0.0,
@@ -630,6 +653,7 @@ class TestReviewCycleReconciliation:
     def test_missing_inputs_are_explicit_no_ops_not_guesses(self) -> None:
         base = dict(
             dev_cost_estimate_usd=25.0,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
             requested_review_max=5,
             spent_so_far_usd=0.0,
@@ -674,6 +698,7 @@ class TestReviewCycleReconciliation:
         record = sb.reconcile_review_cycles(
             allocation,
             dev_cost_estimate_usd=25.0,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
             requested_review_max=5,
             spent_so_far_usd=0.0,
@@ -700,11 +725,145 @@ class TestReviewCycleReconciliation:
         record = sb.reconcile_review_cycles(
             allocation,
             dev_cost_estimate_usd=25.0,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
             requested_review_max=5,
             spent_so_far_usd=0.0,
         )
         assert sb.seating_shortfall(allocation, record, participants=["a"]) is None
+
+    def _issue_2252_allocation(self) -> dict:
+        # Run 076fa19d5fc3: 26 score-4 samples, max $8.14, allocated at 1.25x.
+        return {
+            "allocation_usd": 10.18,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 4,
+            "median_usd": 1.69,
+            "p90_usd": 4.87,
+            "max_usd": 8.14,
+            "sample_count": 26,
+        }
+
+    def test_issue_2252_score_scoped_estimate_keeps_review_fundable(self) -> None:
+        """The score-4 dev average ($2.32) x 1.25 leaves both cycles funded.
+
+        The run that failed subtracted $9.89 — a medium-band, single-model
+        average x 2.0 — from this same $10.18 allocation and refused a $2.42
+        cycle with $0.29 left, before any phase ran (#2284).
+        """
+        record = sb.reconcile_review_cycles(
+            self._issue_2252_allocation(),
+            dev_cost_estimate_usd=2.9,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(4, sample_count=26),
+            review_cycle_cost_usd=2.42,
+            requested_review_max=2,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_AFFORDABLE
+        assert record["remaining_after_dev_usd"] == 7.28
+        assert record["affordable_review_cycles"] == 3
+        assert record["reserved_review_cycles"] == 2
+        assert record["reserved_review_usd"] == 4.84
+        assert sb.seating_shortfall(self._issue_2252_allocation(), record, participants=["a"]) is (
+            None
+        )
+
+    def test_band_and_model_estimate_is_a_no_op_not_a_seating_shortfall(self) -> None:
+        """The exact figures from run 076fa19d5fc3, on their real basis.
+
+        $9.89 is a medium-band, single-model average. Subtracting it from a
+        score-4 allocation is the defect; refusing to subtract it leaves review
+        permitted and DEV free to run.
+        """
+        allocation = self._issue_2252_allocation()
+        record = sb.reconcile_review_cycles(
+            allocation,
+            dev_cost_estimate_usd=9.89,
+            dev_cost_estimate_basis={
+                "source": sb.DEV_ESTIMATE_SOURCE_BAND,
+                "band": "medium",
+                "complexity_score": 4,
+                "statistic": "avg_cost_usd",
+                "scope": sb.DEV_ESTIMATE_SCOPE_DEV_PHASE,
+                "sample_count": 194,
+                "headroom_basis": "band_headroom",
+                "headroom_multiplier": 2.0,
+                "allocation_comparable": False,
+                "reason": "profile_history",
+            },
+            review_cycle_cost_usd=2.42,
+            requested_review_max=2,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE
+        assert record["reconciled_review_max"] == 2
+        assert record["reserved_review_cycles"] == 0
+        assert record["reserved_review_usd"] == 0.0
+        assert record["remaining_after_dev_usd"] is None
+        assert record["dev_cost_estimate_comparable"] is False
+        assert record["dev_cost_estimate_sample_count"] == 194
+        assert sb.seating_shortfall(allocation, record, participants=["a"]) is None
+
+        message = sb.format_reconciliation(record)
+        assert "not on a common population" in message
+        assert "medium-band, single-model average" in message
+        # A refusal citing dollars invites raising a budget that was never the
+        # constraint, so the message must not read as a shortfall.
+        assert "short $" not in message
+        assert "cannot fund" not in message
+
+    def test_a_configured_fallback_estimate_is_also_not_comparable(self) -> None:
+        record = sb.reconcile_review_cycles(
+            self._issue_2252_allocation(),
+            dev_cost_estimate_usd=9.89,
+            dev_cost_estimate_basis={
+                "source": sb.DEV_ESTIMATE_SOURCE_CONFIGURED,
+                "statistic": "configured_budget_usd",
+                "headroom_basis": None,
+                "headroom_multiplier": None,
+                "allocation_comparable": False,
+                "reason": "insufficient_profile_history",
+            },
+            review_cycle_cost_usd=2.42,
+            requested_review_max=2,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE
+        assert "configured fallback: insufficient_profile_history" in sb.format_reconciliation(
+            record
+        )
+
+    def test_an_absent_basis_is_not_subtracted(self) -> None:
+        record = sb.reconcile_review_cycles(
+            self._issue_2252_allocation(),
+            dev_cost_estimate_usd=9.89,
+            dev_cost_estimate_basis=None,
+            review_cycle_cost_usd=2.42,
+            requested_review_max=2,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE
+        assert record["reconciled_review_max"] == 2
+        assert "no recorded basis" in sb.format_reconciliation(record)
+
+    def test_a_score_scoped_estimate_from_another_score_is_not_subtracted(self) -> None:
+        """Same shape, different population — a carried-over estimate."""
+        record = sb.reconcile_review_cycles(
+            self._issue_2252_allocation(),
+            dev_cost_estimate_usd=2.9,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(9, sample_count=26),
+            review_cycle_cost_usd=2.42,
+            requested_review_max=2,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE
+        assert record["complexity_score"] == 4
+        assert record["dev_cost_estimate_complexity_score"] == 9
 
 
 class TestReviewFundingReservation:
@@ -726,6 +885,7 @@ class TestReviewFundingReservation:
         return sb.reconcile_review_cycles(
             self._allocation(usd),
             dev_cost_estimate_usd=2.38,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(3, sample_count=20),
             review_cycle_cost_usd=1.01,
             requested_review_max=review_max,
             spent_so_far_usd=0.0,
@@ -748,6 +908,7 @@ class TestReviewFundingReservation:
     def test_undecided_and_unfundable_seatings_reserve_nothing(self) -> None:
         base = dict(
             dev_cost_estimate_usd=2.38,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(3, sample_count=20),
             review_cycle_cost_usd=1.01,
             requested_review_max=1,
             spent_so_far_usd=0.0,
@@ -949,6 +1110,7 @@ class TestReviewFundingReservation:
         record = sb.reconcile_review_cycles(
             self._allocation(usd=3.39),
             dev_cost_estimate_usd=2.38,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(3, sample_count=20),
             review_cycle_cost_usd=1.01,
             requested_review_max=1,
             spent_so_far_usd=0.0,

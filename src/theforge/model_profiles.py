@@ -1872,6 +1872,73 @@ def get_dev_complexity_stats(
     }
 
 
+def get_dev_score_cost_stats(
+    profiles: dict,
+    complexity_score: int | None,
+    *,
+    min_runs: int = 3,
+) -> dict[str, float] | None:
+    """Return dev cost stats for ONE complexity score, across every model.
+
+    Deliberately unlike :func:`get_dev_complexity_stats`, which narrows to a
+    complexity *band* and to the profile entries that share the selected
+    model's identity. The per-story allocation is derived from the whole-story
+    costs recorded at the story's complexity *score*, across all models
+    (``audit_substrate.derive_cost_samples_by_score``). A dev projection that
+    is going to be subtracted from that allocation has to describe the same
+    population, so this aggregation keeps the score and drops both the band
+    widening and the model narrowing.
+
+    Cost only: iteration and wall-clock sizing still read the per-band,
+    per-model stats, because those are properties of the model doing the work
+    rather than of the story's complexity.
+
+    Returns ``None`` when fewer than ``min_runs`` runs exist at the score, or
+    when no run at the score had a measurable cost — an unmeasured population
+    cannot be averaged into a dollar figure.
+    """
+    try:
+        score_key = str(int(complexity_score))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    models = (profiles or {}).get("models") or {}
+    if not isinstance(models, dict):
+        return None
+    runs = 0
+    measured_runs = 0
+    cost_sum = 0.0
+    for entry in models.values():
+        if not isinstance(entry, dict):
+            continue
+        dev = entry.get("dev")
+        if not isinstance(dev, dict):
+            continue
+        by_score = dev.get("by_complexity_score")
+        if not isinstance(by_score, dict):
+            continue
+        sc = by_score.get(score_key)
+        if not isinstance(sc, dict):
+            continue
+        entry_runs = int(sc.get("runs", 0))
+        if entry_runs <= 0:
+            continue
+        entry_cost = _metric_sum(sc, entry_runs, "_cost_sum", "avg_cost_usd")
+        if entry_cost is None:
+            return None
+        runs += entry_runs
+        # Same measured-cost arithmetic as the per-band stats: unmeasured runs
+        # must not dilute the average toward zero.
+        measured_runs += entry_runs - int(sc.get("_cost_unknown_runs", 0))
+        cost_sum += entry_cost
+    if runs < min_runs or runs <= 0 or measured_runs <= 0:
+        return None
+    return {
+        "runs": float(runs),
+        "measured_runs": float(measured_runs),
+        "avg_cost_usd": round(cost_sum / measured_runs, 6),
+    }
+
+
 def _matching_profile_entries(
     profiles: dict,
     model_key: str,

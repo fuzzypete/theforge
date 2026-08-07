@@ -38,6 +38,17 @@ REVIEW_CYCLE_PRICE_MIN_SAMPLES = 3
 REVIEW_CYCLE_PRICE_HEADROOM = 1.25
 REVIEW_COST_HISTORY_TAIL = 50
 
+# Where a dev dollar estimate was drawn from. Only the score-scoped source
+# describes the population an allocation prices (one complexity score, all
+# models), so only it may be subtracted from one — see
+# ``_dev_estimate_comparable_to_allocation``. Defined here rather than in
+# ``adaptive_iterations`` because seating is what the vocabulary is for.
+DEV_ESTIMATE_SOURCE_SCORE = "profile_observed_score"
+DEV_ESTIMATE_SOURCE_BAND = "profile_observed_band"
+DEV_ESTIMATE_SOURCE_CONFIGURED = "configured_fallback"
+DEV_ESTIMATE_HEADROOM_BASIS_ALLOCATION = "allocation_headroom"
+DEV_ESTIMATE_SCOPE_DEV_PHASE = "dev_phase"
+
 BASIS_SUBSTRATE_BAND = "substrate_band"
 BASIS_CONFIGURED_FALLBACK = "configured_fallback"
 BASIS_OBSERVED_COMPOSITION = "observed_composition"
@@ -759,6 +770,7 @@ RECONCILE_NO_BAND_HISTORY = "no_band_history"
 RECONCILE_NO_DEV_ESTIMATE = "no_dev_estimate"
 RECONCILE_NO_REVIEW_COST = "no_review_cost"
 RECONCILE_COST_UNKNOWN = "cost_unknown"
+RECONCILE_NONCOMPARABLE_DEV_ESTIMATE = "dev_estimate_not_comparable"
 RECONCILE_AFFORDABLE = "within_allocation"
 RECONCILE_REDUCED = "review_max_reduced"
 RECONCILE_UNFUNDABLE = "review_unfundable"
@@ -768,6 +780,7 @@ def reconcile_review_cycles(
     allocation: dict | None,
     *,
     dev_cost_estimate_usd: float | None,
+    dev_cost_estimate_basis: dict | None = None,
     review_cycle_cost_usd: float | None,
     review_cycle_planning: dict | None = None,
     requested_review_max: int,
@@ -825,6 +838,17 @@ def reconcile_review_cycles(
         "review_cycle_cost_headroom_multiplier": None,
         "review_cycle_cost_reason": None,
         "review_cycle_cost_composition": None,
+        "dev_cost_estimate_basis": None,
+        "dev_cost_estimate_basis_reason": None,
+        "dev_cost_estimate_statistic": None,
+        "dev_cost_estimate_scope": None,
+        "dev_cost_estimate_band": None,
+        "dev_cost_estimate_complexity_score": None,
+        "dev_cost_estimate_sample_count": None,
+        "dev_cost_estimate_headroom_multiplier": None,
+        "dev_cost_estimate_headroom_basis": None,
+        "dev_cost_estimate_comparable": None,
+        "remaining_after_dev_usd": None,
         "reserved_review_cycles": 0,
         "reserved_review_usd": 0.0,
         "action": RECONCILE_AFFORDABLE,
@@ -836,6 +860,9 @@ def reconcile_review_cycles(
         return record
     record["allocation_usd"] = round(allocation_usd, 2)
     record["basis"] = (allocation or {}).get("basis")
+    # The population the allocation prices. Recorded so a reader can see which
+    # score the dev estimate had to match to be subtracted from it.
+    record["complexity_score"] = (allocation or {}).get("complexity_score")
 
     if record["basis"] != BASIS_SUBSTRATE_BAND:
         record["action"] = RECONCILE_NO_BAND_HISTORY
@@ -855,6 +882,23 @@ def reconcile_review_cycles(
         record["action"] = RECONCILE_NO_DEV_ESTIMATE
         return record
     record["dev_cost_estimate_usd"] = round(dev_estimate, 4)
+    if isinstance(dev_cost_estimate_basis, dict):
+        record["dev_cost_estimate_basis"] = dev_cost_estimate_basis.get("source")
+        record["dev_cost_estimate_basis_reason"] = dev_cost_estimate_basis.get("reason")
+        record["dev_cost_estimate_statistic"] = dev_cost_estimate_basis.get("statistic")
+        record["dev_cost_estimate_scope"] = dev_cost_estimate_basis.get("scope")
+        record["dev_cost_estimate_band"] = dev_cost_estimate_basis.get("band")
+        record["dev_cost_estimate_complexity_score"] = dev_cost_estimate_basis.get(
+            "complexity_score"
+        )
+        record["dev_cost_estimate_sample_count"] = dev_cost_estimate_basis.get("sample_count")
+        record["dev_cost_estimate_headroom_multiplier"] = dev_cost_estimate_basis.get(
+            "headroom_multiplier"
+        )
+        record["dev_cost_estimate_headroom_basis"] = dev_cost_estimate_basis.get("headroom_basis")
+        record["dev_cost_estimate_comparable"] = dev_cost_estimate_basis.get(
+            "allocation_comparable"
+        )
 
     try:
         cycle_cost = float(review_cycle_cost_usd)
@@ -878,6 +922,13 @@ def reconcile_review_cycles(
 
     if requested_review_max <= 0:
         record["action"] = RECONCILE_AFFORDABLE
+        return record
+
+    if not _dev_estimate_comparable_to_allocation(dev_cost_estimate_basis, allocation):
+        # Two figures drawn from different populations do not have a difference
+        # worth acting on. Record the decision and change nothing: the requested
+        # permission stands, nothing is reserved, and DEV runs (#2284).
+        record["action"] = RECONCILE_NONCOMPARABLE_DEV_ESTIMATE
         return record
 
     remaining = _balance(allocation_usd - float(spent_so_far_usd) - dev_estimate)
@@ -908,6 +959,66 @@ def reconcile_review_cycles(
         4,
     )
     return record
+
+
+def _dev_estimate_comparable_to_allocation(
+    dev_cost_estimate_basis: dict | None,
+    allocation: dict | None,
+) -> bool:
+    """Whether the dev estimate describes the population the allocation prices.
+
+    Subtracting one figure from another asserts they measure the same thing.
+    The allocation is the observed cost distribution at ONE complexity score
+    across ALL models, with :data:`BAND_HEADROOM` on top. An estimate may be
+    subtracted from it only when it is drawn from that same population and
+    carries that same caution — and when the score it was drawn at is the score
+    this allocation was drawn at. Everything else (a band-and-model average, a
+    configured fallback, an estimate carried over from a differently-scored
+    attempt) is recorded and left alone: an incommensurable subtraction resolves
+    in one direction, and the phase estimated first eats the rest of the story.
+    """
+    if not isinstance(dev_cost_estimate_basis, dict):
+        return False
+    if dev_cost_estimate_basis.get("source") != DEV_ESTIMATE_SOURCE_SCORE:
+        return False
+    if dev_cost_estimate_basis.get("statistic") != "avg_cost_usd":
+        return False
+    if dev_cost_estimate_basis.get("headroom_basis") != DEV_ESTIMATE_HEADROOM_BASIS_ALLOCATION:
+        return False
+    if not dev_cost_estimate_basis.get("allocation_comparable"):
+        return False
+    try:
+        if float(dev_cost_estimate_basis.get("headroom_multiplier")) != BAND_HEADROOM:
+            return False
+    except (TypeError, ValueError):
+        return False
+    try:
+        basis_score = int(dev_cost_estimate_basis.get("complexity_score"))
+        allocation_score = int((allocation or {}).get("complexity_score"))
+    except (TypeError, ValueError):
+        return False
+    return basis_score == allocation_score
+
+
+def _format_dev_estimate_basis(record: dict) -> str:
+    source = record.get("dev_cost_estimate_basis")
+    score = record.get("dev_cost_estimate_complexity_score")
+    samples = record.get("dev_cost_estimate_sample_count")
+    sample_text = f" over {int(samples)} run(s)" if isinstance(samples, (int, float)) else ""
+    if source == DEV_ESTIMATE_SOURCE_SCORE:
+        return f"score-{score} average across all models{sample_text}"
+    if source == DEV_ESTIMATE_SOURCE_BAND:
+        band = record.get("dev_cost_estimate_band")
+        return (
+            f"{band or 'unknown'}-band, single-model average{sample_text}"
+            f"{f'; scored {score}' if score is not None else ''}"
+        )
+    if source == DEV_ESTIMATE_SOURCE_CONFIGURED:
+        reason = record.get("dev_cost_estimate_basis_reason")
+        return f"configured fallback{': ' + str(reason) if reason else ''}"
+    if source:
+        return str(source)
+    return "no recorded basis"
 
 
 def _review_cycle_basis_text(record: dict) -> str:
@@ -965,6 +1076,19 @@ def format_reconciliation(record: dict) -> str:
             f"${float(record['review_cycle_cost_usd']):.2f} review cycle{basis} after a "
             f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate "
             f"(short ${float(record['shortfall_usd']):.2f})."
+        )
+    if action == RECONCILE_NONCOMPARABLE_DEV_ESTIMATE:
+        # Deliberately not a dollar shortfall. Naming a figure here would invite
+        # an operator to raise a budget that was never the constraint — the
+        # constraint is that the two numbers do not describe the same runs.
+        allocation_score = record.get("complexity_score")
+        return (
+            f"review_max left at {record['requested_review_max']}: the dev estimate and the "
+            f"allocation are not on a common population, so they were not subtracted. The "
+            f"allocation prices complexity score "
+            f"{allocation_score if allocation_score is not None else '?'}; the "
+            f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate is a "
+            f"{_format_dev_estimate_basis(record)}. Nothing reserved for review."
         )
     if action == RECONCILE_AFFORDABLE:
         return f"allocation funds the permitted {record['requested_review_max']} review cycle(s)."

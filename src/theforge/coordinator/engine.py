@@ -496,6 +496,7 @@ def _coordinator_loop(
         _reconciliation = _story_budget.reconcile_review_cycles(
             state.story_allocation,
             dev_cost_estimate_usd=_limits.dev_cost_estimate_usd,
+            dev_cost_estimate_basis=_limits.audit.get("dev_cost_estimate_basis"),
             review_cycle_cost_usd=float(_review_cycle_planning["planned_cost_usd"]),
             review_cycle_planning=_review_cycle_planning,
             requested_review_max=_limits.review_max,
@@ -528,6 +529,7 @@ def _coordinator_loop(
         if _reconciliation["action"] in (
             _story_budget.RECONCILE_REDUCED,
             _story_budget.RECONCILE_UNFUNDABLE,
+            _story_budget.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE,
         ):
             _audit["rationale"] = (
                 f"{_audit.get('rationale', '')} "
