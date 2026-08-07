@@ -102,11 +102,16 @@ def test_ledger_records_configured_resolved_and_billed_separately() -> None:
     assert ledger["resolved_primary_identity"]["raw"] == "claude-opus-5"
     billed = [c["identity"]["raw"] for c in ledger["billed_components"]]
     assert billed == ["claude-opus-5", "claude-haiku-4-5"]
-    # The component the operator never configured and the catalog does not know
-    # is still recorded, with its own cost attached to it rather than folded in.
+    # The component the operator never configured is still recorded, with its own
+    # cost attached to it rather than folded into the primary's. Its identity now
+    # resolves canonically: being billed as a component while absent from the
+    # catalog was the gap #2252 closed by promoting anthropic/haiku/cli into it.
+    # A spelling the catalog genuinely does not know still reports "unresolved"
+    # — see test_divergence_falls_back_to_raw_spellings_when_neither_canonicalizes.
     haiku = ledger["billed_components"][1]
     assert haiku["cost_usd"] == 0.010
-    assert haiku["identity"]["resolution"] == "unresolved"
+    assert haiku["identity"]["resolution"] == "canonical"
+    assert haiku["identity"]["identity"] == "anthropic/haiku/cli"
 
 
 def test_ledger_records_run_conditions_and_usage_by_class() -> None:

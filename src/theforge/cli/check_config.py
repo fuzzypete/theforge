@@ -517,6 +517,30 @@ def _format_config(
                 lines.append(f"  field provenance for {model_id}:")
                 lines.append(f"    {'forge.yaml:':<12}{', '.join(declared) or '(none)'}")
                 lines.append(f"    {'builtin:':<12}{', '.join(overlaid)}")
+        # A model defined on both sides resolves from forge.yaml, but "the
+        # declaration wins" is not the whole answer: it re-derives its own pricing
+        # attribution, and attribution gates the prices routing reads. Say whether
+        # deleting the declaration would change selection, so that is a stated fact
+        # rather than something the operator finds out by deleting it.
+        if config.model_registry_duplicates:
+            lines.append("  also defined in the shipped catalog (forge.yaml wins):")
+            for duplicate in config.model_registry_duplicates:
+                if duplicate.is_redundant:
+                    verdict = "identical — safe to remove"
+                elif duplicate.routing_differs:
+                    verdict = "ROUTING DIFFERS — removing it changes model selection"
+                else:
+                    verdict = "same routing; differs only in attribution recorded"
+                lines.append(f"    {duplicate.canonical_id:<32}{verdict}")
+                for difference in duplicate.describe():
+                    lines.append(f"      {difference}")
+                if duplicate.routing_differs:
+                    warnings_list.append(
+                        f"{duplicate.canonical_id} is declared in forge.yaml and also shipped in "
+                        "the catalog, and the two resolve to different routing "
+                        f"({'; '.join(d.describe() for d in duplicate.routing_differences)}) — "
+                        "removing the declaration would change model selection"
+                    )
         lines.append("")
 
     # ── DERIVED ROLES (v0.8 simple mode) ─────────────────────────────────

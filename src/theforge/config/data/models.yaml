@@ -72,6 +72,26 @@ models:
       input_per_mtok: 15.00
       output_per_mtok: 75.00
 
+  # Cheap tier for the Anthropic adapter (#2252, promoted from a forge.yaml
+  # project declaration where it has run since #2207). Already billed inside
+  # invocations as a component model before this promotion. dev_capable and
+  # phase_eligibility are stated explicitly, as they were at the project
+  # layer, rather than left to the (permissive) built-in default — it has run
+  # history for preflight/review only.
+  - provider: anthropic
+    model: haiku
+    transport: {kind: cli}
+    routing:
+      tier: cheap
+      capability: 6
+      cost_rank: 1
+      cost_rank_basis: vendor-tier
+      dev_capable: false
+      phase_eligibility: [preflight, review]
+    cost:
+      input_per_mtok: 1.00
+      output_per_mtok: 5.00
+
   # ── OpenAI (Codex CLI) ───────────────────────────────────────────────
   #
   # Unlike the Claude-CLI shorthands above, these model strings are the identity
@@ -113,6 +133,21 @@ models:
       input_per_mtok: 15.00
       output_per_mtok: 120.00
       pricing_provenance: gpt-5.4-pro
+
+  # OpenAI's recommended coding model (#2252, promoted from a forge.yaml
+  # `models.custom` overlay it has run under since #1184). Identifier verified
+  # live against the model's own served identity; billed under this same name.
+  - provider: openai
+    model: gpt-5.5
+    transport: {kind: cli}
+    routing:
+      tier: strong
+      capability: 9
+      cost_rank: 3
+    cost:
+      input_per_mtok: 5.00
+      output_per_mtok: 30.00
+      pricing_provenance: gpt-5.5
 
   # ── OpenAI (API) ─────────────────────────────────────────────────────
   - provider: openai
@@ -214,6 +249,22 @@ models:
       input_per_mtok: 1.25
       output_per_mtok: 10.00
       pricing_provenance: gemini-2.5-pro
+
+  # Google re-entry (#2252, promoted from a forge.yaml `models.custom` overlay
+  # it has run under since #1598). Adopted after gemini-3.1-pro-preview was
+  # benched for a reviewer that completed without calling submit_review;
+  # 3.5-flash beats it on the agentic/tool-call-chaining axes that mattered.
+  - provider: google
+    model: gemini-3.5-flash
+    transport: {kind: api}
+    routing:
+      tier: strong
+      capability: 9
+      cost_rank: 2
+    cost:
+      input_per_mtok: 1.50
+      output_per_mtok: 9.00
+      pricing_provenance: gemini-3.5-flash
 
   # ── Google (Gemini CLI — explicit opt-in) ────────────────────────────
   - provider: google

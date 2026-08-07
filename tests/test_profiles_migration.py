@@ -146,8 +146,8 @@ def test_concrete_anthropic_cli_version_resolves_to_the_family_shorthand():
 
 
 def test_family_match_is_gated_on_the_registry_slot_existing():
-    # No ``anthropic/haiku/cli`` slot in the catalog → unresolved, not guessed.
-    assert canonical_id_for_legacy_key("claude-haiku-4-5") is None
+    # No ``anthropic/turbo/cli`` slot in the catalog → unresolved, not guessed.
+    assert canonical_id_for_legacy_key("claude-turbo-4-5") is None
     # An API hint contradicts the CLI-only heuristic.
     assert canonical_id_for_legacy_key("claude-sonnet-4-6", {"transport_used": "api"}) is None
 
