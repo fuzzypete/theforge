@@ -32,6 +32,7 @@ def _comparable_dev_estimate_basis(score: int = 8, *, sample_count: int = 12) ->
         "allocation_comparable": True,
     }
 
+
 # Observed distribution for score 2 in the issue's table (n=24, median $0.46,
 # p90 $1.08, max $1.35), compressed to the sample floor.
 _SCORE_2_COSTS = [0.21, 0.30, 0.38, 0.46, 0.52, 0.61, 1.08, 1.35]

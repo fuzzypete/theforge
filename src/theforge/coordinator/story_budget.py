@@ -1081,12 +1081,13 @@ def format_reconciliation(record: dict) -> str:
         # Deliberately not a dollar shortfall. Naming a figure here would invite
         # an operator to raise a budget that was never the constraint — the
         # constraint is that the two numbers do not describe the same runs.
+        allocation_score = record.get("complexity_score")
         return (
             f"review_max left at {record['requested_review_max']}: the dev estimate and the "
             f"allocation are not on a common population, so they were not subtracted. The "
             f"allocation prices complexity score "
-            f"{(record.get('complexity_score') if record.get('complexity_score') is not None else '?')}"
-            f"; the ${float(record['dev_cost_estimate_usd']):.2f} dev estimate is a "
+            f"{allocation_score if allocation_score is not None else '?'}; the "
+            f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate is a "
             f"{_format_dev_estimate_basis(record)}. Nothing reserved for review."
         )
     if action == RECONCILE_AFFORDABLE:
