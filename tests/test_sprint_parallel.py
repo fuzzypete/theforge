@@ -24,6 +24,7 @@ from theforge.config import (
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.review import ReviewResult
 from theforge.sprint import load_sprint_manifest, run_sprint
+from theforge.sprint.ci_checks import PrCheckState
 from theforge.sprint.dag import StoryDAG, build_dag
 from theforge.sprint.lock import integration_lock
 from theforge.sprint.runner import _classify_and_record, _run_fresh
@@ -1920,8 +1921,8 @@ class TestQueuedMergePolling:
                 return_value=MagicMock(returncode=0, stdout="OPEN", stderr=""),
             ),
             patch(
-                "theforge.sprint.runner._failing_required_pr_checks",
-                return_value=["gate", "lint"],
+                "theforge.sprint.runner._required_pr_check_state",
+                return_value=PrCheckState(["gate", "lint"], []),
             ),
             patch("theforge.sprint.runner.time.sleep") as sleep,
         ):
@@ -1948,7 +1949,10 @@ class TestQueuedMergePolling:
 
         with (
             patch("theforge.sprint.runner.subprocess.run", side_effect=_fake_run),
-            patch("theforge.sprint.runner._failing_required_pr_checks", return_value=[]) as probe,
+            patch(
+                "theforge.sprint.runner._required_pr_check_state",
+                return_value=PrCheckState([], []),
+            ) as probe,
             patch("theforge.sprint.runner.time.sleep") as sleep,
         ):
             result = _poll_queued_pr(
@@ -1974,7 +1978,10 @@ class TestQueuedMergePolling:
                 "theforge.sprint.runner.subprocess.run",
                 return_value=MagicMock(returncode=0, stdout="OPEN", stderr=""),
             ),
-            patch("theforge.sprint.runner._failing_required_pr_checks", return_value=[]),
+            patch(
+                "theforge.sprint.runner._required_pr_check_state",
+                return_value=PrCheckState([], []),
+            ),
             patch("theforge.sprint.runner.time.sleep"),
             patch(
                 "theforge.sprint.runner.time.monotonic", side_effect=lambda: next(monotonic_values)
@@ -2007,6 +2014,55 @@ class TestQueuedMergePolling:
             _queued_pr_failure_message({"status": "closed"}, url, 3600)
             == f"Queued PR closed: {url}"
         )
+
+    def test_poll_queued_pr_keeps_waiting_on_a_cancelled_required_check(
+        self, tmp_path: Path
+    ) -> None:
+        """Issue #2270: a cancelled check never judged the change, so it must not
+        abandon the PR as decided-red — the wait budget governs it, and the
+        expiry names the checks that produced no verdict."""
+
+        from theforge.sprint.runner import _poll_queued_pr
+
+        monotonic_values = iter([0, 1, 31, 61])
+        with (
+            patch(
+                "theforge.sprint.runner.subprocess.run",
+                return_value=MagicMock(returncode=0, stdout="OPEN", stderr=""),
+            ),
+            patch(
+                "theforge.sprint.runner._required_pr_check_state",
+                return_value=PrCheckState([], ["gate (3.12)"]),
+            ),
+            patch("theforge.sprint.runner.time.sleep") as sleep,
+            patch(
+                "theforge.sprint.runner.time.monotonic", side_effect=lambda: next(monotonic_values)
+            ),
+        ):
+            result = _poll_queued_pr(
+                "https://github.com/x/y/pull/1",
+                tmp_path,
+                60,
+                base_branch="main",
+            )
+
+        assert result == {"status": "timeout", "unjudged_checks": "gate (3.12)"}
+        assert sleep.called  # it waited rather than abandoning on the first poll
+
+    def test_queued_pr_failure_message_separates_unjudged_from_failed(self) -> None:
+        """The recorded reason is what the operator reads to decide whether the
+        work is salvageable, so an unjudged check must not read as a red one."""
+
+        from theforge.sprint.runner import _queued_pr_failure_message
+
+        url = "https://github.com/x/y/pull/7"
+        message = _queued_pr_failure_message(
+            {"status": "timeout", "unjudged_checks": "gate (3.12)"}, url, 3600
+        )
+        assert message == (
+            f"Queued PR required checks never produced a verdict (gate (3.12)) within 3600s: {url}"
+        )
+        assert "required checks failed" not in message
 
     def test_poll_queued_pr_waits_for_origin_main_when_base_branch_set(
         self, tmp_path: Path
