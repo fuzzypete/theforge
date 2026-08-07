@@ -12,6 +12,7 @@ from theforge.runners.schema_utils import (
     ProviderAdapter,
     ToolCallRequest,
     _estimate_cost,
+    sampling_control_kwargs,
 )
 
 if TYPE_CHECKING:
@@ -37,7 +38,6 @@ def _run_anthropic(
         response = client.messages.create(
             model=profile.model,
             max_tokens=4096,
-            temperature=0,
             messages=[{"role": "user", "content": prompt}],
             tools=[
                 {
@@ -47,6 +47,7 @@ def _run_anthropic(
                 }
             ],
             tool_choice={"type": "tool", "name": "review_output"},
+            **sampling_control_kwargs(),
         )
 
         output_text = ""
@@ -155,8 +156,8 @@ def _make_anthropic_adapter(
         kwargs: dict[str, Any] = {
             "model": profile.model,
             "max_tokens": 8192,
-            "temperature": 0,
             "messages": anth_messages,
+            **sampling_control_kwargs(),
         }
         if tools:
             kwargs["tools"] = tools
