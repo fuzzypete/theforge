@@ -11,9 +11,9 @@ from theforge.runners.schema_utils import (
     Finalizer,
     LoopTurn,
     _build_submit_tools_anthropic,
-    _is_reasoning_model,
     _sanitize_schema_for_google,
     forced_output_contract,
+    sampling_control_kwargs,
 )
 
 if TYPE_CHECKING:
@@ -50,9 +50,8 @@ def _make_openai_chat_finalizer(
                 "type": "json_schema",
                 "json_schema": {"name": schema_name, "schema": schema, "strict": True},
             },
+            **sampling_control_kwargs(),
         }
-        if not _is_reasoning_model(profile.model):
-            kwargs["temperature"] = 0
 
         response = client.chat.completions.create(**kwargs)
         output_text = response.choices[0].message.content or ""
@@ -108,9 +107,8 @@ def _make_deepseek_finalizer(
             "model": profile.model,
             "messages": oai_messages,
             "response_format": {"type": "json_object"},
+            **sampling_control_kwargs(),
         }
-        if not _is_reasoning_model(profile.model):
-            kwargs["temperature"] = 0
 
         response = client.chat.completions.create(**kwargs)
         output_text = response.choices[0].message.content or ""
@@ -217,9 +215,9 @@ def _make_anthropic_finalizer(
         response = client.messages.create(
             model=profile.model,
             max_tokens=8192,
-            temperature=0,
             messages=anth_messages,
             tools=[submit_tool],
+            **sampling_control_kwargs(),
             tool_choice={"type": "tool", "name": contract.submit_tool},
         )
 
@@ -278,7 +276,6 @@ def _make_google_finalizer(
         config = _make_google_generate_config(
             genai_types,
             profile,
-            temperature=0,
             response_mime_type="application/json",
             response_schema=finalize_schema,
         )

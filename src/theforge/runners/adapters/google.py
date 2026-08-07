@@ -16,6 +16,7 @@ from theforge.runners.schema_utils import (
     _estimate_cost,
     _sanitize_schema_for_google,
     forced_output_contract,
+    sampling_control_kwargs,
 )
 
 if TYPE_CHECKING:
@@ -78,8 +79,12 @@ def _make_google_generate_config(
     profile: "ModelProfile",
     **kwargs: Any,
 ) -> Any:
-    """Build GenerateContentConfig with optional ThinkingConfig."""
-    config_kwargs = dict(kwargs)
+    """Build GenerateContentConfig with optional ThinkingConfig.
+
+    Every Google request builds its config here, so optional sampling controls
+    are decided once — see :func:`sampling_control_kwargs`.
+    """
+    config_kwargs: dict[str, Any] = {**sampling_control_kwargs(), **kwargs}
     if profile.thinking_budget is not None:
         config_kwargs["thinking_config"] = genai_types.ThinkingConfig(
             thinking_budget=profile.thinking_budget
@@ -168,7 +173,7 @@ def _run_google(
 
     try:
         if plain_text:
-            config = _make_google_generate_config(genai_types, profile, temperature=0)
+            config = _make_google_generate_config(genai_types, profile)
         else:
             schema = _sanitize_schema_for_google(review_json_schema())
             config = _make_google_generate_config(
@@ -176,7 +181,6 @@ def _run_google(
                 profile,
                 response_mime_type="application/json",
                 response_schema=schema,
-                temperature=0,
             )
 
         response = client.models.generate_content(
@@ -380,7 +384,6 @@ def _make_google_adapter(
         config = _make_google_generate_config(
             genai_types,
             profile,
-            temperature=0,
             response_mime_type="application/json",
             response_schema=_finalize_schema,
         )
@@ -419,7 +422,6 @@ def _make_google_adapter(
         config = _make_google_generate_config(
             genai_types,
             profile,
-            temperature=0,
             tools=google_tools,
         )
         response = client.models.generate_content(

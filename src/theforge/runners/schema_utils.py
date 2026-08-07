@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Protocol
 
@@ -108,16 +107,21 @@ def uses_openai_responses_api(model: str) -> bool:
     return model in _RESPONSES_ONLY_MODELS
 
 
-# OpenAI reasoning models that do not support temperature=0.
-# These models only accept temperature=1 (the default).
-_REASONING_MODEL_RE = re.compile(r"^o\d")
+def sampling_control_kwargs() -> dict[str, Any]:
+    """Optional sampling controls to merge into any provider request.
 
+    Empty by design, and deliberately provider- and model-agnostic: no runner
+    behaviour depends on a fixed ``temperature``, and providers increasingly
+    reject the value outright for current models. Deciding this per call site —
+    or from the shape of a model's name — encodes the set of models known when
+    the code was written and misclassifies everything released afterwards, so
+    every request builder in this subsystem routes through here instead.
 
-def _is_reasoning_model(model: str) -> bool:
-    """Return True for reasoning models that do not support temperature=0."""
-    return bool(_REASONING_MODEL_RE.match(model)) or model.startswith(
-        ("deepseek-r1", "deepseek-reasoner")
-    )
+    Re-introducing a control requires two things, neither of which is a model
+    name: a runner behaviour that demonstrably depends on it, and evidence the
+    selected provider accepts it for the selected model.
+    """
+    return {}
 
 
 # Submit tool names — loop-internal, not in TOOL_REGISTRY

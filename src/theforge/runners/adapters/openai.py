@@ -12,7 +12,7 @@ from theforge.runners.schema_utils import (
     ProviderAdapter,
     ToolCallRequest,
     _estimate_cost,
-    _is_reasoning_model,
+    sampling_control_kwargs,
     uses_openai_responses_api,
 )
 
@@ -105,9 +105,8 @@ def _run_openai_chat(
             "model": profile.model,
             "messages": [{"role": "user", "content": prompt}],
             "response_format": response_format,
+            **sampling_control_kwargs(),
         }
-        if not _is_reasoning_model(profile.model):
-            create_kwargs["temperature"] = 0
         response = client.chat.completions.create(**create_kwargs)
         output_text = response.choices[0].message.content or ""
         usage = response.usage
@@ -242,9 +241,8 @@ def _make_openai_chat_adapter(
         kwargs: dict[str, Any] = {
             "model": profile.model,
             "messages": oai_messages,
+            **sampling_control_kwargs(),
         }
-        if not _is_reasoning_model(profile.model):
-            kwargs["temperature"] = 0
         if tools:
             kwargs["tools"] = tools
         if response_format is not None:
