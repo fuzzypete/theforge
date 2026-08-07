@@ -1939,6 +1939,34 @@ def test_merge_failed_check_failure_guidance_names_the_checks(tmp_path: Path) ->
     assert "iteration budget" not in actions
 
 
+def test_merge_failed_unjudged_check_guidance_says_re_dispatch(tmp_path: Path) -> None:
+    """Issue #2270: a check that stopped without judging the change must send the
+    operator to re-dispatch it, not to debug a change that was never tested."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2258",
+                    "outcome": "MERGE_FAILED",
+                    "error": (
+                        "Queued PR required checks never produced a verdict (gate (3.12)) "
+                        "within 3600s: https://github.com/x/y/pull/2269"
+                    ),
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2258"]
+    actions = " ".join(entry["recommended_next_actions"]).lower()
+
+    assert entry["primary_failure_class"] == "merge_failed"
+    assert "re-dispatch" in actions
+    assert "decided-red" not in actions
+    assert "merge conflict" not in actions
+
+
 def test_merge_failed_timeout_guidance_points_at_the_wait_budget(tmp_path: Path) -> None:
     d = _sprint_dir(tmp_path)
     _write(
