@@ -1,7 +1,17 @@
 """Codex (OpenAI) CLI runner.
 
-Invokes `npx @openai/codex exec --json --full-auto` as a subprocess, captures
+Invokes `npx @openai/codex@<pinned> exec --json` as a subprocess, captures
 agent text via a temp file (`-o`), and returns an AgentResult.
+
+The package spec is **version-pinned** (``CODEX_PACKAGE``). An unpinned ``npx``
+spec resolves to whatever npm currently serves, so an upstream release reaches
+this project the moment it publishes, with no commit, no review and no gate. A
+CLI that removes or renames a flag then fails every Codex-transport agent at
+argv parsing — before any model is contacted, so the run costs $0.00 and no
+budget signal fires either. That is how 0.147.0's removal of ``--full-auto``
+took out the reviewer pool and the escalation advisor mid-sprint. Raising the
+pin is a reviewed change like any other, which is the point: the version the
+agents run becomes a fact in the tree rather than a property of the day.
 
 ``--json`` puts codex in machine-readable event mode, which is the ONLY way its
 token usage reaches forge: the human transport prints a bare total that cannot be
@@ -38,6 +48,11 @@ from theforge.workspace_env import build_workspace_env
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
 from .schema_utils import _estimate_cost
+
+# Pinned Codex CLI. See the module docstring for why this is not a floating
+# spec. Both the fresh and the resume argv build from this one constant so the
+# two paths can never drift onto different CLI versions.
+CODEX_PACKAGE = "@openai/codex@0.147.0"
 
 # Emit the cost-unmeasured warning at most once per model to avoid log spam.
 _COST_UNMEASURED_WARNED: set[str] = set()
@@ -99,10 +114,9 @@ def build_argv(
     """
     cmd: list[str] = [
         "npx",
-        "@openai/codex",
+        CODEX_PACKAGE,
         "exec",
         "--json",
-        "--full-auto",
         "--skip-git-repo-check",
         "-m",
         profile.model,
@@ -155,7 +169,7 @@ def build_resume_argv(
     """
     cmd: list[str] = [
         "npx",
-        "@openai/codex",
+        CODEX_PACKAGE,
         "exec",
         "resume",
         "--json",
