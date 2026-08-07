@@ -25,6 +25,7 @@ from theforge.cli.status_run_helpers import live_sprint_run_ids as _live_sprint_
 
 SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
 STALL_CHAR = "·"
+GATE_CHAR = "⏸"
 DONE_CHAR = "✓"
 FAIL_CHAR = "✗"
 WAIT_CHAR = " "
@@ -213,7 +214,7 @@ def render_frame(
     per-slug cost so the next frame can compute deltas.
     """
     from theforge.cli.sprint_status import _format_story_cell, display_sprint_status
-    from theforge.sprint.status_reader import read_live_status
+    from theforge.sprint.status_reader import COLLISION_GATE_STAGE, read_live_status
 
     # Persist the GitHub title cache across frames so titles fetched on frame 1
     # are reused on every subsequent frame (zero re-fetch).
@@ -278,7 +279,14 @@ def render_frame(
             stalled = age > stall_threshold
 
         status = getattr(e, "status", "waiting")
-        if status == "running":
+        # A story held at its plan gate is waiting by design and emits no
+        # events, so its age crossing the stall threshold means nothing. Report
+        # the wait, not a warning the operator cannot act on (#2235).
+        gated = status == "running" and getattr(e, "stage", "") == COLLISION_GATE_STAGE
+        if gated:
+            label = f"{GATE_CHAR} gated"
+            act = _c(label, DIM, color)
+        elif status == "running":
             if stalled:
                 label = f"{STALL_CHAR} stalled"
                 act = _c(label, DIM, color)
