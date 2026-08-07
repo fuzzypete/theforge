@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from .provenance import ConfigProvenance
 
 if TYPE_CHECKING:
+    from .model_duplicates import DuplicateDeclaration
     from .models import AgentDef, AgentSpec, TransportSpec
 
 SUPPORTED_PROVIDERS = {"anthropic", "openai", "google", "deepseek"}
@@ -1246,6 +1247,14 @@ class ForgeConfig:
     # part of a shipped definition readable rather than opaque. Empty for a
     # directly-constructed config that never went through load_config().
     model_registry_field_sources: dict[str, dict[str, str]] = field(default_factory=dict)
+    # Canonical identities defined in *both* the shipped catalog and forge.yaml,
+    # with how the two definitions differ. A duplicate declaration is not assumed
+    # inert: a project declaration re-derives its own pricing attribution, and
+    # attribution gates the prices routing reads, so an apparently redundant
+    # declaration can still change selection. Recorded here (and therefore in the
+    # resolved-config digest) so the difference is a stated fact rather than
+    # something an operator discovers by deleting the declaration.
+    model_registry_duplicates: tuple[DuplicateDeclaration, ...] = ()
     custom_models: tuple[str, ...] = ()
     diagnose: DiagnoseConfig = field(default_factory=DiagnoseConfig)
     # Identity of the configuration this object represents (#2056). Populated by

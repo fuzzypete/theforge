@@ -121,7 +121,9 @@ def test_provenance_survives_the_projections_routing_reads():
 # ── Built-in registry attribution ──────────────────────────────────────
 
 
-@pytest.mark.parametrize("key", ["anthropic/opus/cli", "anthropic/sonnet/cli"])
+@pytest.mark.parametrize(
+    "key", ["anthropic/opus/cli", "anthropic/sonnet/cli", "anthropic/haiku/cli"]
+)
 def test_cli_shorthand_entries_are_unattributed(key):
     """The Claude CLI resolves these identities at invocation, so their stored
     literal cannot be attributed to what is billed."""
@@ -135,7 +137,11 @@ def test_every_other_priced_builtin_entry_records_its_attribution():
         for key, spec in AGENT_REGISTRY.items()
         if spec.input_cost_per_mtok is not None and spec.pricing_provenance is None
     }
-    assert unattributed == {"anthropic/opus/cli", "anthropic/sonnet/cli"}
+    assert unattributed == {
+        "anthropic/opus/cli",
+        "anthropic/sonnet/cli",
+        "anthropic/haiku/cli",
+    }
 
 
 def test_local_endpoint_entries_are_attributed_to_the_endpoint():
