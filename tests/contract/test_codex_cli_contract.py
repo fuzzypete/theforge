@@ -38,12 +38,19 @@ def _profile(**kwargs) -> ModelProfile:
 
 
 def _replace_npx_with_codex(argv: list[str]) -> list[str]:
-    """Substitute the installed `codex` binary for `npx @openai/codex`.
+    """Substitute the installed `codex` binary for `npx @openai/codex@<pin>`.
 
     Avoids pulling a fresh package via npx on every CI run while still
     exercising the same argv shape the runner produces.
+
+    Matches the package spec by prefix so the runner's version pin does not
+    silently stop matching here — a mismatch would fall through and spawn a real
+    npx download instead of the local binary. Note the tradeoff this substitution
+    makes: it validates the argv *shape* against whatever codex happens to be
+    installed, not against the pinned version the runner actually invokes. A
+    flag removed in the pinned release is therefore not caught here.
     """
-    if argv[:2] == ["npx", "@openai/codex"]:
+    if argv[:1] == ["npx"] and argv[1:2] and argv[1].split("@openai/codex")[0] == "":
         return ["codex", *argv[2:]]
     return argv
 
