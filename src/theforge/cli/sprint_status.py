@@ -205,7 +205,7 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
                 file=sys.stderr,
             )
             return 1
-        entries = read_completed_status(summary_path)
+        entries = read_completed_status(summary_path, project_root)
         sprint_name = _read_sprint_name_from_summary(summary_path)
         # Read aggregate metrics from the completed summary.
         try:
@@ -501,6 +501,16 @@ def _print_story_line(
             f"{detail_lines[index] if index < len(detail_lines) else ''}"
         )
         print(f"{prefix}{line}")
+
+    # Re-entry disclosure, below the columns rather than in DETAIL: it is about
+    # what has *not* run and what running each re-entry path would do, which the
+    # detail column (last-known progress) cannot say without lying about it.
+    outstanding = list(getattr(entry, "outstanding_phases", None) or [])
+    if outstanding:
+        print(f"{prefix}    outstanding: {', '.join(outstanding)}")
+    reentry_note = getattr(entry, "reentry_note", "")
+    if reentry_note:
+        print(f"{prefix}    re-entry: {reentry_note}")
 
 
 def _format_sprint_phase(
