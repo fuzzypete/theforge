@@ -18,7 +18,6 @@ from theforge.runners.api import (
 from theforge.runners.schema_utils import (
     LoopTurn,
     ToolCallRequest,
-    _is_reasoning_model,
 )
 from theforge.runners.tool_runtime import TOOL_REGISTRY
 
@@ -469,18 +468,6 @@ class TestDeepSeekProvider:
             base_url=base_url,
         )
 
-    # ── _is_reasoning_model ──────────────────────────────────────────
-
-    def test_is_reasoning_model_deepseek_r1(self):
-        assert _is_reasoning_model("deepseek-r1") is True
-
-    def test_is_reasoning_model_deepseek_r1_prefix_variants(self):
-        assert _is_reasoning_model("deepseek-r1-zero") is True
-        assert _is_reasoning_model("deepseek-r1-distill-qwen-7b") is True
-
-    def test_is_reasoning_model_deepseek_v3_is_false(self):
-        assert _is_reasoning_model("deepseek-v3") is False
-
     # ── _deepseek_client base_url ─────────────────────────────────────
 
     def _patch_openai(self):
@@ -556,8 +543,8 @@ class TestDeepSeekProvider:
         mock_client.chat.completions.create.assert_called_once()
         call_kwargs = mock_client.chat.completions.create.call_args[1]
         assert call_kwargs["model"] == "deepseek-v3"
-        # deepseek-v3 is not a reasoning model — temperature should be set
-        assert call_kwargs.get("temperature") == 0
+        # Optional sampling controls are never sent — see sampling_control_kwargs
+        assert "temperature" not in call_kwargs
 
     def test_run_deepseek_r1_skips_temperature(self, tmp_path):
         profile = self._make_deepseek_profile(model="deepseek-r1")
