@@ -63,6 +63,27 @@ PHASE_BLOCKS: tuple[str, ...] = (
     "timeout_escalation",
 )
 
+#: Sibling key carrying what review has and has not done for the story.
+#:
+#: Deliberately *not* a member of :data:`PHASE_BLOCKS`: nothing restores it onto
+#: a resumed ``CoordinatorState``, so it must never appear in
+#: ``recovered_phases`` (which names phases lifted off disk) nor decide whether
+#: a record is usable.  It exists so a reader can tell "the next review cycle
+#: has not run" from "review completed" without re-deriving either from the
+#: worktree (#2239).  Additive: a record written before this key existed simply
+#: lacks it, and classification then reports the obligation as *unknown* rather
+#: than inventing a completed review.
+REVIEW_PROGRESS_KEY = "review_progress"
+
+#: Verdicts that end the review loop.  Anything else recorded as the latest
+#: verdict means the loop was still owed another cycle when the attempt stopped.
+_TERMINAL_REVIEW_VERDICTS = frozenset({"APPROVE", "REJECT"})
+
+#: Values of ``review_obligation`` in :func:`classify_review_obligation`.
+REVIEW_OBLIGATION_UNKNOWN = "unknown"
+REVIEW_OBLIGATION_NONE = "none"
+REVIEW_OBLIGATION_CYCLE_NOT_RUN = "cycle_not_run"
+
 _SAFE_SLUG_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
 
@@ -188,6 +209,36 @@ def _escalation_block(state: "CoordinatorState") -> dict[str, Any] | None:
     }
 
 
+def _review_progress_block(state: "CoordinatorState") -> dict[str, Any] | None:
+    """What review had done for this story when the attempt stopped, or None.
+
+    Counters and the latest verdict only — never a judgement.  The judgement is
+    :func:`classify_review_obligation`, so every surface that reads this record
+    (resume startup, ``forge status``, the pending-decision list) derives the
+    same answer from the same facts instead of each inventing its own.
+
+    Returns None when review has neither run nor been budgeted, so a record for
+    a story that never reached REVIEW carries no misleading zeroes.
+    """
+    latest_verdict: str | None = None
+    if state.review_results:
+        latest_verdict = getattr(state.review_results[-1], "verdict", None)
+    reviewer_cycles = state.reviewer_cycles_run
+    if not reviewer_cycles and not state.review_results and latest_verdict is None:
+        return None
+    return {
+        "reviewer_cycles_run": reviewer_cycles,
+        "review_cycles_spent": state.review_cycles_spent,
+        "review_cycle": state.review_cycle,
+        "validate_opened_review_cycles": state.validate_opened_review_cycles,
+        "recorded_review_results": len(state.review_results),
+        "latest_review_verdict": latest_verdict,
+        "last_gate_decision": state.last_gate_decision,
+        "last_gate_commit": state.last_gate_commit,
+        "gate_runs": state.gate_runs,
+    }
+
+
 def capture_phase_blocks(state: "CoordinatorState") -> dict[str, Any]:
     """Return every phase block this state currently carries (absent ones omitted)."""
     blocks: dict[str, Any] = {}
@@ -209,6 +260,9 @@ def capture_phase_blocks(state: "CoordinatorState") -> dict[str, Any]:
     timeout_escalation = _jsonable(state.timeout_escalation_audit)
     if timeout_escalation:
         blocks["timeout_escalation"] = timeout_escalation
+    review_progress = _review_progress_block(state)
+    if review_progress is not None:
+        blocks[REVIEW_PROGRESS_KEY] = review_progress
     return blocks
 
 
@@ -263,7 +317,10 @@ def save_resume_record(
     None instead of raising into the phase that called it.
     """
     blocks = capture_phase_blocks(state)
-    if not blocks:
+    # Review progress is evidence *about* a record, not a record of its own: a
+    # story with review counters but no recovered phase output still gets no
+    # sidecar, exactly as before this key existed.
+    if not any(name != REVIEW_PROGRESS_KEY for name in blocks):
         return None
     try:
         path = resume_record_path(project_root, slug)
@@ -326,6 +383,164 @@ def validate_resume_record(
     if recorded_hash != story_content_hash(story_content):
         return False, "story_content_changed"
     return True, "story_content_match"
+
+
+# ── Re-entry analysis ────────────────────────────────────────────────────
+#
+# Two commands re-enter a stopped story and do materially different things:
+# ``forge review`` runs the review phase, ``forge sprint --resume`` recovers the
+# phase records this module holds and continues from what they say.  When those
+# records carry an escalate-gate decision *and* the review loop was still owed a
+# cycle, the two paths disagree about whether the work gets reviewed.  The
+# analysis below is the single derivation of that fact; every surface that tells
+# an operator about it reads from here rather than re-deriving it (#2239).
+
+
+def classify_review_obligation(record: dict[str, Any] | None) -> dict[str, Any]:
+    """Return what the review loop still owes for the story ``record`` describes.
+
+    ``review_obligation`` is one of:
+
+    * ``cycle_not_run`` — a review cycle concluded without ending the loop, so
+      the next cycle is outstanding.  ``outstanding_review_cycle`` names it.
+    * ``none``          — review reached a terminal verdict; nothing outstanding.
+    * ``unknown``       — the record carries no review progress (it predates
+      :data:`REVIEW_PROGRESS_KEY`, or the story never reached REVIEW).  Reported
+      as unknown rather than as ``none``: absence of evidence is not evidence
+      that review completed.
+    """
+    unknown: dict[str, Any] = {
+        "review_obligation": REVIEW_OBLIGATION_UNKNOWN,
+        "outstanding_review_cycle": None,
+        "latest_review_verdict": None,
+        "reviewer_cycles_run": None,
+        "last_gate_decision": None,
+    }
+    if not isinstance(record, dict):
+        return unknown
+    block = record.get(REVIEW_PROGRESS_KEY)
+    if not isinstance(block, dict) or not block:
+        return unknown
+
+    verdict = block.get("latest_review_verdict")
+    verdict = verdict.strip() if isinstance(verdict, str) else None
+    cycles_run = block.get("reviewer_cycles_run")
+    if not isinstance(cycles_run, int) or isinstance(cycles_run, bool):
+        cycles_run = None
+    gate_decision = block.get("last_gate_decision")
+    gate_decision = gate_decision if isinstance(gate_decision, str) and gate_decision else None
+
+    if not verdict:
+        obligation = REVIEW_OBLIGATION_UNKNOWN
+        outstanding = None
+    elif verdict.upper() in _TERMINAL_REVIEW_VERDICTS:
+        obligation = REVIEW_OBLIGATION_NONE
+        outstanding = None
+    else:
+        obligation = REVIEW_OBLIGATION_CYCLE_NOT_RUN
+        outstanding = (cycles_run or 0) + 1
+    return {
+        "review_obligation": obligation,
+        "outstanding_review_cycle": outstanding,
+        "latest_review_verdict": verdict,
+        "reviewer_cycles_run": cycles_run,
+        "last_gate_decision": gate_decision,
+    }
+
+
+def analyze_reentry(record: dict[str, Any] | None) -> dict[str, Any]:
+    """Describe what re-entering the story ``record`` describes would do.
+
+    Independent of any live ``CoordinatorState`` so the status surface can answer
+    the question without starting a run — that is the point of the acceptance
+    criterion it serves: the operator sees this *before* spending anything.
+
+    ``skips_review`` is the disclosure that matters: a recorded escalate-gate
+    decision plus an outstanding review cycle means ``forge sprint --resume``
+    continues from the decision and never runs the cycle, while ``forge review``
+    runs it.
+    """
+    review = classify_review_obligation(record)
+    escalation = (record or {}).get("escalation") if isinstance(record, dict) else None
+    escalation = escalation if isinstance(escalation, dict) else {}
+    decision = escalation.get("decision") or None
+    selected_action = escalation.get("selected_action") or None
+
+    outstanding_phases: list[str] = []
+    if review["review_obligation"] == REVIEW_OBLIGATION_CYCLE_NOT_RUN:
+        outstanding_phases.append("REVIEW")
+
+    return {
+        **review,
+        "escalation_decision": decision,
+        "escalation_selected_action": selected_action,
+        "outstanding_phases": outstanding_phases,
+        "skips_review": bool(decision) and bool(outstanding_phases),
+        "source_run_id": (record or {}).get("run_id") if isinstance(record, dict) else None,
+    }
+
+
+def describe_outstanding_phases(analysis: dict[str, Any]) -> list[str]:
+    """Operator-facing names for the phases the story stopped still owing.
+
+    One phrasing, so the status table, the completed-sprint digest and the
+    pending-decision list cannot describe the same record differently.  Empty
+    when nothing is outstanding.
+    """
+    phases = list(analysis.get("outstanding_phases") or [])
+    cycle = analysis.get("outstanding_review_cycle")
+    if phases == ["REVIEW"] and cycle:
+        return [f"REVIEW cycle {cycle} not run"]
+    return phases
+
+
+def describe_reentry_paths(analysis: dict[str, Any]) -> str:
+    """One-line operator-facing sentence naming each re-entry path's effect.
+
+    Empty when nothing about the re-entry differs between the two paths — the
+    line is only worth printing where the choice changes what runs.
+    """
+    if not analysis.get("skips_review"):
+        return ""
+    cycle = analysis.get("outstanding_review_cycle")
+    cycle_str = f"REVIEW cycle {cycle}" if cycle else "the outstanding REVIEW cycle"
+    decision = analysis.get("escalation_decision")
+    action = analysis.get("escalation_selected_action")
+    decision_str = f"{decision}/{action}" if action else str(decision)
+    return (
+        f"forge review runs {cycle_str}; "
+        f"forge sprint --resume recovers escalation decision {decision_str} and skips REVIEW"
+    )
+
+
+def _reentry_impact(record: dict[str, Any], recovered: list[str]) -> dict[str, Any] | None:
+    """The re-entry analysis, but only when *this* recovery acts on it.
+
+    Returns None unless the escalate-gate decision was genuinely lifted off disk
+    onto this attempt's state — a decision this attempt produced itself is not a
+    recovery, and reporting it as one would make the disclosure noise.
+    """
+    if "escalation" not in recovered:
+        return None
+    analysis = analyze_reentry(record)
+    if not analysis["skips_review"]:
+        return None
+    return analysis
+
+
+def load_reentry_analysis(project_root: Path, slug: str) -> dict[str, Any] | None:
+    """Re-entry analysis for a story's persisted record, or None when there is none.
+
+    Best-effort like everything else here: a story with no record, or a record
+    that says nothing about review, yields None rather than an error.
+    """
+    record = load_resume_record(project_root, slug)
+    if record is None:
+        return None
+    analysis = analyze_reentry(record)
+    if analysis["review_obligation"] == REVIEW_OBLIGATION_UNKNOWN and not analysis["skips_review"]:
+        return None
+    return analysis
 
 
 # ── Restore ──────────────────────────────────────────────────────────────
@@ -509,6 +724,10 @@ def recover_phase_state(
     * ``unavailable`` — no record on disk for this story.
     * ``rejected``    — a record exists but does not describe this story text.
     * ``not_needed``  — a usable record added nothing this attempt lacked.
+
+    ``reentry_impact`` carries the re-entry analysis when the recovery changes
+    which phases run — today, when a recovered escalate-gate decision means the
+    outstanding review cycle will not be run.  None otherwise.
     """
     record = load_resume_record(project_root, slug)
     if record is None:
@@ -517,6 +736,7 @@ def recover_phase_state(
             "reason": "no_record",
             "recovered_phases": [],
             "source_run_id": None,
+            "reentry_impact": None,
         }
 
     usable, reason = validate_resume_record(record, story_content=story_content)
@@ -526,6 +746,7 @@ def recover_phase_state(
             "reason": reason,
             "recovered_phases": [],
             "source_run_id": record.get("run_id"),
+            "reentry_impact": None,
         }
 
     recovered = apply_resume_record_to_state(state, record)
@@ -535,4 +756,5 @@ def recover_phase_state(
         "recovered_phases": recovered,
         "source_run_id": record.get("run_id"),
         "recorded_phases": [name for name in PHASE_BLOCKS if record.get(name)],
+        "reentry_impact": _reentry_impact(record, recovered),
     }
