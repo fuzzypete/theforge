@@ -91,6 +91,42 @@ def _seed_review_cycle_history(project_root: Path, cycle_costs: list[float]) -> 
         conn.close()
 
 
+def _seed_dev_profile_history(
+    project_root: Path,
+    *,
+    avg_cost_usd: float,
+    avg_iterations: float,
+    complexity_score: int = 9,
+    band_avg_cost_usd: float | None = None,
+) -> None:
+    """Seed dev history at a complexity score, and at the band for sizing.
+
+    ``avg_cost_usd`` is the score-scoped average the seating dev estimate is
+    derived from (#2284); ``band_avg_cost_usd`` is the band-and-model average,
+    which sizes nothing here but is what the defect used to subtract.
+    """
+    profiles = project_root / ".forge" / "model_profiles.yaml"
+    profiles.parent.mkdir(parents=True, exist_ok=True)
+    profiles.write_text(
+        (
+            "models:\n"
+            "  anthropic/sonnet/cli:\n"
+            "    dev:\n"
+            "      by_complexity:\n"
+            "        large:\n"
+            "          runs: 3\n"
+            f"          avg_iterations: {avg_iterations}\n"
+            f"          avg_cost_usd: {band_avg_cost_usd or avg_cost_usd}\n"
+            "      by_complexity_score:\n"
+            f"        '{complexity_score}':\n"
+            "          runs: 3\n"
+            f"          avg_iterations: {avg_iterations}\n"
+            f"          avg_cost_usd: {avg_cost_usd}\n"
+        ),
+        encoding="utf-8",
+    )
+
+
 def _config(tmp_path: Path, budget_usd: float = 50.0):
     cfg_path = tmp_path / "forge.yaml"
     cfg_path.write_text(
@@ -565,6 +601,7 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         # The seating numbers from run 88a7e2cc81eb: $48.02 allocation, a
         # $25.0428 dev estimate, a $17.55-per-cycle panel.
         config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(tmp_path, avg_cost_usd=20.03424, avg_iterations=4.0)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path, 48.02)
 
@@ -603,6 +640,7 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         from theforge.coordinator.engine import _coordinator_loop
 
         config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(tmp_path, avg_cost_usd=20.03424, avg_iterations=4.0)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path, 30.0)
 
@@ -632,6 +670,7 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
 
         _seed_review_cycle_history(tmp_path, [3.10, 3.64, 4.20])
         config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(tmp_path, avg_cost_usd=20.03424, avg_iterations=4.0)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path, 48.02)
 
@@ -663,6 +702,7 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         from theforge.coordinator.engine import _coordinator_loop
 
         config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(tmp_path, avg_cost_usd=20.03424, avg_iterations=4.0)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path, 500.0)
 
@@ -708,6 +748,7 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         from theforge.coordinator.engine import _coordinator_loop
 
         config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(tmp_path, avg_cost_usd=20.03424, avg_iterations=4.0)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path, 48.02)
         state.story_allocation = {
@@ -736,6 +777,7 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         from theforge.coordinator.state import CoordinatorResult
 
         config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(tmp_path, avg_cost_usd=20.03424, avg_iterations=4.0)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path, 48.02)
 
@@ -758,6 +800,94 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
             audit["iterations"]["adaptive_limits"]["review_cycle_planning"]["basis"]
             == sb.BASIS_REVIEW_CEILING_FALLBACK
         )
+
+    def test_non_comparable_configured_dev_estimate_is_recorded_as_a_no_op(
+        self, tmp_path: Path
+    ) -> None:
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 48.02)
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert record["action"] == sb.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE
+        assert record["dev_cost_estimate_basis"] == sb.DEV_ESTIMATE_SOURCE_CONFIGURED
+        assert record["dev_cost_estimate_comparable"] is False
+        assert record["reserved_review_usd"] == 0.0
+        assert state.adaptive_review_max == record["requested_review_max"]
+        assert state.phase != Phase.ESCALATE
+        assert state.allocation_exhausted is None
+        assert "not on a common population" in state.adaptive_limits_audit["rationale"]
+
+    def test_issue_2284_an_ordinary_story_is_funded_through_review(self, tmp_path: Path) -> None:
+        """Run 076fa19d5fc3, end to end through the seating seam.
+
+        Score-4 allocation ($10.18 from a $8.14 observed max), cheap score-4 dev
+        history ($2.32 average), and expensive medium-band single-model history
+        ($4.947 average — the $9.89 estimate that consumed 97% of the
+        allocation). The dev estimate must come from the score population, so
+        the $2.42 review cycle stays funded and DEV runs (#2284).
+        """
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        _seed_review_cycle_history(tmp_path, [1.90, 1.936, 2.10])
+        config = self._adaptive_config(tmp_path, dev_budget_usd=9.89, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(
+            tmp_path,
+            avg_cost_usd=2.32,
+            avg_iterations=2.0,
+            complexity_score=4,
+            band_avg_cost_usd=4.947,
+        )
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path, 10.18)
+        state.preflight_complexity = "medium"
+        state.preflight_complexity_score = 4
+        state.story_allocation = {
+            "allocation_usd": 10.18,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 4,
+            "median_usd": 1.69,
+            "p90_usd": 4.87,
+            "max_usd": 8.14,
+            "sample_count": 26,
+        }
+
+        class _StopAtDev(Exception):
+            pass
+
+        reached_dev: dict = {}
+
+        def _fake_dev(*_args, **_kwargs):
+            reached_dev["review_max"] = state.adaptive_review_max
+            raise _StopAtDev()
+
+        with patch("theforge.coordinator.engine._run_dev_phase", _fake_dev):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert record["dev_cost_estimate_basis"] == sb.DEV_ESTIMATE_SOURCE_SCORE
+        assert record["dev_cost_estimate_complexity_score"] == 4
+        assert record["dev_cost_estimate_usd"] == 2.9
+        assert record["action"] in (sb.RECONCILE_AFFORDABLE, sb.RECONCILE_REDUCED)
+        assert record["affordable_review_cycles"] >= 1
+        assert record["reserved_review_cycles"] >= 1
+        # The refusal that fired before any phase ran must not fire.
+        assert state.allocation_exhausted is None
+        assert reached_dev["review_max"] >= 1
 
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
@@ -864,6 +994,12 @@ class TestTheSeatedReviewReservationIsHeldAcrossPhases:
 
     def _seated_state(self, tmp_path: Path):
         """State as issue-2252 was seated: $4.12 against a 20-run band."""
+        # Score-3 dev history averaging $1.904: x1.25 allocation headroom is the
+        # $2.38 estimate this class reconciles against, now drawn from the
+        # allocation's own population so seating may subtract it at all (#2284).
+        _seed_dev_profile_history(
+            tmp_path, avg_cost_usd=1.904, avg_iterations=2.0, complexity_score=3
+        )
         state = CoordinatorState(log_dir=tmp_path / "logs")
         state.preflight_complexity = "medium"
         state.preflight_complexity_score = 3

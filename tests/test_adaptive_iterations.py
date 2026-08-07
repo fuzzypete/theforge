@@ -276,6 +276,192 @@ def test_insufficient_profile_history_still_uses_review_history_signal(tmp_path:
     assert "review history raised review_max to 4" in result.audit["rationale"]
 
 
+# ── Score-scoped dev cost estimate (#2284) ────────────────────────────────
+
+
+def _profiles_with_score_history(
+    *,
+    score: int = 4,
+    score_runs: int = 26,
+    score_avg_cost: float = 2.32,
+    band: str = "medium",
+    band_avg_cost: float = 4.947,
+    band_runs: int = 194,
+    other_model_runs: int = 0,
+    other_model_avg_cost: float = 0.0,
+):
+    """The issue-2252 shape: cheap score history, expensive band/model history."""
+    profiles = {
+        "models": {
+            "dev": {
+                "dev": {
+                    "by_complexity": {
+                        band: {
+                            "runs": band_runs,
+                            "avg_iterations": 4.0,
+                            "avg_cost_usd": band_avg_cost,
+                        }
+                    },
+                    "by_complexity_score": {
+                        str(score): {
+                            "runs": score_runs,
+                            "avg_iterations": 4.0,
+                            "avg_cost_usd": score_avg_cost,
+                        }
+                    },
+                }
+            }
+        }
+    }
+    if other_model_runs:
+        profiles["models"]["other"] = {
+            "dev": {
+                "by_complexity_score": {
+                    str(score): {
+                        "runs": other_model_runs,
+                        "avg_iterations": 4.0,
+                        "avg_cost_usd": other_model_avg_cost,
+                    }
+                }
+            }
+        }
+    return profiles
+
+
+def test_dev_estimate_uses_score_history_not_the_band_and_model_average(tmp_path: Path):
+    """The two figures seating subtracts must describe the same population.
+
+    Run 076fa19d5fc3 estimated $9.89 (medium band, one model, x2.0) against a
+    $10.18 allocation drawn from 26 score-4 samples whose max was $8.14. The
+    estimate now comes from those same score-4 runs: $2.32 x 1.25.
+    """
+    result = derive_limits(
+        4,
+        "medium",
+        _policy(),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles_with_score_history(),
+    )
+
+    assert result.dev_cost_estimate_usd == 2.9
+    basis = result.audit["dev_cost_estimate_basis"]
+    assert basis["source"] == "profile_observed_score"
+    assert basis["complexity_score"] == 4
+    assert basis["statistic"] == "avg_cost_usd"
+    assert basis["headroom_basis"] == "allocation_headroom"
+    assert basis["headroom_multiplier"] == 1.25
+    assert basis["sample_count"] == 26
+    # The estimate prices the dev phase; the allocation prices the whole story.
+    assert basis["scope"] == "dev_phase"
+    assert basis["allocation_comparable"] is True
+    assert result.audit["score_cost_history_runs"] == 26
+    assert "score-4 run(s) across all models" in result.audit["rationale"]
+
+
+def test_iterations_and_timeout_still_come_from_the_band_and_model_history(tmp_path: Path):
+    """Only the dollar figure moved. Sizing the work stays a model property."""
+    result = derive_limits(
+        4,
+        "medium",
+        _policy(),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles_with_score_history(),
+    )
+
+    # ceil(4.0 * 1.5) = 6 → clamped to the cap of 6; timeout 6 * 300 = 1800.
+    assert result.dev_max == 6
+    assert result.dev_timeout_seconds == 1800
+    assert result.audit["profile_history_runs"] == 194
+    assert result.audit["profile_avg_cost_usd"] == 4.947
+
+
+def test_score_history_is_aggregated_across_models_like_the_allocation(tmp_path: Path):
+    """The allocation spans all models at the score, so the estimate must too."""
+    result = derive_limits(
+        4,
+        "medium",
+        _policy(),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles_with_score_history(
+            score_runs=2, score_avg_cost=4.0, other_model_runs=2, other_model_avg_cost=1.0
+        ),
+    )
+
+    # (2 x $4.00 + 2 x $1.00) / 4 = $2.50, x 1.25 = $3.125.
+    assert result.audit["score_cost_history_runs"] == 4
+    assert result.dev_cost_estimate_usd == 3.125
+
+
+def test_without_score_history_the_estimate_is_recorded_as_not_comparable(tmp_path: Path):
+    """The band estimate is still the best available figure — just not subtractable."""
+    result = derive_limits(
+        5,
+        "medium",
+        _policy(),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles(band="medium", avg_cost=3.0),
+    )
+
+    assert result.dev_cost_estimate_usd == 6.0  # band estimate retained for audit
+    basis = result.audit["dev_cost_estimate_basis"]
+    assert basis["source"] == "profile_observed_band"
+    assert basis["allocation_comparable"] is False
+    assert result.audit["score_cost_history_runs"] == 0
+    assert "not comparable with the story allocation" in result.audit["rationale"]
+
+
+def test_score_history_below_the_run_floor_is_not_used(tmp_path: Path):
+    result = derive_limits(
+        4,
+        "medium",
+        _policy(),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles_with_score_history(score_runs=2),
+    )
+
+    assert result.audit["score_cost_history_runs"] == 0
+    assert result.audit["dev_cost_estimate_basis"]["allocation_comparable"] is False
+
+
+def test_static_fallback_estimate_is_not_comparable_either(tmp_path: Path):
+    result = derive_limits(
+        5,
+        "medium",
+        _policy(adaptive_iterations=False),
+        model_name="dev",
+        base_timeout_seconds=900,
+        base_cost_estimate_usd=10.0,
+        static_dev_max=3,
+        review_history_path=tmp_path / "none",
+        model_profiles=_profiles(),
+    )
+
+    basis = result.audit["dev_cost_estimate_basis"]
+    assert basis["source"] == "configured_fallback"
+    assert basis["allocation_comparable"] is False
+    assert basis["reason"] == "adaptive_iterations_disabled"
+
+
 # ── Budget headroom scaling by complexity band ────────────────────────────
 
 
