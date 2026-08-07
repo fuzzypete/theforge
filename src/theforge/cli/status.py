@@ -611,6 +611,23 @@ def _print_pending_reason(reason: str) -> None:
         print(f"{prefix}{line}")
 
 
+def _pending_reentry_lines(project_root: Path, story: str) -> list[str]:
+    """Re-entry disclosure lines for a pending decision's story, if any.
+
+    A pending decision names a choice the operator is about to make, but not
+    that the story behind it stopped with a review cycle unrun — so acting on
+    the decision (which is what `forge sprint --resume` does) skips a review
+    that `forge review` would run.  Hiding that here would make the
+    pending-decision surface the one place the operator looks and the one place
+    the fact is missing (#2239).
+    """
+    if not story or story == "?":
+        return []
+    from theforge.cli.reentry_display import reentry_lines  # noqa: PLC0415
+
+    return reentry_lines(project_root, story, indent="    ")
+
+
 def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
     """Print the pending-decisions section."""
     pending_entries = pending_mod.list_pending(project_root)
@@ -650,6 +667,8 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
                 print(f"    options: {opts_str}")
             if created_at:
                 print(f"    created: {created_at}")
+            for line in _pending_reentry_lines(project_root, str(story)):
+                print(line)
     else:
         print("\nPending decisions: (none)")
 

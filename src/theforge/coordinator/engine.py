@@ -199,7 +199,11 @@ from .review_phase import (  # noqa: E402
     _run_review_only_phase,
     _run_review_phase,
 )
-from .run_setup import _rebase_onto_main, _setup_resume_entry  # noqa: E402,I001
+from .run_setup import (  # noqa: E402,I001
+    REENTRY_MODE_PIPELINE_RESUME,
+    _rebase_onto_main,
+    _setup_resume_entry,
+)
 from .validate_phase import (  # noqa: E402
     _run_validate_phase,
     _ValidateOutcome,
@@ -1526,6 +1530,7 @@ def _run_resume_coordinator(
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
     lands_in_project_root: bool | None = None,
+    reentry_mode: str = REENTRY_MODE_PIPELINE_RESUME,
 ) -> CoordinatorResult:
     """Shared body for run_from_review and run_from_dev.
 
@@ -1552,6 +1557,7 @@ def _run_resume_coordinator(
         initial_phase=initial_phase,
         notify=notify,
         run_id=run_id,
+        reentry_mode=reentry_mode,
     )
     if isinstance(setup, CoordinatorResult):
         return setup
@@ -1793,6 +1799,7 @@ def run_from_review(
     stop_event: "threading.Event | None" = None,
     base_lands_locally: bool | None = None,
     lands_in_project_root: bool | None = None,
+    reentry_mode: str = REENTRY_MODE_PIPELINE_RESUME,
 ) -> CoordinatorResult:
     """Start at REVIEW on an existing worktree, then iterate DEV→VALIDATE→REVIEW as needed.
 
@@ -1814,6 +1821,10 @@ def run_from_review(
             merges into the project-root checkout, used by the landing
             precondition. The sprint scheduler supplies it; None derives it from
             auto_merge and config.
+        reentry_mode: Which operator-facing command re-entered. ``forge review``
+            passes REENTRY_MODE_REVIEW so the resume disclosure states that this
+            path *runs* an outstanding review cycle; a ``--resume`` triage that
+            lands here is a pipeline resume and keeps the default.
     """
     return _run_resume_coordinator(
         config,
@@ -1821,6 +1832,7 @@ def run_from_review(
         workspace_path,
         initial_phase=Phase.REVIEW,
         skip_dev_first_iter=True,
+        reentry_mode=reentry_mode,
         interactive=interactive,
         auto_merge=auto_merge,
         notify=notify,

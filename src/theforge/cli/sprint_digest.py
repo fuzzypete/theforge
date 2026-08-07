@@ -10,9 +10,10 @@
   do next.
 
 The digest is a pure *renderer*. Its interface to the rest of the system is the
-two artifacts it reads — ``sprint-summary.yaml`` (the LANDED accounting) and
-``sprint-rca.yaml`` (the recovery signals). It never invokes the RCA engine and
-never touches live coordinator state; that keeps it implementable and testable
+artifacts it reads — ``sprint-summary.yaml`` (the LANDED accounting),
+``sprint-rca.yaml`` (the recovery signals), and the per-story resume record
+(what re-entering the story would do). It never invokes the RCA engine and never
+touches live coordinator state; that keeps it implementable and testable
 independently of both the live renderer and the classifier.
 
 Layout for a completed sprint with one or more non-DONE stories::
@@ -25,6 +26,11 @@ Layout for a completed sprint with one or more non-DONE stories::
     ALREADY LANDED (skipped as merged) (n)
       ✓ #NNNN  —  —  <title>
            landed before this run — skipped as already merged
+
+    OUTSTANDING (n)
+      ✗ #NNNN  REVIEW cycle 2 not run
+           re-entry: forge review runs REVIEW cycle 2; forge sprint --resume
+                     recovers escalation decision <d> and skips REVIEW
 
     FAILED — <primary_failure_class> (n)
       ✗ #NNNN  $cost  elapsed  <title>
@@ -53,6 +59,7 @@ from pathlib import Path
 
 import yaml
 
+from theforge.cli.reentry_display import load_reentry_display
 from theforge.sprint.rca import DONE_OUTCOMES, RCA_FILENAME
 from theforge.sprint.status_reader import (
     _elapsed_seconds_from_bounds,
@@ -131,6 +138,12 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
     # All-DONE sprint: tighter LANDED-only digest, no recovery sections.
     if not non_done:
         return 0
+
+    # Before the RCA branch, and before the missing-RCA early return below: a
+    # phase the story still owes is a fact about the story, not a classification
+    # of why it failed, so it must not depend on an RCA artifact existing. This
+    # is the digest's answer to "what will re-entering do" (#2239).
+    _print_outstanding(non_done, project_root)
 
     resolved_run_id = str(sprint_block.get("run_id") or run_id)
     rca = _read_digest_rca(summary_path.parent, resolved_run_id)
@@ -307,6 +320,41 @@ def _print_shape_gate_skips(summary: dict) -> None:
             )
         if isinstance(threshold, int):
             print(f"       (stuck threshold: {threshold})")
+
+
+def _print_outstanding(non_done: list[dict], project_root: Path) -> None:
+    """Render phases the stopped stories still owe, and what re-entry would do.
+
+    Reads the coordinator's persisted resume record — a third on-disk artifact
+    alongside the summary and the RCA, still no live state and still no engine
+    invocation, so the digest stays a pure renderer.
+
+    Without this the postmortem is the *default* rendering for a completed
+    sprint (``forge status`` with no run id lands here) and the one that says
+    nothing about an unrun review cycle: the operator reads a failure
+    classification, reaches for ``forge sprint --resume`` because it reads as
+    "continue what you were doing", and never learns it would continue from a
+    recorded decision instead of running the review (#2239).
+    """
+    rows: list[tuple[dict, list[str], str]] = []
+    for story in non_done:
+        slug = str(story.get("slug") or "")
+        loaded = load_reentry_display(project_root, slug)
+        if loaded is None:
+            continue
+        phases, note = loaded
+        if not phases:
+            continue
+        rows.append((story, phases, note))
+    if not rows:
+        return
+
+    print()
+    print(f"OUTSTANDING ({len(rows)})")
+    for story, phases, note in rows:
+        print(f"  ✗ {_story_ref(story)}  {', '.join(phases)}")
+        if note:
+            print(f"       re-entry: {note}")
 
 
 def _print_failed_by_class(non_done: list[dict], rca_stories: dict) -> None:
