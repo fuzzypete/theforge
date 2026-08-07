@@ -537,7 +537,21 @@ def _fold_dev_bucket(
 
 
 RESOLVED_MODEL_BREAKDOWN_KEY = "by_resolved_model"
-"""Section key holding the per-served-version breakdown of a role's evidence."""
+"""Per-served-version breakdown of the population counted by a section's ``runs``."""
+
+RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY = "by_resolved_model_attempts"
+"""Per-served-version breakdown of the population counted by ``_attempted_count``.
+
+Deliberately a *second* key rather than a shared one. Several sections carry two
+independent populations: ``review`` counts cycles-with-findings under ``runs``
+and invocations under ``_attempted_count``; ``preflight``/``planner`` count
+phases under ``runs`` and attempts under ``_attempted_count``. Both are folded
+from the same run, at different call sites, with different denominators — so one
+shared breakdown would be incremented twice per invocation and report more
+attributed version observations than either population contains. Each breakdown
+is scoped to the counter it explains, and each signal reads the one matching its
+own denominator.
+"""
 
 ALIAS_DERIVED_KEY = "alias_derived"
 """Section key holding evidence projected from an alias onto a concrete version."""
@@ -549,14 +563,23 @@ def _fold_resolved_model(
     *,
     success: bool | None,
     tainted: bool,
+    key: str = RESOLVED_MODEL_BREAKDOWN_KEY,
+    count: int = 1,
 ) -> None:
     """Attribute one folded observation to the concrete version that produced it.
 
-    The population under a section's ``runs`` describes whatever the configured
-    identity meant at the time of each run. When that identity is a family
-    alias, "at the time of each run" is load-bearing: two observations under one
-    key can be observations of two different models, and nothing in the counters
-    says so. This breakdown says so.
+    The population under a section's counter describes whatever the configured
+    identity meant at the time of each observation. When that identity is a
+    family alias, "at the time of each observation" is load-bearing: two entries
+    under one key can be entries about two different models, and nothing in the
+    counters says so. This breakdown says so.
+
+    ``key`` selects which counter the breakdown explains
+    (:data:`RESOLVED_MODEL_BREAKDOWN_KEY` for ``runs``,
+    :data:`RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY` for ``_attempted_count``) and
+    ``count`` is how much that counter moved, so a breakdown always sums to the
+    denominator it describes. A breakdown that does not is worse than none: it
+    reads as authoritative while disagreeing with the population it explains.
 
     Kept deliberately thin — counts only, no rates. It exists so a consumer can
     answer *does this population describe one model or several*, which the
@@ -569,16 +592,18 @@ def _fold_resolved_model(
     A ``None`` ``resolved_model`` records nothing: "the transport reported no
     resolved identity" is not evidence about a version.
     """
-    if not resolved_model:
+    if not resolved_model or count <= 0:
         return
-    breakdown = section.setdefault(RESOLVED_MODEL_BREAKDOWN_KEY, {})
+    breakdown = section.setdefault(key, {})
     bucket = breakdown.setdefault(resolved_model, {})
     if tainted:
-        bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + 1
+        bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + count
         return
-    bucket["runs"] = int(bucket.get("runs", 0)) + 1
+    bucket["runs"] = int(bucket.get("runs", 0)) + count
     if success is not None:
-        bucket["_successes"] = float(bucket.get("_successes", 0.0)) + (1.0 if success else 0.0)
+        bucket["_successes"] = float(bucket.get("_successes", 0.0)) + (
+            float(count) if success else 0.0
+        )
 
 
 def _fold_dev_capability(
@@ -814,11 +839,15 @@ def _update_review(
         return
     # Version attribution (#2226): the findings/cost population under this
     # section is attributed to the concrete model that served, so an alias's
-    # review history can be told apart from one model's review history. Folded
-    # after the taint gate — this section tallies taint in cycles, and a
-    # per-version tally weighted differently from the section it breaks down
-    # would be a third number nobody could reconcile.
-    _fold_resolved_model(rev, resolved_model, success=None, tainted=False)
+    # review history can be told apart from one model's review history.
+    #
+    # This breaks down ``runs``, which the section counts in CYCLES, so the fold
+    # is weighted by ``cycles`` too — and it uses the runs-scoped key, not the
+    # attempt-scoped one the completion fold below writes. The two populations
+    # are folded from the same run at different call sites; sharing one
+    # breakdown would count each invocation twice and report more attributed
+    # version observations than either counter contains.
+    _fold_resolved_model(rev, resolved_model, success=None, tainted=False, count=cycles)
     if cost_usd is None:
         log.warning(
             "[model_profiles] Review run recorded cost-unmeasured (NOT $0.00): "
@@ -880,7 +909,16 @@ def _update_review_completion(
     ``tainted_runs`` instead — never deleted, so the exclusion stays visible.
     """
     rev = entry.setdefault("review", {})
-    _fold_resolved_model(rev, resolved_model, success=completed, tainted=tainted)
+    # Version attribution (#2226) against ``_attempted_count`` — the counter this
+    # fold moves and the one :func:`get_review_signal` divides by. Kept separate
+    # from the cycles-denominated breakdown :func:`_update_review` writes.
+    _fold_resolved_model(
+        rev,
+        resolved_model,
+        success=completed,
+        tainted=tainted,
+        key=RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
+    )
     if tainted:
         rev["tainted_runs"] = int(rev.get("tainted_runs", 0)) + 1
         return
@@ -910,10 +948,22 @@ def _update_role_completion(
     if tainted:
         return
     section = entry.setdefault(role, {})
-    # Version attribution (#2226). No tainted tally here: this fold "only skips"
-    # (the per-phase fold owns the single tainted-run count), so recording one
-    # would count a tainted run once per attempt.
-    _fold_resolved_model(section, resolved_model, success=completed, tainted=False)
+    # Version attribution (#2226) against ``_attempted_count``, the counter this
+    # fold moves and the one :func:`get_role_reliability_signal` divides by. The
+    # phase-level fold (_update_preflight / _update_planner) writes the
+    # runs-denominated breakdown separately; one shared key would double-count
+    # every invocation that produces both.
+    #
+    # No tainted tally here: this fold "only skips" (the per-phase fold owns the
+    # single tainted-run count), so recording one would count a tainted run once
+    # per attempt.
+    _fold_resolved_model(
+        section,
+        resolved_model,
+        success=completed,
+        tainted=False,
+        key=RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
+    )
     _fold_completion_counters(section, completed)
 
 
@@ -931,6 +981,8 @@ def _update_preflight(
     if tainted:
         pf["tainted_runs"] = int(pf.get("tainted_runs", 0)) + 1
         return
+    # Version attribution (#2226) against ``runs`` — the phase counter. The
+    # per-attempt completion fold writes its own attempt-denominated breakdown.
     _fold_resolved_model(pf, resolved_model, success=None, tainted=False)
     if cost_usd is None:
         log.warning(
@@ -960,6 +1012,7 @@ def _update_planner(
     if tainted:
         pl["tainted_runs"] = int(pl.get("tainted_runs", 0)) + 1
         return
+    # Version attribution (#2226) against ``runs`` — see :func:`_update_preflight`.
     _fold_resolved_model(pl, resolved_model, success=None, tainted=False)
     if cost_usd is None:
         log.warning(
@@ -1513,7 +1566,12 @@ def _weighted_rate(
     return round(num / den, 4) if den > 0 else fallback
 
 
-def _resolved_population(buckets: list[dict], *, total_key: str = "runs") -> dict:
+def _resolved_population(
+    buckets: list[dict],
+    *,
+    total_key: str = "runs",
+    key: str = RESOLVED_MODEL_BREAKDOWN_KEY,
+) -> dict:
     """Summarize which concrete versions produced a signal's population (#2226).
 
     Every routing signal below reports a rate over a population keyed by the
@@ -1530,6 +1588,11 @@ def _resolved_population(buckets: list[dict], *, total_key: str = "runs") -> dic
     explicit, so a partly-pre-#2226 population cannot read as single-model just
     because the older half recorded no served version.
 
+    ``key`` and ``total_key`` must name a matched pair — the breakdown and the
+    counter it explains. A section can carry two populations (``runs`` and
+    ``_attempted_count``), and reading a breakdown against the wrong denominator
+    reports more attributed observations than the signal's population holds.
+
     Returns ``{}`` when nothing in the population carries a served version at
     all — an empty mapping rather than a fabricated single-model claim.
     """
@@ -1540,7 +1603,7 @@ def _resolved_population(buckets: list[dict], *, total_key: str = "runs") -> dic
         if not isinstance(bucket, dict):
             continue
         total_runs += int(bucket.get(total_key, 0))
-        breakdown = bucket.get(RESOLVED_MODEL_BREAKDOWN_KEY)
+        breakdown = bucket.get(key)
         if not isinstance(breakdown, dict):
             continue
         for model, counts in breakdown.items():
@@ -1819,7 +1882,11 @@ def get_review_signal(
             "clean_attempts_required": required_clean,
             "recovered": clean_streak >= required_clean,
         },
-        "resolved_population": _resolved_population(consulted, total_key="_attempted_count"),
+        "resolved_population": _resolved_population(
+            consulted,
+            total_key="_attempted_count",
+            key=RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
+        ),
     }
 
 
@@ -1921,7 +1988,11 @@ def get_role_reliability_signal(
         "floor": "pass" if floor_ok else "fail",
         "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
         "rate": weighted if floor_ok else None,
-        "resolved_population": _resolved_population(consulted, total_key="_attempted_count"),
+        "resolved_population": _resolved_population(
+            consulted,
+            total_key="_attempted_count",
+            key=RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
+        ),
     }
 
 

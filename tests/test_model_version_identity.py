@@ -25,6 +25,7 @@ from theforge.config.models import AGENT_REGISTRY, resolve_agent_spec
 from theforge.coordinator import audit_substrate as sub
 from theforge.coordinator.agent_identity import invocation_identity_rows
 from theforge.model_profiles import (
+    RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
     RESOLVED_MODEL_BREAKDOWN_KEY,
     ReviewerAttempt,
     RoleAttempt,
@@ -460,6 +461,100 @@ class TestAliasEvidenceIsAttributableToVersions:
         assert review["resolved_population"]["by_resolved_model"] == {
             "anthropic/claude-sonnet-4-6/cli": 1
         }
+
+    def test_phase_and_attempt_telemetry_for_one_run_do_not_double_count(self) -> None:
+        """A version breakdown must sum to the counter it explains.
+
+        preflight/planner/review sections carry TWO populations folded from the
+        same run at different call sites: ``runs`` (phase cost/cycles) and
+        ``_attempted_count`` (per-invocation completion). A single shared
+        breakdown would be incremented by both and report more attributed
+        version observations than either counter holds — the signal would claim
+        more evidence about a version than its own rate is computed over.
+        """
+        data: dict = {"models": {}}
+        outcome = RunOutcome(
+            complexity="medium",
+            dev_model=ALIAS,
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=1.0,
+            # Phase-level preflight telemetry AND the matching attempt record.
+            preflight_model=ALIAS,
+            preflight_actual_model="opus",
+            preflight_cli="claude",
+            preflight_cost_usd=0.1,
+            preflight_resolved_model=PINNED,
+            preflight_attempts=[RoleAttempt(name=ALIAS, completed=True, resolved_model=PINNED)],
+            # Same for the planner.
+            planner_model=ALIAS,
+            planner_actual_model="opus",
+            planner_cli="claude",
+            planner_cost_usd=0.2,
+            planner_resolved_model=PINNED,
+            planner_attempts=[RoleAttempt(name=ALIAS, completed=True, resolved_model=PINNED)],
+            # And for the reviewer: findings/cost telemetry plus a completion attempt.
+            reviewers={"anthropic/sonnet/cli": (1, 2, 0.3)},
+            reviewer_attempts=[
+                ReviewerAttempt(
+                    name="anthropic/sonnet/cli",
+                    completed_parseable_verdict=True,
+                    actual_model="sonnet",
+                    cli="claude",
+                    resolved_model="anthropic/claude-sonnet-4-6/cli",
+                )
+            ],
+        )
+        apply_run(data, outcome)
+
+        for role in ("preflight", "planner"):
+            signal = get_role_reliability_signal(data, ALIAS, role, min_runs=1)
+            population = signal["resolved_population"]
+            # One attempt was folded, so exactly one attributed observation.
+            assert population["by_resolved_model"] == {PINNED: 1}
+            assert population["attributed"] == signal["attempted"] == 1
+            assert population["unattributed"] == 0
+            # The phase counter keeps its own, separately-scoped breakdown.
+            section = data["models"][ALIAS][role]
+            assert section[RESOLVED_MODEL_BREAKDOWN_KEY][PINNED]["runs"] == 1
+            assert section[RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY][PINNED]["runs"] == 1
+
+        review = get_review_signal(data, "anthropic/sonnet/cli", min_runs=1)
+        population = review["resolved_population"]
+        assert population["by_resolved_model"] == {"anthropic/claude-sonnet-4-6/cli": 1}
+        assert population["attributed"] == review["attempted"] == 1
+        assert population["unattributed"] == 0
+
+    def test_the_cycles_denominated_review_breakdown_sums_to_runs(self) -> None:
+        """``review.runs`` counts CYCLES, so its breakdown is weighted by cycles."""
+        data: dict = {"models": {}}
+        apply_run(
+            data,
+            RunOutcome(
+                complexity="medium",
+                dev_model=ALIAS,
+                dev_success=True,
+                dev_iterations=1,
+                dev_cost_usd=1.0,
+                reviewers={"anthropic/sonnet/cli": (3, 6, 0.9)},
+                reviewer_attempts=[
+                    ReviewerAttempt(
+                        name="anthropic/sonnet/cli",
+                        completed_parseable_verdict=True,
+                        actual_model="sonnet",
+                        cli="claude",
+                        resolved_model="anthropic/claude-sonnet-4-6/cli",
+                    )
+                ],
+            ),
+        )
+        rev = data["models"]["anthropic/sonnet/cli"]["review"]
+        served = "anthropic/claude-sonnet-4-6/cli"
+        assert rev["runs"] == 3
+        assert rev[RESOLVED_MODEL_BREAKDOWN_KEY][served]["runs"] == 3
+        # ...while the attempt breakdown tracks the single invocation.
+        assert rev["_attempted_count"] == 1
+        assert rev[RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY][served]["runs"] == 1
 
     def test_a_tainted_run_is_tallied_per_version_and_still_excluded(self) -> None:
         data: dict = {"models": {}}

@@ -2092,8 +2092,13 @@ def alias_resolution_timeline(conn: sqlite3.Connection) -> list[dict]:
           ],
           "distinct_resolved": int,
           "changed": bool,                # resolved to more than one identity
-          "current": str | None,          # newest resolved identity
+          "current": str | None,          # the NEWEST recorded resolution
         }
+
+    ``resolved_models`` is ordered by first appearance, which is the readable
+    order for a drift history. ``current`` is deliberately not its last element:
+    an alias that resolved A → B → A is currently on A, and reading the tail of a
+    first-appearance list would report B.
 
     ``changed`` is the detection this exists for: two runs naming the same alias
     that resolved to different concrete versions produce ``changed: True``,
@@ -2111,9 +2116,15 @@ def alias_resolution_timeline(conn: sqlite3.Connection) -> list[dict]:
             continue
         bucket = grouped.setdefault(
             configured,
-            {"configured_model": configured, "invocations": 0, "_resolved": {}},
+            {"configured_model": configured, "invocations": 0, "_resolved": {}, "_current": None},
         )
         bucket["invocations"] += 1
+        # Rows arrive oldest-first, so the last one seen for this alias IS the
+        # newest resolution. Tracked here rather than read off the tail of
+        # ``resolved_models``: that list is ordered by FIRST appearance, so an
+        # alias that went A → B → A would report B as current when the newest
+        # invocation resolved to A.
+        bucket["_current"] = resolved
         seen = bucket["_resolved"].get(resolved)
         started = row["started_at"]
         if seen is None:
@@ -2136,7 +2147,7 @@ def alias_resolution_timeline(conn: sqlite3.Connection) -> list[dict]:
         bucket["resolved_models"] = resolved_models
         bucket["distinct_resolved"] = len(resolved_models)
         bucket["changed"] = len(resolved_models) > 1
-        bucket["current"] = resolved_models[-1]["resolved_model"] if resolved_models else None
+        bucket["current"] = bucket.pop("_current")
         out.append(bucket)
     out.sort(key=lambda b: (-b["distinct_resolved"], -b["invocations"], b["configured_model"]))
     return out

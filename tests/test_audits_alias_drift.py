@@ -122,3 +122,44 @@ def test_a_pinned_candidate_shows_its_own_identity_on_both_sides(tmp_path: Path,
 
     assert audits_cli.cmd_audits(_args(forge_yaml, changed_only=True)) == 0
     assert "no recorded invocation" in capsys.readouterr().out
+
+
+def test_an_alias_that_returned_to_an_earlier_version_reports_it_as_current(
+    tmp_path: Path, capsys
+) -> None:
+    """A → B → A: ``current`` is the newest resolution, not the newest *first* seen.
+
+    ``resolved_models`` is ordered by first appearance, which is the readable
+    order for a drift history. Reading its tail would name B here, even though
+    the newest recorded invocation resolved back to A.
+    """
+    forge_yaml = _setup_project(tmp_path)
+    _index(
+        tmp_path,
+        [
+            _record("r1", "2026-03-01T10:00:00+00:00", "opus", "claude-opus-4-6"),
+            _record("r2", "2026-04-01T10:00:00+00:00", "opus", "claude-opus-5"),
+            _record("r3", "2026-05-01T10:00:00+00:00", "opus", "claude-opus-4-6"),
+        ],
+    )
+
+    conn = sub.create_or_open(tmp_path)
+    try:
+        timeline = sub.alias_resolution_timeline(conn)
+    finally:
+        conn.close()
+
+    entry = timeline[0]
+    assert entry["changed"] is True
+    assert entry["current"] == "anthropic/claude-opus-4-6/cli"
+    # First-appearance ordering is preserved for the history itself.
+    assert [r["resolved_model"] for r in entry["resolved_models"]] == [
+        "anthropic/claude-opus-4-6/cli",
+        "anthropic/claude-opus-5/cli",
+    ]
+    # ...and the returned-to version records both of its invocations.
+    assert entry["resolved_models"][0]["invocations"] == 2
+    assert entry["resolved_models"][0]["last_run_id"] == "r3"
+
+    assert audits_cli.cmd_audits(_args(forge_yaml, changed_only=True)) == 0
+    assert "CHANGED" in capsys.readouterr().out

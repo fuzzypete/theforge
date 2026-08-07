@@ -1261,3 +1261,90 @@ def test_seam_a_reviewer_attempt_carries_the_version_that_served_it(tmp_path):
     assert state.reviewer_attempts[0]["resolved_model"] == "anthropic/claude-opus-5/cli"
     attempts = _extract_reviewer_attempts(state)
     assert attempts[0].resolved_model == "anthropic/claude-opus-5/cli"
+
+
+def test_seam_preflight_phase_and_attempt_telemetry_agree_on_the_version_count(tmp_path):
+    """Seam (preflight_flow attempt ledger → bridge → aggregator → signal): #2226.
+
+    A real preflight run produces BOTH phase-level telemetry (cost/runs) and an
+    attempt record for the same invocation. Each carries the served version, and
+    each moves a different counter. If both folded into one version breakdown,
+    the reliability signal would claim two attributed observations of the served
+    model while dividing its rate by one attempt.
+    """
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+    from theforge.model_profiles import (
+        RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
+        RESOLVED_MODEL_BREAKDOWN_KEY,
+        apply_run,
+        get_role_reliability_signal,
+    )
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state.preflight_result = replace(
+        _preflight_result_with_attempts(
+            [
+                {
+                    "profile_name": "preflight",
+                    "model": "opus",
+                    "provider": None,
+                    "cli": "claude",
+                    "cost_usd": 0.01,
+                    "completed": True,
+                    "ledger": {
+                        "version": 1,
+                        "role": "preflight",
+                        "resolved_primary_identity": {
+                            "raw": "claude-opus-4-6",
+                            "identity": "anthropic/claude-opus-4-6/cli",
+                            "resolution": "canonical",
+                        },
+                    },
+                }
+            ]
+        ),
+        model_used="claude-opus-4-6",
+        transport_used="cli",
+    )
+
+    outcome = build_run_outcome(config, state, success=True)
+    served = "anthropic/claude-opus-4-6/cli"
+    assert outcome.preflight_resolved_model == served
+    assert [a.resolved_model for a in outcome.preflight_attempts] == [served]
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    # The phase fold keys off config.preflight_profile and the attempt fold off
+    # the attempt's own identity. Both must be present, and neither breakdown may
+    # absorb the other's observation.
+    sections = [entry["preflight"] for entry in data["models"].values() if "preflight" in entry]
+    assert sections, "preflight telemetry reached no profile entry"
+    phase_runs = sum(int(s.get("runs", 0)) for s in sections)
+    attempted = sum(int(s.get("_attempted_count", 0)) for s in sections)
+    assert phase_runs == 1 and attempted == 1
+
+    def _attributed(key: str) -> int:
+        return sum(
+            int(counts.get("runs", 0))
+            for section in sections
+            for counts in (section.get(key) or {}).values()
+        )
+
+    # Two separately-scoped breakdowns, each summing to its own counter — not
+    # one shared breakdown holding 2 for a population of 1.
+    assert _attributed(RESOLVED_MODEL_BREAKDOWN_KEY) == phase_runs
+    assert _attributed(RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY) == attempted
+
+    attempt = outcome.preflight_attempts[0]
+    signal = get_role_reliability_signal(
+        data,
+        attempt.name,
+        "preflight",
+        min_runs=1,
+        actual_model=attempt.actual_model,
+        cli=attempt.cli,
+    )
+    population = signal["resolved_population"]
+    assert population["attributed"] == signal["attempted"] == 1
+    assert population["by_resolved_model"] == {served: 1}
