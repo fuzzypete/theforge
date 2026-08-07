@@ -33,6 +33,45 @@ class StoryStatusEntry:
     complexity_score: int | None = None
     model: str | None = None
     last_event_ts: float | None = None
+    # Phases the story stopped still owing, derived from its persisted resume
+    # record (e.g. ``["REVIEW"]`` when a review cycle concluded REQUEST_CHANGES
+    # and the next one never ran). Read-only display data (#2239).
+    outstanding_phases: list[str] = field(default_factory=list)
+    # What each re-entry path would do, when they disagree — empty otherwise.
+    # An operator choosing between `forge review` and `forge sprint --resume` is
+    # choosing whether the work gets reviewed, so the choice is stated here
+    # rather than left to be discovered by running one.
+    reentry_note: str = ""
+
+
+def _reentry_display(project_root: Path | None, slug: str) -> tuple[list[str], str]:
+    """Return ``(outstanding_phases, reentry_note)`` for ``slug``.
+
+    Reads the coordinator's persisted resume record — the same record a resume
+    would recover — so status answers "what does this story still owe, and what
+    will re-entering do" without starting a run.  Best-effort: any unreadable or
+    absent record yields empty display fields rather than an error, because a
+    status view that fails on a missing sidecar is worse than one that says
+    nothing about it.
+    """
+    if project_root is None or not slug:
+        return [], ""
+    try:
+        from theforge.coordinator.resume_persistence import (  # noqa: PLC0415
+            describe_reentry_paths,
+            load_reentry_analysis,
+        )
+
+        analysis = load_reentry_analysis(Path(project_root), slug)
+    except Exception:
+        return [], ""
+    if not analysis:
+        return [], ""
+    phases = list(analysis.get("outstanding_phases") or [])
+    cycle = analysis.get("outstanding_review_cycle")
+    if phases == ["REVIEW"] and cycle:
+        phases = [f"REVIEW cycle {cycle} not run"]
+    return phases, describe_reentry_paths(analysis)
 
 
 def _follow_redirect_chain(run_id: str, project_root: Path, max_hops: int = 20) -> str:
@@ -875,13 +914,21 @@ def _allocation_detail(allocation: object) -> str:
     return "; ".join(parts)
 
 
-def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
+def read_completed_status(
+    summary_path: Path,
+    project_root: Path | None = None,
+) -> list[StoryStatusEntry]:
     """Parse a sprint-summary.yaml and return per-story status entries.
 
     Enriches each entry with ``bundle_candidate`` and ``batch_group`` read from
     the per-story coordinator audit at ``<sprint-log-dir>/<slug>/audit.yaml``.
     The summary entry wins for ``batch_group`` when it carries one; the audit is
     the fallback for summaries written before the story's group was stamped.
+
+    ``project_root`` is optional because the resume records that answer "what
+    does this story still owe" live under ``<project_root>/.forge``, which a
+    summary path alone cannot locate.  Omit it and the re-entry fields stay
+    empty; every other field is unaffected.
     """
     try:
         with open(summary_path, encoding="utf-8") as f:
@@ -950,6 +997,7 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
 
         dev_model_raw = story.get("dev_model")
         model_val = dev_model_raw if isinstance(dev_model_raw, str) and dev_model_raw else None
+        outstanding_phases, reentry_note = _reentry_display(project_root, slug)
 
         entries.append(
             StoryStatusEntry(
@@ -970,6 +1018,8 @@ def read_completed_status(summary_path: Path) -> list[StoryStatusEntry]:
                 complexity=complexity,
                 complexity_score=complexity_score,
                 model=model_val,
+                outstanding_phases=outstanding_phases,
+                reentry_note=reentry_note,
             )
         )
 
@@ -1058,6 +1108,8 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
             if isinstance(_ts, (int, float)):
                 _last_event_ts = float(_ts)
 
+        outstanding_phases, reentry_note = _reentry_display(project_root, slug)
+
         entries.append(
             StoryStatusEntry(
                 slug=slug,
@@ -1075,6 +1127,8 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                 complexity_score=complexity_score,
                 model=model_val,
                 last_event_ts=_last_event_ts,
+                outstanding_phases=outstanding_phases,
+                reentry_note=reentry_note,
             )
         )
         if slug:
@@ -1093,6 +1147,7 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
             detail = _nonempty_str(story.get("verdict")) or outcome
             if outcome in {"SKIPPED", "DROPPED", "ALREADY_DONE"} or depends_on:
                 _, detail, _ = _stage_and_detail_from_completed_story(story, None)
+            outstanding_phases, reentry_note = _reentry_display(project_root, slug)
             entries.append(
                 StoryStatusEntry(
                     slug=slug,
@@ -1114,6 +1169,8 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
                     stage=_format_terminal_stage(story.get("iteration_usage")),
                     detail=detail,
                     complexity=None,
+                    outstanding_phases=outstanding_phases,
+                    reentry_note=reentry_note,
                 )
             )
             seen_slugs.add(slug)

@@ -77,6 +77,10 @@ forge run stories/add-auth.md --from review --fg
 
 **`--resume`**
 Use this when a run was interrupted and you want automatic state detection.
+`--resume` continues from the pipeline state an earlier attempt recorded, which
+includes any escalate-gate decision — see
+[Choosing a re-entry path](#choosing-a-re-entry-path) before resuming a story
+whose review loop was still owed a cycle.
 
 **`--until` / `--from`**
 Use these for partial workflows, inspection checkpoints, or explicit re-entry
@@ -97,7 +101,9 @@ forge review --issue <N> [flags]
 ```
 
 **Use this when:** You implemented or fixed something in a worktree and want to
-run review without re-running PLAN/DEV.
+run review without re-running PLAN/DEV. This is also the path that *runs* an
+outstanding review cycle on a story that stopped mid-pipeline — `forge sprint
+--resume` may skip it. See [Choosing a re-entry path](#choosing-a-re-entry-path).
 
 Name the **story**, not the worktree. A story sourced from a GitHub issue is
 never written to disk, so `--issue N` is the only way to review one — it reads
@@ -367,6 +373,26 @@ When the owning process is gone, stories whose last recorded phase said
 `running` are reported as `interrupted` (their last known phase is retained in
 the PHASE column as history). Interrupted work is not progressing — resume the
 sprint rather than waiting on it.
+
+### Outstanding phases and re-entry
+
+A story that stopped mid-pipeline can still owe a phase. When it does, its row
+carries two extra lines derived from the coordinator's persisted resume record —
+no run is started, so this costs nothing:
+
+```
+✗ issue-2239   failed   REVIEW   ...   review cycle 1 REQUEST_CHANGES
+    outstanding: REVIEW cycle 2 not run
+    re-entry: forge review runs REVIEW cycle 2; forge sprint --resume recovers
+              escalation decision land_core/defer_edges and skips REVIEW
+```
+
+`outstanding:` names what has *not* run — this is what distinguishes a story
+with an unrun review cycle from one whose review completed with APPROVE (which
+shows neither line). `re-entry:` appears only where the two paths disagree; see
+[Choosing a re-entry path](#choosing-a-re-entry-path). The same two lines are
+printed under a pending decision whose story is in that state, so the
+pending-decision surface cannot hide an unrun review cycle.
 
 ### Operator-action queue
 
@@ -885,6 +911,44 @@ forge migrate-profiles --dry-run # print the migration report without writing
 | Provider crashed / timed out mid-phase | Reruns the crashed phase | Safe; phases are idempotent |
 | Stale worktree from previous run | Resumes from last confirmed phase | May produce unexpected results if the story changed |
 | Manual human edits made to worktree | Resumes from VALIDATE | Coordinator sees the edited state |
+| Escalate-gate decision recorded, next review cycle unrun | Recovers the decision and continues from it — REVIEW does not run | Use `forge review` instead when you want that cycle to run. See below |
+
+### Choosing a re-entry path
+
+`forge review` and `forge sprint --resume` (equally, `forge run --resume`) both
+re-enter a stopped story, and they do different things:
+
+- **`forge review`** runs the review phase against the worktree. It runs a
+  review cycle; it does not consult the recorded pipeline state.
+- **`forge sprint --resume`** re-enters the pipeline and *recovers* what an
+  earlier attempt recorded — preflight, routing, plan review, and any
+  escalate-gate decision — then continues from what that state says. If the
+  recovered state is a decision, resume continues from the decision, not from
+  the unfinished phase.
+
+Those diverge whenever a story stopped with both a recorded escalate-gate
+decision and a review cycle it never ran — for example: gate PASS after a fix,
+review cycle 1 returned REQUEST_CHANGES, cycle 2 never ran, escalation decision
+`land_core_defer_edges` recorded.
+
+| You want | Use | What happens |
+|---|---|---|
+| The unrun review cycle to execute against the fix | `forge review <story>` | Review cycle 2 runs; the recorded decision is not consulted |
+| To honor the recorded pipeline state (the decision you already made) | `forge sprint --resume` / `forge run --resume` | Resume continues from `land_core_defer_edges` and proceeds to landing; **no review runs** |
+
+Neither is a default: choosing between them is choosing whether the work gets
+reviewed. Check `forge status` first — a story in this state prints an
+`outstanding:` line naming the unrun cycle and a `re-entry:` line naming what
+each path would do. Resume itself reports the same thing before it spends
+anything, on its `↺ RESUME` lines:
+
+```
+  ↺ RESUME   recovered phase record: escalation
+  ↺ RESUME   acting on escalation decision land_core / defer_edges (from run 20260807-...)
+  ↺ RESUME   outstanding: REVIEW cycle 2 has not run (last verdict REQUEST_CHANGES, gate PASS)
+  ↺ RESUME   this resume continues from that decision and will NOT run REVIEW —
+             `forge review` runs REVIEW cycle 2 instead
+```
 
 **Force a clean restart:**
 

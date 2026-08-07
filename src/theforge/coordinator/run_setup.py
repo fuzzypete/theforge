@@ -442,6 +442,47 @@ def _rebase_onto_main(worktree_path: str, base_branch: str, logger) -> tuple[boo
     return True, ""
 
 
+def _report_reentry_impact(recovery: dict) -> None:
+    """State, before the loop spends anything, a recovery that changes what runs.
+
+    The generic "recovered phase record: escalation" line above names *what* was
+    lifted off disk but not what acting on it costs the operator: a recovered
+    escalate-gate decision continues from that decision, so a review cycle that
+    never ran never will.  ``forge review`` is the path that runs it.  Split
+    across short lines to match the surrounding RESUME output (#2239).
+    """
+    impact = recovery.get("reentry_impact")
+    if not impact:
+        return
+
+    decision = impact.get("escalation_decision")
+    action = impact.get("escalation_selected_action")
+    decision_str = f"{decision} / {action}" if action else str(decision)
+    source = recovery.get("source_run_id") or "an earlier attempt"
+    _cu._log(f"  ↺ RESUME   acting on escalation decision {decision_str} (from {source})")
+
+    cycle = impact.get("outstanding_review_cycle")
+    cycle_str = f"REVIEW cycle {cycle}" if cycle else "the next REVIEW cycle"
+    verdict = impact.get("latest_review_verdict")
+    gate = impact.get("last_gate_decision")
+    context = ", ".join(
+        part
+        for part in (
+            f"last verdict {verdict}" if verdict else "",
+            f"gate {gate}" if gate else "",
+        )
+        if part
+    )
+    outstanding = f"  ↺ RESUME   outstanding: {cycle_str} has not run"
+    if context:
+        outstanding = f"{outstanding} ({context})"
+    _cu._log(outstanding)
+    _cu._log(
+        f"  ↺ RESUME   this resume continues from that decision and will NOT run REVIEW — "
+        f"`forge review` runs {cycle_str} instead"
+    )
+
+
 def _setup_resume_entry(
     config: ForgeConfig,
     task: TaskStory,
@@ -563,6 +604,7 @@ def _setup_resume_entry(
         _cu._log(
             f"  ↺ RESUME   recovered phase record: {', '.join(_recovery['recovered_phases'])}"
         )
+        _report_reentry_impact(_recovery)
     elif _recovery["status"] == "rejected":
         _cu._log(
             f"  ⚠ RESUME   persisted phase record rejected ({_recovery['reason']}) — "
