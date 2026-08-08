@@ -1348,3 +1348,156 @@ def test_seam_preflight_phase_and_attempt_telemetry_agree_on_the_version_count(t
     population = signal["resolved_population"]
     assert population["attributed"] == signal["attempted"] == 1
     assert population["by_resolved_model"] == {served: 1}
+
+
+def test_seam_a_reviewer_served_by_two_versions_splits_its_cycle_evidence(tmp_path):
+    """Seam (review_pool capture → bridge → aggregator): #2226.
+
+    One reviewer profile, two review cycles, two different served versions. The
+    findings/cost aggregate is cycle-denominated, so its version breakdown has to
+    be split per cycle — attributing all three cycles of evidence to whichever
+    version ran last is the story's own defect one level down.
+    """
+    from theforge.coordinator.model_profiles_bridge import (
+        _review_resolved_cycle_counts,
+        build_run_outcome,
+    )
+    from theforge.coordinator.review_pool import _append_reviewer_attempt
+    from theforge.coordinator.state import ReviewCycleMetadata
+    from theforge.model_profiles import RESOLVED_MODEL_BREAKDOWN_KEY, apply_run
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    profile = _planner_profile()
+    old, new = "claude-sonnet-4-6", "claude-opus-5"
+    for cycle, served in ((1, old), (2, new)):
+        _append_reviewer_attempt(
+            state,
+            config,
+            profile,
+            replace(_make_agent_result(success=True), model_used=served, transport_used="cli"),
+            parseable=True,
+            cycle_num=cycle,
+        )
+
+    counts = _review_resolved_cycle_counts(state)
+    assert counts[profile.name] == {
+        "anthropic/claude-sonnet-4-6/cli": 1,
+        "anthropic/claude-opus-5/cli": 1,
+    }
+
+    state.review_cycle_metadata = [
+        ReviewCycleMetadata(
+            pool_models=[profile.name],
+            successful=[profile.name],
+            failed=[],
+            synthesized=False,
+        )
+        for _ in range(2)
+    ]
+    outcome = build_run_outcome(config, state, success=True)
+    assert outcome.reviewers[profile.name][0] == 2
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    rev = data["models"]["anthropic/opus/cli"]["review"]
+    assert rev["runs"] == 2
+    breakdown = rev[RESOLVED_MODEL_BREAKDOWN_KEY]
+    assert breakdown["anthropic/claude-sonnet-4-6/cli"]["runs"] == 1
+    assert breakdown["anthropic/claude-opus-5/cli"]["runs"] == 1
+
+
+def test_seam_a_parse_retry_within_one_cycle_is_still_one_cycle_of_evidence(tmp_path):
+    """Two invocations, one cycle — the cycle breakdown must not count both."""
+    from theforge.coordinator.model_profiles_bridge import _review_resolved_cycle_counts
+    from theforge.coordinator.review_pool import _append_reviewer_attempt
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    profile = _planner_profile()
+    for _ in range(2):
+        _append_reviewer_attempt(
+            state,
+            config,
+            profile,
+            replace(
+                _make_agent_result(success=True),
+                model_used="claude-opus-5",
+                transport_used="cli",
+            ),
+            parseable=True,
+            cycle_num=1,
+        )
+
+    counts = _review_resolved_cycle_counts(state)
+    assert counts[profile.name] == {"anthropic/claude-opus-5/cli": 1}
+
+
+def test_seam_value_samples_keep_the_version_that_served_their_own_attempt(tmp_path):
+    """Seam (pool value capture → bridge → reviewer_value): #2226.
+
+    Value telemetry rows are stamped with the served version at capture time. A
+    join by reviewer name alone in the bridge would stamp every sample with
+    whichever version was newest for that reviewer, so two attempts served by
+    different versions would report identical — and for one of them, wrong —
+    attribution.
+    """
+    from theforge.coordinator.model_profiles_bridge import (
+        _extract_code_reviewer_values,
+        _extract_plan_reviewer_values,
+    )
+
+    state = _dev_state_medium()
+    old, new = "anthropic/claude-sonnet-4-6/cli", "anthropic/claude-opus-5/cli"
+
+    def _row(index_key: str, index: int, served: str) -> dict:
+        return {
+            index_key: index,
+            "reviewer": "rev",
+            "complexity": "medium",
+            "unique_p1_count": 1,
+            "total_p1_count": 2,
+            "latency_s": 10.0,
+            "actual_model": "opus",
+            "cli": "claude",
+            "resolved_model": served,
+        }
+
+    state.plan_reviewer_value = [_row("attempt", 0, old), _row("attempt", 1, new)]
+    state.code_reviewer_value = [_row("cycle", 1, old), _row("cycle", 2, new)]
+
+    assert [s.resolved_model for s in _extract_plan_reviewer_values(state)] == [old, new]
+    assert [s.resolved_model for s in _extract_code_reviewer_values(state)] == [old, new]
+
+
+def test_seam_value_folds_split_by_the_version_that_produced_each_sample(tmp_path):
+    """The folded value section reports both versions, not just the newest."""
+    from theforge.coordinator.model_profiles_bridge import _extract_code_reviewer_values
+    from theforge.model_profiles import RESOLVED_MODEL_BREAKDOWN_KEY
+    from theforge.reviewer_value import CODE_PHASE, fold_reviewer_value, section_for_phase
+
+    state = _dev_state_medium()
+    old, new = "anthropic/claude-sonnet-4-6/cli", "anthropic/claude-opus-5/cli"
+    state.code_reviewer_value = [
+        {
+            "cycle": cycle,
+            "reviewer": "rev",
+            "complexity": "medium",
+            "unique_p1_count": 1,
+            "total_p1_count": 2,
+            "latency_s": 10.0,
+            "actual_model": "opus",
+            "cli": "claude",
+            "resolved_model": served,
+        }
+        for cycle, served in ((1, old), (2, new))
+    ]
+
+    entry: dict = {}
+    for sample in _extract_code_reviewer_values(state):
+        fold_reviewer_value(entry, sample, phase=CODE_PHASE, tainted=False)
+
+    section = entry[section_for_phase(CODE_PHASE)]
+    assert section["runs"] == 2
+    assert section[RESOLVED_MODEL_BREAKDOWN_KEY][old]["runs"] == 1
+    assert section[RESOLVED_MODEL_BREAKDOWN_KEY][new]["runs"] == 1

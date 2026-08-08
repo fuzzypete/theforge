@@ -163,3 +163,89 @@ def test_an_alias_that_returned_to_an_earlier_version_reports_it_as_current(
 
     assert audits_cli.cmd_audits(_args(forge_yaml, changed_only=True)) == 0
     assert "CHANGED" in capsys.readouterr().out
+
+
+def _preflight_ledger(configured: str, served: str) -> dict:
+    configured_block, served_block = _identity_block(configured), _identity_block(served)
+    return {
+        "version": 1,
+        "role": "preflight",
+        "profile": "preflight",
+        "configured_identity": configured_block,
+        "resolved_primary_identity": served_block,
+        "configured_differs_from_resolved": (
+            configured_block["identity"] != served_block["identity"]
+        ),
+        "billed_components": [],
+    }
+
+
+def test_an_ordinary_preflight_is_counted_once_not_twice(tmp_path: Path) -> None:
+    """The final preflight attempt lives in BOTH record surfaces (#2226).
+
+    ``preflight.attempts`` records every attempt including the final one, and
+    that final attempt is also the ``cost.agents`` preflight entry. Indexing both
+    would double every ordinary run's preflight in the drift counts.
+    """
+    final = _preflight_ledger("opus", "claude-opus-5")
+    record = {
+        "run_id": "r1",
+        "task": {"slug": "demo", "name": "demo"},
+        "outcome": {"success": True, "final_phase": "DONE"},
+        "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
+        "totals": {"cost_usd": 1.0, "duration_s": 60.0},
+        "cost": {
+            "total_usd": 1.0,
+            "agents": [{"role": "preflight", "profile": "preflight", "ledger": final}],
+        },
+        "preflight": {"attempts": [{"profile_name": "preflight", "ledger": final}]},
+    }
+    _setup_project(tmp_path)
+    _index(tmp_path, [record])
+
+    conn = sub.create_or_open(tmp_path)
+    try:
+        timeline = sub.alias_resolution_timeline(conn)
+    finally:
+        conn.close()
+
+    entry = timeline[0]
+    assert entry["configured_model"] == "anthropic/opus/cli"
+    assert entry["invocations"] == 1
+    assert entry["resolved_models"][0]["invocations"] == 1
+
+
+def test_a_preflight_fallback_counts_both_invocations(tmp_path: Path) -> None:
+    """De-duplication must not swallow the superseded attempt."""
+    superseded = _preflight_ledger("opus", "claude-opus-4-6")
+    final = _preflight_ledger("opus", "claude-opus-5")
+    record = {
+        "run_id": "r1",
+        "task": {"slug": "demo", "name": "demo"},
+        "outcome": {"success": True, "final_phase": "DONE"},
+        "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
+        "totals": {"cost_usd": 1.0, "duration_s": 60.0},
+        "cost": {
+            "total_usd": 1.0,
+            "agents": [{"role": "preflight", "profile": "preflight", "ledger": final}],
+        },
+        "preflight": {
+            "attempts": [
+                {"profile_name": "preflight", "ledger": superseded},
+                {"profile_name": "preflight", "ledger": final},
+            ]
+        },
+    }
+    _setup_project(tmp_path)
+    _index(tmp_path, [record])
+
+    conn = sub.create_or_open(tmp_path)
+    try:
+        timeline = sub.alias_resolution_timeline(conn)
+    finally:
+        conn.close()
+
+    entry = timeline[0]
+    assert entry["invocations"] == 2
+    assert entry["distinct_resolved"] == 2
+    assert entry["changed"] is True

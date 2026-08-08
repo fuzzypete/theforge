@@ -226,33 +226,85 @@ def _record_ledgers(record: object) -> list[tuple[str, int, dict]]:
     * ``cost.agents`` — the per-agent breakdown covering every phase that
       reached a completed invocation (preflight, plan, plan_review, dev, review,
       synthesis).
-    * ``preflight.attempts`` — the earlier preflight parse-retry and fallback
-      attempts. Only the *final* preflight attempt reaches ``cost.agents``, so an
-      attempt that ran, resolved to a concrete version and was then superseded
-      exists nowhere else (see ``preflight_flow._record_attempt``).
+    * ``preflight.attempts`` — the preflight parse-retry and fallback attempts.
+      Only the *final* preflight attempt reaches ``cost.agents``, so an attempt
+      that ran, resolved to a concrete version and was then superseded exists
+      nowhere else (see ``preflight_flow._record_attempt``).
 
     Restricting to ``cost.agents`` would make the index quietly incomplete for
     exactly the retry path where a fallback model — a different identity from
     the configured one — is most likely to have served.
+
+    The two sources **overlap by one entry**, and that overlap has to be removed
+    here or every ordinary preflight is counted twice. ``preflight.attempts``
+    records *every* attempt including the final one, and that final attempt is
+    what becomes ``state.preflight_result`` and therefore the ``cost.agents``
+    preflight entry. Only the last attempt can be that duplicate — an earlier
+    one was superseded by definition — so the de-duplication is positional, and
+    it is confirmed against the ``cost.agents`` ledger rather than assumed: a
+    record whose preflight result never reached ``cost.agents`` (the renderer's
+    defensive guard) still has its final attempt indexed, because there is
+    nothing there to duplicate.
+
+    De-duplicating by ledger identity alone would be wrong: a same-profile
+    parse-retry resolves to the same version as the attempt it replaced, so
+    identical signatures are expected and dropping on a signature match would
+    erase a real invocation.
     """
     if not isinstance(record, dict):
         return []
     found: list[tuple[str, int, dict]] = []
+    cost_agent_preflight: list[dict] = []
     cost_block = record.get("cost")
     if isinstance(cost_block, dict):
         agents = cost_block.get("agents")
         if isinstance(agents, list):
             for position, entry in enumerate(agents):
-                if isinstance(entry, dict):
-                    found.append(("cost.agents", position, entry))
+                if not isinstance(entry, dict):
+                    continue
+                found.append(("cost.agents", position, entry))
+                if entry.get("role") == "preflight" or entry.get("phase") == "preflight":
+                    cost_agent_preflight.append(entry)
     preflight = record.get("preflight")
     if isinstance(preflight, dict):
         attempts = preflight.get("attempts")
         if isinstance(attempts, list):
+            final_index = len(attempts) - 1
+            duplicated = {
+                _ledger_signature(entry.get("ledger")) for entry in cost_agent_preflight
+            } - {None}
             for position, attempt in enumerate(attempts):
-                if isinstance(attempt, dict):
-                    found.append(("preflight.attempts", position, attempt))
+                if not isinstance(attempt, dict):
+                    continue
+                if (
+                    position == final_index
+                    and _ledger_signature(attempt.get("ledger")) in duplicated
+                ):
+                    continue
+                found.append(("preflight.attempts", position, attempt))
     return found
+
+
+def _ledger_signature(ledger: object) -> tuple | None:
+    """Identity fingerprint of one recorded ledger, for overlap detection only.
+
+    Compares what the two record surfaces would both have written for the same
+    invocation: the raw configured and resolved spellings plus the profile. Not
+    an identity in its own right — see :func:`_record_ledgers` for why a
+    signature match is only acted on positionally.
+    """
+    if not isinstance(ledger, dict):
+        return None
+
+    def _raw(key: str) -> str | None:
+        block = ledger.get(key)
+        return str(block.get("raw") or "") if isinstance(block, dict) else None
+
+    return (
+        _raw("configured_identity"),
+        _raw("resolved_primary_identity"),
+        str(ledger.get("profile") or ""),
+    )
 
 
 def invocation_identity_rows(record: object) -> list[dict]:

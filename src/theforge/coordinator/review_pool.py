@@ -35,6 +35,7 @@ from theforge.traces import write_trace
 
 from . import story_budget as _story_budget
 from . import util as _cu
+from .agent_identity import resolved_identity_for_result
 from .log_tee import _write_log_artifact
 from .review_context import (
     _get_commit_diffs,
@@ -243,8 +244,6 @@ def _append_reviewer_attempt(
     / completion-rate evidence.
     """
     from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
-
-    from .agent_identity import resolved_identity_for_result  # noqa: PLC0415
 
     completed, outcome, reason = _classify_reviewer_attempt(result, parseable, config)
     if outcome_override is not None:
@@ -1157,7 +1156,7 @@ def _run_review_pool(
     _profiles_by_name = {p.name: p for p in pool}
     _uniq_inputs = [(n, p.findings) for n, p in named_parsed if not p.parse_errors]
     _uniqueness = compute_reviewer_uniqueness(_uniq_inputs, anchor_text=code_review_anchor_text)
-    for _name, _parsed_r in named_parsed:
+    for _i, (_name, _parsed_r) in enumerate(named_parsed):
         _unique_p1, _total_p1 = _uniqueness.get(_name, (0, 0))
         _prof = _profiles_by_name.get(_name)
         state.code_reviewer_value.append(
@@ -1172,6 +1171,14 @@ def _run_review_pool(
                 "actual_model": getattr(_prof, "model", None),
                 "provider": getattr(_prof, "provider", None),
                 "cli": getattr(_prof, "cli", None),
+                # The concrete version that served THIS cycle (#2226).
+                # ``successful`` is aligned 1:1 with ``names``/``parsed_results``,
+                # so the sample is attributed to the invocation it measures. A
+                # join by reviewer name alone would stamp every cycle's sample
+                # with whichever version was newest for that reviewer.
+                "resolved_model": (
+                    resolved_identity_for_result(successful[_i]) if _i < len(successful) else None
+                ),
             }
         )
 

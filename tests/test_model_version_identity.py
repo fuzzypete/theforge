@@ -234,23 +234,84 @@ class TestServedVersionIsRecordedDistinguishably:
         ]
         assert all(row["differs"] for row in rows)
 
-    def test_a_superseded_preflight_attempt_is_indexed_too(self) -> None:
-        """Only the final preflight attempt reaches cost.agents; the rest are here.
+    def test_the_final_preflight_attempt_is_indexed_once_not_twice(self) -> None:
+        """The two record surfaces overlap by exactly one entry (#2226).
 
-        An attempt that ran, resolved to a concrete version and was then replaced
-        by a fallback exists nowhere but ``preflight.attempts`` — limiting the
-        index to ``cost.agents`` would lose exactly the retry path where the
-        served identity is most likely to differ.
+        ``preflight.attempts`` records EVERY attempt including the final one, and
+        that final attempt is what becomes ``state.preflight_result`` and hence
+        the ``cost.agents`` preflight entry. A normal preflight — one attempt, no
+        retry — must therefore still produce one identity row, or alias-drift
+        counts every ordinary run's preflight twice.
         """
+        final = _ledger("opus", "claude-opus-5", role="preflight")
         record = {
-            "cost": {
-                "agents": [
-                    {
-                        "role": "preflight",
-                        "ledger": _ledger("sonnet", "sonnet", role="preflight"),
-                    }
+            "cost": {"agents": [{"role": "preflight", "profile": "preflight", "ledger": final}]},
+            "preflight": {"attempts": [{"profile_name": "preflight", "ledger": final}]},
+        }
+        rows = invocation_identity_rows(record)
+        assert len(rows) == 1
+        assert rows[0]["source"] == "cost.agents"
+        assert rows[0]["resolved"][0] == CURRENT
+
+    def test_a_superseded_preflight_attempt_is_indexed_beside_the_final_one(self) -> None:
+        """The superseded attempts exist nowhere but ``preflight.attempts``.
+
+        A fallback run records two attempts: the failed primary and the fallback
+        that replaced it. Only the fallback reaches ``cost.agents``, so dropping
+        ``preflight.attempts`` entirely would lose exactly the retry path where
+        the served identity is most likely to differ from the configured one —
+        while keeping all of it double-counts the final attempt.
+        """
+        superseded = _ledger("sonnet", "claude-sonnet-4-6", role="preflight")
+        final = _ledger("opus", "claude-opus-5", role="preflight")
+        record = {
+            "cost": {"agents": [{"role": "preflight", "profile": "preflight", "ledger": final}]},
+            "preflight": {
+                "attempts": [
+                    {"profile_name": "preflight", "ledger": superseded},
+                    {"profile_name": "preflight", "ledger": final},
                 ]
             },
+        }
+        rows = invocation_identity_rows(record)
+        assert [r["source"] for r in rows] == ["cost.agents", "preflight.attempts"]
+        assert {r["resolved"][0] for r in rows} == {
+            CURRENT,
+            "anthropic/claude-sonnet-4-6/cli",
+        }
+
+    def test_a_same_profile_parse_retry_is_not_dropped_as_a_duplicate(self) -> None:
+        """Identical ledgers are expected on a parse retry — de-dup is positional.
+
+        A same-profile parse retry resolves to the same version as the attempt it
+        replaced, so its ledger signature matches. Dropping on a signature match
+        alone would erase a real invocation; only the LAST attempt can be the one
+        that also reached ``cost.agents``.
+        """
+        same = _ledger("opus", "claude-opus-5", role="preflight")
+        record = {
+            "cost": {"agents": [{"role": "preflight", "profile": "preflight", "ledger": same}]},
+            "preflight": {
+                "attempts": [
+                    {"profile_name": "preflight", "ledger": same},
+                    {"profile_name": "preflight", "ledger": same},
+                ]
+            },
+        }
+        rows = invocation_identity_rows(record)
+        # Two invocations happened: the retried one and the one that survived.
+        assert len(rows) == 2
+        assert [r["source"] for r in rows] == ["cost.agents", "preflight.attempts"]
+
+    def test_a_final_attempt_absent_from_cost_agents_is_still_indexed(self) -> None:
+        """Nothing to duplicate → nothing to skip.
+
+        ``audit_render`` defensively omits a preflight entry whose result is not a
+        readable AgentResult. The attempt must not vanish because of a positional
+        rule that assumed the duplicate was there.
+        """
+        record = {
+            "cost": {"agents": []},
             "preflight": {
                 "attempts": [
                     {
@@ -261,9 +322,7 @@ class TestServedVersionIsRecordedDistinguishably:
             },
         }
         rows = invocation_identity_rows(record)
-        assert [r["source"] for r in rows] == ["cost.agents", "preflight.attempts"]
-        assert rows[1]["configured"][0] == ALIAS
-        assert rows[1]["resolved"][0] == CURRENT
+        assert [r["source"] for r in rows] == ["preflight.attempts"]
 
     def test_a_pre_ledger_record_still_indexes_and_says_it_is_partial(self) -> None:
         rows = invocation_identity_rows(
@@ -525,9 +584,18 @@ class TestAliasEvidenceIsAttributableToVersions:
         assert population["attributed"] == review["attempted"] == 1
         assert population["unattributed"] == 0
 
-    def test_the_cycles_denominated_review_breakdown_sums_to_runs(self) -> None:
-        """``review.runs`` counts CYCLES, so its breakdown is weighted by cycles."""
+    def test_review_cycles_served_by_different_versions_split_the_breakdown(self) -> None:
+        """``review.runs`` counts CYCLES, and cycles can be served by two models.
+
+        ``reviewers`` aggregates findings/cost across every cycle a reviewer took
+        part in. Attributing that whole aggregate to one served version would be
+        a false claim about which model produced the evidence — the story's own
+        defect, one level down. The breakdown is therefore a per-version CYCLE
+        COUNT, joined per (reviewer, cycle).
+        """
         data: dict = {"models": {}}
+        old = "anthropic/claude-sonnet-4-6/cli"
+        new = "anthropic/claude-sonnet-5/cli"
         apply_run(
             data,
             RunOutcome(
@@ -537,24 +605,48 @@ class TestAliasEvidenceIsAttributableToVersions:
                 dev_iterations=1,
                 dev_cost_usd=1.0,
                 reviewers={"anthropic/sonnet/cli": (3, 6, 0.9)},
+                reviewer_resolved_cycles={"anthropic/sonnet/cli": {old: 2, new: 1}},
                 reviewer_attempts=[
                     ReviewerAttempt(
                         name="anthropic/sonnet/cli",
                         completed_parseable_verdict=True,
                         actual_model="sonnet",
                         cli="claude",
-                        resolved_model="anthropic/claude-sonnet-4-6/cli",
+                        resolved_model=new,
                     )
                 ],
             ),
         )
         rev = data["models"]["anthropic/sonnet/cli"]["review"]
-        served = "anthropic/claude-sonnet-4-6/cli"
         assert rev["runs"] == 3
-        assert rev[RESOLVED_MODEL_BREAKDOWN_KEY][served]["runs"] == 3
-        # ...while the attempt breakdown tracks the single invocation.
+        # Sums to the counter it explains, split by the version per cycle.
+        assert rev[RESOLVED_MODEL_BREAKDOWN_KEY][old]["runs"] == 2
+        assert rev[RESOLVED_MODEL_BREAKDOWN_KEY][new]["runs"] == 1
+        # ...while the attempt breakdown tracks the single recorded invocation.
         assert rev["_attempted_count"] == 1
-        assert rev[RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY][served]["runs"] == 1
+        assert rev[RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY][new]["runs"] == 1
+        assert old not in rev[RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY]
+
+    def test_a_cycle_with_no_recorded_version_under_claims_rather_than_guesses(self) -> None:
+        """The breakdown never sums past the cycle count it explains."""
+        data: dict = {"models": {}}
+        served = "anthropic/claude-sonnet-4-6/cli"
+        apply_run(
+            data,
+            RunOutcome(
+                complexity="medium",
+                dev_model=ALIAS,
+                dev_success=True,
+                dev_iterations=1,
+                dev_cost_usd=1.0,
+                reviewers={"anthropic/sonnet/cli": (3, 6, 0.9)},
+                # Only one of the three cycles recorded a served identity.
+                reviewer_resolved_cycles={"anthropic/sonnet/cli": {served: 1}},
+            ),
+        )
+        rev = data["models"]["anthropic/sonnet/cli"]["review"]
+        assert rev["runs"] == 3
+        assert sum(b["runs"] for b in rev[RESOLVED_MODEL_BREAKDOWN_KEY].values()) == 1
 
     def test_a_tainted_run_is_tallied_per_version_and_still_excluded(self) -> None:
         data: dict = {"models": {}}

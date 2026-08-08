@@ -483,8 +483,9 @@ def _invocation_identity_params(run_id: str, record: dict) -> list[tuple]:
     """Project a record to the ``invocation_identities`` rows it justifies.
 
     ``seq`` is assigned by the extraction order (``cost.agents`` first, then the
-    superseded ``preflight.attempts``), so it is stable for a given record and a
-    rewrite of the same run produces the same keys rather than accumulating.
+    ``preflight.attempts`` entries that are not already covered by it), so it is
+    stable for a given record and a rewrite of the same run produces the same
+    keys rather than accumulating.
     """
     started_at = (record.get("timing") or {}).get("started_at")
     params: list[tuple] = []

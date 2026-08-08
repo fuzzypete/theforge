@@ -37,32 +37,42 @@ def _last_resolved_identity(results: object) -> str | None:
     return None
 
 
-def _resolved_by_reviewer(state: CoordinatorState) -> dict[str, str]:
-    """Map reviewer profile name → the concrete identity that most recently served.
+def _review_resolved_cycle_counts(state: CoordinatorState) -> dict[str, dict[str, int]]:
+    """Map reviewer name → {served identity: cycles it served}.
 
-    The value-telemetry captures (``plan_reviewer_value`` /
-    ``code_reviewer_value``) record the reviewer's *profile* identity, which for
-    a family alias does not name the version that produced the measurement.
-    Rather than plumbing the served identity through both pool loops, the join
-    happens here, against the two per-invocation captures that already carry it:
-    the reviewer-attempt records (code review) and the plan-review results
-    (plan review). Deterministic — keyed by profile name, newest wins — and it
-    keeps this module the single adapter between coordinator state and the
-    profile aggregator.
+    ``_extract_reviewers`` aggregates a reviewer's findings/cost across every
+    cycle it participated in, so the population under ``review.runs`` is counted
+    in CYCLES. One reviewer profile can be served by different concrete versions
+    across those cycles, and attributing the whole aggregate to a single version
+    would be a false claim about which model produced that evidence — the exact
+    failure this story exists to end, one level down.
+
+    The join is per (reviewer, cycle), against the reviewer-attempt records,
+    which are written one per invocation and carry both the cycle number and the
+    served identity. Cycles whose attempt recorded no served identity are simply
+    absent, so the breakdown under-claims rather than over-claims: it never sums
+    past the cycle count it explains.
     """
-    by_name: dict[str, str] = {}
+    per_cycle: dict[tuple[str, int], str] = {}
     for attempt in state.reviewer_attempts or []:
         if not isinstance(attempt, dict):
             continue
-        name, resolved = attempt.get("name"), attempt.get("resolved_model")
-        if name and resolved:
-            by_name[str(name)] = str(resolved)
-    for result in state.plan_review_results or []:
-        name = getattr(result, "profile_name", None)
-        resolved = resolved_identity_for_result(result)
-        if name and resolved:
-            by_name[str(name)] = resolved
-    return by_name
+        name, resolved, cycle = (
+            attempt.get("name"),
+            attempt.get("resolved_model"),
+            attempt.get("cycle"),
+        )
+        if not (name and resolved) or not isinstance(cycle, int):
+            continue
+        # One reviewer can be invoked several times inside one cycle (a parse
+        # retry). They are the same cycle of evidence, so the cycle maps to one
+        # served identity — the last invocation that reported one.
+        per_cycle[(str(name), cycle)] = str(resolved)
+    counts: dict[str, dict[str, int]] = {}
+    for (name, _cycle), resolved in per_cycle.items():
+        by_version = counts.setdefault(name, {})
+        by_version[resolved] = by_version.get(resolved, 0) + 1
+    return counts
 
 
 def _extract_reviewers(
@@ -135,7 +145,6 @@ def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerV
     identity so the value signal lands under the same model entry the router looks
     it up by.
     """
-    resolved_by_name = _resolved_by_reviewer(state)
     samples: list[PlanReviewerValueSample] = []
     for v in state.plan_reviewer_value or []:
         if not isinstance(v, dict) or not v.get("reviewer"):
@@ -150,7 +159,10 @@ def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerV
                 actual_model=v.get("actual_model"),
                 provider=v.get("provider"),
                 cli=v.get("cli"),
-                resolved_model=resolved_by_name.get(str(v["reviewer"])),
+                # Stamped on the row at capture time by the pool that ran it, so
+                # a reviewer served by different versions across attempts/cycles
+                # keeps each sample attributed to the invocation it measures.
+                resolved_model=v.get("resolved_model"),
             )
         )
     return samples
@@ -165,7 +177,6 @@ def _extract_code_reviewer_values(state: CoordinatorState) -> list[ReviewerValue
     reviewer's canonical identity, so the value signal lands under the same model
     entry the router looks it up by.
     """
-    resolved_by_name = _resolved_by_reviewer(state)
     samples: list[ReviewerValueSample] = []
     for v in state.code_reviewer_value or []:
         if not isinstance(v, dict) or not v.get("reviewer"):
@@ -180,7 +191,10 @@ def _extract_code_reviewer_values(state: CoordinatorState) -> list[ReviewerValue
                 actual_model=v.get("actual_model"),
                 provider=v.get("provider"),
                 cli=v.get("cli"),
-                resolved_model=resolved_by_name.get(str(v["reviewer"])),
+                # Stamped on the row at capture time by the pool that ran it, so
+                # a reviewer served by different versions across attempts/cycles
+                # keeps each sample attributed to the invocation it measures.
+                resolved_model=v.get("resolved_model"),
             )
         )
     return samples
@@ -395,6 +409,9 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         planner_cost_usd=planner_cost,
         planner_attempts=planner_attempts,
         reviewers=_extract_reviewers(state),
+        # Per-reviewer {served identity: cycles} (#2226). The findings/cost
+        # aggregate is cycle-denominated, so its version breakdown has to be too.
+        reviewer_resolved_cycles=_review_resolved_cycle_counts(state),
         reviewer_attempts=_extract_reviewer_attempts(state),
         plan_reviewer_values=_extract_plan_reviewer_values(state),
         code_reviewer_values=_extract_code_reviewer_values(state),

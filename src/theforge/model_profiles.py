@@ -228,6 +228,13 @@ class RunOutcome:
     planner_cost_usd: float | None = None  # None = cost unmeasured
     planner_attempts: list[RoleAttempt] = field(default_factory=list)
     reviewers: dict[str, tuple[int, int, float | None]] = field(default_factory=dict)
+    # Per-reviewer ``{served identity: cycles it served}`` (#2226). ``reviewers``
+    # above is cycle-denominated and aggregates across every cycle a reviewer
+    # took part in; one profile can be served by different concrete versions
+    # across those cycles, so a single served identity cannot describe the
+    # aggregate. Absent/short entries under-claim rather than over-claim: the
+    # breakdown never sums past the cycle count it explains.
+    reviewer_resolved_cycles: dict[str, dict[str, int]] = field(default_factory=dict)
     # Every reviewer invocation this run, including failures (#1388). Unlike
     # ``reviewers`` (which is survivorship-biased — only reviewers that returned a
     # parseable verdict appear), this list carries an entry for each attempt so the
@@ -826,7 +833,7 @@ def _update_review(
     findings: int,
     cost_usd: float | None,
     tainted: bool = False,
-    resolved_model: str | None = None,
+    resolved_cycles: dict[str, int] | None = None,
 ) -> None:
     if cycles <= 0:
         return
@@ -838,16 +845,21 @@ def _update_review(
         rev["tainted_runs"] = int(rev.get("tainted_runs", 0)) + cycles
         return
     # Version attribution (#2226): the findings/cost population under this
-    # section is attributed to the concrete model that served, so an alias's
+    # section is attributed to the concrete models that served it, so an alias's
     # review history can be told apart from one model's review history.
     #
-    # This breaks down ``runs``, which the section counts in CYCLES, so the fold
-    # is weighted by ``cycles`` too — and it uses the runs-scoped key, not the
-    # attempt-scoped one the completion fold below writes. The two populations
-    # are folded from the same run at different call sites; sharing one
-    # breakdown would count each invocation twice and report more attributed
-    # version observations than either counter contains.
-    _fold_resolved_model(rev, resolved_model, success=None, tainted=False, count=cycles)
+    # This breaks down ``runs``, which the section counts in CYCLES, so the input
+    # is a per-version CYCLE COUNT rather than one identity: a reviewer served by
+    # version A for two cycles and version B for one is three cycles of evidence
+    # about two models, and folding all three under either one would be a false
+    # claim about which model produced them.
+    #
+    # It uses the runs-scoped key, not the attempt-scoped one the completion fold
+    # writes. The two populations are folded from the same run at different call
+    # sites; sharing one breakdown would count each invocation twice and report
+    # more attributed version observations than either counter contains.
+    for served, served_cycles in (resolved_cycles or {}).items():
+        _fold_resolved_model(rev, served, success=None, tainted=False, count=served_cycles)
     if cost_usd is None:
         log.warning(
             "[model_profiles] Review run recorded cost-unmeasured (NOT $0.00): "
@@ -1355,10 +1367,6 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
     _rev_identity = {
         att.name: (att.actual_model, att.provider, att.cli) for att in outcome.reviewer_attempts
     }
-    # Resolved (served) identity per reviewer, keyed the same way (#2226).
-    _rev_resolved = {
-        att.name: att.resolved_model for att in outcome.reviewer_attempts if att.resolved_model
-    }
     for name, (cycles, findings, cost) in outcome.reviewers.items():
         _am, _pv, _cl = _rev_identity.get(name, (None, None, None))
         rev_entry = _ensure_model(data, name, actual_model=_am, provider=_pv, cli=_cl)
@@ -1368,7 +1376,7 @@ def apply_run(data: dict, outcome: RunOutcome) -> dict:
             findings,
             cost,
             tainted=outcome.dev_tainted,
-            resolved_model=_rev_resolved.get(name),
+            resolved_cycles=outcome.reviewer_resolved_cycles.get(name),
         )
     # Attempt-completion telemetry (#1388): one fold per reviewer invocation,
     # including failures, so the completion rate is complete over attempts.
