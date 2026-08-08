@@ -838,6 +838,42 @@ class TestDefaultFlags:
         assert config.dev_profile.registry_id == "anthropic/sonnet/cli"
         assert config.dev_profile.registry_source == "builtin"
 
+    def test_models_custom_declares_and_selects_canonical_schema_model(self, tmp_path):
+        """A models.custom entry written in the canonical routing/cost shape loads
+        and is selectable by its canonical key, not just accepted without error.
+
+        Regression coverage for the deferred edge in #2233: the parser once
+        rejected this shape as missing legacy flat fields (tier,
+        input_cost_per_mtok, output_cost_per_mtok) even though those are
+        expressed here under routing/cost.
+        """
+        config_path = _write_config(
+            {
+                "models": {
+                    "enabled": ["anthropic/sonnet/cli", "openai/gpt-5.5-canonical/cli"],
+                    "custom": {
+                        "openai/gpt-5.5-canonical/cli": {
+                            "provider": "openai",
+                            "model": "gpt-5.5-canonical",
+                            "transport": {"kind": "cli"},
+                            "routing": {"tier": "strong", "capability": 9, "cost_rank": 2},
+                            "cost": {"input_per_mtok": 5.00, "output_per_mtok": 30.00},
+                        }
+                    },
+                },
+                "budget_usd": 50.0,
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.models == ["anthropic/sonnet/cli", "openai/gpt-5.5-canonical/cli"]
+        assert config.custom_models == ("openai/gpt-5.5-canonical/cli",)
+        assert config.model_registry_sources["openai/gpt-5.5-canonical/cli"] == "forge.yaml"
+        assert config.model_registry["openai/gpt-5.5-canonical/cli"].model == "gpt-5.5-canonical"
+        assert config.model_registry["openai/gpt-5.5-canonical/cli"].tier == "strong"
+        assert config.model_registry["openai/gpt-5.5-canonical/cli"].capability == 9
+        assert config.model_registry["openai/gpt-5.5-canonical/cli"].cost_rank == 2
+
     def test_models_custom_only_makes_dev_profile_report_forge_yaml_source(self, tmp_path):
         """When the sole enabled model is forge.yaml-declared, dev names that source."""
         config_path = _write_config(
