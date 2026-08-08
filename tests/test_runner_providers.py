@@ -18,6 +18,9 @@ from theforge.runners import log_agent_result, run_agent, runner_codex
 
 # Codex spawn seam patched by the tests below.
 _CODEX_RUN_TARGET = "theforge.runners.runner_codex.process_group.run_in_process_group"
+# Gemini's spawn seam. Group-isolated like codex's since #2309 — a bare
+# subprocess.run left the npm→node→gemini tree outside every teardown path.
+_GEMINI_RUN_TARGET = "theforge.runners.runner_gemini.process_group.run_in_process_group"
 
 
 def _make_stream_mock(lines: list[str], returncode: int = 0, stderr: str = "") -> MagicMock:
@@ -490,7 +493,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc):
             result = run_agent(
                 prompt="review this code",
                 profile=gemini_profile,
@@ -506,7 +509,7 @@ class TestRunGemini:
 
     def test_gemini_timeout(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runners.runner_gemini.subprocess.run",
+            _GEMINI_RUN_TARGET,
             side_effect=subprocess.TimeoutExpired(cmd="gemini", timeout=300),
         ):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
@@ -518,7 +521,7 @@ class TestRunGemini:
 
     def test_gemini_not_found(self, gemini_profile: ModelProfile, tmp_path: Path) -> None:
         with patch(
-            "theforge.runners.runner_gemini.subprocess.run",
+            _GEMINI_RUN_TARGET,
             side_effect=FileNotFoundError(),
         ):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
@@ -534,9 +537,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch(
-            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc) as mock_run:
             run_agent(prompt="review", profile=gemini_profile, working_dir=tmp_path)
 
         cmd = mock_run.call_args[0][0]
@@ -561,9 +562,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch(
-            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc) as mock_run:
             run_agent(prompt="my prompt", profile=gemini_profile, working_dir=tmp_path)
 
         call_kwargs = mock_run.call_args[1]
@@ -580,7 +579,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="plain text response", stderr=""
         )
-        with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
 
         assert result.success is True
@@ -593,7 +592,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=1, stdout="", stderr="gemini error"
         )
-        with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc):
             result = run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
 
         assert result.output == "gemini error"
@@ -604,9 +603,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch(
-            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
-        ) as mock_run:
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc) as mock_run:
             run_agent(prompt="test", profile=gemini_profile, working_dir=tmp_path)
 
         assert mock_run.call_args[1]["cwd"] == str(tmp_path)
@@ -619,7 +616,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc):
             result = run_agent(
                 prompt="review",
                 profile=gemini_profile,
@@ -637,7 +634,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout=json_output, stderr=""
         )
-        with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc):
             result = run_agent(
                 prompt="review",
                 profile=gemini_profile,
@@ -658,7 +655,7 @@ class TestRunGemini:
         mock_proc = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="not json at all", stderr=""
         )
-        with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
+        with patch(_GEMINI_RUN_TARGET, return_value=mock_proc):
             # Test both sequential and pool modes
             result_seq = run_agent(
                 prompt="review",

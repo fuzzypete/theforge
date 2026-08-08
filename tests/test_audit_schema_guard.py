@@ -44,6 +44,7 @@ from theforge.coordinator.state import (
     ReviewIterationTelemetry,
 )
 from theforge.coordinator.validate_phase import record_validate_block
+from theforge.process_group import TEARDOWN_KILLED_SURVIVORS, ProcessTeardown
 from theforge.runners import AgentResult
 from theforge.task import TaskStory
 
@@ -225,6 +226,17 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
             configured_transport="cli",
             reasoning_effort="high",
             cost_provenance=COST_PROVIDER_REPORTED,
+            # A forced process teardown (#2309), so the guard pins the nested
+            # shape rather than just the null. Built through the real
+            # ProcessTeardown dataclass so a field added to it shows up here.
+            process_teardown=ProcessTeardown(
+                pgid=4242,
+                action=TEARDOWN_KILLED_SURVIVORS,
+                member_count=2,
+                members=(4242, 4243),
+                sandbox_dir="/tmp/forge/worktrees/test",
+                completed=True,
+            ),
         )
     )
     state.dev_durations.append(12.0)

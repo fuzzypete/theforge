@@ -9,7 +9,10 @@ Two mechanisms cooperate:
    launched with ``start_new_session=True`` so it leads its own process group.
    On timeout or any teardown the whole group is ``killpg``-ed, so grandchildren
    (node, the provider leaf binary) die too — a bare ``proc.kill()`` reaches only
-   the direct child.
+   the direct child. A *clean* exit is checked too rather than assumed: an agent
+   that shelled out to a long-running command and returned first leaves that
+   command running, and it is killed at release (`release_group_record`) rather
+   than left to outlive the story that authorised it (#2309).
 2. **Orphan reaper** (`reap_orphan_agents`) — synchronous group-kill cannot run
    when the parent sprint is ``SIGKILL``-ed, so each spawned group records its
    pgid + owner pid in a sidecar under ``.forge/runs/agents/``. A later
@@ -38,6 +41,8 @@ import signal
 import struct
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -54,6 +59,47 @@ _RUN_ID_ENV = "FORGE_DETACHED_RUN_ID"
 # bound the whole teardown at 2x this, which keeps it inside the <5s budget the
 # gate's timeout path is asserted against even when every kill is refused.
 KILL_GRACE_SECONDS = 2.0
+
+# Teardown actions recorded on a `ProcessTeardown`.
+TEARDOWN_KILLED_SURVIVORS = "killed_survivors"
+"""The invocation finished but left live descendants; they were killed here."""
+
+TEARDOWN_RETAINED_FOR_REAPER = "retained_for_reaper"
+"""Descendants survived the kill; the sidecar was kept so a later sweep can act."""
+
+
+@dataclass(frozen=True)
+class ProcessTeardown:
+    """What it took to end the process group one invocation spawned.
+
+    Produced only when the group did *not* end on its own — i.e. the invocation
+    returned (cleanly or not) while processes it had started were still running.
+    A quiet, self-terminating group produces no record at all, so the presence of
+    one is itself the signal: this invocation left work behind, and something had
+    to end it.
+
+    Stdlib-only and pure data (convention 4) so both the runners and the audit
+    writer can carry it without importing process machinery.
+    """
+
+    pgid: int
+    action: str
+    member_count: int
+    members: tuple[int, ...]
+    sandbox_dir: str | None
+    completed: bool
+    """True when the group was gone by the time teardown returned."""
+
+    def to_audit_dict(self) -> dict[str, Any]:
+        """Audit-record projection: the facts an operator needs, JSON-shaped."""
+        return {
+            "pgid": self.pgid,
+            "action": self.action,
+            "member_count": self.member_count,
+            "members": list(self.members),
+            "sandbox_dir": self.sandbox_dir,
+            "completed": self.completed,
+        }
 
 
 def _log(msg: str) -> None:
@@ -75,6 +121,7 @@ def run_in_process_group(
     text: bool = False,
     env: dict[str, str] | None = None,
     cwd: str | None = None,
+    teardown_out: list[ProcessTeardown] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     """``subprocess.run`` that isolates the child into its own process group.
 
@@ -84,6 +131,11 @@ def run_in_process_group(
     before the exception is re-raised, so npm→node→leaf grandchildren cannot
     outlive the call. ``subprocess.run``'s own timeout kill signals only the
     direct child (``npm exec``), leaving node + the provider leaf alive.
+
+    ``teardown_out`` is an out-parameter rather than part of the return value:
+    a forced teardown is a fact about the *call*, and it has to reach the caller
+    on the exception paths too, where there is no return value to carry it. Any
+    `ProcessTeardown` produced at release is appended to it.
     """
     stdout = subprocess.PIPE if capture_output else None
     stderr = subprocess.PIPE if capture_output else None
@@ -130,7 +182,9 @@ def run_in_process_group(
         raise
     finally:
         if pgid is not None:
-            release_group_record(pgid, group_killed=group_killed)
+            teardown = release_group_record(pgid, group_killed=group_killed, sandbox_dir=cwd)
+            if teardown is not None and teardown_out is not None:
+                teardown_out.append(teardown)
     return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
@@ -163,15 +217,72 @@ def _attach_partial_output(
         exc.stderr = err
 
 
-def release_group_record(pgid: int, *, group_killed: bool) -> None:
-    """Drop the reaper's sidecar, but only once the group is really gone.
+def _group_membership_is_observable() -> bool:
+    """True where `group_members` can actually enumerate a group.
 
-    When teardown could reach only the direct child, that child exits while its
-    grandchildren keep running — and unregistering here would erase the one
-    record that lets `reap_orphan_agents` ever kill them. The sidecar is how a
-    surviving group stays reachable, so it outlives a partial teardown.
+    `group_is_alive` deliberately errs toward "alive" when it cannot tell, so on
+    a platform that can enumerate, an empty membership is the sharper answer and
+    is allowed to overrule the probe. Where enumeration is a dead end, the probe
+    is all there is.
     """
-    if not group_killed and group_is_alive(pgid):
+    return sys.platform.startswith("linux") or sys.platform == "darwin"
+
+
+def _await_empty_group(pgid: int, *, grace_seconds: float = KILL_GRACE_SECONDS) -> bool:
+    """Poll until *pgid* holds no processes, bounded by *grace_seconds*."""
+    deadline = time.monotonic() + grace_seconds
+    while True:
+        if not group_is_alive(pgid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def release_group_record(
+    pgid: int, *, group_killed: bool, sandbox_dir: str | Path | None = None
+) -> ProcessTeardown | None:
+    """End the group for good, then drop the reaper's sidecar.
+
+    Two survivals are possible here and they are not the same fact:
+
+    * **Teardown reached only the direct child** (``group_killed=False``) — the
+      kill was refused, so re-issuing it buys nothing. Unregistering would erase
+      the one record that lets `reap_orphan_agents` ever reach the survivors, so
+      the sidecar is kept instead.
+    * **The invocation ended on its own terms while descendants kept running**
+      (``group_killed=True``, group still alive) — a dev agent that shelled out
+      to ``pytest -n auto`` and returned before those workers did. Nothing killed
+      that tree, because nothing had decided it needed killing: the leader exited
+      cleanly, so teardown treated the group as gone. It was not, and the workers
+      then outlived the sprint, the worktree and the budget that authorised them,
+      competing for the host with every run measured afterwards (#2309). Work a
+      story starts ends with the story, so the survivors are killed here.
+
+    Returns a `ProcessTeardown` describing either survival, and ``None`` for the
+    ordinary case where the group was already empty — so a caller can record that
+    a kill was needed without having to infer it from a log line.
+
+    Killing on membership alone is safe despite pgid recycling: a pgid is only
+    reusable once its group is empty, and a group with live members has not
+    emptied. The members enumerated here are therefore this group's, not a
+    successor's — the check `_identity_verdict` makes for a record read minutes
+    later is not needed for one read microseconds after our own wait returned.
+    """
+    if not group_is_alive(pgid):
+        unregister_agent_group(pgid)
+        return None
+
+    members = group_members(pgid)
+    if group_killed and not members and _group_membership_is_observable():
+        # The signal-0 probe errs toward "alive"; enumeration is the sharper
+        # instrument and says there is nothing left to kill.
+        unregister_agent_group(pgid)
+        return None
+
+    sandbox = str(sandbox_dir) if sandbox_dir is not None else None
+
+    if not group_killed:
         _log(
             f"  ⚠ keeping agent sidecar for pgid={pgid}: teardown reached only the "
             "direct child and the group is still alive"
@@ -179,8 +290,45 @@ def release_group_record(pgid: int, *, group_killed: bool) -> None:
         # Capture the survivors now, while we still know this group is ours — it
         # is the only identity a later sweep can check once the leader is gone.
         retain_group_record(pgid)
-        return
-    unregister_agent_group(pgid)
+        return ProcessTeardown(
+            pgid=pgid,
+            action=TEARDOWN_RETAINED_FOR_REAPER,
+            member_count=len(members),
+            members=tuple(sorted(members)),
+            sandbox_dir=sandbox,
+            completed=False,
+        )
+
+    _log(
+        f"  ⚠ agent invocation finished but left {len(members) or 'live'} process(es) "
+        f"running in pgid={pgid} (sandbox={sandbox}); killing them now so they cannot "
+        "outlive the story that started them"
+    )
+    killed = kill_agent_group(pgid)
+    gone = killed and _await_empty_group(pgid)
+    if gone:
+        unregister_agent_group(pgid)
+        return ProcessTeardown(
+            pgid=pgid,
+            action=TEARDOWN_KILLED_SURVIVORS,
+            member_count=len(members),
+            members=tuple(sorted(members)),
+            sandbox_dir=sandbox,
+            completed=True,
+        )
+    _log(
+        f"  ⚠ pgid={pgid} still holds processes after the kill; keeping its sidecar "
+        "so a later sweep can finish the job"
+    )
+    retain_group_record(pgid)
+    return ProcessTeardown(
+        pgid=pgid,
+        action=TEARDOWN_RETAINED_FOR_REAPER,
+        member_count=len(members),
+        members=tuple(sorted(members)),
+        sandbox_dir=sandbox,
+        completed=False,
+    )
 
 
 def _killpg_for(pid: int) -> bool:

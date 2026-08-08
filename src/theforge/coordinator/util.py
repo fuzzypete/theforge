@@ -22,8 +22,7 @@ from theforge.process_group import (
     KILL_GRACE_SECONDS,
     is_killable_pgid,
     register_agent_group,
-    retain_group_record,
-    unregister_agent_group,
+    release_group_record,
 )
 from theforge.workspace_env import build_workspace_env
 
@@ -449,17 +448,12 @@ def _run_shell_detailed(
         # Drop the record only once the whole group is known to be gone. A
         # teardown that reached at most the direct child leaves grandchildren
         # running, and the sidecar is the only handle a later reaper has on
-        # them — erasing it would strand them permanently (#2013).
+        # them — erasing it would strand them permanently (#2013). And a shell
+        # that exited cleanly is not evidence its group did: `make gate` can
+        # return while a pytest-xdist worker it started is still on the CPU, so
+        # release checks and kills rather than assuming (#2309).
         if pgid is not None:
-            if group_gone:
-                unregister_agent_group(pgid)
-            else:
-                # Survivors: snapshot who is still in the group while we still
-                # know the group is ours. Once the shell (the group leader) is
-                # gone, that snapshot is the only thing that distinguishes these
-                # descendants from an unrelated group holding a recycled pgid,
-                # and a reaper with no such evidence declines to signal (#2115).
-                retain_group_record(pgid)
+            release_group_record(pgid, group_killed=group_gone, sandbox_dir=str(cwd))
         if owns_streams:
             for stream_name in ("stdout", "stderr"):
                 stream = getattr(proc, stream_name, None)

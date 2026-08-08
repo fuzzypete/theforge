@@ -29,7 +29,7 @@ import re
 import tempfile
 import time
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -724,6 +724,10 @@ def _run_codex(
     start_wall = time.time()
     label = profile.name or profile.identity_label
     _codex_env = build_workspace_env(working_dir, extra=secrets)
+    # Out-parameter for a forced teardown (#2309). It has to be a channel outside
+    # the return value because the timeout path raises rather than returns, and a
+    # kill on that path is exactly the fact the run needs to record.
+    _teardowns: list[process_group.ProcessTeardown] = []
     outcome, elapsed = _run_with_heartbeat(
         # Group-isolated spawn: subprocess.run's own timeout kill reaches only
         # `npm exec`, leaving node + the codex leaf alive. run_in_process_group
@@ -736,12 +740,15 @@ def _run_codex(
             timeout=profile.timeout_seconds,
             env=_codex_env,
             cwd=str(working_dir),
+            teardown_out=_teardowns,
         ),
         label=label,
         profile=profile,
         cli_name="npx @openai/codex",
         quiet=quiet,
     )
+
+    _teardown = _teardowns[0] if _teardowns else None
 
     try:
         if outcome.exception:
@@ -756,7 +763,10 @@ def _run_codex(
                 ),
             )
             if result:
-                return result
+                # _handle_exception is transport-agnostic and knows nothing about
+                # process groups, so the teardown fact is grafted on here rather
+                # than threaded through it.
+                return replace(result, process_teardown=_teardown)
             raise outcome.exception
 
         proc = outcome.proc
@@ -847,6 +857,7 @@ def _run_codex(
                 dev_handoff=_try_parse_handoff(_json_output),
                 startup_failure=_startup_failure,
                 failure_code=_failure_code,
+                process_teardown=_teardown,
             )
 
         return AgentResult(
@@ -862,6 +873,7 @@ def _run_codex(
             dev_handoff=_try_parse_handoff(output_text),
             startup_failure=_startup_failure,
             failure_code=_failure_code,
+            process_teardown=_teardown,
         )
     finally:
         try:

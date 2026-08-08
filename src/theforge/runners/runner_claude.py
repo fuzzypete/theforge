@@ -746,6 +746,10 @@ def _run_claude(
     # clean up if the sprint is SIGKILL-ed mid-run. Defined before the try so the
     # finally can unregister even if Popen itself raises.
     pgid: int | None = None
+    # Set by the finally when the group did not end on its own, so every result
+    # this function can return says whether the invocation left processes behind
+    # and what had to be done about them (#2309).
+    teardown: process_group.ProcessTeardown | None = None
     try:
         # start_new_session=True isolates the CLI (and its node/tool children)
         # into their own process group, making the whole tree killable at once.
@@ -894,15 +898,30 @@ def _run_claude(
         # SIGTERM→SystemExit, KeyboardInterrupt, or any post-spawn error: kill the
         # whole group so it cannot outlive this process, then re-raise.
         _kill_group()
+        # Reap the CLI before the finally inspects the group. An unwaited child
+        # lingers as a zombie, which still counts as a group member — release
+        # would then read our own corpse as a survivor and report a teardown
+        # that never happened. Bounded, for the reason every wait here is (#1959).
+        try:
+            proc.wait(timeout=process_group.KILL_GRACE_SECONDS)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
         raise
     finally:
         # Normally the group is dead by now (clean exit, an in-loop _kill_group,
         # or the except above) and dropping the sidecar keeps the reaper from
         # chasing a dead pgid. But when a kill was refused the tree can outlive
         # us, and the sidecar is the only thing that can still reach it — so
-        # release the record only once the group is actually gone.
+        # release the record only once the group is actually gone. A clean exit
+        # is no longer taken as proof the group went with the child: an agent
+        # that started a long-running command and returned first leaves it
+        # running, and release kills it rather than letting it outlive the story.
         if pgid is not None:
-            process_group.release_group_record(pgid, group_killed=not group_kill_failed.is_set())
+            teardown = process_group.release_group_record(
+                pgid,
+                group_killed=not group_kill_failed.is_set(),
+                sandbox_dir=working_dir,
+            )
 
     if stuck_monitor.should_terminate:
         partial_output = "".join(lines)
@@ -930,6 +949,7 @@ def _run_claude(
             failure_code="stuck_pattern",
             dev_handoff=_try_parse_handoff(partial_output),
             tool_trace=extract_tool_trace(lines),
+            process_teardown=teardown,
             partial_output=_extract_stream_output(lines),
         )
 
@@ -960,6 +980,7 @@ def _run_claude(
             failure_code="timeout",
             dev_handoff=_try_parse_handoff(partial_output),
             tool_trace=extract_tool_trace(lines),
+            process_teardown=teardown,
             partial_output=_extract_stream_output(lines),
         )
 
@@ -1012,6 +1033,7 @@ def _run_claude(
             model_usage=_noresult_usage,
             dev_handoff=_try_parse_handoff(_noresult_output),
             tool_trace=extract_tool_trace(lines),
+            process_teardown=teardown,
             partial_output=None if proc.returncode == 0 else _extract_stream_output(lines),
         )
 
@@ -1039,4 +1061,5 @@ def _run_claude(
         model_usage=_parse_model_usage(result_json),
         dev_handoff=_try_parse_handoff(_success_output),
         tool_trace=extract_tool_trace(lines),
+        process_teardown=teardown,
     )

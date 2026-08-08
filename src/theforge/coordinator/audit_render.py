@@ -178,6 +178,15 @@ def _agent_entry(
             complexity=complexity,
             complexity_score=complexity_score,
         ),
+        # Whether this invocation's process group had to be torn down because it
+        # outlived the invocation, and what that took (#2309). Always written —
+        # ``None`` is the answer "the group ended on its own", which is a fact
+        # about the run, not an absence. A leaked process produces no artifact
+        # and no cost line of its own, so this entry is the only place the
+        # originating run can say a kill was needed.
+        "process_teardown": (
+            r.process_teardown.to_audit_dict() if r.process_teardown is not None else None
+        ),
     }
     if r.failure_code:
         entry["failure_code"] = r.failure_code
