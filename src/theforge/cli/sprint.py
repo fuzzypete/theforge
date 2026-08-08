@@ -244,6 +244,8 @@ def _cmd_sprint(args: object) -> int:
     dry_run = getattr(args, "dry_run", False)
     max_parallel: int | None = getattr(args, "parallel", None)
     force = getattr(args, "force", False)
+    accept_unmeasured_spend = list(getattr(args, "accept_unmeasured_spend", None) or [])
+    accept_unmeasured_reason = getattr(args, "accept_unmeasured_reason", None)
 
     # ── Query mode: fetch issues and build ResolvedSprint ───────────────
     if query_mode:
@@ -263,6 +265,8 @@ def _cmd_sprint(args: object) -> int:
             reexec=reexec,
             no_pull=no_pull,
             force=force,
+            accept_unmeasured_spend=accept_unmeasured_spend,
+            accept_unmeasured_reason=accept_unmeasured_reason,
             _daemon=_daemon,
             _detach=_detach,
             _generate_run_id=_generate_run_id,
@@ -345,6 +349,8 @@ def _cmd_sprint(args: object) -> int:
             "config": str(config_path),
             "no_pull": no_pull,
             "force": force,
+            "accept_unmeasured_spend": accept_unmeasured_spend,
+            "accept_unmeasured_reason": accept_unmeasured_reason,
         }
         response = _daemon.submit_sprint(config.project_root, str(manifest_path), sprint_args)
         if response.get("ok"):
@@ -379,6 +385,8 @@ def _cmd_sprint(args: object) -> int:
             force=force,
             live_story_slugs=set(liveness.live_slugs),
             unresolved_live_slugs=set(liveness.unresolved_slugs),
+            accept_unmeasured_spend=accept_unmeasured_spend,
+            accept_unmeasured_reason=accept_unmeasured_reason,
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
@@ -883,6 +891,8 @@ def _run_query_mode(
     no_pull: bool,
     force: bool = False,
     reexec: bool = False,
+    accept_unmeasured_spend: list[str] | None = None,
+    accept_unmeasured_reason: str | None = None,
     _daemon: object,
     _detach: object,
     _generate_run_id: object,
@@ -1279,6 +1289,8 @@ def _run_query_mode(
             force=force,
             live_story_slugs=set(liveness.live_slugs),
             unresolved_live_slugs=set(liveness.unresolved_slugs),
+            accept_unmeasured_spend=accept_unmeasured_spend or [],
+            accept_unmeasured_reason=accept_unmeasured_reason,
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
@@ -1425,4 +1437,30 @@ def register_parser(subparsers: object) -> None:
             "of needs-grooming labels or local shape check results. Emits a "
             "prominent warning listing every skipped issue's reason codes."
         ),
+    )
+    sprint_parser.add_argument(
+        "--accept-unmeasured-spend",
+        metavar="SOURCE",
+        action="append",
+        default=None,
+        help=(
+            "Accept one unmeasured-spend source by id (repeatable). A story "
+            "whose agent call exited without reporting cost makes the sprint "
+            "total a lower bound, and the budget guard then refuses to certify "
+            "a cap it cannot evaluate. Naming the source here charges its "
+            "recorded ceiling to budget verification in place of the unknown, "
+            "so the story runs again. The source id is the one printed in the "
+            "'budget unverifiable' refusal (e.g. issue-2206 or "
+            "carried:issue-2206 — both name the same work). A source with no "
+            "derivable ceiling is refused and the guard stays closed. The "
+            "resolution is recorded in sprint-audit.yaml under "
+            "sprint.accepted_unmeasured_spend; the cost stays reported as "
+            "unmeasured."
+        ),
+    )
+    sprint_parser.add_argument(
+        "--accept-unmeasured-reason",
+        metavar="TEXT",
+        default=None,
+        help="Reason recorded alongside each --accept-unmeasured-spend acceptance",
     )

@@ -796,3 +796,587 @@ class TestBudgetEnforcementSeam:
             encoding="utf-8",
         )
         assert _prior_sprint_cost_incomplete(tmp_path, "sid") is False
+
+
+# ── Resolving unmeasured spend deliberately (#2310) ───────────────────────────
+#
+# Refusing to spend against a cap that cannot be verified is right. A guard that
+# no action can satisfy is not: its only exit is to abandon the pipeline for the
+# story, which is the outcome the guard exists to prevent. These tests pin the
+# deliberate exit — the unknown is bounded, attributed, accepted by name, and the
+# resolution is recorded WITHOUT the cost ever being relabelled as measured.
+
+_ALLOCATION_USD = 5.0
+_MEASURED_BEFORE_FAILURE = 0.5
+
+
+def _bounded_story_audit(*, run_id: str = "194febaf01fd") -> dict:
+    """A per-story audit for a run whose reviewer exited without a cost."""
+    return {
+        "run_id": run_id,
+        "outcome": {"final_phase": "FAILED"},
+        "error_type": "provider_quota",
+        "cost": {
+            "total_usd": None,
+            "agents": [
+                {
+                    "role": "dev",
+                    "profile": "claude-dev",
+                    "cost_usd": _MEASURED_BEFORE_FAILURE,
+                    "success": True,
+                },
+                {
+                    "role": "review",
+                    "profile": "gpt-reviewer",
+                    "cost_usd": None,
+                    "success": False,
+                    "failure_code": "quota_exhausted",
+                },
+            ],
+            "story_allocation": {
+                "allocation_usd": _ALLOCATION_USD,
+                "basis": "substrate_band",
+                "complexity_score": 4,
+                "fallback_configured_usd": 8.0,
+            },
+        },
+    }
+
+
+def _write_story_audit(tmp_path: Path, sprint_name: str, slug: str, data: dict) -> None:
+    story_dir = tmp_path / ".forge" / "logs" / sprint_name / slug
+    story_dir.mkdir(parents=True, exist_ok=True)
+    (story_dir / "audit.yaml").write_text(yaml.safe_dump(data), encoding="utf-8")
+
+
+class TestUnmeasuredSourceIdentity:
+    """A carried source and a fresh one name the same work."""
+
+    def test_carried_and_bare_ids_normalize_together(self) -> None:
+        from theforge.sprint.unmeasured import normalize_source_id
+
+        assert normalize_source_id("carried:issue-2206") == "issue-2206"
+        assert normalize_source_id("issue-2206") == "issue-2206"
+        assert normalize_source_id("  carried:carried:issue-2206 ") == "issue-2206"
+        assert normalize_source_id(None) == ""
+
+    def test_only_story_sources_resolve_to_a_slug(self) -> None:
+        from theforge.sprint.unmeasured import source_slug
+
+        assert source_slug("carried:issue-2206") == "issue-2206"
+        assert source_slug("issue-2206") == "issue-2206"
+        # Kind-prefixed sources are not story runs, and the whole-generation
+        # marker is not work at all — neither has a per-story audit to read.
+        assert source_slug("intake:issue-2206") is None
+        assert source_slug("carried:prior-generation") is None
+
+
+class TestUnmeasuredSourceDerivation:
+    """The bound and the origin are read off records, never invented."""
+
+    def test_recorded_allocation_bounds_the_unmeasured_remainder(self) -> None:
+        from theforge.sprint.unmeasured import build_source
+
+        source = build_source("carried:issue-2206", _bounded_story_audit())
+        assert source.source == "issue-2206"
+        assert source.acceptable is True
+        # The measured part is already in the sprint's accumulated total; only
+        # the remainder of the allocation stands in for what is unknown.
+        assert source.measured_lower_bound_usd == _MEASURED_BEFORE_FAILURE
+        assert source.ceiling_usd == round(_ALLOCATION_USD - _MEASURED_BEFORE_FAILURE, 4)
+        assert source.origin["run_id"] == "194febaf01fd"
+        assert source.origin["role"] == "review"
+        assert source.origin["phase"] == "REVIEW"
+        assert source.origin["profile"] == "gpt-reviewer"
+        assert source.origin["failure_code"] == "quota_exhausted"
+
+    def test_a_source_with_no_recorded_allocation_stays_unbounded(self) -> None:
+        """No fabricated bound: an unreadable origin keeps the guard closed."""
+        from theforge.sprint.unmeasured import accept, build_source
+
+        assert build_source("issue-2206", None).acceptable is False
+        no_allocation = build_source(
+            "issue-2206", {"run_id": "r1", "cost": {"total_usd": None, "agents": []}}
+        )
+        assert no_allocation.acceptable is False
+        assert accept(no_allocation, accepted_at="2026-08-08T00:00:00+00:00") is None
+
+    def test_acceptance_record_round_trips_through_persistence(self) -> None:
+        from theforge.sprint.unmeasured import (
+            AcceptedUnmeasuredSpend,
+            accept,
+            build_source,
+        )
+
+        record = accept(
+            build_source("carried:issue-2206", _bounded_story_audit()),
+            accepted_at="2026-08-08T00:00:00+00:00",
+            reason="reviewer hit a provider quota; landed by hand",
+        )
+        assert record is not None
+        restored = AcceptedUnmeasuredSpend.from_dict(record.as_dict())
+        assert restored == record
+        # A record without a numeric ceiling resolves nothing and is dropped.
+        assert AcceptedUnmeasuredSpend.from_dict({"source": "issue-2206"}) is None
+
+    def test_only_sources_this_run_carries_are_charged(self) -> None:
+        from theforge.sprint.unmeasured import (
+            accept,
+            accepted_by_source,
+            accepted_ceiling_total,
+            build_source,
+            partition,
+        )
+
+        record = accept(
+            build_source("issue-2206", _bounded_story_audit()),
+            accepted_at="2026-08-08T00:00:00+00:00",
+        )
+        index = accepted_by_source([record])
+        # Matches the carried spelling of the same source...
+        unresolved, applied = partition(["carried:issue-2206", "carried:prior-generation"], index)
+        assert unresolved == ["carried:prior-generation"]
+        assert accepted_ceiling_total(applied) == 4.5
+        # ...and charges nothing when this run carries no such spend.
+        unresolved, applied = partition(["issue-9999"], index)
+        assert unresolved == ["issue-9999"]
+        assert accepted_ceiling_total(applied) == 0.0
+
+
+class TestBudgetWithAcceptedCeilings:
+    def test_accepted_ceiling_replaces_the_unknown_and_dispatch_resumes(self) -> None:
+        from theforge.sprint.budget import evaluate_budget
+
+        assert (
+            evaluate_budget(
+                accumulated_cost=0.5,
+                prior_cost=0.0,
+                budget_usd=100.0,
+                unmeasured_spend=[],
+                accepted_unmeasured_ceiling_usd=4.5,
+            )
+            is None
+        )
+
+    def test_accepted_ceiling_is_charged_not_forgiven(self) -> None:
+        """Accepting never buys headroom — the ceiling counts against the cap."""
+        from theforge.sprint.budget import evaluate_budget
+
+        block = evaluate_budget(
+            accumulated_cost=1.0,
+            prior_cost=0.0,
+            budget_usd=5.0,
+            unmeasured_spend=[],
+            accepted_unmeasured_ceiling_usd=4.5,
+        )
+        assert block is not None
+        assert block.kind == "exhausted"
+        assert "accepted unmeasured ceiling $4.50" in block.detail
+
+    def test_exhaustion_wording_is_unchanged_when_nothing_was_accepted(self) -> None:
+        from theforge.sprint.budget import evaluate_budget
+
+        block = evaluate_budget(
+            accumulated_cost=0.0,
+            prior_cost=6.0,
+            budget_usd=5.0,
+            unmeasured_spend=[],
+        )
+        assert block is not None
+        assert block.stopped_reason == (
+            "Budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        )
+
+    def test_refusal_names_the_amount_and_the_origin(self) -> None:
+        """An unknown can only be accepted if it is bounded and attributed."""
+        from theforge.sprint.budget import evaluate_budget
+        from theforge.sprint.unmeasured import build_source
+
+        source = build_source("carried:issue-2206", _bounded_story_audit())
+        block = evaluate_budget(
+            accumulated_cost=0.0,
+            prior_cost=0.0,
+            budget_usd=100.0,
+            unmeasured_spend=["carried:issue-2206"],
+            source_details={"carried:issue-2206": source.describe()},
+        )
+        assert block is not None
+        assert block.kind == "unverifiable"
+        assert "at most $4.50 more" in block.detail
+        assert "run_id=194febaf01fd" in block.detail
+        assert "role=review" in block.detail
+
+    def test_budget_verification_spend_sums_measured_and_accepted(self) -> None:
+        from theforge.sprint.budget import budget_verification_spend
+
+        assert (
+            budget_verification_spend(
+                accumulated_cost=1.0,
+                prior_cost=0.5,
+                accepted_unmeasured_ceiling_usd=4.5,
+            )
+            == 6.0
+        )
+
+
+class TestPriorGenerationCarryIsSourceAware:
+    @staticmethod
+    def _write_incomplete_audit(tmp_path: Path, sources: list[str] | None) -> None:
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True, exist_ok=True)
+        block = {
+            "sprint_id": "sid",
+            "total_cost_usd": None,
+            "total_cost_measured_usd": 0.0,
+            "cost_complete": False,
+        }
+        if sources is not None:
+            block["unmeasured_spend_sources"] = sources
+        (audits / "sprint-audit.yaml").write_text(
+            yaml.safe_dump({"sprint": block}), encoding="utf-8"
+        )
+
+    def test_accepting_every_named_source_clears_the_generation_carry(
+        self, tmp_path: Path
+    ) -> None:
+        from theforge.sprint.runner import _prior_sprint_cost_incomplete
+        from theforge.sprint.unmeasured import accept, accepted_by_source, build_source
+
+        self._write_incomplete_audit(tmp_path, ["issue-2206"])
+        assert _prior_sprint_cost_incomplete(tmp_path, "sid") is True
+        accepted = accepted_by_source(
+            [
+                accept(
+                    build_source("issue-2206", _bounded_story_audit()),
+                    accepted_at="2026-08-08T00:00:00+00:00",
+                )
+            ]
+        )
+        assert _prior_sprint_cost_incomplete(tmp_path, "sid", accepted) is False
+
+    def test_a_partially_accepted_generation_still_carries(self, tmp_path: Path) -> None:
+        from theforge.sprint.runner import _prior_sprint_cost_incomplete
+        from theforge.sprint.unmeasured import accept, accepted_by_source, build_source
+
+        self._write_incomplete_audit(tmp_path, ["issue-2206", "intake:issue-2207"])
+        accepted = accepted_by_source(
+            [
+                accept(
+                    build_source("issue-2206", _bounded_story_audit()),
+                    accepted_at="2026-08-08T00:00:00+00:00",
+                )
+            ]
+        )
+        assert _prior_sprint_cost_incomplete(tmp_path, "sid", accepted) is True
+
+    def test_an_incomplete_generation_that_named_nothing_still_carries(
+        self, tmp_path: Path
+    ) -> None:
+        """Nothing there for an operator to have resolved — stay closed."""
+        from theforge.sprint.runner import _prior_sprint_cost_incomplete
+        from theforge.sprint.unmeasured import accept, accepted_by_source, build_source
+
+        self._write_incomplete_audit(tmp_path, None)
+        accepted = accepted_by_source(
+            [
+                accept(
+                    build_source("issue-2206", _bounded_story_audit()),
+                    accepted_at="2026-08-08T00:00:00+00:00",
+                )
+            ]
+        )
+        assert _prior_sprint_cost_incomplete(tmp_path, "sid", accepted) is True
+
+
+class TestUnmeasuredResolutionSeam:
+    """The reported failure end to end: refuse, accept, run, record."""
+
+    @staticmethod
+    def _arrange(tmp_path: Path):
+        from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
+
+        from theforge.sprint.audit import persist_accumulated_story_state
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=100.0)
+        config = _make_config(tmp_path)
+
+        sprint_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_dir.mkdir(parents=True, exist_ok=True)
+        (sprint_dir / ".sprint_id").write_text("sprint-2310", encoding="utf-8")
+        _write_story_audit(tmp_path, "Test Sprint", "feature-a", _bounded_story_audit())
+        persist_accumulated_story_state(
+            "sprint-2310",
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                }
+            ],
+        )
+        return config, manifest_path
+
+    @staticmethod
+    def _run(config, manifest_path, **kwargs):
+        from unittest.mock import patch
+
+        from test_sprint_resume import _make_coordinator_result
+
+        from theforge.sprint import run_sprint
+        from theforge.sprint.dag import StoryTriage
+
+        def _triage(spec_path, *args, **kw):
+            return StoryTriage(
+                story_path=str(spec_path),
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+            )
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=_triage):
+            with patch(
+                "theforge.sprint.runner.run_task",
+                side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
+            ) as mock_run:
+                result = run_sprint(config, manifest_path, **kwargs)
+        return result, mock_run
+
+    def test_carried_unmeasured_story_is_refused_with_its_amount_and_origin(
+        self, tmp_path: Path
+    ) -> None:
+        config, manifest_path = self._arrange(tmp_path)
+        result, mock_run = self._run(config, manifest_path)
+
+        assert mock_run.call_count == 0
+        assert result.stopped_reason is not None
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        # The refusal is no longer opaque: it names the bound and the call.
+        assert "at most $4.50 more" in result.stopped_reason
+        assert "role=review" in result.stopped_reason
+        assert result.unresolved_unmeasured_spend_sources
+        assert result.accepted_unmeasured_spend == ()
+
+    def test_accepting_the_source_lets_the_same_story_run(self, tmp_path: Path) -> None:
+        config, manifest_path = self._arrange(tmp_path)
+        result, mock_run = self._run(
+            config,
+            manifest_path,
+            accept_unmeasured_spend=["carried:feature-a"],
+            accept_unmeasured_reason="reviewer hit a provider quota",
+        )
+
+        assert mock_run.call_count == 1
+        assert result.stopped_reason is None
+        assert result.unresolved_unmeasured_spend_sources == ()
+        # The spend is still unmeasured — acceptance resolved the budget
+        # question, not the measurement one.
+        assert result.cost_complete is False
+        assert "carried:feature-a" in result.unmeasured_spend_sources
+        [accepted] = result.accepted_unmeasured_spend
+        assert accepted["source"] == "feature-a"
+        assert accepted["accepted_ceiling_usd"] == 4.5
+        assert accepted["origin_run_id"] == "194febaf01fd"
+        assert accepted["origin_role"] == "review"
+        assert accepted["origin_failure_code"] == "quota_exhausted"
+        assert accepted["reason"] == "reviewer hit a provider quota"
+        # Budget verification charged the ceiling on top of measured spend.
+        assert result.budget_verification_spend_usd >= 4.5
+
+    def test_an_unbounded_source_cannot_be_accepted(self, tmp_path: Path) -> None:
+        """Without a recorded bound there is nothing to accept — stay closed."""
+        config, manifest_path = self._arrange(tmp_path)
+        # Strip the allocation that made the source bounded.
+        _write_story_audit(
+            tmp_path,
+            "Test Sprint",
+            "feature-a",
+            {"run_id": "r1", "cost": {"total_usd": None, "agents": []}},
+        )
+        result, mock_run = self._run(config, manifest_path, accept_unmeasured_spend=["feature-a"])
+
+        assert mock_run.call_count == 0
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        assert result.accepted_unmeasured_spend == ()
+
+    def test_a_source_this_sprint_never_flagged_is_refused(self, tmp_path: Path) -> None:
+        config, manifest_path = self._arrange(tmp_path)
+        result, mock_run = self._run(config, manifest_path, accept_unmeasured_spend=["issue-9999"])
+
+        assert mock_run.call_count == 0
+        assert result.accepted_unmeasured_spend == ()
+
+    def test_audit_and_summary_record_the_resolution(self, tmp_path: Path) -> None:
+        config, manifest_path = self._arrange(tmp_path)
+        self._run(config, manifest_path, accept_unmeasured_spend=["feature-a"])
+
+        audit = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )["sprint"]
+        # Still incomplete: an acceptance is not a measurement.
+        assert audit["cost_complete"] is False
+        assert audit["total_cost_usd"] is None
+        assert audit["unresolved_unmeasured_spend_sources"] == []
+        assert audit["unmeasured_spend_sources"]
+        [accepted] = audit["accepted_unmeasured_spend"]
+        assert accepted["source"] == "feature-a"
+        assert accepted["accepted_ceiling_usd"] == 4.5
+        assert accepted["origin_run_id"] == "194febaf01fd"
+        assert audit["budget_verification_spend_usd"] >= 4.5
+
+        summary = yaml.safe_load(
+            (tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml").read_text(
+                encoding="utf-8"
+            )
+        )["sprint"]
+        assert summary["cost_complete"] is False
+        assert summary["unresolved_unmeasured_spend_sources"] == []
+        assert summary["accepted_unmeasured_spend"][0]["source"] == "feature-a"
+        assert summary["budget_verification_spend_usd"] >= 4.5
+
+    def test_the_resolution_survives_into_the_next_run(self, tmp_path: Path) -> None:
+        """The operator resolves it once; a later run reads the record."""
+        config, manifest_path = self._arrange(tmp_path)
+        self._run(config, manifest_path, accept_unmeasured_spend=["feature-a"])
+
+        persisted = yaml.safe_load(
+            (tmp_path / ".forge" / "sprints" / "sprint-2310" / "state.yaml").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert persisted["accepted_unmeasured_spend"][0]["source"] == "feature-a"
+
+        # The story goes unmeasured again on a later attempt: the recorded
+        # resolution still stands, with no flag on this invocation at all. The
+        # current generation flags it bare (``feature-a``) rather than carried,
+        # so acceptance has to key on the normalized id or it would re-block.
+        state_path = tmp_path / ".forge" / "sprints" / "sprint-2310" / "state.yaml"
+        state = yaml.safe_load(state_path.read_text(encoding="utf-8"))
+        for story in state["stories"]:
+            story["cost_usd"] = None
+        state_path.write_text(yaml.safe_dump(state), encoding="utf-8")
+
+        result, mock_run = self._run(config, manifest_path)
+        assert mock_run.call_count == 1
+        assert result.stopped_reason is None
+        assert result.unresolved_unmeasured_spend_sources == ()
+        assert result.accepted_unmeasured_spend[0]["source"] == "feature-a"
+
+
+class TestAcceptanceReachesTheRunner:
+    """CLI plumbing: the option is parsed and threaded through every path."""
+
+    def test_option_is_repeatable_and_parsed(self) -> None:
+        import argparse
+
+        from theforge.cli.sprint import register_parser
+
+        parser = argparse.ArgumentParser()
+        register_parser(parser.add_subparsers(dest="command"))
+        args = parser.parse_args(
+            [
+                "sprint",
+                "sprint.yaml",
+                "--accept-unmeasured-spend",
+                "issue-2206",
+                "--accept-unmeasured-spend",
+                "carried:prior-generation",
+                "--accept-unmeasured-reason",
+                "quota failure, landed by hand",
+            ]
+        )
+        assert args.accept_unmeasured_spend == ["issue-2206", "carried:prior-generation"]
+        assert args.accept_unmeasured_reason == "quota failure, landed by hand"
+        # Absent by default, so nothing is accepted unless asked for.
+        assert parser.parse_args(["sprint", "sprint.yaml"]).accept_unmeasured_spend is None
+
+    def test_cmd_sprint_passes_the_acceptance_to_run_sprint(self, tmp_path: Path) -> None:
+        import argparse
+        from unittest.mock import MagicMock, patch
+
+        from test_sprint_resume import _make_manifest, _make_spec_file
+
+        from theforge.cli import sprint as sprint_cli
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config_path = tmp_path / "forge.yaml"
+        config_path.write_text("project: test\n", encoding="utf-8")
+
+        fake_config = MagicMock()
+        fake_config.project_root = tmp_path
+        fake_config.project = "test"
+        fake_result = MagicMock()
+        fake_result.specs_failed = 0
+
+        args = argparse.Namespace(
+            manifest=str(manifest_path),
+            milestone=None,
+            label=None,
+            issues=None,
+            config=str(config_path),
+            base_branch=None,
+            name=None,
+            fg=True,
+            detach=False,
+            dry_run=False,
+            verbose=False,
+            auto_merge=False,
+            interactive=False,
+            resume=False,
+            no_pull=False,
+            parallel=None,
+            force=False,
+            no_notify=True,
+            accept_unmeasured_spend=["carried:issue-2206"],
+            accept_unmeasured_reason="quota failure",
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=fake_config),
+            patch("theforge.cli.sprint.apply_base_branch_override", return_value=fake_config),
+            patch("theforge.cli.sprint._find_config", return_value=config_path),
+            patch("theforge.cli.sprint.parse_manifest_slugs", return_value=["feature-a"]),
+            patch("theforge.cli.sprint._acquire_launch_locks", return_value=([], None, {})),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch("theforge.cli.sprint.run_sprint", return_value=fake_result) as mock_run_sprint,
+        ):
+            sprint_cli.cmd_sprint(args)
+
+        kwargs = mock_run_sprint.call_args.kwargs
+        assert kwargs["accept_unmeasured_spend"] == ["carried:issue-2206"]
+        assert kwargs["accept_unmeasured_reason"] == "quota failure"
+
+    def test_daemon_submission_forwards_the_acceptance(self, tmp_path: Path) -> None:
+        """--detach enumerates run_sprint kwargs by hand; the flag must be there."""
+        from unittest.mock import MagicMock, patch
+
+        from theforge.daemon import DaemonServer
+
+        daemon = DaemonServer.__new__(DaemonServer)
+        daemon.forge_root = tmp_path
+        (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
+
+        with (
+            patch("theforge.config.load_config", return_value=MagicMock()),
+            patch("theforge.sprint.runner.parse_manifest_slugs", return_value=["feature-a"]),
+            patch("theforge.sprint.lock.acquire_story_locks", return_value=([], [])),
+            patch("theforge.sprint.lock.release_story_locks"),
+            patch("theforge.sprint.run_sprint") as mock_run_sprint,
+        ):
+            daemon._execute_sprint(
+                str(tmp_path / "sprint.yaml"),
+                {
+                    "accept_unmeasured_spend": ["issue-2206"],
+                    "accept_unmeasured_reason": "quota failure",
+                },
+                lambda _state: None,
+            )
+
+        kwargs = mock_run_sprint.call_args.kwargs
+        assert kwargs["accept_unmeasured_spend"] == ["issue-2206"]
+        assert kwargs["accept_unmeasured_reason"] == "quota failure"
