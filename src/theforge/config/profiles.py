@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib
 import logging
 from collections.abc import Iterator
+from dataclasses import replace as _dc_replace
 from typing import TYPE_CHECKING, Any
 
 from .auth import check_agent_auth
@@ -635,6 +636,12 @@ def _apply_transport_fallback(
 
     Reads ``transport.kind`` — not the legacy cli/provider pair — to decide what
     a profile currently dispatches through.
+
+    Rebuilt with :func:`dataclasses.replace` rather than a hand-enumerated
+    constructor call: every field this helper does not name would otherwise be
+    silently reset to its default, which is how ``phase`` was once lost and how
+    ``registry_id``/``registry_source`` would be lost now that adaptively routed
+    (catalog-sourced) profiles pass through here (#2298).
     """
     if profile.mode != "cli":
         return profile
@@ -644,26 +651,4 @@ def _apply_transport_fallback(
     fallback = fallbacks.get(provider)
     if fallback is None:
         return profile
-    return ModelProfile(
-        name=profile.name,
-        cli=profile.cli,
-        provider=profile.provider,
-        model=profile.model,
-        budget_usd=profile.budget_usd,
-        timeout_seconds=profile.timeout_seconds,
-        allowed_tools=profile.allowed_tools,
-        timeout_medium_seconds=profile.timeout_medium_seconds,
-        timeout_large_seconds=profile.timeout_large_seconds,
-        reasoning_effort=profile.reasoning_effort,
-        thinking_budget=profile.thinking_budget,
-        review_role=profile.review_role,
-        base_url=profile.base_url,
-        max_tool_output_bytes=profile.max_tool_output_bytes,
-        max_iterations=profile.max_iterations,
-        fallback_models=profile.fallback_models,
-        api_fallback=fallback,
-        github_handle=profile.github_handle,
-        phase=profile.phase,
-        sandbox_mode=profile.sandbox_mode,
-        transport=profile.transport,
-    )
+    return _dc_replace(profile, api_fallback=fallback)

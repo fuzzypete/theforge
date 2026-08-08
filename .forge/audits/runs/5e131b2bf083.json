@@ -1,0 +1,4331 @@
+{
+  "schema_version": 22,
+  "run_id": "5e131b2bf083",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc24",
+  "task": {
+    "name": "An expiring escalate gate discards the advisory recommendation it just produced, so unattended runs fail stories the evidence had already resolved",
+    "slug": "issue-2279",
+    "story_path": null,
+    "story_text": "## Why\n\nAn escalate gate that expires discards the advice it just paid for.\n\nOn escalation the coordinator invokes a fresh-context advisor, which returns a report whose\n`recommendation` is constrained to the action taxonomy and must appear among the options it\npresents. That report is rendered for the operator, recorded on state, and then \u2014 if no\nselection arrives before the gate expires \u2014 ignored. The run auto-escalates and the story is\nrecorded as failed, no matter what the advisor concluded.\n\nThe effect is that unattended operation has only two shapes, and neither is what an operator\nactually wants overnight. Under `prompt`, every escalation becomes a failure after a fixed wait,\nincluding ones where the evidence pointed clearly at a single action. Under `auto_approve`, the\ngate short-circuits on gate-pass-plus-majority-approval and never consults the advisor at all, so\nthe cases the advisor exists for are exactly the cases it cannot help with.\n\nWhat is missing is the middle: an expiry that applies the advice rather than discarding it. The\ntaxonomy already contains the answer for the case where no action is defensible \u2014 `elevate`\nroutes the story to a human design decision \u2014 so an advisor that cannot recommend confidently has\na way to say so, and an expiry that honours the recommendation inherits that safety rather than\nbeing forced to guess.\n\nThe distinction this preserves is between a decision nobody made and a decision made on evidence.\nAn operator returning in the morning needs to know which one they are looking at, for each story\nand without reconstructing the run.\n\n## Example\n\nA story escalates at 02:00 with the gate passing and one unresolved P2, and the advisor\nrecommends `land_core_defer_edges` with its reasoning recorded.\n\nToday, at 02:10 the run logs `Pending decision timed out after 10m 0s \u2014 auto-escalating`, the\nstory is recorded as failed, and the recommendation is preserved only as an artifact nobody acted\non. The operator arrives to a failed story, reads the advice, agrees with it, and performs by hand\nthe action the system had already selected eight hours earlier.\n\nWanted: at 02:10 the run records that the gate expired and the advisor's recommendation was\napplied, lands the core, files the deferred edge, and the morning view shows the story as landed\nby advice rather than by an operator \u2014 with the same reasoning attached. Had the advisor instead\nreturned `elevate`, or returned nothing at all, the story would be waiting exactly as it does\ntoday.\n\n## Acceptance criteria\n\n- An escalate gate that expires without an operator selection applies the advisory\n  recommendation, and the outcome is the same as if an operator had chosen that action\n  deliberately.\n- A recommendation of `elevate` on expiry leaves the story awaiting a human, because the taxonomy\n  already treats it as the answer for a case no automated choice fits.\n- When no recommendation is available to apply \u2014 the advisor failed to launch, produced no\n  parseable report, or recommended nothing \u2014 the gate preserves the story for an operator rather\n  than selecting a fallback action. An absent recommendation is the absence of advice, not\n  consent to any particular outcome, and the run states which of those two situations occurred.\n- Every decision records who or what made it, so an operator reading a run afterwards can\n  distinguish an action they chose, an action applied from advice on expiry, and a gate still\n  waiting \u2014 without reconstructing it from timestamps.\n- Applying advice on expiry is opt-in and does not change what the gate does while an operator is\n  present: a selection that arrives before expiry governs, whatever the advisor recommended.\n- The existing policies keep their current meanings, so a project that has not opted in sees no\n  change in behaviour.\n",
+    "github_issue": 2279,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": {
+    "status": "recovered",
+    "reason": "story_content_match",
+    "recovered_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "source_run_id": "11c1b0d29040",
+    "recorded_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "reentry_impact": null
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'An expiring escalate gate discards the advisory recommendation it just produced, so unattended runs fail stories the evidence had already resolved' completed. Review approved after 2 cycle(s), 2 dev iteration(s). Branch: feat/issue-2279",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "7cbac7fb1399235850c19c55e87d1d1e78920adc407c4744cb4d3dc49fafbafb",
+    "resolved_sha256": "8da488ff26c562ed1d0c422362acde9eb41b80e75b99d333dedc65b72ca43cd2",
+    "source_sha256_at_finish": "7cbac7fb1399235850c19c55e87d1d1e78920adc407c4744cb4d3dc49fafbafb",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-08T07:25:34.019790+00:00",
+    "finished_at": "2026-08-08T07:57:21.178725+00:00",
+    "duration_seconds": 1907.158935
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2279",
+    "branch": "feat/issue-2279",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 7.343709500000002,
+        "duration_s": 830.79,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/config/__init__.py",
+          "src/theforge/config/defaults.py",
+          "src/theforge/config/load.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/pending_hitl.py",
+          "src/theforge/coordinator/remote_gates.py",
+          "src/theforge/coordinator/resume_persistence.py",
+          "src/theforge/coordinator/review_phase.py",
+          "src/theforge/coordinator/state.py",
+          "src/theforge/pending.py",
+          "src/theforge/sprint/rca.py",
+          "tests/test_coord_escalate_timeout_advice.py"
+        ],
+        "files_changed_count": 14,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 2,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 2.955177500000001,
+        "duration_s": 191.84,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/review_phase.py",
+          "tests/test_coord_escalate_timeout_advice.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 3.160958,
+        "duration_s": 352.76
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 2.835398,
+        "duration_s": 157.43
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 6.2119,
+      "static_dev_max": 3,
+      "estimate_headroom_factor": 1.25,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 122,
+      "profile_avg_iterations": 1.8525,
+      "profile_avg_cost_usd": 10.129768,
+      "score_cost_history_runs": 66,
+      "score_cost_avg_usd": 12.024767,
+      "profile_raw_dev_max": 2.7788,
+      "dev_cost_estimate_basis": {
+        "source": "profile_observed_score",
+        "band": "large",
+        "complexity_score": 8,
+        "statistic": "avg_cost_usd",
+        "scope": "dev_phase",
+        "sample_count": 66,
+        "headroom_multiplier": 1.25,
+        "headroom_basis": "allocation_headroom",
+        "allocation_comparable": true,
+        "reason": "profile_score_history"
+      },
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 15.031,
+      "review_history_sample_size": 26,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 122 large-band profile runs with 1.5x iteration headroom and 2.5x budget headroom; timeout floored on observed run duration+headroom (4948s). Dev cost estimate from 66 score-8 run(s) across all models (avg $12.02 x 1.25x allocation headroom) \u2014 the population the story allocation is drawn from. review history stayed within the complexity-derived review base.",
+      "review_cycle_planning": {
+        "planned_cost_usd": 3.9647,
+        "basis": "observed_composition",
+        "fallback_configured_usd": 18.6357,
+        "sample_count": 20,
+        "median_usd": 3.1717,
+        "p90_usd": 5.4376,
+        "max_usd": 7.807,
+        "headroom_multiplier": 1.25,
+        "reason": "derived from median observed review-cycle spend $3.17 x 1.25 headroom over 20 cycle(s) run by this exact panel",
+        "excluded_for_taint": 1,
+        "composition": [
+          "anthropic-haiku-cli",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ]
+      },
+      "review_cycle_reconciliation": {
+        "requested_review_max": 5,
+        "reconciled_review_max": 5,
+        "affordable_review_cycles": 8,
+        "allocation_usd": 51.0,
+        "spent_so_far_usd": 0.8079,
+        "dev_cost_estimate_usd": 15.031,
+        "review_cycle_cost_usd": 3.9647,
+        "review_cycle_cost_basis": "observed_composition",
+        "review_cycle_cost_sample_count": 20,
+        "review_cycle_cost_median_usd": 3.1717,
+        "review_cycle_cost_p90_usd": 5.4376,
+        "review_cycle_cost_max_usd": 7.807,
+        "review_cycle_cost_headroom_multiplier": 1.25,
+        "review_cycle_cost_reason": "derived from median observed review-cycle spend $3.17 x 1.25 headroom over 20 cycle(s) run by this exact panel",
+        "review_cycle_cost_composition": [
+          "anthropic-haiku-cli",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ],
+        "dev_cost_estimate_basis": "profile_observed_score",
+        "dev_cost_estimate_basis_reason": "profile_score_history",
+        "dev_cost_estimate_statistic": "avg_cost_usd",
+        "dev_cost_estimate_scope": "dev_phase",
+        "dev_cost_estimate_band": "large",
+        "dev_cost_estimate_complexity_score": 8,
+        "dev_cost_estimate_sample_count": 66,
+        "dev_cost_estimate_headroom_multiplier": 1.25,
+        "dev_cost_estimate_headroom_basis": "allocation_headroom",
+        "dev_cost_estimate_comparable": true,
+        "remaining_after_dev_usd": 35.1611,
+        "reserved_review_cycles": 5,
+        "reserved_review_usd": 19.8235,
+        "action": "within_allocation",
+        "basis": "substrate_band",
+        "complexity_score": 8
+      },
+      "review_funding_reservation": {
+        "allocation_usd": 51.0,
+        "reserved_review_usd": 19.8235,
+        "reserved_review_cycles": 5,
+        "review_cycle_cost_usd": 3.9647,
+        "action": "within_allocation",
+        "nonreview_allocation_usd": 31.1765
+      }
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-08T07:25:36.671602+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 2,
+        "total_count": 2,
+        "timestamp": "2026-08-08T07:49:44.440992+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 17.103122300000003,
+    "dev_usd": 10.298887000000002,
+    "review_usd": 5.9963561,
+    "dev_invocations": 2,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "preflight",
+        "profile": "preflight",
+        "cost_usd": 0.8078792000000001,
+        "duration_seconds": 150.62815779191442,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.8078792000000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 7504,
+            "output_tokens": 13765,
+            "cache_read_tokens": 630469,
+            "cache_creation_tokens": 93393,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 5791,
+              "output_tokens": 17,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.005876,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1713,
+              "output_tokens": 13748,
+              "cache_read_tokens": 630469,
+              "cache_creation_tokens": 93393,
+              "thinking_tokens": 0,
+              "cost_usd": 0.8020032,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 5791,
+            "output_tokens": 17,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.005876
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": 1713,
+            "output_tokens": 13748,
+            "cache_read_tokens": 630469,
+            "cache_creation_tokens": 93393,
+            "cost_usd": 0.8020032
+          }
+        ],
+        "model_used": "sonnet",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 7.343709500000002,
+        "duration_seconds": 830.7862445418723,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 7.343709500000002,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 7066,
+            "output_tokens": 44210,
+            "cache_read_tokens": 9807915,
+            "cache_creation_tokens": 132710,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 6897,
+              "output_tokens": 17,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.006982,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 169,
+              "output_tokens": 44193,
+              "cache_read_tokens": 9807915,
+              "cache_creation_tokens": 132710,
+              "thinking_tokens": 0,
+              "cost_usd": 7.336727500000001,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 6897,
+            "output_tokens": 17,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.006982
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 169,
+            "output_tokens": 44193,
+            "cache_read_tokens": 9807915,
+            "cache_creation_tokens": 132710,
+            "cost_usd": 7.336727500000001
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 2.955177500000001,
+        "duration_seconds": 191.83995654201135,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 2.955177500000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 27,
+            "output_tokens": 7711,
+            "cache_read_tokens": 2359695,
+            "cache_creation_tokens": 158242,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 27,
+              "output_tokens": 7711,
+              "cache_read_tokens": 2359695,
+              "cache_creation_tokens": 158242,
+              "thinking_tokens": 0,
+              "cost_usd": 2.955177500000001,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 27,
+            "output_tokens": 7711,
+            "cache_read_tokens": 2359695,
+            "cache_creation_tokens": 158242,
+            "cost_usd": 2.955177500000001
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.2820390000000002,
+        "duration_seconds": 117.37958947204363,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": "high",
+          "cost_usd": 1.2820390000000002,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1077875,
+            "output_tokens": 7396,
+            "cache_read_tokens": 962048,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 3387
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1077875,
+              "output_tokens": 7396,
+              "cache_read_tokens": 962048,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 3387,
+              "cost_usd": 1.2820390000000002,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 1077875,
+            "output_tokens": 7396,
+            "cache_read_tokens": 962048,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.2820390000000002
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.6764435,
+        "duration_seconds": 117.37958947204363,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 1.6764435,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1049601,
+            "output_tokens": 1716,
+            "cache_read_tokens": 753042,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 9622
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1049601,
+              "output_tokens": 1716,
+              "cache_read_tokens": 753042,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 9622,
+              "cost_usd": 1.6764435,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 1049601,
+            "output_tokens": 1716,
+            "cache_read_tokens": 753042,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.6764435
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-haiku-cli",
+        "cost_usd": 0.20247579999999998,
+        "duration_seconds": 117.37958947204363,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-haiku-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.20247579999999998,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "anthropic/haiku/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "anthropic/haiku/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 40236,
+            "output_tokens": 11788,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 50711,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 40236,
+              "output_tokens": 11788,
+              "cache_read_tokens": 18778,
+              "cache_creation_tokens": 50711,
+              "thinking_tokens": 0,
+              "cost_usd": 0.20247579999999998,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 40236,
+            "output_tokens": 11788,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 50711,
+            "cost_usd": 0.20247579999999998
+          }
+        ],
+        "model_used": "haiku",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.059957,
+        "duration_seconds": 52.348295625066385,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": "high",
+          "cost_usd": 1.059957,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 923745,
+            "output_tokens": 5656,
+            "cache_read_tokens": 828544,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 2133
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 923745,
+              "output_tokens": 5656,
+              "cache_read_tokens": 828544,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 2133,
+              "cost_usd": 1.059957,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 923745,
+            "output_tokens": 5656,
+            "cache_read_tokens": 828544,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.059957
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.512108,
+        "duration_seconds": 52.348295625066385,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 1.512108,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 966282,
+            "output_tokens": 1443,
+            "cache_read_tokens": 817493,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 5522
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 966282,
+              "output_tokens": 1443,
+              "cache_read_tokens": 817493,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 5522,
+              "cost_usd": 1.512108,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 966282,
+            "output_tokens": 1443,
+            "cache_read_tokens": 817493,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.512108
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-haiku-cli",
+        "cost_usd": 0.26333280000000003,
+        "duration_seconds": 52.348295625066385,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-haiku-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.26333280000000003,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "anthropic/haiku/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "haiku",
+            "transport": "cli",
+            "identity": "anthropic/haiku/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 9,
+            "output_tokens": 9638,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 106628,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 9,
+              "output_tokens": 9638,
+              "cache_read_tokens": 18778,
+              "cache_creation_tokens": 106628,
+              "thinking_tokens": 0,
+              "cost_usd": 0.26333280000000003,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 9,
+            "output_tokens": 9638,
+            "cache_read_tokens": 18778,
+            "cache_creation_tokens": 106628,
+            "cost_usd": 0.26333280000000003
+          }
+        ],
+        "model_used": "haiku",
+        "transport_used": "cli"
+      }
+    ],
+    "story_allocation": {
+      "allocation_usd": 51.0,
+      "basis": "substrate_band",
+      "complexity_score": 8,
+      "excluded_for_taint": 2,
+      "fallback_configured_usd": 50.0,
+      "max_usd": 40.8032,
+      "median_usd": 9.0875,
+      "p90_usd": 32.0767,
+      "reason": "derived from 46 admissible run(s) at complexity score 8 (max $40.80 x 1.25)",
+      "sample_count": 46,
+      "scaled_profiles": {
+        "preflight": 6.2119,
+        "plan": 0.4348,
+        "dev": 6.2119,
+        "review_pool[0]": 6.2119,
+        "review_pool[1]": 6.2119,
+        "review_pool[2]": 6.2119,
+        "plan_agent_review[0]": 6.2119,
+        "plan_agent_review[1]": 6.2119,
+        "plan_agent_review[2]": 6.2119,
+        "synthesis": 0.8697
+      },
+      "carried": true,
+      "observed_usd": 17.1031,
+      "status": "within_allocation",
+      "exceeded": false
+    },
+    "allocation_exhausted": null,
+    "reviewer_budget_overruns": []
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The advisor, action taxonomy, and 'preserve on timeout' disposition already exist, but no path applies the advisor's recommendation on expiry, and no provenance field distinguishes operator/auto/advisor-applied decisions \u2014 this is unfinished, implementable work.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "feature",
+    "domains": [
+      "backend",
+      "concurrency",
+      "config"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.8078792000000001,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "e0d8b35c1cd6",
+    "cache_snapshot": {
+      "worktree_head": "29cb0cc66687b62f0c94bc227b3ece0d8ba3a4aa",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "29cb0cc66687b62f0c94bc227b3ece0d8ba3a4aa",
+      "story_content_hash": "c071f2b320d331e3b573e25bebff8250d6486055a35ddcc649bc5a2111cf393a"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "29cb0cc66687b62f0c94bc227b3ece0d8ba3a4aa",
+      "current_worktree_head": "29cb0cc66687b62f0c94bc227b3ece0d8ba3a4aa",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "29cb0cc66687b62f0c94bc227b3ece0d8ba3a4aa",
+      "current_evaluation_base_branch_head": "29cb0cc66687b62f0c94bc227b3ece0d8ba3a4aa",
+      "cached_story_content_hash": "c071f2b320d331e3b573e25bebff8250d6486055a35ddcc649bc5a2111cf393a",
+      "current_story_content_hash": "c071f2b320d331e3b573e25bebff8250d6486055a35ddcc649bc5a2111cf393a",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.8078792000000001,
+        "duration_s": 150.63,
+        "success": true,
+        "exit_code": 0,
+        "completed": true,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": null,
+          "complexity_score": null,
+          "reasoning_effort": null,
+          "cost_usd": 0.8078792000000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 7504,
+            "output_tokens": 13765,
+            "cache_read_tokens": 630469,
+            "cache_creation_tokens": 93393,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 5791,
+              "output_tokens": 17,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.005876,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1713,
+              "output_tokens": 13748,
+              "cache_read_tokens": 630469,
+              "cache_creation_tokens": 93393,
+              "thinking_tokens": 0,
+              "cost_usd": 0.8020032,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        }
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "gpt-5.4",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.4/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "forge.yaml",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "haiku",
+            "source": "forge.yaml",
+            "canonical_id": "anthropic/haiku/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.80 \u2265 threshold 0.60 over 122 admissible runs \u2014 pre-promotion held) (profile success_rate=0.80 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($7.14)",
+        "planner": "complexity score 8 \u2192 tier strong ($7.14); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 64.29,
+        "final_total_usd": 64.29,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 7.14
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 7.14
+          },
+          "plan_reviewers": [
+            {
+              "model": "opus",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "gpt-5.4",
+              "budget_usd": 7.14
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 7.14
+            },
+            {
+              "model": "haiku",
+              "budget_usd": 7.14
+            }
+          ],
+          "total_usd": 64.29
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gpt-5.5"
+        ],
+        "source": "complexity_adaptive"
+      },
+      "story_allocation": {
+        "allocation_usd": 51.0,
+        "basis": "substrate_band",
+        "complexity_score": 8,
+        "excluded_for_taint": 2,
+        "fallback_configured_usd": 50.0,
+        "max_usd": 40.8032,
+        "median_usd": 9.0875,
+        "p90_usd": 32.0767,
+        "reason": "derived from 46 admissible run(s) at complexity score 8 (max $40.80 x 1.25)",
+        "sample_count": 46,
+        "scaled_profiles": {
+          "preflight": 6.2119,
+          "plan": 0.4348,
+          "dev": 6.2119,
+          "review_pool[0]": 6.2119,
+          "review_pool[1]": 6.2119,
+          "review_pool[2]": 6.2119,
+          "plan_agent_review[0]": 6.2119,
+          "plan_agent_review[1]": 6.2119,
+          "plan_agent_review[2]": 6.2119,
+          "synthesis": 0.8697
+        },
+        "carried": true
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 23
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 23
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 23
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2279/iter_1.yaml",
+      "handoff": {
+        "summary": "Added an opt-in retry.escalate_timeout_policy ('preserve' default | 'apply_advice') that lets an expired escalate gate apply the advisory recommendation it just generated, via a timeout-only branch in _run_escalate_gate_inner that converts a usable recommendation into a taxonomy action before disposition normalization \u2014 so accept/defer/named behave exactly like deliberate selections. A new _advice_for_expired_gate helper withholds application for elevate, unparseable reports, empty recommendations, advisor launch failures, surfaces with no advisory, and recommendations this run cannot perform; each preserves the story with its own explanatory sentence in the result message. A new pending_hitl.cleanup_escalate_pending helper clears the expired checkpoint only when advice is actually applied. Two provenance fields (escalate_decision_source, escalate_timeout_advice) are populated for all seven gate outcomes and flow into the audit escalation block (with awaiting_operator and advisory_recommendation) and the resume record save/restore. The stale 'auto-escalating' timeout wording in pending.poll_pending and remote_gates was corrected without breaking the RCA pattern that matches it.",
+        "commits": [
+          {
+            "sha": "8682396f",
+            "message": "feat(coordinator): apply advisory recommendation on opted-in escalate-gate expiry"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "An escalate gate that expires without an operator selection applies the advisory recommendation, and the outcome is the same as if an operator had chosen that action deliberately.",
+            "status": "MET",
+            "notes": "Applied before disposition normalization, so accept finalizes the approval, defer_or_abandon rejects, and named actions surface the same forge operation as a manual selection. Tested in TestAppliesAdviceOnExpiry (three dispositions)."
+          },
+          {
+            "criterion": "A recommendation of `elevate` on expiry leaves the story awaiting a human.",
+            "status": "MET",
+            "notes": "Explicit branch in _advice_for_expired_gate returning ADVICE_ELEVATE; checkpoint left on disk, message says the expiry deliberately made no selection. Tested at both the disposition level and through the real pending gate."
+          },
+          {
+            "criterion": "When no recommendation is available to apply, the gate preserves the story rather than selecting a fallback, and the run states which situation occurred.",
+            "status": "MET",
+            "notes": "Five distinct statuses (launch_failure, advisor_unavailable, unparseable_report, no_recommendation, not_performable) each map to a sentence appended to the preserve message and to escalate_timeout_advice in the audit/resume records. No substitute action is ever recorded."
+          },
+          {
+            "criterion": "Every decision records who or what made it.",
+            "status": "MET",
+            "notes": "escalate_decision_source covers policy_reject, policy_auto_approve, operator, operator_declined, coordinator_no_interaction, timeout_pending, advisor_on_timeout; surfaced as escalation.decision_source in the audit record and round-tripped through the resume record."
+          },
+          {
+            "criterion": "Applying advice on expiry is opt-in and a selection arriving before expiry governs.",
+            "status": "MET",
+            "notes": "Branch guarded on decision == 'timeout' only. Tested both with a stubbed gate returning a selection that differs from the recommendation and through the real pending file resolving before expiry \u2014 both record operator provenance and follow the selection."
+          },
+          {
+            "criterion": "The existing policies keep their current meanings, so a project that has not opted in sees no change in behaviour.",
+            "status": "MET",
+            "notes": "Default 'preserve' leaves the timeout path byte-identical (same message, same advisory_pending decision); escalate_policy validation was deliberately left untouched. Covered by TestDefaultPolicyUnchanged plus the pre-existing escalation-advisor and review-phase-cycle suites passing unchanged."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "17 pre-existing full-suite failures in test_sprint_lock.py, test_cut_rc_isolation.py, and test_sprint_reexec_collision.py fail with PermissionError from multiprocessing.SemLock \u2014 a sandbox restriction unrelated to this diff (no code overlap)."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2279/iter_2.yaml",
+      "handoff": {
+        "summary": "Iteration 2 advisory cleanup, one P2. When an opted-in expiry applied an `accept` recommendation, the completion message still read 'Human approved via escalate gate' while the same run recorded escalate_decision_source=advisor_on_timeout \u2014 the account of the outcome contradicted the record of who produced it. Added _decided_by_advice(state), which reads that same published provenance field so message and record cannot disagree, and branched the approve-path completion message on it. Sweeping the file for the same pattern found it once more in the `named` disposition, whose log line said 'selected' and whose message said 'Worktree preserved for the operator' with no indication that no operator acted; both now name the expiry when the source is advisor_on_timeout. Operator-present wording is byte-identical in both branches. The other human-attribution strings in review_phase.py (984/989 human-review gate, 454 auto_approve policy) are unreachable from the advisor path and were left alone. _drive_gate now optionally captures _finalize_approve's kwargs, and four new tests pin both directions for both branches.",
+        "commits": [
+          {
+            "sha": "8682396f",
+            "message": "feat(coordinator): apply advisory recommendation on opted-in escalate-gate expiry"
+          },
+          {
+            "sha": "a3bc4b3c",
+            "message": "fix(coordinator): report advice-applied escalate outcomes as advisor, not human"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "An escalate gate that expires without an operator selection applies the advisory recommendation, and the outcome is the same as if an operator had chosen that action deliberately.",
+            "status": "MET",
+            "notes": "Applied before disposition normalization, so accept finalizes the approval, defer_or_abandon rejects, and named actions surface the same forge operation as a manual selection. Iteration 2 keeps the OUTCOME identical while making the operator-facing account of it accurate about who acted."
+          },
+          {
+            "criterion": "A recommendation of `elevate` on expiry leaves the story awaiting a human.",
+            "status": "MET",
+            "notes": "Explicit branch in _advice_for_expired_gate returning ADVICE_ELEVATE; checkpoint left on disk, message says the expiry deliberately made no selection. Unchanged this iteration."
+          },
+          {
+            "criterion": "When no recommendation is available to apply, the gate preserves the story rather than selecting a fallback, and the run states which situation occurred.",
+            "status": "MET",
+            "notes": "Five distinct statuses (launch_failure, advisor_unavailable, unparseable_report, no_recommendation, not_performable) each map to a sentence in the preserve message and to escalate_timeout_advice. Unchanged this iteration."
+          },
+          {
+            "criterion": "Every decision records who or what made it.",
+            "status": "MET",
+            "notes": "escalate_decision_source covers all seven outcomes and reaches the audit and resume records. Iteration 2 strengthens this: the completion messages now derive from the same field, so a reader cannot get one answer from the prose and another from the record."
+          },
+          {
+            "criterion": "Applying advice on expiry is opt-in and a selection arriving before expiry governs.",
+            "status": "MET",
+            "notes": "Branch guarded on decision == 'timeout' only. Tested with a stubbed gate returning a selection differing from the recommendation and through the real pending file resolving before expiry; iteration 2 adds two more tests asserting operator selections keep their original wording."
+          },
+          {
+            "criterion": "The existing policies keep their current meanings, so a project that has not opted in sees no change in behaviour.",
+            "status": "MET",
+            "notes": "Default 'preserve' leaves the timeout path byte-identical; escalate_policy validation untouched. The new message branch is gated on advisor_on_timeout, which a non-opted-in project never reaches."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "17 pre-existing failures in test_sprint_lock.py, test_cut_rc_isolation.py, and test_sprint_reexec_collision.py fail with PermissionError from multiprocessing.SemLock \u2014 a sandbox restriction with no overlap with this diff. Excluding those three files, the full suite is 7632 passed / 28 skipped."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "8682396f8e97618874d72d6e4b3c874408182c87",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "8682396f8e97618874d72d6e4b3c874408182c87",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api",
+        "anthropic-haiku-cli": "anthropic/haiku/cli"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded",
+        "anthropic-haiku-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] The implementation satisfies the acceptance criteria and the focused plus related escalation suites pass; I found one non-blocking operator-facing wording issue. | [google-gemini-3.5-flash-api] The opt-in retry.escalate_timeout_policy applies advisory recommendation on expiry while fully preserving operator selection, decision provenance, and default preserve behavior with excellent test coverage. | [anthropic-haiku-cli] Solid implementation of opt-in escalate-gate timeout advice application with comprehensive edge-case handling, proper decision provenance, and backward-compatible defaults.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "src/theforge/coordinator/review_phase.py",
+          "line": 577,
+          "description": "When an opted-in expired gate applies an accept recommendation, the successful outcome message still says the story was human-approved even though the recorded decision source is advisor_on_timeout.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "An escalate gate that expires without an operator selection applies the advisory recommendation, and the outcome is the same as if an operator had chosen that action deliberately.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:488-501 converts an opted-in timeout into the advisory action before normal disposition handling, and src/theforge/coordinator/review_phase.py:520-582 then runs the same approve/reject/named branches as a selection. tests/test_coord_escalate_timeout_advice.py:316-359 covers named, accept, and defer-or-abandon recommendations on expiry. pytest -q tests/test_coord_escalate_timeout_advice.py passed.; Implemented in src/theforge/coordinator/review_phase.py:488-506 where the expired gate sets decision to the applied advisory action and runs cleanup_escalate_pending. Fully covered by tests under TestAppliesAdviceOnExpiry in tests/test_coord_escalate_timeout_advice.py:302-364.; src/theforge/coordinator/review_phase.py lines 488-501 implements the timeout+opt-in branch that calls _advice_for_expired_gate(), and when a usable recommendation is returned, line 501 reassigns decision = applied before the taxonomy-action normalization at line 516. This flows through identical disposition handling as operator selections. Tests verify at test_coord_escalate_timeout_advice.py::TestAppliesAdviceOnExpiry (three disposition paths: named action, accept finalizes approval, defer_or_abandon rejects)."
+        },
+        {
+          "criterion": "A recommendation of elevate on expiry leaves the story awaiting a human, because the taxonomy already treats it as the answer for a case no automated choice fits.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:309-310 returns no applied action for elevate, and src/theforge/coordinator/review_phase.py:606-643 preserves the gate as advisory_pending. tests/test_coord_escalate_timeout_advice.py:372-382 verifies the disposition, and tests/test_coord_escalate_timeout_advice.py:558-570 verifies the pending checkpoint remains for an operator.; src/theforge/coordinator/review_phase.py line 310 explicitly checks recommendation == \"elevate\" and returns None (ADVICE_ELEVATE status), preventing application. Line 640 sets decision_source to TIMEOUT_PENDING and the preserve message is returned with advice-not-applied explanation. Test at test_coord_escalate_timeout_advice.py::TestPreservesWhenAdviceCannotBeApplied::test_elevate_leaves_the_story_awaiting_a_human verifies the checkpoint is preserved and the decision remains advisory_pending."
+        },
+        {
+          "criterion": "When no recommendation is available to apply \u2014 the advisor failed to launch, produced no parseable report, or recommended nothing \u2014 the gate preserves the story for an operator rather than selecting a fallback action. An absent recommendation is the absence of advice, not consent to any particular outcome, and the run states which of those two situations occurred.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:300-314 classifies launch failure, unavailable advisor, unparseable report, empty or invalid recommendation, and not-performable recommendations as non-applied statuses, while src/theforge/coordinator/review_phase.py:639-643 appends the explanatory note and preserves the gate. tests/test_coord_escalate_timeout_advice.py:384-452 covers unparseable, empty recommendation, launch failure, unavailable advisory, and not-performable recommendation cases.; Implemented in src/theforge/coordinator/review_phase.py:300-314 and 639-641 which sets state.escalate_timeout_advice to appropriate status and appends explaining note to the message. Fully covered by tests under TestPreservesWhenAdviceCannotBeApplied in tests/test_coord_escalate_timeout_advice.py:367-440."
+        },
+        {
+          "criterion": "Every decision records who or what made it, so an operator reading a run afterwards can distinguish an action they chose, an action applied from advice on expiry, and a gate still waiting \u2014 without reconstructing it from timestamps.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/state.py:48-54 defines the decision sources, src/theforge/coordinator/review_phase.py:405-515 assigns them across policy, operator, timeout, and advisor paths, src/theforge/coordinator/audit.py:991-1005 writes them to audit, and src/theforge/coordinator/resume_persistence.py:201-221 plus src/theforge/coordinator/resume_persistence.py:653-670 round-trip them through resume. tests/test_coord_escalate_timeout_advice.py:576-633 verifies audit and resume provenance.; Implemented by adding escalate_decision_source and escalate_timeout_advice to CoordinatorState (src/theforge/coordinator/state.py:824-836), populated in review_phase.py, saved/restored in resume_persistence.py:201-209, 661-667, and included in audit log in audit.py:993-1004. Fully covered by TestDecisionProvenanceIsRecorded in tests/test_coord_escalate_timeout_advice.py:607-633.; src/theforge/coordinator/state.py lines 39-65 define seven decision-source constants (OPERATOR, OPERATOR_DECLINED, POLICY_REJECT, POLICY_AUTO_APPROVE, NO_INTERACTION, TIMEOUT_PENDING, ADVISOR_ON_TIMEOUT). Each gate outcome sets escalate_decision_source (line 408 for policy_reject, line 425 for policy_auto_approve, line 478 for no_interaction, line 501 for advice applied, line 640 for timeout_pending, line 547 for operator_declined, line 540 for operator). src/theforge/coordinator/audit.py lines 999-1005 record decision_source and timeout_advice in the audit escalation block. src/theforge/coordinator/resume_persistence.py lines 208, 667-668 persist and restore these fields. Test at test_coord_escalate_timeout_advice.py::TestDecisionProvenanceIsRecorded verifies all values flow through audit and resume records correctly."
+        },
+        {
+          "criterion": "Applying advice on expiry is opt-in and does not change what the gate does while an operator is present: a selection that arrives before expiry governs, whatever the advisor recommended.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:260-269 checks the opt-in policy, src/theforge/coordinator/review_phase.py:488-515 applies advice only when decision == \"timeout\" and attributes non-timeout decisions to the operator, and tests/test_coord_escalate_timeout_advice.py:458-509 verifies both stubbed and pending-file selections override a different recommendation.; Implemented in src/theforge/coordinator/review_phase.py:488 by restricting the branch to decision == 'timeout' and checking _timeout_applies_advice(config). Fully covered by TestOperatorSelectionBeatsAdvice in tests/test_coord_escalate_timeout_advice.py:443-494.; src/theforge/coordinator/review_phase.py line 488 guards the advice-apply branch on BOTH decision == \"timeout\" AND _timeout_applies_advice(config). Line 259 defines _timeout_applies_advice to check config.retry.escalate_timeout_policy == ESCALATE_TIMEOUT_APPLY_ADVICE. This means operator selections (which produce decision values like \"accept\", \"defer_or_abandon\", \"redirect\") never enter the apply-advice branch \u2014 they bypass it entirely at the guard condition. Tests at test_coord_escalate_timeout_advice.py::TestOperatorSelectionBeatsAdvice verify both stubbed gate selections and real pending-file resolutions before expiry are respected over the recommendation (decision_source recorded as OPERATOR, not ADVISOR_ON_TIMEOUT)."
+        },
+        {
+          "criterion": "The existing policies keep their current meanings, so a project that has not opted in sees no change in behaviour.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:663-768 defaults escalate_timeout_policy to preserve, src/theforge/config/load.py:1197-1242 loads and validates only the new field while leaving escalate_policy untouched, and src/theforge/coordinator/review_phase.py:507-508 preserves timeout behavior when not opted in. tests/test_coord_escalate_timeout_advice.py:227-248 covers config loading and policy tolerance, and tests/test_coord_escalate_timeout_advice.py:254-310 covers default timeout, reject policy, and auto-approve provenance. pytest -q tests/test_coord_escalation_advisor.py tests/test_coord_review_phase_cycle.py tests/test_coord_escalate_offerable_actions.py passed.; Implemented in src/theforge/config/types.py:768 defaulting escalate_timeout_policy to 'preserve'. A timeout under 'preserve' is handled in review_phase.py:507-508 keeping the original behavior. Fully covered by TestDefaultPolicyUnchanged in tests/test_coord_escalate_timeout_advice.py:255-299.; src/theforge/config/types.py line 759 defaults escalate_timeout_policy to \"preserve\". src/theforge/coordinator/review_phase.py line 488 requires _timeout_applies_advice(config) to be true, which line 261 defines as returning False when the config field is \"preserve\". Non-opted-in projects follow the elif branch at line 503 which sets escalate_timeout_advice = ADVICE_POLICY_PRESERVE, then continue to existing preserve logic. src/theforge/config/load.py line 1195-1197 explicitly validates only the new field (escalate_timeout_policy), leaving escalate_policy validation unchanged per design note. Test at test_coord_escalate_timeout_advice.py::TestDefaultPolicyUnchanged::test_timeout_still_preserves_when_not_opted_in verifies the message is unchanged and decision is advisory_pending. Pre-existing escalation-advisor and review-phase test suites pass unchanged."
+        },
+        {
+          "criterion": "A recommendation of `elevate` on expiry leaves the story awaiting a human, because the taxonomy already treats it as the answer for a case no automated choice fits.",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/coordinator/review_phase.py:309-310 where _advice_for_expired_gate returns ADVICE_ELEVATE status and does not apply the action. Fully covered by test_elevate_leaves_the_story_awaiting_a_human and test_elevate_leaves_the_checkpoint_for_the_operator in tests/test_coord_escalate_timeout_advice.py:377-391 and 590-604."
+        },
+        {
+          "criterion": "When no recommendation is available to apply \u2014 the advisor failed to launch, produced no parseable report, or recommended nothing \u2014 the gate preserves the story rather than selecting a fallback action. An absent recommendation is the absence of advice, not consent to any outcome, and the run states which of those two situations occurred.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py::_advice_for_expired_gate lines 293-308 systematically checks five distinct scenarios (launch_failure, advisor_unavailable, unparseable_report, no_recommendation, not_performable) and returns None for each. Each maps to a unique status constant (ADVICE_LAUNCH_FAILURE, ADVICE_UNAVAILABLE, ADVICE_UNPARSEABLE, ADVICE_NO_RECOMMENDATION, ADVICE_NOT_PERFORMABLE). Lines 228-249 define _TIMEOUT_ADVICE_NOTES with explanatory sentences for each scenario, which are appended to the preserve message at line 641. Tests cover all five at test_coord_escalate_timeout_advice.py::TestPreservesWhenAdviceCannotBeApplied (one test per scenario, verifying the specific message and status are recorded)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "a3bc4b3c528e1a117056390a65bf0f54bb0d5e4f",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "a3bc4b3c528e1a117056390a65bf0f54bb0d5e4f",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-haiku-cli"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api",
+        "anthropic-haiku-cli": "anthropic/haiku/cli"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded",
+        "anthropic-haiku-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] No P1 regressions found; the cycle-2 wording fix is covered and the opt-in timeout-advice flow satisfies the acceptance criteria. | [google-gemini-3.5-flash-api] Approved the clean, comprehensive implementation of applying escalate-gate advisor recommendation on opted-in timeout, complete with robust seam-level testing and rich provenance tracking. | [anthropic-haiku-cli] Cycle 2 fix ensures message wording matches provenance record; both commits solidly implement the spec with no regressions or new defects.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "An escalate gate that expires without an operator selection applies the advisory recommendation, and the outcome is the same as if an operator had chosen that action deliberately.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:500-513 applies a performable advisory action only on timeout before disposition normalization, and lines 532-545 route the applied taxonomy action through the same approve, reject, or named dispositions as a selection; tests/test_coord_escalate_timeout_advice.py:321-418 covers named, accept, and defer_or_abandon recommendations, including the original unattended timeout symptom.; src/theforge/coordinator/review_phase.py:500-518 (applies the advice on timeout); tests/test_coord_escalate_timeout_advice.py (TestAppliesAdviceOnExpiry suite verify named recommendations, accept, and defer_or_abandon).; Commit 8682396f: src/theforge/coordinator/review_phase.py lines 490-511 apply the recommendation before disposition normalization (decision = applied at line 510, processed through action_disposition at line 516). Identical behavior to operator selection confirmed by tests at test_coord_escalate_timeout_advice.py::TestAppliesAdviceOnExpiry (three disposition paths verify outcome matches manual selection). Commit a3bc4b3c: lines 589-600 and 618-631 ensure the message wording accurately attributes the outcome to advice applied, not an operator."
+        },
+        {
+          "criterion": "A recommendation of elevate on expiry leaves the story awaiting a human, because the taxonomy already treats it as the answer for a case no automated choice fits.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:321-322 returns ADVICE_ELEVATE without an applied action, and lines 635-672 preserve the escalation as advisory_pending; tests/test_coord_escalate_timeout_advice.py:431-441 asserts the preserved state and elevate status, and lines 617-629 assert the pending checkpoint remains actionable.; Commit 8682396f: src/theforge/coordinator/review_phase.py line 310 explicitly branches on recommendation == \"elevate\" returning (None, ADVICE_ELEVATE), preventing application. Line 640 preserves the story as advisory_pending. test_coord_escalate_timeout_advice.py::TestPreservesWhenAdviceCannotBeApplied::test_elevate_leaves_the_story_awaiting_a_human verifies checkpoint survives and message explains the deliberate no-selection decision. Commit a3bc4b3c does not change this path."
+        },
+        {
+          "criterion": "When no recommendation is available to apply \u2014 the advisor failed to launch, produced no parseable report, or recommended nothing \u2014 the gate preserves the story for an operator rather than selecting a fallback action. An absent recommendation is the absence of advice, not consent to any particular outcome, and the run states which of those two situations occurred.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:312-320 classifies missing, unparseable, and empty recommendations without applying a fallback, lines 323-325 rejects not-performable advice, and lines 633-672 append the distinct preserve reason; tests/test_coord_escalate_timeout_advice.py:443-511 covers unparseable_report, no_recommendation, launch_failure, advisor_unavailable, and not_performable.; src/theforge/coordinator/review_phase.py:312-320, 323-326 (advice categorization), and lines 663-670 (notes appended from _TIMEOUT_ADVICE_NOTES); tests/test_coord_escalate_timeout_advice.py::TestPreservesWhenAdviceCannotBeApplied (various tests verifying distinct preservation messages)."
+        },
+        {
+          "criterion": "Every decision records who or what made it, so an operator reading a run afterwards can distinguish an action they chose, an action applied from advice on expiry, and a gate still waiting \u2014 without reconstructing it from timestamps.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/state.py:42-63 defines decision sources, lines 827-837 stores decision_source and timeout_advice, src/theforge/coordinator/audit.py:998-1000 emits them, and src/theforge/coordinator/resume_persistence.py:208-210 and 665-668 persist and restore them; tests/test_coord_escalate_timeout_advice.py:635-692 verifies audit and resume records, while lines 272-315 and 517-568 cover policy and operator sources.; src/theforge/coordinator/state.py:39-74 (decision sources and statuses), src/theforge/coordinator/audit.py:990-1004 (audit log emission), and src/theforge/coordinator/resume_persistence.py:201-209, 661-667 (state persistence/resume); tests/test_coord_escalate_timeout_advice.py::TestDecisionProvenanceIsRecorded (verifies audit log entries and resume record round-tripping).; Commit 8682396f: src/theforge/coordinator/state.py lines 48-66 define seven ESCALATE_DECISION_SOURCES constants. review_phase.py sets escalate_decision_source at lines 408, 425, 478, 501, 540, 547, 640 for all gate outcomes. audit.py lines 999-1005 records decision_source and timeout_advice in escalation block. resume_persistence.py lines 208, 667-668 persist/restore these fields. test_coord_escalate_timeout_advice.py::TestDecisionProvenanceIsRecorded verifies audit and resume records. Commit a3bc4b3c: lines 260-269 add _decided_by_advice() helper that reads escalate_decision_source from the same published field, ensuring message wording and provenance cannot diverge. Four new tests (test_applied_accept_is_not_reported_as_a_human_approval, test_operator_accept_is_still_reported_as_a_human_approval, test_applied_named_action_message_names_the_expiry, test_operator_named_action_message_is_unchanged) verify both branches for both approval and named-action paths."
+        },
+        {
+          "criterion": "Applying advice on expiry is opt-in and does not change what the gate does while an operator is present: a selection that arrives before expiry governs, whatever the advisor recommended.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:272-281 gates the feature on retry.escalate_timeout_policy, line 500 requires decision == timeout before applying advice, and lines 521-527 attribute non-timeout decisions to the operator; tests/test_coord_escalate_timeout_advice.py:232-247 covers config loading and validation, lines 517-568 verifies operator selections beat conflicting advice, and lines 372-405 verifies operator-present wording remains unchanged.; src/theforge/coordinator/review_phase.py:494-500 (gated strictly on decision == 'timeout'); tests/test_coord_escalate_timeout_advice.py::TestOperatorSelectionBeatsAdvice (verifies operator selections override advisory recommendations).; Commit 8682396f: src/theforge/coordinator/review_phase.py line 488 guards advice-apply branch on BOTH decision == \"timeout\" AND _timeout_applies_advice(config). Default is \"preserve\" (types.py line 759), so non-opted-in projects skip the branch. Operator selections (from pending file, ntfy, terminal) produce non-\"timeout\" decision values, never entering the expiry branch. test_coord_escalate_timeout_advice.py::TestOperatorSelectionBeatsAdvice::test_selection_before_expiry_governs_over_a_different_recommendation and test_pending_file_selection_before_expiry_governs verify operator provenance (ESCALATE_SOURCE_OPERATOR) when selection beats advice. Commit a3bc4b3c: test_operator_accept_is_still_reported_as_a_human_approval and test_operator_named_action_message_is_unchanged verify operator-present wording is byte-identical."
+        },
+        {
+          "criterion": "The existing policies keep their current meanings, so a project that has not opted in sees no change in behaviour.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/types.py:753-768 keeps preserve as the RetryPolicy default, src/theforge/config/defaults.py:108-118 documents the default config value, src/theforge/config/load.py:1197-1242 defaults absent config to preserve, and src/theforge/coordinator/review_phase.py:519-521 keeps non-opted-in timeouts on the preserve path; tests/test_coord_escalate_timeout_advice.py:249-270 verifies old escalate_policy tolerance and default timeout preservation, and lines 272-315 verifies reject and auto_approve policy provenance.; src/theforge/coordinator/review_phase.py:272-282 (opt-in check helper) and lines 519-520 (preserves timeout under default policy); tests/test_coord_escalate_timeout_advice.py::TestEscalateTimeoutPolicyConfig (verifies defaults and loading) and TestDefaultPolicyUnchanged::test_timeout_still_preserves_when_not_opted_in (verifies preserve behavior).; Commit 8682396f: Default retry.escalate_timeout_policy is \"preserve\" (types.py line 759, defaults.py line 119, load.py line 1200 validation defaults). Line 488 condition requires _timeout_applies_advice(config) to be true, which returns False for non-opted-in (line 261). Non-opted-in timeout flows through elif branch (line 503) which sets escalate_timeout_advice = ADVICE_POLICY_PRESERVE, then preserve branch at line 640 produces identical message as before (test_coord_escalate_timeout_advice.py::TestDefaultPolicyUnchanged::test_timeout_still_preserves_when_not_opted_in verifies message contains \"advisory report was generated\"). Commit a3bc4b3c: message branching in approval (lines 589-600) and named-action (lines 618-631) both check _decided_by_advice() which returns False for non-opted-in projects (decision_source is TIMEOUT_PENDING, not ADVISOR_ON_TIMEOUT), so non-opted-in wording is unchanged. Pre-existing escalation-advisor and review-phase test suites pass unchanged."
+        },
+        {
+          "criterion": "A recommendation of `elevate` on expiry leaves the story awaiting a human, because the taxonomy already treats it as the answer for a case no automated choice fits.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/coordinator/review_phase.py:321-322 (explicit ADVICE_ELEVATE return); tests/test_coord_escalate_timeout_advice.py::TestPreservesWhenAdviceCannotBeApplied::test_elevate_leaves_the_story_awaiting_a_human (reproduced and verified)."
+        },
+        {
+          "criterion": "When no recommendation is available to apply \u2014 the advisor failed to launch, produced no parseable report, or recommended nothing \u2014 the gate preserves the story rather than selecting a fallback action. An absent recommendation is the absence of advice, not consent to any outcome, and the run states which of those two situations occurred.",
+          "status": "VERIFIED",
+          "evidence": "Commit 8682396f: src/theforge/coordinator/review_phase.py lines 293-308 in _advice_for_expired_gate systematically distinguish five scenarios (launch_failure, advisor_unavailable, unparseable_report, no_recommendation, not_performable), each returning (None, status). Lines 228-249 define _TIMEOUT_ADVICE_NOTES with explanatory sentences for each, appended to preserve message at line 641. test_coord_escalate_timeout_advice.py::TestPreservesWhenAdviceCannotBeApplied covers all five with distinct message verification. Commit a3bc4b3c does not affect this logic."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "anthropic-haiku-cli",
+      "provider": null,
+      "model": "haiku",
+      "cli": "claude",
+      "canonical_id": "anthropic/haiku/cli",
+      "resolved_model": "anthropic/haiku/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "anthropic-haiku-cli",
+      "provider": null,
+      "model": "haiku",
+      "cli": "claude",
+      "canonical_id": "anthropic/haiku/cli",
+      "resolved_model": "anthropic/haiku/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [anthropic-opus-cli] Step 3 inspects 'the AdvisoryReport object that was just generated', but advisory is only bound inside the _is_pending_file_mode branch (review_phase.py:338). Referencing it at the post-normalization point (L367+) on a remote/interactive/no-interaction path would raise NameError.\n  Suggestion: Initialize advisory: AdvisoryReport | None = None before the interaction-method dispatch at review_phase.py:334 and guard the new branch on advisory is not None.\n- [P1-impl] [anthropic-opus-cli] Step 3's 'clean up the expired pending checkpoint when advice is applied' has no named seam. _pending_escalate_gate has already rewritten the pending file with timed_out_awaiting_decision (pending_hitl.py:268-282) and returned before review_phase decides to apply advice; the cleanup helper (_pending.cleanup_pending) needs run_id and project_root, which review_phase resolves differently from pending_hitl.\n  Suggestion: Either expose a small cleanup helper in pending_hitl.py that resolves the effective run_id/project_root the same way _pending_escalate_gate does, or pass the opt-in policy down so the timeout branch skips the preserve-rewrite when advice will be applied.\n- [P2] [anthropic-opus-cli] Step 1 adds validation with a clear ValueError for the new field, but load.py:1227 reads the existing escalate_policy with no validation at all, so the two fields will behave inconsistently on typos.\n  Suggestion: Validate only the new field (as planned) and leave escalate_policy alone, or note the asymmetry; do not silently change escalate_policy's tolerance for unknown values, which would violate the last AC.\n- [P2] [anthropic-opus-cli] Step 4 mentions updating 'auto-escalating' timeout log wording, but pending_hitl.py:283-286 already says 'pending checkpoint preserved'. The stale wording lives on another surface (the dev/seam timeout or remote path).\n  Suggestion: Grep for the literal 'auto-escalating' before editing so the fix lands on the surface that actually emits the message quoted in the spec, rather than rewording the already-correct escalate-gate log.\n- [P2] [google-gemini-3.5-flash-api] In defaults.py, the newly documented configuration fields (escalate_policy, escalate_timeout_policy) should match the existing standard indentation and format of the retry section.\n- [P2] [google-gemini-3.5-flash-api] Some test fixtures in test_sprint_rca.py write dummy logs that assert or contain the exact string 'Pending decision timed out after 10m 0s \u2014 auto-escalating'.\n- [P1-impl] [openai-gpt-5.4-cli] Step 2 changes the serialized escalation audit shape in src/theforge/coordinator/audit.py, but the plan does not call out the corresponding audit schema-version work. This repo has a writer-side schema guard in tests/test_audit_schema_guard.py, and additive audit fields normally require updating src/theforge/coordinator/audit_substrate.py schema metadata/migrations as well.\n  Suggestion: When implementing Step 2, include the required CURRENT_RECORD_SCHEMA_VERSION/migration updates and refresh the audit schema guard fixture alongside the new escalation provenance fields.",
+    "cost_usd": 0,
+    "plan_finding_registry": [],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against\n  finding[5]: UNMATCHED \u2014 no prior findings to match against\n  finding[6]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2320",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2279",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2320",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2320",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_review": {
+    "source": "merged_cycle_review",
+    "verdict": "APPROVE"
+  },
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-08T07:57:21.178725+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3863 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 799 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/explain.py",
+      "detail": "src/theforge/cli/explain.py has 663 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1428 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1230 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1810 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 757 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/profiles.py",
+      "detail": "src/theforge/config/profiles.py has 669 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 1315 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 706 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1179 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 3142 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1682 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1683 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1507 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 2004 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 2070 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1761 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1225 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/resume_persistence.py",
+      "detail": "src/theforge/coordinator/resume_persistence.py has 785 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2353 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1264 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/run_setup.py",
+      "detail": "src/theforge/coordinator/run_setup.py has 654 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1288 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/story_budget.py",
+      "detail": "src/theforge/coordinator/story_budget.py has 1210 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1245 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1287 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 657 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 3439 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/process_group.py",
+      "detail": "src/theforge/process_group.py has 788 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1113 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 827 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1042 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 870 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1130 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1794 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/batch_report.py",
+      "detail": "src/theforge/sprint/batch_report.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 2247 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 6954 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1174 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 603 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 685 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1645 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1472 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1263 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1346 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_models.py",
+      "detail": "tests/test_config_models.py has 1012 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1600 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2790 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1021 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1398 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1163 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1226 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1418 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1257 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1310 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3666 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 2345 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_reexec_reconcile.py",
+      "detail": "tests/test_sprint_reexec_reconcile.py has 1123 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1827 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_budget_allocation.py",
+      "detail": "tests/test_story_budget_allocation.py has 1153 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_budget_seam.py",
+      "detail": "tests/test_story_budget_seam.py has 1323 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1337 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/coordinator",
+      "detail": "No test mirror found for package src/theforge/coordinator (expected tests/test_coordinator_*.py or tests/test_coordinator/)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "67e4dfc07aeda2e2",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/review_phase.py",
+      "line": 577,
+      "severity": "P2",
+      "description": "When an opted-in expired gate applies an accept recommendation, the successful outcome message still says the story was human-approved even though the recorded decision source is advisor_on_timeout.",
+      "reporter": "openai-gpt-5.5-cli",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 7,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": true,
+      "enabled": true,
+      "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+      "phases": {
+        "plan": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "plan",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            }
+          ],
+          "provider_support": "supported_metered",
+          "varies_by_provider": false
+        },
+        "dev": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "dev",
+          "applied": false,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        },
+        "review": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "review",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 24576
+            },
+            {
+              "name": "openai-gpt-5.4-cli",
+              "model": "gpt-5.4",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 24576
+            },
+            {
+              "name": "anthropic-haiku-cli",
+              "model": "haiku",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "mixed",
+          "varies_by_provider": false
+        }
+      },
+      "applied": true
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 7,
+            "selected": true
+          },
+          "anthropic-haiku-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 6,
+            "completed": 5,
+            "raw": 0.8333,
+            "weighted": 0.8345,
+            "rate": 0.8345,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($7.14)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 17,
+            "completed": 17,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 1,
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($7.14); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8525,
+              "weighted": 0.8048,
+              "runs": 122,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.8048,
+              "resolved_population": {}
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "concurrency",
+                "config"
+              ],
+              "raw": 0.8702,
+              "weighted": 0.7,
+              "runs": 131,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.7,
+              "by_domain": {
+                "backend": {
+                  "runs": 85,
+                  "raw": 0.8706,
+                  "weighted": 0.7,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "concurrency": {
+                  "runs": 19,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "config": {
+                  "runs": 27,
+                  "raw": 0.7778,
+                  "weighted": 0.7,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                }
+              },
+              "resolved_population": {}
+            },
+            "cost_tiebreak": {
+              "value": Infinity,
+              "source": "seed",
+              "seed": Infinity,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null,
+              "resolved_population": {}
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "concurrency",
+                "config"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "config": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                }
+              },
+              "resolved_population": {}
+            },
+            "cost_tiebreak": {
+              "value": 30.0,
+              "source": "seed",
+              "seed": 30.0,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "cost_tiebreak": {
+        "selected_model": "anthropic-opus-cli",
+        "value": Infinity,
+        "source": "seed",
+        "observations": 0,
+        "cohort": {
+          "role": "DEV",
+          "complexity": "HIGH",
+          "reasoning_effort": "high"
+        },
+        "reason": "no_matching_cohort"
+      },
+      "domain_match": {
+        "domains": [
+          "backend",
+          "concurrency",
+          "config"
+        ],
+        "influenced": false,
+        "complexity_only_head": "anthropic-opus-cli",
+        "domain_head": "anthropic-opus-cli",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "concurrency",
+            "config"
+          ],
+          "raw": 0.8702,
+          "weighted": 0.7,
+          "runs": 131,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.7,
+          "by_domain": {
+            "backend": {
+              "runs": 85,
+              "raw": 0.8706,
+              "weighted": 0.7,
+              "tainted_runs": 0,
+              "resolved_population": {}
+            },
+            "concurrency": {
+              "runs": 19,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0,
+              "resolved_population": {}
+            },
+            "config": {
+              "runs": 27,
+              "raw": 0.7778,
+              "weighted": 0.7,
+              "tainted_runs": 0,
+              "resolved_population": {}
+            }
+          },
+          "resolved_population": {}
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "anthropic-opus-cli",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8525,
+        "weighted_success_rate": 0.8048,
+        "sample_size": 122,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.8048,
+          "threshold": 0.6,
+          "sample_size": 122,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+concurrency+config",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "anthropic-haiku-cli",
+          "google-gemini-3.5-flash-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "not_cadence_run",
+        "domains": [
+          "backend",
+          "concurrency",
+          "config"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.80 \u2265 threshold 0.60 over 122 admissible runs \u2014 pre-promotion held) (profile success_rate=0.80 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 156,
+            "completed": 148,
+            "raw": 0.9487,
+            "weighted": 0.9661,
+            "rate": 0.9661,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 3,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "attempted": 20,
+            "completed": 19,
+            "raw": 0.95,
+            "weighted": 0.9557,
+            "rate": 0.9557,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 18,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli"
+          ],
+          "checked_detail": {
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 3,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-haiku-cli": {
+              "clean_streak": 18,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "plan_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "anthropic-opus-cli": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.5,
+              "weighted": 0.5,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 64.545,
+              "weighted": 64.545,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 1,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 82.0533,
+              "weighted": 82.0533,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 4,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 69.6963,
+              "weighted": 69.6963,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli"
+          ],
+          "checked_detail": {
+            "anthropic-opus-cli": {
+              "raw": 0.5,
+              "weighted": 0.5,
+              "runs": 2,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 1,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "runs": 4,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-haiku-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "opus",
+          "gemini-3.5-flash",
+          "gpt-5.4"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['anthropic', 'google', 'openai'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-haiku-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 181,
+            "completed": 178,
+            "raw": 0.9834,
+            "weighted": 0.9681,
+            "rate": 0.9681,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 3,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 156,
+            "completed": 148,
+            "raw": 0.9487,
+            "weighted": 0.9661,
+            "rate": 0.9661,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 3,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "attempted": 20,
+            "completed": 19,
+            "raw": 0.95,
+            "weighted": 0.9557,
+            "rate": 0.9557,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 18,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 3,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 3,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-haiku-cli": {
+              "clean_streak": 18,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "code_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "runs": 8,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": 1.0,
+              "floor": "pass"
+            },
+            "latency_per_p1": {
+              "raw": 62.1519,
+              "weighted": 61.6295,
+              "rate": 61.6295,
+              "floor": "pass"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-haiku-cli": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 46.895,
+              "weighted": 46.895,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-haiku-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 8,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-haiku-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 2,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "haiku"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.807879,
+      "duration_s": 150.63,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": {
+      "cost_usd": 0,
+      "duration_s": 438.83,
+      "iterations": 0,
+      "outcome": "approve"
+    },
+    "dev": {
+      "cost_usd": 10.298887,
+      "duration_s": 1022.63,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 359.11,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 5.996356,
+      "duration_s": 509.18,
+      "cycles": 2,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 2.341996,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 3.188551,
+          "verdict": "APPROVE"
+        },
+        "anthropic-haiku-cli": {
+          "cost": 0.465809,
+          "verdict": "APPROVE"
+        }
+      },
+      "per_reviewer_value": [
+        {
+          "cycle": 1,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 117.38,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 117.38,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "anthropic-haiku-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 117.38,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 52.35,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 52.35,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "anthropic-haiku-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 52.35,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        }
+      ]
+    }
+  },
+  "totals": {
+    "cost_usd": 17.103122,
+    "duration_s": 2480.38,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "sprint_id": "99111e79ce4d",
+  "sprint_name": "issues-2298,2279,2288,2287"
+}

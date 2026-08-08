@@ -663,6 +663,7 @@ def _apply_post_plan_dev_checkpoint(
         reasoning_effort=_reasoning_effort,
         domains=_domains,
         recency=_recency,
+        transport_fallbacks=config.transport_fallbacks,
     )
     state._adaptive_decision = _updated
     if _updated.routing_decision:
