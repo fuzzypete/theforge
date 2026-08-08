@@ -631,9 +631,11 @@ def _apply_post_plan_dev_checkpoint(
     _domains = None
     _reasoning_effort = None
     if _adaptive_enabled:
-        from theforge.coordinator.audit_substrate import load_observed_cost_cohorts  # noqa: PLC0415
-        from theforge.model_profiles import load_profiles  # noqa: PLC0415
         from theforge.assignment import _requested_dev_reasoning_effort  # noqa: PLC0415
+        from theforge.coordinator.audit_substrate import (  # noqa: PLC0415
+            load_observed_cost_cohorts,
+        )
+        from theforge.model_profiles import load_profiles  # noqa: PLC0415
 
         _model_profiles = load_profiles(config.project_root / ".forge" / "model_profiles.yaml")
         _observed_costs, _ = load_observed_cost_cohorts(config.project_root)

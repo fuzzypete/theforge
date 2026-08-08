@@ -12,7 +12,7 @@ by its real per-MTok price — across every ranking helper the fix touches:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -164,12 +164,24 @@ def _equal_reliability_profiles(rate: float = 0.8) -> dict:
     }
 
 
+def _fresh_stamp() -> str:
+    """A timestamp inside the recency window *whenever the suite runs*.
+
+    A literal date would pass today and silently start failing the day it aged
+    past ``OBSERVED_COST_TIEBREAK_RECENCY_DAYS`` — the cohort would fall back to
+    the seed and the assertions below would be testing the fallback while
+    claiming to test observation.
+    """
+    return (datetime.now(UTC) - timedelta(days=1)).isoformat()
+
+
 def _observed_costs(*, sonnet: list[float], mini: list[float], effort: str = "low") -> dict:
     def _obs(values: list[float]) -> list[dict[str, object]]:
+        stamp = _fresh_stamp()
         return [
             {
                 "cost_usd": value,
-                "started_at": "2026-08-01T12:00:00+00:00",
+                "started_at": stamp,
                 "cost_provenance": "provider_reported",
             }
             for value in values
@@ -252,10 +264,12 @@ def test_assign_models_uses_observed_cost_for_final_dev_tiebreak(_all_authed):
 def test_observed_cost_never_beats_stronger_reliability(_all_authed):
     agents = _two_cheap_agents()
     profiles = _equal_reliability_profiles()
-    profiles["models"]["anthropic/sonnet/cli"]["dev"]["success_rate"] = 0.7
-    profiles["models"]["anthropic/sonnet/cli"]["dev"]["by_complexity"]["small"]["success_rate"] = 0.7
-    profiles["models"]["openai/gpt-5.4-mini/cli"]["dev"]["success_rate"] = 0.9
-    profiles["models"]["openai/gpt-5.4-mini/cli"]["dev"]["by_complexity"]["small"]["success_rate"] = 0.9
+    # Sonnet is the cheaper candidate on observed cost but the weaker one on
+    # reliability evidence; cost must not buy it the lead.
+    for key, rate in (("anthropic/sonnet/cli", 0.7), ("openai/gpt-5.4-mini/cli", 0.9)):
+        dev = profiles["models"][key]["dev"]
+        dev["success_rate"] = rate
+        dev["by_complexity"]["small"]["success_rate"] = rate
     decision = assign_models(
         agents,
         AssignmentConfig(
@@ -289,7 +303,9 @@ def test_observed_cost_mismatched_effort_falls_back_to_declared_seed(_all_authed
         complexity="LOW",
         complexity_score=2,
         model_profiles=_equal_reliability_profiles(),
-        observed_costs=_observed_costs(sonnet=[1.1, 1.2, 1.0], mini=[2.8, 2.9, 3.0], effort="high"),
+        observed_costs=_observed_costs(
+            sonnet=[1.1, 1.2, 1.0], mini=[2.8, 2.9, 3.0], effort="high"
+        ),
     )
     assert decision.dev.model == "gpt-5.4-mini"
     assert decision.routing_decision["dev"]["cost_tiebreak"]["source"] == "seed"

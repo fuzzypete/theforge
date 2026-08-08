@@ -1293,7 +1293,12 @@ def _apply_preflight_config(
     from theforge.coordinator.audit_substrate import (  # noqa: PLC0415
         load_observed_cost_cohorts as _load_observed_cost_cohorts,
     )
+
     _observed_costs, _observed_costs_excluded = _load_observed_cost_cohorts(config.project_root)
+    # Both loaders apply the same taint gate over the same audit records, so the
+    # two counts describe one set of set-aside runs, not two. Reported as the
+    # larger of the pair — summing would double-count the same runs and overstate
+    # how much history was discounted.
     _excluded_for_taint = max(_excluded_for_taint, _observed_costs_excluded)
 
     from theforge.model_profiles import load_profiles as _load_profiles  # noqa: PLC0415

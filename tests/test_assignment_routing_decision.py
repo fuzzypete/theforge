@@ -7,6 +7,8 @@ assign_models attaches to its AssignmentDecision.
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 
 from theforge.assignment import (
@@ -420,59 +422,78 @@ def test_dev_cost_tiebreak_block_records_selected_cohort(_keys_except_deepseek):
         _cfg(),
         complexity="HIGH",
         complexity_score=9,
+        # These AgentDefs carry no ``cli``, so their canonical storage key is
+        # ``<provider>/<model>/api`` — the same key the profile store and the
+        # cohort reader both write. Keying history under any other spelling
+        # makes it silently invisible to the lookup.
+        # ``_identity`` pins each bucket to its provider/model so both candidates
+        # resolve to an equal 0.8 reliability rate. Without it the profile lookup
+        # falls back to inferring identity from the key, which leaves one side
+        # cold-start — and a cost tiebreak between a ranked and an unranked
+        # candidate would not be a tiebreak at all.
         model_profiles={
             "models": {
-                "anthropic/opus/cli": {
+                "anthropic/opus/api": {
+                    "_identity": {"provider": "anthropic", "model": "opus"},
                     "dev": {
                         "runs": 8,
                         "success_rate": 0.8,
                         "by_complexity": {"large": {"runs": 8, "success_rate": 0.8}},
-                    }
+                    },
                 },
                 "openai/gpt-5.4/api": {
+                    "_identity": {"provider": "openai", "model": "gpt-5.4"},
                     "dev": {
                         "runs": 8,
                         "success_rate": 0.8,
                         "by_complexity": {"large": {"runs": 8, "success_rate": 0.8}},
-                    }
+                    },
                 },
             }
         },
         observed_costs={
-            "anthropic/opus/cli": {
+            "anthropic/opus/api": {
                 "DEV|HIGH|high": {
                     "role": "DEV",
                     "complexity": "HIGH",
                     "reasoning_effort": "high",
                     "observations": [
                         {
-                            "cost_usd": 1.1,
-                            "started_at": "2026-08-01T12:00:00+00:00",
+                            "cost_usd": cost,
+                            # Relative, not a literal date: a fixed stamp would
+                            # age out of the recency window and quietly turn this
+                            # into a test of the seed fallback.
+                            "started_at": (datetime.now(UTC) - timedelta(days=1)).isoformat(),
                             "cost_provenance": "provider_reported",
-                        },
-                        {
-                            "cost_usd": 1.2,
-                            "started_at": "2026-08-01T12:00:00+00:00",
-                            "cost_provenance": "provider_reported",
-                        },
-                        {
-                            "cost_usd": 1.0,
-                            "started_at": "2026-08-01T12:00:00+00:00",
-                            "cost_provenance": "provider_reported",
-                        },
+                        }
+                        for cost in (1.1, 1.2, 1.0)
                     ],
                 }
             }
         },
     )
     block = decision.routing_decision["dev"]["cost_tiebreak"]
-    assert block["source"] in {"observed", "seed"}
-    assert block["observations"] is not None
+    # The provenance must name observation specifically — asserting only that
+    # the source is one of {observed, seed} passes even when the cohort was
+    # never found, which is exactly the failure this block exists to expose.
+    assert decision.dev.name == "opus"
+    assert block["selected_model"] == "opus"
+    assert block["source"] == "observed"
+    assert block["reason"] == "observed_median"
+    assert block["observations"] == 3
+    assert block["value"] == 1.1  # median of 1.0, 1.1, 1.2
     assert block["cohort"] == {
         "role": "DEV",
         "complexity": "HIGH",
         "reasoning_effort": "high",
     }
+    # The unmatched candidate is recorded as falling back, not as observed.
+    pool = {
+        e["name"]: e.get("signals", {}).get("cost_tiebreak")
+        for e in decision.routing_decision["dev"]["candidate_pool"]
+    }
+    assert pool["gpt"]["source"] == "seed"
+    assert pool["gpt"]["observations"] == 0
 
 
 def test_score_policy_low_score_routes_to_min_reviewers(_keys_except_deepseek):

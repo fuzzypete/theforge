@@ -26,14 +26,13 @@ import json
 import sqlite3
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 from pathlib import Path
 from typing import Iterable
 
 from .agent_identity import (
     dev_identity_ledger,
-    entry_identity_ledger,
     dev_model_identity_detail,
+    entry_identity_ledger,
     invocation_identity_rows,
 )
 

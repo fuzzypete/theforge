@@ -634,7 +634,9 @@ def _rerank_by_profiles(
 
     def _cost(row: tuple[AgentDef, dict, dict | None, dict]) -> float:
         value = row[3].get("value")
-        return float(value) if isinstance(value, (int, float)) else price_tiebreak_signal_for(row[0])
+        if isinstance(value, (int, float)):
+            return float(value)
+        return price_tiebreak_signal_for(row[0])
 
     def _complexity_key(row: tuple[AgentDef, dict, dict | None, dict]) -> tuple:
         _, signal, _, _ = row
