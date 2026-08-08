@@ -9,14 +9,29 @@ import re
 import subprocess
 import tempfile
 import tokenize
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
 from theforge.config.types import HardConventionsConfig
+from theforge.convention_types import ConventionViolation
+from theforge.line_count_conventions import (
+    MODULE_LINES_RULE,
+    check_line_counts,
+    module_growth_violations,
+    module_line_counts,
+)
 from theforge.root_file_conventions import (
     DEFAULT_ALLOWED_ROOT_FILES,
     resolve_root_file_allowances,
 )
+
+__all__ = [
+    "ConventionViolation",
+    "check_hard_conventions",
+    "new_hard_convention_violations_since_ref",
+]
 
 log = logging.getLogger(__name__)
 
@@ -57,20 +72,12 @@ def _resolve_package_dirs(
     return pairs
 
 
-@dataclass
-class ConventionViolation:
-    rule: str  # "max_module_lines", "no_circular_imports", "test_mirrors_source"
-    file: str  # path relative to project root
-    detail: str  # human-readable description
-    blocking: bool = True
-
-
 def check_hard_conventions(
     config: HardConventionsConfig, project_root: Path
 ) -> list[ConventionViolation]:
     """Run all enabled hard convention checks and return violations."""
     violations: list[ConventionViolation] = []
-    violations.extend(_check_line_counts(config, project_root))
+    violations.extend(check_line_counts(config, project_root))
     if config.no_circular_imports:
         violations.extend(_check_circular_imports(project_root, config.package_roots))
     if config.test_mirrors_source:
@@ -90,18 +97,34 @@ def check_hard_conventions(
 def new_hard_convention_violations_since_ref(
     config: HardConventionsConfig, project_root: Path, git_ref: str
 ) -> tuple[list[ConventionViolation], list[ConventionViolation]]:
-    """Return (current, net-new) hard convention violations since git_ref."""
+    """Return (current, net-new) hard convention violations since git_ref.
+
+    ``current`` is the plain scan: every module over ``max_module_lines`` with
+    its distance from the configured limit, which is what the advisory report
+    reads. ``net_new`` is what blocks, and for ``max_module_lines`` it is a
+    ratchet rather than an identity diff (ADR-0008): a module already over the
+    limit at ``git_ref`` is frozen at its size there and may not grow, while a
+    module within the limit stays governed by the limit itself. A module may
+    therefore appear in ``current`` (still many times the convention) and not in
+    ``net_new`` (compliant with its frozen ceiling) at the same time.
+    """
     current = check_hard_conventions(config, project_root)
-    baseline = _check_hard_conventions_at_git_ref(config, project_root, git_ref)
+    with _git_ref_tree(project_root, git_ref) as baseline_root:
+        baseline = check_hard_conventions(config, baseline_root)
+        baseline_module_lines = module_line_counts(config, baseline_root)
     baseline_keys = {_violation_key(v) for v in baseline}
-    net_new = [v for v in current if _violation_key(v) not in baseline_keys]
+    net_new = [
+        v
+        for v in current
+        if v.rule != MODULE_LINES_RULE and _violation_key(v) not in baseline_keys
+    ]
+    net_new.extend(module_growth_violations(config, project_root, baseline_module_lines))
     return current, net_new
 
 
-def _check_hard_conventions_at_git_ref(
-    config: HardConventionsConfig, project_root: Path, git_ref: str
-) -> list[ConventionViolation]:
-    """Run hard convention checks against the repository tree at git_ref."""
+@contextmanager
+def _git_ref_tree(project_root: Path, git_ref: str) -> Iterator[Path]:
+    """Yield a temporary directory holding the repository tree at git_ref."""
     with tempfile.TemporaryDirectory(prefix="theforge-conventions-") as tmp:
         tmp_path = Path(tmp)
         proc = subprocess.run(
@@ -129,67 +152,20 @@ def _check_hard_conventions_at_git_ref(
                 "Failed to extract convention baseline for "
                 f"{git_ref!r}: {stderr or 'unknown error'}"
             )
+        yield tmp_path
+
+
+def _check_hard_conventions_at_git_ref(
+    config: HardConventionsConfig, project_root: Path, git_ref: str
+) -> list[ConventionViolation]:
+    """Run hard convention checks against the repository tree at git_ref."""
+    with _git_ref_tree(project_root, git_ref) as tmp_path:
         return check_hard_conventions(config, tmp_path)
 
 
 def _violation_key(violation: ConventionViolation) -> tuple[str, str]:
     """Stable identity for comparing convention violations across snapshots."""
     return (violation.rule, violation.file)
-
-
-# ── Line count check ──────────────────────────────────────────────────
-
-
-def _check_line_counts(
-    config: HardConventionsConfig, project_root: Path
-) -> list[ConventionViolation]:
-    violations: list[ConventionViolation] = []
-
-    tests_root = project_root / "tests"
-
-    # Module scan roots: configured package_roots (which may live outside src/),
-    # else the legacy src/** scope. Dedup by resolved path so overlapping roots
-    # (e.g. "src" and "src/pipeline") don't double-report a file.
-    if config.package_roots:
-        module_roots = [project_root / rel for rel in config.package_roots]
-    else:
-        module_roots = [project_root / "src"]
-
-    seen: set[Path] = set()
-    for module_root in module_roots:
-        if not module_root.exists():
-            continue
-        for py_file in sorted(module_root.rglob("*.py")):
-            resolved = py_file.resolve()
-            if resolved in seen:
-                continue
-            seen.add(resolved)
-            line_count = len(py_file.read_text(encoding="utf-8", errors="replace").splitlines())
-            if line_count > config.max_module_lines:
-                rel = str(py_file.relative_to(project_root))
-                violations.append(
-                    ConventionViolation(
-                        rule="max_module_lines",
-                        file=rel,
-                        detail=f"{rel} has {line_count} lines (limit {config.max_module_lines})",
-                        blocking=False,
-                    )
-                )
-
-    for py_file in sorted(tests_root.rglob("*.py")):
-        line_count = len(py_file.read_text(encoding="utf-8", errors="replace").splitlines())
-        if line_count > config.max_test_file_lines:
-            rel = str(py_file.relative_to(project_root))
-            violations.append(
-                ConventionViolation(
-                    rule="max_test_file_lines",
-                    file=rel,
-                    detail=f"{rel} has {line_count} lines (limit {config.max_test_file_lines})",
-                    blocking=False,
-                )
-            )
-
-    return violations
 
 
 # ── Circular import check ─────────────────────────────────────────────

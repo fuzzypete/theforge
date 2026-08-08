@@ -1,0 +1,4500 @@
+{
+  "schema_version": 22,
+  "run_id": "24094739bfd6",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc24",
+  "task": {
+    "name": "Test processes a dev agent spawns outlive the sprint that started them and go on consuming the host indefinitely",
+    "slug": "issue-2309",
+    "story_path": null,
+    "story_text": "## Observed\n\nTest processes a dev agent spawns inside its sandbox outlive the sprint that created them, and go\non consuming the machine indefinitely.\n\nStory `issue-2284`'s dev agent ran the project's own suite four times while working, three of them\nwith `pytest -n auto --dist worksteal`, concurrently. Those invocations never terminated. Thirteen\nhours after the sprint completed and its worktree was deleted, the machine still carried:\n\n```\n40 processes, ~321% CPU total\nparent 4129   13:20:23  .venv/bin/python -m pytest tests/test_story_budget_seam.py::...\nparent 68119  13:56:07  .venv/bin/python -m pytest tests/test_story_budget_seam.py -q -n auto --dist\nparent 71222  13:51:50  .venv/bin/python -m pytest tests/test_story_budget_seam.py -q -n auto --dist\nparent 85040  13:41:11  .venv/bin/python -m pytest tests/test_story_budget_seam.py -q\n```\n\nThe parents were alive, not orphaned children of a reaped tree, and every worker executed from\n`.forge/worktrees/issue-2284/.venv` \u2014 a path that no longer exists, held open by the running\nprocesses.\n\nThe effect was not confined to wasted CPU. Every gate run on this host afterwards competed with\nroughly three cores of dead test workers: a `make gate` that normally completes in about 55\nseconds took 181, and a wall-clock timeout test failed inside it while passing three times out of\nthree when run alone. That failure was read as a possible regression in an unrelated story. Every\nrun duration recorded during those thirteen hours \u2014 the same durations adaptive limits derive dev\ntimeouts from \u2014 was measured against a host under load that nothing accounted for.\n\n## Expected\n\nWork a sprint starts should not outlive the sprint. A story's agent runs inside a sandbox with a\nworktree, a virtualenv and a budget, all of which end when the story does; a process it spawned is\npart of that same envelope and should end with it, whether the story succeeded, failed, or was\nstopped.\n\nThe failure is quiet in a way that matters. A leaked process produces no artifact, no cost record\nand no log line, so nothing in the run reports it and nothing in a later run knows it is there.\nWhat it changes instead is every timing measurement taken afterwards on the same host \u2014 which is\nthe input the system uses to decide how long work should be allowed to take. A leak that only\nwasted CPU would be a nuisance; one that silently biases the measurements the scheduler learns\nfrom is a correctness problem for everything measured while it persists.\n\nThat an agent runs the suite at all is reasonable and worth keeping. That it can run it several\ntimes concurrently, each fanning out across every core, inside an environment already running\nunder the coordinator's own parallelism, is a resource decision nobody made \u2014 the agent has no way\nto know what else is executing, so the bound has to come from the side that does.\n\n## Diagnosis\n\n- **Observed symptom:** pytest processes spawned by a dev agent remain running and consuming CPU\n  long after the sprint that started them has completed and its worktree has been removed.\n- **Evidence:** four `pytest` parents with elapsed times of 13h20m\u201313h56m, PPIDs alive, and 40\n  associated workers totalling ~321% CPU, all executing `.forge/worktrees/issue-2284/.venv/bin/python`\n  after that worktree was deleted. Three carried `-n auto --dist worksteal`. The sprint that\n  spawned them had completed and landed via #2285.\n- **Ruled out:** not the 21-day-old orphaned `codex exec` pair from another project \u2014 those are\n  idle, 13 minutes of CPU across 21 days, and unrelated.\n- **Ruled out:** not a worktree-cleanup failure. The worktree was removed; the processes held the\n  freed inode open, which is why they remained visible under a path that no longer resolves.\n- **Confirmed cause:** processes started by an agent inside its sandbox are not part of anything\n  the sprint tears down at story end, so a subprocess that does not exit on its own persists\n  without limit.\n- **Affected code path:** sandbox process supervision and story teardown.\n- **Fix-success criterion:** a process a story's agent starts does not outlive the story, whatever\n  the story's outcome, and a process that has to be terminated at teardown is recorded so the run\n  shows it happened. The suite remains runnable by an agent; what it cannot do is leave work\n  behind.\n",
+    "github_issue": 2309,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": {
+    "kind": "worker_timeout",
+    "cause": "Worker timeout (>5400s) during phase DEV",
+    "error_type": "TimeoutError",
+    "phase": "DEV",
+    "run_id": "24094739bfd6",
+    "source": "sprint.runner:worker-deadline",
+    "recorded_at": "2026-08-08T17:33:23.653299+00:00"
+  },
+  "phase_recovery": {
+    "status": "recovered",
+    "reason": "story_content_match",
+    "recovered_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "source_run_id": "84ce78ebc916",
+    "recorded_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "reentry_impact": null
+  },
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Worker thread timed out after 5400s",
+    "error_type": "TimeoutError",
+    "start_phase": null,
+    "stop_phase": null,
+    "cost_usd": 33.2578
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "edb7cbb3ab7da2fc0ce92c7ffde9d5a6238ccdeaa1eca0fed1c6f68f19284629",
+    "resolved_sha256": "7a3e2961c36f88230aa0e76c3a2417c372ba6c53ca38383a56fef92eb93dd26d",
+    "source_sha256_at_finish": "edb7cbb3ab7da2fc0ce92c7ffde9d5a6238ccdeaa1eca0fed1c6f68f19284629",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-08T16:14:40.666163+00:00",
+    "finished_at": "2026-08-08T17:33:23.653528+00:00",
+    "duration_seconds": 4722.987365
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2309",
+    "branch": "feat/issue-2309",
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "gate_decisions": [
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 2,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 10.275344500000001,
+        "duration_s": 984.79,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/agent_types.py",
+          "src/theforge/coordinator/audit_render.py",
+          "src/theforge/coordinator/audit_substrate.py",
+          "src/theforge/coordinator/util.py",
+          "src/theforge/process_group.py",
+          "src/theforge/runners/runner_claude.py",
+          "src/theforge/runners/runner_codex.py",
+          "src/theforge/runners/runner_gemini.py",
+          "tests/fake_bin/claude",
+          "tests/fake_bin/npx",
+          "tests/fixtures/audit_record_schema_v24.json",
+          "tests/test_audit_schema_guard.py",
+          "tests/test_coord_gate_exec.py",
+          "tests/test_process_teardown_lifecycle.py",
+          "tests/test_runner_gemini.py",
+          "tests/test_runner_providers.py"
+        ],
+        "files_changed_count": 16,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 10.658750000000001,
+        "duration_s": 892.46,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/util.py",
+          "src/theforge/process_group.py",
+          "src/theforge/runners/runner_claude.py",
+          "tests/fake_bin/claude",
+          "tests/fake_bin/npx",
+          "tests/fixtures/audit_record_schema_v24.json",
+          "tests/test_audit_schema_guard.py",
+          "tests/test_process_group.py",
+          "tests/test_process_teardown_lifecycle.py",
+          "tests/test_sprint_terminal_lifecycle.py"
+        ],
+        "files_changed_count": 10,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 5.584483,
+        "duration_s": 883.01
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 1
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 1
+        },
+        "repeated_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 1,
+        "cost_usd": 6.324141,
+        "duration_s": 1132.87
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 6.1005,
+      "static_dev_max": 3,
+      "estimate_headroom_factor": 1.25,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 123,
+      "profile_avg_iterations": 1.8537,
+      "profile_avg_cost_usd": 10.131143,
+      "score_cost_history_runs": 67,
+      "score_cost_avg_usd": 11.999007,
+      "profile_raw_dev_max": 2.7805,
+      "dev_cost_estimate_basis": {
+        "source": "profile_observed_score",
+        "band": "large",
+        "complexity_score": 8,
+        "statistic": "avg_cost_usd",
+        "scope": "dev_phase",
+        "sample_count": 67,
+        "headroom_multiplier": 1.25,
+        "headroom_basis": "allocation_headroom",
+        "allocation_comparable": true,
+        "reason": "profile_score_history"
+      },
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 14.9988,
+      "review_history_sample_size": 25,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 123 large-band profile runs with 1.5x iteration headroom and 2.5x budget headroom; timeout floored on observed run duration+headroom (4948s). Dev cost estimate from 67 score-8 run(s) across all models (avg $12.00 x 1.25x allocation headroom) \u2014 the population the story allocation is drawn from. review history stayed within the complexity-derived review base.",
+      "review_cycle_planning": {
+        "planned_cost_usd": 3.2467,
+        "basis": "observed_review_cycle",
+        "fallback_configured_usd": 18.3015,
+        "sample_count": 59,
+        "median_usd": 2.5974,
+        "p90_usd": 4.885,
+        "max_usd": 7.807,
+        "headroom_multiplier": 1.25,
+        "reason": "derived from median observed review-cycle spend $2.60 x 1.25 headroom over 59 cycle(s)",
+        "excluded_for_taint": 1,
+        "composition": [
+          "deepseek-deepseek-reasoner-api",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ]
+      },
+      "review_cycle_reconciliation": {
+        "requested_review_max": 5,
+        "reconciled_review_max": 5,
+        "affordable_review_cycles": 10,
+        "allocation_usd": 51.0,
+        "spent_so_far_usd": 0.4151,
+        "dev_cost_estimate_usd": 14.9988,
+        "review_cycle_cost_usd": 3.2467,
+        "review_cycle_cost_basis": "observed_review_cycle",
+        "review_cycle_cost_sample_count": 59,
+        "review_cycle_cost_median_usd": 2.5974,
+        "review_cycle_cost_p90_usd": 4.885,
+        "review_cycle_cost_max_usd": 7.807,
+        "review_cycle_cost_headroom_multiplier": 1.25,
+        "review_cycle_cost_reason": "derived from median observed review-cycle spend $2.60 x 1.25 headroom over 59 cycle(s)",
+        "review_cycle_cost_composition": [
+          "deepseek-deepseek-reasoner-api",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ],
+        "dev_cost_estimate_basis": "profile_observed_score",
+        "dev_cost_estimate_basis_reason": "profile_score_history",
+        "dev_cost_estimate_statistic": "avg_cost_usd",
+        "dev_cost_estimate_scope": "dev_phase",
+        "dev_cost_estimate_band": "large",
+        "dev_cost_estimate_complexity_score": 8,
+        "dev_cost_estimate_sample_count": 67,
+        "dev_cost_estimate_headroom_multiplier": 1.25,
+        "dev_cost_estimate_headroom_basis": "allocation_headroom",
+        "dev_cost_estimate_comparable": true,
+        "remaining_after_dev_usd": 35.5861,
+        "reserved_review_cycles": 5,
+        "reserved_review_usd": 16.2335,
+        "action": "within_allocation",
+        "basis": "substrate_band",
+        "complexity_score": 8
+      },
+      "review_funding_reservation": {
+        "allocation_usd": 51.0,
+        "reserved_review_usd": 16.2335,
+        "reserved_review_cycles": 5,
+        "review_cycle_cost_usd": 3.2467,
+        "action": "within_allocation",
+        "nonreview_allocation_usd": 34.7665
+      }
+    },
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-08T16:14:42.056025+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-08-08T16:46:54.397939+00:00"
+      },
+      {
+        "cycle": 2,
+        "cycle_count": 1,
+        "total_count": 3,
+        "timestamp": "2026-08-08T17:21:48.836685+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 33.25778022,
+    "dev_usd": 20.9340945,
+    "review_usd": 11.90862362,
+    "dev_invocations": 2,
+    "review_invocations": 7,
+    "agents": [
+      {
+        "role": "preflight",
+        "profile": "preflight",
+        "cost_usd": 0.4150621,
+        "duration_seconds": 90.72420487506315,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.4150621,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6067,
+            "output_tokens": 6809,
+            "cache_read_tokens": 353727,
+            "cache_creation_tokens": 33480,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 6051,
+              "output_tokens": 17,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.006136,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 16,
+              "output_tokens": 6792,
+              "cache_read_tokens": 353727,
+              "cache_creation_tokens": 33480,
+              "thinking_tokens": 0,
+              "cost_usd": 0.40892609999999996,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 6051,
+            "output_tokens": 17,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.006136
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": 16,
+            "output_tokens": 6792,
+            "cache_read_tokens": 353727,
+            "cache_creation_tokens": 33480,
+            "cost_usd": 0.40892609999999996
+          }
+        ],
+        "model_used": "sonnet",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 10.275344500000001,
+        "duration_seconds": 984.7871082918718,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 10.275344500000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 7370,
+            "output_tokens": 51202,
+            "cache_read_tokens": 14617241,
+            "cache_creation_tokens": 167876,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 7154,
+              "output_tokens": 16,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.007234,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 216,
+              "output_tokens": 51186,
+              "cache_read_tokens": 14617241,
+              "cache_creation_tokens": 167876,
+              "thinking_tokens": 0,
+              "cost_usd": 10.268110500000002,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 7154,
+            "output_tokens": 16,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.007234
+          },
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 216,
+            "output_tokens": 51186,
+            "cache_read_tokens": 14617241,
+            "cache_creation_tokens": 167876,
+            "cost_usd": 10.268110500000002
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 10.658750000000001,
+        "duration_seconds": 892.4604453747161,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 10.658750000000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 98,
+            "output_tokens": 49112,
+            "cache_read_tokens": 13199080,
+            "cache_creation_tokens": 283092,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 98,
+              "output_tokens": 49112,
+              "cache_read_tokens": 13199080,
+              "cache_creation_tokens": 283092,
+              "thinking_tokens": 0,
+              "cost_usd": 10.658750000000001,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 98,
+            "output_tokens": 49112,
+            "cache_read_tokens": 13199080,
+            "cache_creation_tokens": 283092,
+            "cost_usd": 10.658750000000001
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.8866179999999999,
+        "duration_seconds": 262.33087272243574,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": "high",
+          "cost_usd": 0.8866179999999999,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 557558,
+            "output_tokens": 7226,
+            "cache_read_tokens": 470656,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 4777
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 557558,
+              "output_tokens": 7226,
+              "cache_read_tokens": 470656,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 4777,
+              "cost_usd": 0.8866179999999999,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 557558,
+            "output_tokens": 7226,
+            "cache_read_tokens": 470656,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.8866179999999999
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "deepseek-deepseek-reasoner-api",
+        "cost_usd": 2.19899806,
+        "duration_seconds": 262.33087272243574,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "deepseek-deepseek-reasoner-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 2.19899806,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "deepseek-reasoner",
+            "transport": "api",
+            "identity": "deepseek/deepseek-reasoner/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "deepseek-reasoner",
+            "transport": "api",
+            "identity": "deepseek/deepseek-reasoner/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 3656164,
+            "output_tokens": 85894,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "deepseek-reasoner",
+                "transport": "api",
+                "identity": "deepseek/deepseek-reasoner/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 3656164,
+              "output_tokens": 85894,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 2.19899806,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "deepseek-reasoner",
+            "input_tokens": 3656164,
+            "output_tokens": 85894,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 2.19899806
+          }
+        ],
+        "model_used": "deepseek-reasoner",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 0.7842915,
+        "duration_seconds": 262.33087272243574,
+        "success": false,
+        "exit_code": 1,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.7842915,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 514005,
+            "output_tokens": 346,
+            "cache_read_tokens": 417024,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 1130
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 514005,
+              "output_tokens": 346,
+              "cache_read_tokens": 417024,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 1130,
+              "cost_usd": 0.7842915,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 514005,
+            "output_tokens": 346,
+            "cache_read_tokens": 417024,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.7842915
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.714575,
+        "duration_seconds": 377.5465809861198,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 1.714575,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1117862,
+            "output_tokens": 1042,
+            "cache_read_tokens": 1005440,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 3156
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1117862,
+              "output_tokens": 1042,
+              "cache_read_tokens": 1005440,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 3156,
+              "cost_usd": 1.714575,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 1117862,
+            "output_tokens": 1042,
+            "cache_read_tokens": 1005440,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.714575
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.5441460000000002,
+        "duration_seconds": 377.5465809861198,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": "high",
+          "cost_usd": 1.5441460000000002,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1362182,
+            "output_tokens": 8070,
+            "cache_read_tokens": 1224192,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 3769
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1362182,
+              "output_tokens": 8070,
+              "cache_read_tokens": 1224192,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 3769,
+              "cost_usd": 1.5441460000000002,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 1362182,
+            "output_tokens": 8070,
+            "cache_read_tokens": 1224192,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.5441460000000002
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "deepseek-deepseek-reasoner-api",
+        "cost_usd": 2.26427006,
+        "duration_seconds": 377.5465809861198,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "deepseek-deepseek-reasoner-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 2.26427006,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "deepseek-reasoner",
+            "transport": "api",
+            "identity": "deepseek/deepseek-reasoner/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "deepseek-reasoner",
+            "transport": "api",
+            "identity": "deepseek/deepseek-reasoner/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 3632351,
+            "output_tokens": 121679,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "deepseek-reasoner",
+                "transport": "api",
+                "identity": "deepseek/deepseek-reasoner/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 3632351,
+              "output_tokens": 121679,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 2.26427006,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "deepseek-reasoner",
+            "input_tokens": 3632351,
+            "output_tokens": 121679,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 2.26427006
+          }
+        ],
+        "model_used": "deepseek-reasoner",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 2.515725,
+        "duration_seconds": null,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 2.515725,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1637688,
+            "output_tokens": 1286,
+            "cache_read_tokens": 1447375,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 5291
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1637688,
+              "output_tokens": 1286,
+              "cache_read_tokens": 1447375,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 5291,
+              "cost_usd": 2.515725,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 1637688,
+            "output_tokens": 1286,
+            "cache_read_tokens": 1447375,
+            "cache_creation_tokens": 0,
+            "cost_usd": 2.515725
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      }
+    ],
+    "story_allocation": {
+      "allocation_usd": 51.0,
+      "basis": "substrate_band",
+      "complexity_score": 8,
+      "excluded_for_taint": 2,
+      "fallback_configured_usd": 50.0,
+      "max_usd": 40.8032,
+      "median_usd": 9.0969,
+      "p90_usd": 32.0767,
+      "reason": "derived from 47 admissible run(s) at complexity score 8 (max $40.80 x 1.25)",
+      "sample_count": 47,
+      "scaled_profiles": {
+        "preflight": 6.1005,
+        "plan": 0.7321,
+        "dev": 6.1005,
+        "review_pool[0]": 6.1005,
+        "review_pool[1]": 6.1005,
+        "review_pool[2]": 6.1005,
+        "plan_agent_review[0]": 6.1005,
+        "plan_agent_review[1]": 6.1005,
+        "plan_agent_review[2]": 6.1005,
+        "synthesis": 1.4641
+      },
+      "carried": true,
+      "observed_usd": 33.2578,
+      "status": "within_allocation",
+      "exceeded": false
+    },
+    "allocation_exhausted": null,
+    "reviewer_budget_overruns": []
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Extensive process-group isolation and orphan-reaping infrastructure already exists (process_group.py, runner_claude.py, coordinator/util.py), but it is explicitly designed as a fallback for a SIGKILL-ed sprint process and is only swept opportunistically by a later mutating `forge` command (sprint start/stop) \u2014 it does not unconditionally terminate a story's spawned process tree at that story's own teardown, nor does it surface a forced kill in the run's own record, which is exactly the gap the spec describes.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "concurrency",
+      "testing",
+      "backend"
+    ],
+    "contract_change": false,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.4150621,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "52c6770216a4",
+    "cache_snapshot": {
+      "worktree_head": "e5cb1bbca6e95698fa2856da7dbfb44fbd94a27d",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "e5cb1bbca6e95698fa2856da7dbfb44fbd94a27d",
+      "story_content_hash": "76f61f55f3d958ae7dbc5aa44076fa7e5c4e80a7f78d5bda093369810497d7ba"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "e5cb1bbca6e95698fa2856da7dbfb44fbd94a27d",
+      "current_worktree_head": "e5cb1bbca6e95698fa2856da7dbfb44fbd94a27d",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "e5cb1bbca6e95698fa2856da7dbfb44fbd94a27d",
+      "current_evaluation_base_branch_head": "e5cb1bbca6e95698fa2856da7dbfb44fbd94a27d",
+      "cached_story_content_hash": "76f61f55f3d958ae7dbc5aa44076fa7e5c4e80a7f78d5bda093369810497d7ba",
+      "current_story_content_hash": "76f61f55f3d958ae7dbc5aa44076fa7e5c4e80a7f78d5bda093369810497d7ba",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.4150621,
+        "duration_s": 90.72,
+        "success": true,
+        "exit_code": 0,
+        "completed": true,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": null,
+          "complexity_score": null,
+          "reasoning_effort": null,
+          "cost_usd": 0.4150621,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6067,
+            "output_tokens": 6809,
+            "cache_read_tokens": 353727,
+            "cache_creation_tokens": 33480,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "claude-haiku-4-5-20251001",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 6051,
+              "output_tokens": 17,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.006136,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 16,
+              "output_tokens": 6792,
+              "cache_read_tokens": 353727,
+              "cache_creation_tokens": 33480,
+              "thinking_tokens": 0,
+              "cost_usd": 0.40892609999999996,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        }
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.6-luna",
+          "source": "forge.yaml",
+          "canonical_id": "openai/gpt-5.6-luna/api"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "gpt-5.6-sol",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.6-sol/api"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "deepseek-reasoner",
+            "source": "builtin",
+            "canonical_id": "deepseek/deepseek-reasoner/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "deepseek-reasoner",
+            "source": "builtin",
+            "canonical_id": "deepseek/deepseek-reasoner/api"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "builtin",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.81 \u2265 threshold 0.60 over 123 admissible runs \u2014 pre-promotion held) (profile success_rate=0.81 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($4.17)",
+        "planner": "complexity score 8 \u2192 tier strong ($4.17); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['openai', 'anthropic', 'deepseek'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'deepseek', 'google'], complexity score 8 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 37.5,
+        "final_total_usd": 37.5,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 4.17
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 4.17
+          },
+          "plan_reviewers": [
+            {
+              "model": "gpt-5.6-sol",
+              "budget_usd": 4.17
+            },
+            {
+              "model": "opus",
+              "budget_usd": 4.17
+            },
+            {
+              "model": "deepseek-reasoner",
+              "budget_usd": 4.17
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 4.17
+            },
+            {
+              "model": "deepseek-reasoner",
+              "budget_usd": 4.17
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 4.17
+            }
+          ],
+          "total_usd": 37.5
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "deepseek-reasoner",
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gemini-3.1-pro-preview",
+          "gpt-5.6-terra",
+          "gpt-5.5",
+          "gpt-5.6-sol"
+        ],
+        "source": "complexity_adaptive"
+      },
+      "story_allocation": {
+        "allocation_usd": 51.0,
+        "basis": "substrate_band",
+        "complexity_score": 8,
+        "excluded_for_taint": 2,
+        "fallback_configured_usd": 50.0,
+        "max_usd": 40.8032,
+        "median_usd": 9.0969,
+        "p90_usd": 32.0767,
+        "reason": "derived from 47 admissible run(s) at complexity score 8 (max $40.80 x 1.25)",
+        "sample_count": 47,
+        "scaled_profiles": {
+          "preflight": 6.1005,
+          "plan": 0.7321,
+          "dev": 6.1005,
+          "review_pool[0]": 6.1005,
+          "review_pool[1]": 6.1005,
+          "review_pool[2]": 6.1005,
+          "plan_agent_review[0]": 6.1005,
+          "plan_agent_review[1]": 6.1005,
+          "plan_agent_review[2]": 6.1005,
+          "synthesis": 1.4641
+        },
+        "carried": true
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/runners",
+          "lines": 16
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/runners/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/runners",
+          "lines": 18
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2309/iter_1.yaml",
+      "handoff": {
+        "summary": "Closed the lifecycle gap at the runner process-group boundary. release_group_record no longer assumes a clean CLI exit means the group went with it: it probes the group, snapshots membership, killpg-s any survivors, waits bounded, and returns a structured ProcessTeardown (killed_survivors or retained_for_reaper, with pgid, member count, sandbox dir and completion). Those facts propagate as a new AgentResult.process_teardown field from all three local CLI runners \u2014 Claude via a variable set in its finally and attached to each post-teardown return; Codex via a teardown_out out-parameter on run_in_process_group plus a dataclasses.replace graft onto the _handle_exception timeout result; Gemini by moving off bare subprocess.run onto run_in_process_group, which previously gave it no process group, no registry entry and no teardown at all. The audit writer records cost.agents[].process_teardown on every invocation (None meaning the group ended on its own, which is distinct from an older record that never asked), with CURRENT_RECORD_SCHEMA_VERSION bumped to 24, a _migrate_v23_to_v24 backfilling None, and the v24 snapshot committed. The coordinator's gate-shell path had the identical clean-exit assumption (make gate returning is not proof its pytest-xdist workers stopped) and is now routed through the same helper, which also removed duplicated retain/unregister logic. New tests/test_process_teardown_lifecycle.py covers the seam, all three runners, the gate shell, the audit record, the migration and the refused-kill retention path using real subprocesses via new grandchild_success fake-CLI modes; verified to fail against the pre-fix release semantics.",
+        "commits": [
+          {
+            "sha": "b3e01b05",
+            "message": "fix(process): end a story's spawned process tree at the story, and record it"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A process a story's agent starts does not outlive the story, whatever the story's outcome.",
+            "status": "MET",
+            "notes": "Every CLI-backed invocation now verifies its process group is empty at release and kills survivors before the story proceeds \u2014 the clean-success path that previously deferred them to an opportunistic later reaper. Covered for all three local runners (claude/codex/gemini) plus run_in_process_group itself and the gate shell, with real-subprocess tests asserting the grandchild is gone after the runner returns while the result still reports success. The refused-kill case (sandbox denies killpg) still retains the sidecar for the orphan reaper, which remains the only honest outcome there."
+          },
+          {
+            "criterion": "A process that has to be terminated at teardown is recorded so the run shows it happened.",
+            "status": "MET",
+            "notes": "ProcessTeardown rides out on AgentResult.process_teardown and is rendered into the originating run's audit at cost.agents[].process_teardown with pgid, action, member count, member pids, sandbox path and whether cleanup completed or was retained for the reaper. Written on every agent entry (null when the group ended on its own) so absence-vs-null stays meaningful; record schema bumped to v24 with a migration and a regenerated snapshot. tests/test_process_teardown_lifecycle.py::test_forced_teardown_appears_in_the_run_audit pins it."
+          },
+          {
+            "criterion": "The suite remains runnable by an agent; what it cannot do is leave work behind.",
+            "status": "MET",
+            "notes": "Nothing restricts what an agent may run. The only new behaviour is at teardown: the invocation's own success is preserved (tests assert result.success is True on the clean-exit-with-survivors path) and only its leftovers are killed."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Plan step 3 was labelled 'create' but audit_render.py / audit.py / audit_substrate.py already existed; treated as modify-plus-one-new-snapshot as the plan reviewer noted. SCHEMA_VERSION lives only in audit_substrate.py (audit.py re-exports it), so one bump covered both names.",
+          "Plan step 2 left the codex teardown channel unnamed. Chose the out-parameter the plan reviewer recommended (teardown_out on run_in_process_group) rather than changing its return type, which keeps the two existing mock targets in test_runner_codex.py and test_runner_providers.py working. The _handle_exception timeout result gets the metadata grafted on via dataclasses.replace in the runner rather than threading process-group knowledge into the transport-agnostic helper.",
+          "Extended scope by one file beyond the plan: coordinator/util.py's _run_shell_detailed, flagged as adjacent by both plan reviewers, carried the same clean-exit assumption for gate commands and is now routed through release_group_record. Cheap (it deleted duplicated logic) and in-scope under the in_scope P2 policy.",
+          "Did not add the #2115 _identity_verdict fingerprint check before the clean-release kill. The leader's fingerprint is unverifiable at that moment (it has just exited) and the check is unnecessary: a pgid cannot be reallocated while its group is non-empty, so enumerated live members are necessarily this group's. Documented in release_group_record's docstring."
+        ],
+        "deferred_items": [
+          "The spec's Expected section argues an agent should not be able to run the suite several times concurrently at full fan-out and that the bound must come from the coordinator. That is a resource-policy decision, not a lifecycle one, and appears in no acceptance criterion or in the fix-success criterion \u2014 not implemented. Worth its own story if wanted.",
+          "Three existing test files (test_cut_rc_isolation.py, test_sprint_lock.py, test_sprint_reexec_collision.py \u2014 17 tests) fail in this sandbox with PermissionError from multiprocessing.SemLock and mktemp. Pre-existing environment restriction, unrelated to any changed code path; expected to pass in the coordinator's gate."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2309/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 fixes the review's P1: a process group is escapable, so a process the agent starts that calls setsid left the registered pgid and outlived the story invisibly. Added a process lease \u2014 open_process_lease stamps a fresh, never-reused token into the child's environment at spawn, and because environment is inherited across fork/exec and survives setsid, every descendant carries it however many sessions deep. close_process_lease enumerates live holders (/proc/<pid>/environ on Linux, sysctl KERN_PROCARGS2 on macOS, skipping processes older than the lease so the sweep costs ~0.7ms) and kills them. release_group_record runs the group kill first, then the lease sweep, and now accepts pgid=None so the sweep still runs when the group could not be resolved. Wired at all four spawn sites: run_in_process_group (codex + gemini), the claude runner's own Popen, and the gate shell in coordinator/util.py. The token is also recorded on the reaper sidecar and swept by reap_orphan_agents regardless of the pgid verdict \u2014 it needs no identity check because a token minted once for one spawn cannot be counterfeited by a recycled id, unlike the pgid that #2115 guards. ProcessTeardown gained escaped_pids so the audit distinguishes a survivor that stayed in the group from one that stepped outside it; the v24 snapshot was regenerated (no version bump \u2014 v24 is introduced by this branch and has not shipped). Iteration 0's work is otherwise unchanged: clean-exit group verification, teardown facts on AgentResult, cost.agents[].process_teardown at schema v24 with the v23-to-v24 migration, and gemini moved onto the group-isolated spawn.",
+        "commits": [
+          {
+            "sha": "b3e01b05",
+            "message": "fix(process): end a story's spawned process tree at the story, and record it"
+          },
+          {
+            "sha": "4603a334",
+            "message": "fix(process): contain descendants that leave the process group (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A process a story's agent starts does not outlive the story, whatever the story's outcome.",
+            "status": "MET",
+            "notes": "Two containers now, checked in order. The process group catches descendants that stayed in it (verified at release rather than assumed from a clean exit). The lease catches the ones that did not: a token inherited through environment, which setsid cannot shed. Both run at all four spawn sites \u2014 claude, codex, gemini and the gate shell \u2014 on success, timeout and unwind paths. Real-subprocess tests cover a same-group grandchild and a setsid escapee for each runner, plus inheritance through a multi-exec chain; all were verified to fail with the respective mechanism disabled."
+          },
+          {
+            "criterion": "A process that has to be terminated at teardown is recorded so the run shows it happened.",
+            "status": "MET",
+            "notes": "ProcessTeardown rides out on AgentResult.process_teardown into cost.agents[].process_teardown, now with escaped_pids alongside members so the record says which container caught what \u2014 a survivor that outran its invocation and one that also left the container it was placed in are different facts. Null on an invocation whose tree ended on its own, so absence-vs-null stays meaningful. Schema v24 with migration and regenerated snapshot."
+          },
+          {
+            "criterion": "The suite remains runnable by an agent; what it cannot do is leave work behind.",
+            "status": "MET",
+            "notes": "Nothing restricts what an agent may run, and every clean-exit test asserts result.success is True while its leftovers are killed. The lease is a per-spawn token, so one invocation's teardown provably cannot reach another's work \u2014 pinned by test_a_lease_never_matches_another_spawn."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The P1 fix stays inside the plan's approach (Step 1's 'kill any surviving descendants' extended to descendants the pgid cannot name) rather than adopting the reviewer's alternatives of an OS job object or cgroup, which are Linux-only and privilege-bearing. The env-lease is the portable form of the same containment and is the 'additional descendant tracking mechanism' the finding's fix note also offered.",
+          "Extended beyond the plan's file list by two adjacent paths, both for the same defect: coordinator/util.py's gate shell (flagged by both plan reviewers in cycle 0) and reap_orphan_agents, which had the identical escapee blind spot on the SIGKILL-ed-sprint path.",
+          "Regenerated the v24 schema snapshot for escaped_pids rather than bumping to v25: v24 is introduced by this branch and has never been written by a shipped writer, so there is no stored record at v24 to migrate from."
+        ],
+        "deferred_items": [
+          "Two existing tests in test_sprint_terminal_lifecycle.py and one in test_process_group.py simulated a refused killpg while leaving per-pid kills working; the lease now ends those trees at release, so their stand-in sandbox was changed to deny the per-pid kill too \u2014 which is what 'teardown reached only the direct child' means. They still exercise the reaper path; the improved outcome is covered separately in test_process_teardown_lifecycle.py.",
+          "Cycle 1 P2 (deepseek): the gate shell's ProcessTeardown is still not surfaced in any audit field \u2014 _run_shell_detailed returns only ok/output/code/timed_out, and threading a teardown record through every gate caller into the validate block is a wider change than this finding warrants. The gate's leaked workers are killed either way, and the log line plus reaper sidecar remain. Worth its own story if the recording criterion is to extend to gate shells.",
+          "The spec's Expected section argues an agent should not be able to run the suite several times concurrently at full fan-out and that the bound must come from the coordinator. Still not implemented: it is a resource-policy decision, appears in no acceptance criterion, and is unrelated to the P1.",
+          "17 tests in test_cut_rc_isolation.py, test_sprint_lock.py and test_sprint_reexec_collision.py fail in this sandbox with PermissionError from multiprocessing.SemLock and mktemp. Pre-existing environment restriction, identical set and count as before this iteration; none touch changed code."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "30b834e3f1d48f6d"
+      ]
+    },
+    {
+      "iteration": 3,
+      "finding_ids": [
+        "30b834e3f1d48f6d"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "b3e01b0570bade9593dafb74e7fda0fcd8f7ccbb",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "b3e01b0570bade9593dafb74e7fda0fcd8f7ccbb",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "deepseek-deepseek-reasoner-api",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "deepseek-deepseek-reasoner-api",
+        "google-gemini-3.5-flash-api"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "deepseek-deepseek-reasoner-api": "deepseek/deepseek-reasoner/api",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {
+        "google-gemini-3.5-flash-api": 1
+      },
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "deepseek-deepseek-reasoner-api": "succeeded",
+        "google-gemini-3.5-flash-api": "transient_retried_then_succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5-cli] The same-process-group leak is covered, but story-started work can still escape teardown by creating its own process group. | [deepseek-deepseek-reasoner-api] The lifecycle gap is closed at the runner process-group boundary: release_group_record now verifies a group is empty on clean exit and kills survivors before dropping the sidecar, the teardown fact rides out on AgentResult and into the v24 audit record, and the gate-shell path shares the same containment. Real-subprocess tests pin the exact #2309 failure mode across all three runners, run_in_process_group and the gate shell, and the full touched test surface passes. | [google-gemini-3.5-flash-api] Exquisitely clean implementation that closes the process-group lifecycle leak at the agent/runner boundary and records teardown events in the audit log.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/process_group.py",
+          "line": 185,
+          "description": "When a CLI-backed invocation starts a long-lived subprocess in its own process group and exits successfully, run_in_process_group returns success with no process_teardown while the subprocess remains running.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A process a story's agent starts does not outlive the story, whatever the story's outcome.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/process_group.py:185 and src/theforge/process_group.py:242-331 now release, inspect, and kill survivors in the registered pgid, and the runners invoke that path at src/theforge/runners/runner_claude.py:920, src/theforge/runners/runner_codex.py:735, and src/theforge/runners/runner_gemini.py:165. tests/test_process_teardown_lifecycle.py:68-107 and :200-276 cover clean-success survivors in the same process group. The criterion is not fully met because descendants that create a new process group are outside the checked pgid and remain alive with no teardown record.; release_group_record (src/theforge/process_group.py:290-330) now probes the group on clean exit (group_killed=True), enumerates members, killpg-s survivors and awaits emptiness before unregistering, returning ProcessTeardown; refused kills retain the sidecar for the orphan reaper. Wired into run_in_process_group (line 185), runner_claude (line 920), runner_codex via teardown_out (line 740), runner_gemini (line 165, moved off bare subprocess.run), and _run_shell_detailed (src/theforge/coordinator/util.py:456). The #2309 symptom is reproduced with real subprocesses in tests/test_process_teardown_lifecycle.py (grandchild_success fake-CLI modes asserting the grandchild is dead after the runner returns while result.success is True) for claude, codex, gemini, run_in_process_group itself, and the gate shell; all pass.; In src/theforge/process_group.py (lines 242-331), release_group_record checks for survivors and kills them on release. Tested in tests/test_process_teardown_lifecycle.py (lines 68-107, 196-285)."
+        },
+        {
+          "criterion": "A process that has to be terminated at teardown is recorded so the run shows it happened.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/agent_types.py:110-116 carries ProcessTeardown on AgentResult, src/theforge/coordinator/audit_render.py:181-189 renders it into cost.agents[].process_teardown, and src/theforge/coordinator/audit_substrate.py:1484-1510 adds the v24 migration. tests/test_process_teardown_lifecycle.py:320-418 verifies a forced teardown appears in the generated run audit and that a clean invocation records null.; ProcessTeardown rides out on AgentResult.process_teardown (src/theforge/agent_types.py:116), is rendered by audit_render.py:187-189 into cost.agents[].process_teardown (None when the group ended on its own), CURRENT_RECORD_SCHEMA_VERSION bumped to 24 with _migrate_v23_to_v24 backfilling None (audit_substrate.py:1486-1517) and the v24 snapshot regenerated. Pinned by tests/test_process_teardown_lifecycle.py::test_forced_teardown_appears_in_the_run_audit (killed_survivors with pgid/members/sandbox/completed) and ::test_pre_v24_records_read_back_as_did_not_say; guard updated in test_audit_schema_guard.py via a real ProcessTeardown.; In src/theforge/agent_types.py (lines 110-115), AgentResult gets process_teardown. Recorded in src/theforge/coordinator/audit_render.py (lines 181-190). Tested in tests/test_process_teardown_lifecycle.py (lines 331-425)."
+        },
+        {
+          "criterion": "The suite remains runnable by an agent; what it cannot do is leave work behind.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/process_group.py:167-188 preserves the child return code while performing release cleanup afterward, and src/theforge/runners/runner_codex.py:847-877 plus src/theforge/runners/runner_gemini.py:220-230 keep success based on the CLI return code while attaching teardown metadata. tests/test_process_teardown_lifecycle.py:180-197 asserts the runner result remains successful while leftovers are killed and recorded, with runner coverage at :200-276.; No restriction is added on what an agent may run; the only new behaviour is at release (process_group.py:290-330). The clean-exit-with-survivors tests assert result.success is True and only the leftovers are killed (test_process_teardown_lifecycle.py _assert_reaped_and_recorded and the three runner tests).; Verified by test_process_teardown_lifecycle.py where the fake agents run, succeed, and exit 0, while their lingering process tree is successfully reaped on release."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "4603a3348f0be99ec7b2b885e95aff18a91c9592",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "4603a3348f0be99ec7b2b885e95aff18a91c9592",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "deepseek-deepseek-reasoner-api",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "deepseek-deepseek-reasoner-api",
+        "google-gemini-3.5-flash-api"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "deepseek-deepseek-reasoner-api": "deepseek/deepseek-reasoner/api",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "deepseek-deepseek-reasoner-api": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5-cli] The prior escapee P1 is still present on macOS because the lease sweep does not find leased child processes. | [deepseek-deepseek-reasoner-api] Cycle 1 P1 is resolved: release now verifies the group is empty on clean exit and kills survivors, and the new process lease catches setsid escapees at all four spawn sites, with teardown facts carried into the audit record. No regressions found in the latest iteration. | [google-gemini-3.5-flash-api] Process lease tracking successfully terminates setsid-escaped descendants at story end and records forced teardowns in audit logs.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 1,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/process_group.py",
+          "line": 187,
+          "description": "When a CLI-backed invocation starts a long-lived descendant in its own session and exits successfully on macOS, the invocation returns success with process_teardown null while that descendant remains running.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/coordinator/util.py",
+          "line": 459,
+          "description": "A gate command that leaves a descendant running has that descendant killed by release_group_record, but the forced teardown is not carried into the run's audit record, so the run does not show that the kill happened.",
+          "reviewers": [
+            "deepseek-deepseek-reasoner-api"
+          ],
+          "reporter": "deepseek-deepseek-reasoner-api"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A process a story's agent starts does not outlive the story, whatever the story's outcome.",
+          "status": "PARTIAL",
+          "evidence": "Same-group survivors are handled through release_group_record at src/theforge/process_group.py:476-534 and run_in_process_group at src/theforge/process_group.py:310-355, with coverage in tests/test_process_teardown_lifecycle.py:68-108. The lease path is wired into the runner and gate call sites at src/theforge/runners/runner_claude.py:737 and 923-928, src/theforge/runners/runner_codex.py:735-744, src/theforge/runners/runner_gemini.py:165-173, and src/theforge/coordinator/util.py:394-459, but the macOS lease discovery path at src/theforge/process_group.py:187-228 does not find a real leased child; the escapee tests fail at tests/test_process_teardown_lifecycle.py:173, 210, 293, 407, 456, 513, and 705.; release_group_record now checks for survivors on clean exit and kills them (process_group.py:459-466), and close_process_lease kills escaped descendants by inherited token (process_group.py:248-264). Wired at all four spawn sites: run_in_process_group (runner_codex.py:735-744, runner_gemini.py:165-173), runner_claude.py:923-928, and coordinator/util.py:394-459. Real-subprocess tests cover same-group grandchild, setsid escapee, multi-exec inheritance, and the SIGKILL-ed-sprint reaper path in tests/test_process_teardown_lifecycle.py.; src/theforge/process_group.py:124-264 implements environment process lease tokens. Wired at all spawn sites and the gate shell: src/theforge/coordinator/util.py:394, src/theforge/runners/runner_claude.py:737, and src/theforge/process_group.py:310 via run_in_process_group for codex/gemini. Sweep covers DEAD owner sprints via close_process_lease in reap_orphan_agents (src/theforge/process_group.py:1132). Covered by integration tests in tests/test_process_teardown_lifecycle.py."
+        },
+        {
+          "criterion": "A process that has to be terminated at teardown is recorded so the run shows it happened.",
+          "status": "PARTIAL",
+          "evidence": "ProcessTeardown is carried on AgentResult at src/theforge/agent_types.py:110-116 and rendered into cost.agents[].process_teardown at src/theforge/coordinator/audit_render.py:181-189, with migration support at src/theforge/coordinator/audit_substrate.py:1484-1510 and audit coverage in tests/test_process_teardown_lifecycle.py:571-625. For macOS escapees, the lease sweep returns no holder, so affected runner results keep process_teardown as null as shown by the failing runner assertions at tests/test_process_teardown_lifecycle.py:293.; AgentResult.process_teardown (agent_types.py:116) is rendered into cost.agents[].process_teardown by audit_render._agent_entry (audit_render.py:187-189), with schema v24 migration and pinned snapshot (audit_substrate.py:89, MIGRATION_HELPERS; tests/fixtures/audit_record_schema_v24.json). Tests test_forced_teardown_appears_in_the_run_audit and test_pre_v24_records_read_back_as_did_not_say verify the audit shape and migration.; ProcessTeardown dataclass added in src/theforge/process_group.py:82 and on AgentResult in src/theforge/agent_types.py:107. Audit rendering wired in src/theforge/coordinator/audit_render.py:181 and reader-side migration helper in src/theforge/coordinator/audit_substrate.py:1484. Verified in test_forced_teardown_appears_in_the_run_audit and test_pre_v24_records_read_back_as_did_not_say (tests/test_process_teardown_lifecycle.py)."
+        },
+        {
+          "criterion": "The suite remains runnable by an agent; what it cannot do is leave work behind.",
+          "status": "PARTIAL",
+          "evidence": "The successful-run tests keep result.success true while checking leftover cleanup at tests/test_process_teardown_lifecycle.py:288-307, and the same-group cases pass in the focused lifecycle run. The escapee cases still leave work behind on macOS, with the low-level and runner tests failing at tests/test_process_teardown_lifecycle.py:173, 367, 407, 456, and 513.; No command restrictions were added; clean-exit tests assert result.success is True while verifying leftover processes are killed (tests/test_process_teardown_lifecycle.py _assert_reaped_and_recorded). Per-spawn lease isolation is pinned by test_a_lease_never_matches_another_spawn, proving one invocation cannot reap another's work.; Uniquely generated os.urandom lease tokens ensure separate invocations never conflict or accidentally reap another's process subtree (src/theforge/process_group.py:152). Verified in test_a_lease_never_matches_another_spawn (tests/test_process_teardown_lifecycle.py)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": false,
+      "outcome": "transport_failure",
+      "failure_reason": "transient transport failure",
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "deepseek-deepseek-reasoner-api",
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "cli": null,
+      "canonical_id": "deepseek/deepseek-reasoner/api",
+      "resolved_model": "deepseek/deepseek-reasoner/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "deepseek-deepseek-reasoner-api",
+      "provider": "deepseek",
+      "model": "deepseek-reasoner",
+      "cli": null,
+      "canonical_id": "deepseek/deepseek-reasoner/api",
+      "resolved_model": "deepseek/deepseek-reasoner/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [anthropic-opus-cli] Step 2 (runner_codex teardown metadata): run_in_process_group returns a subprocess.CompletedProcess (process_group.py:134), which has nowhere to carry teardown facts, and its release_group_record call is inside a finally (line 133). 'Preserve equivalent metadata from run_in_process_group(...)' therefore needs a channel the plan does not name.\n  Suggestion: Dev picks the channel at implementation time \u2014 an out-parameter, a returned tuple, or a small result wrapper. Note that changing the return type would touch the two mock targets at tests/test_runner_codex.py:28 and tests/test_runner_providers.py:20, so an out-param is the cheaper shape.\n- [P2] [anthropic-opus-cli] Step 3 is labeled 'action: create', but all four listed files already exist \u2014 audit_render.py, audit.py, and audit_substrate.py are modifications; only the v24 snapshot at tests/fixtures/audit_record_schema_v24.json is genuinely new.\n  Suggestion: Read the step as modify-plus-one-new-snapshot. Mislabeled action only; no effect on the work.\n- [P2] [anthropic-opus-cli] Step 1 blast radius: the gate's shell-timeout path at coordinator/util.py:422,455 registers a group and calls unregister_agent_group directly rather than going through release_group_record, so it will not inherit Step 1's kill-live-descendants behavior.\n  Suggestion: Out of scope for the story's criteria (gate shell, not a story agent's sandbox), but worth routing through the same helper if it turns out to be cheap.\n- [P2] [deepseek-deepseek-reasoner-api] Step 1 routes the new survivor-kill through the real kill_agent_group(pgid), but the existing end-to-end test test_process_group.py::test_teardown_that_leaves_survivors_records_them_and_the_reaper_uses_it monkeypatches only _killpg_for/_kill_pid to simulate a refused group kill, so under the new release semantics the real kill_agent_group would actually SIGKILL the survivor and the test's retained-sidecar/reaper assertions would fail. Similarly, the existing gemini mock tests (test_runner_gemini.py) patch theforge.runners.runner_gemini.subprocess.run and assert call args/env, which break once _run_gemini switches to run_in_process_group. Step 4 lists both test files, so the churn is anticipated, but the plan should explicitly name these two rework cases so the dev does not trip on them as regressions.\n- [P2] [deepseek-deepseek-reasoner-api] The plan scopes the fix to the agent-runner boundary (claude/codex/gemini). _run_shell_detailed in coordinator/util.py \u2014 the gate-command path that also spawns pytest -n auto --dist worksteal-style trees with start_new_session=True \u2014 has the identical 'clean completion implies the group went with the child' assumption on its unregister_agent_group(pgid) path (coordinator/util.py:454-455) and is not in the plan's file list. If the acceptance criterion is read as 'any process a sprint starts', this path still leaks on clean completion; at minimum the plan should state the scope decision explicitly.\n- [P1-impl] [deepseek-deepseek-reasoner-api] Step 1's clean-release kill does not reference the #2115 identity-verification discipline (leader start-time fingerprint / recorded-members snapshot) before calling kill_agent_group. In the clean-release path the risk is negligible (the pgid cannot be recycled while group_is_alive is true immediately after the leader's own wait returns), but reusing the existing _identity_verdict-style check would be the defensive move and keeps a single kill discipline. The dev can resolve this during implementation.\n- [P1-impl] [deepseek-deepseek-reasoner-api] Step 2's propagation of teardown facts across run_in_process_group and _handle_exception is underspecified: run_in_process_group returns a subprocess.CompletedProcess and currently has no channel to carry release_group_record's new return value, and _handle_exception's TimeoutExpired path likewise needs a carrier (e.g. an attribute attached to the exception or CompletedProcess, or a wrapper). Both callers in the listed files make this mechanically solvable, but the concrete carrier should be chosen deliberately so _run_codex can attach metadata on the timeout path.",
+    "cost_usd": 0,
+    "plan_finding_registry": [],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against\n  finding[5]: UNMATCHED \u2014 no prior findings to match against\n  finding[6]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_review": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "Worker timeout (>5400s) during phase DEV",
+  "error_type": "TimeoutError",
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_gate_exec.py",
+      "detail": "tests/test_coord_gate_exec.py has 1009 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "30b834e3f1d48f6d",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/process_group.py",
+      "line": 185,
+      "severity": "P1",
+      "description": "When a CLI-backed invocation starts a long-lived subprocess in its own process group and exits successfully, run_in_process_group returns success with no process_teardown while the subprocess remains running.",
+      "reporter": "openai-gpt-5.5-cli",
+      "disposition": "unresolved"
+    },
+    {
+      "finding_id": "30baa5f75f744b1c",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/coordinator/util.py",
+      "line": 459,
+      "severity": "P2",
+      "description": "A gate command that leaves a descendant running has that descendant killed by release_group_record, but the forced teardown is not carried into the run's audit record, so the run does not show that the kill happened.",
+      "reporter": "deepseek-deepseek-reasoner-api",
+      "disposition": "net_new"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose; extract instead of growing monolith files",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 7,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": true,
+      "enabled": true,
+      "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+      "phases": {
+        "plan": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "plan",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            }
+          ],
+          "provider_support": "supported_metered",
+          "varies_by_provider": false
+        },
+        "dev": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "dev",
+          "applied": false,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        },
+        "review": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "review",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.6-sol-api",
+              "model": "gpt-5.6-sol",
+              "transport": "openai",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "deepseek-deepseek-reasoner-api",
+              "model": "deepseek-reasoner",
+              "transport": "deepseek",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "deepseek-deepseek-reasoner-api",
+              "model": "deepseek-reasoner",
+              "transport": "deepseek",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 24576
+            }
+          ],
+          "provider_support": "mixed",
+          "varies_by_provider": false
+        }
+      },
+      "applied": true
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-api",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-luna-api",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "deepseek-deepseek-reasoner-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-luna-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 0,
+            "selected": true
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 7,
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 6,
+            "completed": 5,
+            "raw": 0.8333,
+            "weighted": 0.8345,
+            "rate": 0.8345,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.6-luna",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($4.17)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-api",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-luna-api",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "deepseek-deepseek-reasoner-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 17,
+            "completed": 17,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 1,
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($4.17); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8537,
+              "weighted": 0.8106,
+              "runs": 123,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.8106,
+              "resolved_population": {
+                "by_resolved_model": {
+                  "anthropic/opus/cli": 1
+                },
+                "distinct": 1,
+                "mixed": false,
+                "attributed": 1,
+                "unattributed": 122
+              }
+            },
+            "domain": {
+              "domains": [
+                "concurrency",
+                "testing",
+                "backend"
+              ],
+              "raw": 0.9008,
+              "weighted": 0.75,
+              "runs": 121,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.75,
+              "by_domain": {
+                "concurrency": {
+                  "runs": 20,
+                  "raw": 1.0,
+                  "weighted": 1.0,
+                  "tainted_runs": 0,
+                  "resolved_population": {
+                    "by_resolved_model": {
+                      "anthropic/opus/cli": 1
+                    },
+                    "distinct": 1,
+                    "mixed": false,
+                    "attributed": 1,
+                    "unattributed": 19
+                  }
+                },
+                "testing": {
+                  "runs": 11,
+                  "raw": 0.9091,
+                  "weighted": 0.9091,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "backend": {
+                  "runs": 90,
+                  "raw": 0.8778,
+                  "weighted": 0.75,
+                  "tainted_runs": 0,
+                  "resolved_population": {
+                    "by_resolved_model": {
+                      "anthropic/opus/cli": 5
+                    },
+                    "distinct": 1,
+                    "mixed": false,
+                    "attributed": 5,
+                    "unattributed": 85
+                  }
+                }
+              },
+              "resolved_population": {
+                "by_resolved_model": {
+                  "anthropic/opus/cli": 6
+                },
+                "distinct": 1,
+                "mixed": false,
+                "attributed": 6,
+                "unattributed": 115
+              }
+            },
+            "cost_tiebreak": {
+              "value": Infinity,
+              "source": "seed",
+              "seed": Infinity,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null,
+              "resolved_population": {}
+            },
+            "domain": {
+              "domains": [
+                "concurrency",
+                "testing",
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "testing": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                }
+              },
+              "resolved_population": {}
+            },
+            "cost_tiebreak": {
+              "value": 30.0,
+              "source": "seed",
+              "seed": 30.0,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.6-sol-api",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null,
+              "resolved_population": {}
+            },
+            "domain": {
+              "domains": [
+                "concurrency",
+                "testing",
+                "backend"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "concurrency": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "testing": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                }
+              },
+              "resolved_population": {}
+            },
+            "cost_tiebreak": {
+              "value": 30.0,
+              "source": "seed",
+              "seed": 30.0,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.6-terra-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-luna-api",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "deepseek-deepseek-reasoner-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "cost_tiebreak": {
+        "selected_model": "anthropic-opus-cli",
+        "value": Infinity,
+        "source": "seed",
+        "observations": 0,
+        "cohort": {
+          "role": "DEV",
+          "complexity": "HIGH",
+          "reasoning_effort": "high"
+        },
+        "reason": "no_matching_cohort"
+      },
+      "domain_match": {
+        "domains": [
+          "concurrency",
+          "testing",
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "anthropic-opus-cli",
+        "domain_head": "anthropic-opus-cli",
+        "selected_model_slice": {
+          "domains": [
+            "concurrency",
+            "testing",
+            "backend"
+          ],
+          "raw": 0.9008,
+          "weighted": 0.75,
+          "runs": 121,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.75,
+          "by_domain": {
+            "concurrency": {
+              "runs": 20,
+              "raw": 1.0,
+              "weighted": 1.0,
+              "tainted_runs": 0,
+              "resolved_population": {
+                "by_resolved_model": {
+                  "anthropic/opus/cli": 1
+                },
+                "distinct": 1,
+                "mixed": false,
+                "attributed": 1,
+                "unattributed": 19
+              }
+            },
+            "testing": {
+              "runs": 11,
+              "raw": 0.9091,
+              "weighted": 0.9091,
+              "tainted_runs": 0,
+              "resolved_population": {}
+            },
+            "backend": {
+              "runs": 90,
+              "raw": 0.8778,
+              "weighted": 0.75,
+              "tainted_runs": 0,
+              "resolved_population": {
+                "by_resolved_model": {
+                  "anthropic/opus/cli": 5
+                },
+                "distinct": 1,
+                "mixed": false,
+                "attributed": 5,
+                "unattributed": 85
+              }
+            }
+          },
+          "resolved_population": {
+            "by_resolved_model": {
+              "anthropic/opus/cli": 6
+            },
+            "distinct": 1,
+            "mixed": false,
+            "attributed": 6,
+            "unattributed": 115
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "anthropic-opus-cli",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8537,
+        "weighted_success_rate": 0.8106,
+        "sample_size": 123,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.8106,
+          "threshold": 0.6,
+          "sample_size": 123,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:backend+concurrency+testing",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "openai-gpt-5.6-sol-api",
+          "openai-gpt-5.6-terra-api",
+          "openai-gpt-5.6-luna-api",
+          "anthropic-claude-haiku-4-5-cli",
+          "google-gemini-3.5-flash-api",
+          "deepseek-deepseek-reasoner-api",
+          "google-gemini-3.1-pro-preview-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "concurrency",
+          "testing"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.81 \u2265 threshold 0.60 over 123 admissible runs \u2014 pre-promotion held) (profile success_rate=0.81 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-api",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-luna-api",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "deepseek-deepseek-reasoner-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "deepseek-deepseek-reasoner-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 164,
+            "completed": 154,
+            "raw": 0.939,
+            "weighted": 0.9418,
+            "rate": 0.9418,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 5,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-luna-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "deepseek-deepseek-reasoner-api",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-luna-api",
+            "openai-gpt-5.6-sol-api",
+            "openai-gpt-5.6-terra-api"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "deepseek-deepseek-reasoner-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 5,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-luna-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "plan_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "runs": 2,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.5,
+              "weighted": 0.5,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 64.545,
+              "weighted": 64.545,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "deepseek-deepseek-reasoner-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 1,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 82.0533,
+              "weighted": 82.0533,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 4,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 69.6963,
+              "weighted": 69.6963,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-luna-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "deepseek-deepseek-reasoner-api",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-luna-api",
+            "openai-gpt-5.6-sol-api",
+            "openai-gpt-5.6-terra-api"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-opus-cli": {
+              "raw": 0.5,
+              "weighted": 0.5,
+              "runs": 2,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "deepseek-deepseek-reasoner-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 1,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "runs": 4,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-luna-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.6-sol",
+          "opus",
+          "deepseek-reasoner"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'anthropic', 'deepseek'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-api",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-luna-api",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "deepseek-deepseek-reasoner-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 188,
+            "completed": 185,
+            "raw": 0.984,
+            "weighted": 0.9713,
+            "rate": 0.9713,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 10,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "deepseek-deepseek-reasoner-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 164,
+            "completed": 154,
+            "raw": 0.939,
+            "weighted": 0.9418,
+            "rate": 0.9418,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 5,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-luna-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-sonnet-cli",
+            "deepseek-deepseek-reasoner-api",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-luna-api",
+            "openai-gpt-5.6-sol-api",
+            "openai-gpt-5.6-terra-api"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 10,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-sol-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "deepseek-deepseek-reasoner-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 5,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-luna-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "code_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "runs": 8,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": 1.0,
+              "floor": "pass"
+            },
+            "latency_per_p1": {
+              "raw": 62.1519,
+              "weighted": 61.6295,
+              "rate": 61.6295,
+              "floor": "pass"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "deepseek-deepseek-reasoner-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-luna-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-sonnet-cli",
+            "deepseek-deepseek-reasoner-api",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-luna-api",
+            "openai-gpt-5.6-sol-api",
+            "openai-gpt-5.6-terra-api"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 8,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-sol-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "deepseek-deepseek-reasoner-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-luna-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "deepseek-reasoner",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'deepseek', 'google'], complexity score 8 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.415062,
+      "duration_s": 90.72,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": {
+      "cost_usd": 0,
+      "duration_s": 461.54,
+      "iterations": 0,
+      "outcome": "approve"
+    },
+    "dev": {
+      "cost_usd": 20.934095,
+      "duration_s": 1877.25,
+      "iterations": 2,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 132.84,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 11.908624,
+      "duration_s": 1919.63,
+      "cycles": 2,
+      "outcome": "request_changes",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 2.430764,
+          "verdict": "REQUEST_CHANGES"
+        },
+        "deepseek-deepseek-reasoner-api": {
+          "cost": 4.463268,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 5.014591,
+          "verdict": "APPROVE"
+        }
+      },
+      "per_reviewer_value": [
+        {
+          "cycle": 1,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "unique_p1_count": 1,
+          "total_p1_count": 1,
+          "latency_s": 262.33,
+          "latency_per_p1_s": 262.33,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "deepseek-deepseek-reasoner-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 262.33,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 262.33,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "unique_p1_count": 1,
+          "total_p1_count": 1,
+          "latency_s": 377.55,
+          "latency_per_p1_s": 377.55,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "deepseek-deepseek-reasoner-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 377.55,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 377.55,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        }
+      ]
+    }
+  },
+  "totals": {
+    "cost_usd": 33.25778,
+    "duration_s": 4481.99,
+    "dev_attempts_total": 2,
+    "dev_iterations_productive": 2,
+    "review_cycles_total": 2,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 2,
+    "review_cycles": 2
+  },
+  "last_phase": "DEV",
+  "last_model": "opus",
+  "sprint_id": "768884db1b94",
+  "sprint_name": "issues-2309,2310,2311,2312,2313,2314"
+}
