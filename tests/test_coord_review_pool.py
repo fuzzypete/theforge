@@ -1040,6 +1040,63 @@ class TestTransientRetry:
     @patch("theforge.coordinator.review_pool.log_agent_result")
     @patch("theforge.coordinator.review_pool.run_agent")
     @patch("theforge.coordinator.review_pool.run_agent_pool")
+    def test_quorum_unmet_retains_survivor_verdicts(
+        self, mock_pool, _mock_run_agent, _mock_log, tmp_path
+    ):
+        """A collapse still escalates, but the surviving verdict must remain visible.
+
+        #2300: the survivor's APPROVE used to vanish with the merged result, so a
+        later full-knowledge operator decision had nothing to act on. merged stays
+        None (quorum still governs automatic progression); the individual/named
+        slots carry the verdict the reviewer actually produced.
+        """
+        r1 = _make_review_profile("r1")
+        r2 = _make_review_profile("r2")
+        config = _make_pool_config(tmp_path, [r1, r2], r1)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "retry": RetryPolicy(
+                    max_review_transport_retries=0,
+                    review_quorum_threshold=2,
+                    review_transport_retry_backoff_seconds=0.0,
+                ),
+            }
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "ws"
+        workspace.mkdir()
+        state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+
+        mock_pool.return_value = [
+            _make_agent_result(success=False, output="quota exceeded", profile_name="r1"),
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="r2"),
+        ]
+
+        meta = _meta()
+        _successful, _failed, merged, individual, named = _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+        )
+
+        assert merged is None
+        assert state.phase == Phase.ESCALATE
+        assert "Quorum unmet" in state.error
+        assert [n for n, _ in named] == ["r2"]
+        assert named[0][1].verdict == "APPROVE"
+        assert [r.verdict for r in individual] == ["APPROVE"]
+
+    @patch("theforge.coordinator.review_pool.time.sleep", lambda *_a, **_k: None)
+    @patch("theforge.coordinator.review_pool.log_agent_result")
+    @patch("theforge.coordinator.review_pool.run_agent")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
     def test_panel_size_one_collapses_threshold(
         self, mock_pool, mock_run_agent, _mock_log, tmp_path
     ):

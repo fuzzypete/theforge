@@ -956,6 +956,19 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "merge": result.merge,
         "landing": build_landing_record(result.merge),
         "landing_status": getattr(result, "landing_status", None),
+        # Which review the landing was taken on: a merged cycle review, or a
+        # reviewer verdict selected at the escalate gate when no merged review
+        # existed (#2300). None when nothing was landed.
+        "landing_review": (
+            {
+                "source": state.landing_review_source,
+                "verdict": state.landing_review_result.verdict
+                if state.landing_review_result is not None
+                else None,
+            }
+            if state.landing_review_source is not None
+            else None
+        ),
         "landing_event": (
             {
                 "landing_status": result.landing_status,
@@ -977,6 +990,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "gate_result": state.gate_decisions[-1] if state.gate_decisions else None,
                 "human_decision": state.escalate_decision,
                 "selected_action": state.escalate_selected_action,
+                # A selection the gate refused to carry out. Recorded alongside
+                # (not in place of) human_decision so the audit shows what the
+                # operator chose AND that no outcome was substituted for it
+                # (#2300).
+                "declined_action": state.escalate_declined_action,
+                "declined_reason": state.escalate_declined_reason,
                 "advisory_generated": state.advisory_generated,
                 "advisory": state.advisory_report,
                 # A pre-turn advisor exit is a configuration defect that spent
@@ -990,7 +1009,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                     else None
                 ),
             }
-            if state.escalate_decision is not None
+            if state.escalate_decision is not None or state.escalate_declined_action is not None
             else None
         ),
         "error": state.error,
