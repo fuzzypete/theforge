@@ -43,6 +43,9 @@ def CURSOR_UP(n: int) -> str:
 
 GREEN = "\x1b[32m"
 RED = "\x1b[31m"
+# Reserved for the one row that is waiting on the operator: it must not read as
+# a healthy live row (green) nor as background inactivity (dim) (#2313).
+YELLOW = "\x1b[33m"
 DIM = "\x1b[2m"
 RESET = "\x1b[0m"
 
@@ -214,7 +217,11 @@ def render_frame(
     per-slug cost so the next frame can compute deltas.
     """
     from theforge.cli.sprint_status import _format_story_cell, display_sprint_status
-    from theforge.sprint.status_reader import COLLISION_GATE_STAGE, read_live_status
+    from theforge.sprint.status_reader import (
+        COLLISION_GATE_STAGE,
+        OPERATOR_DECISION_STAGE,
+        read_live_status,
+    )
 
     # Persist the GitHub title cache across frames so titles fetched on frame 1
     # are reused on every subsequent frame (zero re-fetch).
@@ -243,6 +250,7 @@ def render_frame(
     prev_costs = dict(state.get("costs", {}))
     new_costs: dict[str, float] = {}
     stalled_paths: list[str] = []
+    decision_lines: list[tuple[str, str]] = []
 
     overlay_lines: list[str] = []
     overlay_lines.append("")
@@ -283,7 +291,17 @@ def render_frame(
         # events, so its age crossing the stall threshold means nothing. Report
         # the wait, not a warning the operator cannot act on (#2235).
         gated = status == "running" and getattr(e, "stage", "") == COLLISION_GATE_STAGE
-        if gated:
+        # A gate waiting on a person is the one wait the operator can end, and
+        # the only one they will never look for if it renders as inactivity. Say
+        # a decision is pending, and carry the remaining time below (#2313).
+        awaiting_decision = (
+            status == "running" and getattr(e, "stage", "") == OPERATOR_DECISION_STAGE
+        )
+        if awaiting_decision:
+            label = f"{GATE_CHAR} decision"
+            act = _c(label, YELLOW, color)
+            decision_lines.append((path, getattr(e, "detail", "") or ""))
+        elif gated:
             label = f"{GATE_CHAR} gated"
             act = _c(label, DIM, color)
         elif status == "running":
@@ -318,6 +336,17 @@ def render_frame(
         path_disp = path if len(path) <= 30 else path[:29] + "…"
         act_padded = act + " " * max(0, _ACT_COL - len(label))
         overlay_lines.append(f"{path_disp:<30}  {act_padded}  {delta_str:>8}  {age_str:>9}")
+
+    if decision_lines:
+        overlay_lines.append("")
+        for path_name, detail in decision_lines:
+            text = f"Awaiting operator decision: {path_name}"
+            if detail:
+                text += f" — {detail}"
+            overlay_lines.append(_c(text, YELLOW, color))
+        overlay_lines.append(
+            _c("Resolve with: forge decide <run-id> <action>", DIM, color),
+        )
 
     if stalled_paths:
         stalled_preview = ", ".join(stalled_paths[:2])

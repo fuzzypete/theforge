@@ -565,6 +565,125 @@ def _collision_gate_detail(detail_data: dict) -> str | None:
     return text
 
 
+#: Stage reported for a story the coordinator is deliberately holding at a gate
+#: that waits on a person (escalate, human review, plan review). The story emits
+#: no events while the gate polls, so without this the wait reads as a stall —
+#: and the one state that only an operator can clear is the one state the view
+#: gives them no reason to act on (#2313).
+OPERATOR_DECISION_STAGE = "operator decision"
+
+#: How many decision options to name before summarising the rest.
+_DECISION_OPTION_PREVIEW = 3
+
+
+def _fmt_remaining(seconds: float) -> str:
+    """Format a remaining-time span the same way the run log does."""
+    h, rem = divmod(int(seconds), 3600)
+    m, s = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m {s}s"
+    if m:
+        return f"{m}m {s}s"
+    return f"{s}s"
+
+
+def _pending_entry_is_live(entry: dict) -> bool:
+    """True when ``entry`` is an undecided checkpoint owned by a live process.
+
+    ``list_pending`` returns every file in ``.forge/pending`` verbatim, including
+    already-decided records and records left behind by a dead run. Rendering
+    either as "waiting on you" would send the operator to a gate that is not
+    open, so both are filtered out here.
+    """
+    if entry.get("decision"):
+        return False
+    pid = entry.get("pid")
+    try:
+        owner_pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    try:
+        from theforge.pid import _is_pid_alive  # noqa: PLC0415
+
+        return _is_pid_alive(owner_pid)
+    except Exception:
+        return False
+
+
+def _pending_remaining_text(entry: dict) -> str:
+    """Describe how long the pending wait has left, or that it has lapsed."""
+    timeout_at_str = entry.get("timeout_at")
+    if not isinstance(timeout_at_str, str) or not timeout_at_str:
+        return ""
+    try:
+        timeout_at = datetime.datetime.fromisoformat(timeout_at_str)
+    except Exception:
+        return ""
+    if timeout_at.tzinfo is None:
+        timeout_at = timeout_at.replace(tzinfo=datetime.timezone.utc)
+    remaining = (timeout_at - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    if remaining > 0:
+        return f"{_fmt_remaining(remaining)} remaining"
+    # The escalate gate preserves an expired checkpoint and keeps awaiting a
+    # selection rather than auto-rejecting, so an elapsed window still needs the
+    # operator — say that instead of implying the decision is gone.
+    return "window elapsed — still awaiting decision"
+
+
+def _select_pending_for_story(pending: list[dict], slug: str) -> dict | None:
+    """Pick the live pending record a story row should display, if any."""
+    if not slug:
+        return None
+    candidates = [
+        entry
+        for entry in pending
+        if isinstance(entry, dict)
+        and _nonempty_str(entry.get("story")) == slug
+        and _pending_entry_is_live(entry)
+    ]
+    if not candidates:
+        return None
+
+    # An ESCALATE checkpoint is the gate that stalls longest and costs most to
+    # miss; prefer it, then the most recently created record.
+    def _rank(entry: dict) -> tuple[int, str]:
+        phase = _nonempty_str(entry.get("phase")) or ""
+        created = _nonempty_str(entry.get("created_at")) or ""
+        return (1 if phase.upper() == "ESCALATE" else 0, created)
+
+    return max(candidates, key=_rank)
+
+
+def _live_pending_records(project_root: Path) -> list[dict]:
+    """Load `.forge/pending` checkpoints, best-effort (never raises)."""
+    try:
+        from theforge.pending import list_pending  # noqa: PLC0415
+
+        return [entry for entry in list_pending(project_root) if isinstance(entry, dict)]
+    except Exception:
+        return []
+
+
+def _pending_decision_display(entry: dict) -> str:
+    """Render the DETAIL text for a story awaiting an operator decision."""
+    phase = _nonempty_str(entry.get("phase")) or "gate"
+    run_id = _nonempty_str(entry.get("run_id")) or "?"
+    parts = [f"{phase} decision pending {run_id}"]
+    remaining = _pending_remaining_text(entry)
+    if remaining:
+        parts.append(remaining)
+    options = entry.get("options")
+    opts = [o for o in options if isinstance(o, str) and o] if isinstance(options, list) else []
+    if opts:
+        shown = opts[:_DECISION_OPTION_PREVIEW]
+        extra = len(opts) - len(shown)
+        opts_str = "/".join(shown)
+        if extra > 0:
+            opts_str += f" +{extra} more"
+        parts.append(f"options: {opts_str}")
+    return "; ".join(parts)
+
+
 def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None]:
     phase_val = story.get("phase")
     status_val = story.get("status", "waiting")
@@ -1073,6 +1192,15 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
         return None
 
     stories_data = data.get("stories", [])
+    # Read the pending checkpoints once per snapshot: a gate waiting on a person
+    # writes one, and it is the only live record of that wait (#2313).
+    pending_records = (
+        _live_pending_records(project_root)
+        if any(
+            isinstance(s, dict) and s.get("status") in _IN_FLIGHT_STATUSES for s in stories_data
+        )
+        else []
+    )
     entries = []
     seen_slugs: set[str] = set()
     for story in stories_data:
@@ -1090,6 +1218,14 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
             if last_phase_str:
                 phase_display = last_phase_str
         stage, detail, complexity = _stage_and_detail_from_live_story(story)
+        # A gate holding this story for a person outranks whatever the phase
+        # would otherwise render: the phase says what the story was doing, the
+        # checkpoint says what it is waiting for and who can clear it (#2313).
+        if status_val in _IN_FLIGHT_STATUSES and pending_records:
+            pending_entry = _select_pending_for_story(pending_records, slug)
+            if pending_entry is not None:
+                stage = OPERATOR_DECISION_STAGE
+                detail = _pending_decision_display(pending_entry)
         complexity_score = _normalize_complexity_score(story.get("complexity_score"))
 
         if status_val in {"skipped", "blocked", "operator-action"}:
