@@ -51,19 +51,31 @@ DEV_ESTIMATE_SCOPE_DEV_PHASE = "dev_phase"
 
 BASIS_SUBSTRATE_BAND = "substrate_band"
 BASIS_CONFIGURED_FALLBACK = "configured_fallback"
+BASIS_OBSERVED_SCORE = "observed_complexity_score"
 BASIS_OBSERVED_COMPOSITION = "observed_composition"
 BASIS_OBSERVED_REVIEW_CYCLE = "observed_review_cycle"
 BASIS_OBSERVED_SPARSE = "observed_sparse"
 BASIS_REVIEW_CEILING_FALLBACK = "ceiling_fallback"
 
 # The rungs of the review-cycle pricing ladder, most specific first. A price is
-# "observed" on any of the first three: all describe measured spend, and differ
+# "observed" on any of the first four: all describe measured spend, and differ
 # only in which population was measurable. The ceiling is not a price at all —
 # it is a permission — so it sits outside this set and is reached only when
 # nothing has ever been observed.
 OBSERVED_REVIEW_CYCLE_BASES = frozenset(
-    {BASIS_OBSERVED_COMPOSITION, BASIS_OBSERVED_REVIEW_CYCLE, BASIS_OBSERVED_SPARSE}
+    {
+        BASIS_OBSERVED_SCORE,
+        BASIS_OBSERVED_COMPOSITION,
+        BASIS_OBSERVED_REVIEW_CYCLE,
+        BASIS_OBSERVED_SPARSE,
+    }
 )
+
+# The one rung whose population is the population a band-derived allocation
+# prices: review spend recorded on stories that scored the same complexity.
+# Only a price from this rung may be subtracted from such an allocation hard
+# enough to refuse the story — see ``_review_price_comparable_to_allocation``.
+COMPARABLE_REVIEW_CYCLE_BASES = frozenset({BASIS_OBSERVED_SCORE})
 
 STATUS_WITHIN = "within_allocation"
 STATUS_EXCEEDED = "allocation_exceeded"
@@ -119,7 +131,15 @@ class StoryAllocation:
 
 @dataclass(frozen=True)
 class ReviewCyclePlanningPrice:
-    """Planned per-cycle review price plus the evidence it was derived from."""
+    """Planned per-cycle review price plus the evidence it was derived from.
+
+    ``complexity_score`` is the score the samples were *scoped to* — set only on
+    the score-scoped rung, and ``None`` on every wider one. That distinction is
+    what makes a price comparable to a band-derived allocation or not, so it is
+    recorded rather than inferred. ``requested_complexity_score`` is the score
+    the caller asked for regardless of which rung answered, so an operator can
+    see that a score was known and the history for it was not there.
+    """
 
     planned_cost_usd: float
     basis: str
@@ -132,6 +152,8 @@ class ReviewCyclePlanningPrice:
     reason: str = ""
     excluded_for_taint: int = 0
     composition: tuple[str, ...] | None = None
+    complexity_score: int | None = None
+    requested_complexity_score: int | None = None
 
     @property
     def derived(self) -> bool:
@@ -150,6 +172,8 @@ class ReviewCyclePlanningPrice:
             "reason": self.reason,
             "excluded_for_taint": self.excluded_for_taint,
             "composition": list(self.composition) if self.composition else None,
+            "complexity_score": self.complexity_score,
+            "requested_complexity_score": self.requested_complexity_score,
         }
 
 
@@ -298,6 +322,8 @@ def review_cycle_planning_from_samples(
     derived_basis: str = BASIS_OBSERVED_REVIEW_CYCLE,
     scope_suffix: str = "",
     composition: tuple[str, ...] | None = None,
+    complexity_score: int | None = None,
+    requested_complexity_score: int | None = None,
 ) -> ReviewCyclePlanningPrice:
     """Return the deterministic planning price for one review cycle.
 
@@ -333,6 +359,7 @@ def review_cycle_planning_from_samples(
             ),
             excluded_for_taint=excluded_for_taint,
             composition=composition,
+            requested_complexity_score=requested_complexity_score,
         )
 
     median = percentile(usable, 0.5)
@@ -361,6 +388,7 @@ def review_cycle_planning_from_samples(
             ),
             excluded_for_taint=excluded_for_taint,
             composition=composition,
+            requested_complexity_score=requested_complexity_score,
         )
 
     planned = min(
@@ -382,6 +410,8 @@ def review_cycle_planning_from_samples(
         ),
         excluded_for_taint=excluded_for_taint,
         composition=composition,
+        complexity_score=complexity_score,
+        requested_complexity_score=requested_complexity_score,
     )
 
 
@@ -418,10 +448,29 @@ def _record_cycle_compositions(rec: dict) -> dict:
     return compositions
 
 
+def _record_complexity_score(rec: dict) -> int | None:
+    """The preflight complexity score of one audit record, or ``None``.
+
+    A review cycle has no score of its own — the score is a property of the
+    story whose run the cycle belongs to — so score scoping is a record-level
+    filter, and the whole record's cycles are admitted or excluded together.
+    Mirrors the coercion ``audit_substrate._flat_fields`` uses for the indexed
+    ``complexity_score`` column so both read the same records the same way.
+    """
+    preflight = rec.get("preflight")
+    raw = preflight.get("complexity_score") if isinstance(preflight, dict) else None
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, (int, float)):
+        return int(raw)
+    return None
+
+
 def _extract_review_cycle_cost_samples(
     records: list[dict],
     *,
     composition: tuple[str, ...] | None = None,
+    complexity_score: int | None = None,
 ) -> tuple[list[float], int]:
     """Return measured per-cycle review costs from prior audit records.
 
@@ -430,6 +479,11 @@ def _extract_review_cycle_cost_samples(
     — an unjoinable cycle is not evidence about any particular panel — but is
     still counted in the unfiltered population, where it remains evidence about
     review as an activity.
+
+    With ``complexity_score``, only cycles belonging to runs that scored exactly
+    that complexity are returned. A run with no recorded score is excluded from
+    a scored query for the same reason an unjoinable panel is: it is not
+    evidence about any particular score.
     """
     samples: list[float] = []
     excluded_for_taint = 0
@@ -438,6 +492,8 @@ def _extract_review_cycle_cost_samples(
             continue
         if str(rec.get("trust_status") or "").lower() == "tainted":
             excluded_for_taint += 1
+            continue
+        if complexity_score is not None and _record_complexity_score(rec) != complexity_score:
             continue
         iterations = rec.get("iterations")
         if not isinstance(iterations, dict):
@@ -466,17 +522,29 @@ def derive_review_cycle_planning_price(
     *,
     configured_ceiling_usd: float,
     composition: list[str] | tuple[str, ...] | None = None,
+    complexity_score: int | None = None,
     min_samples: int = REVIEW_CYCLE_PRICE_MIN_SAMPLES,
     headroom_multiplier: float = REVIEW_CYCLE_PRICE_HEADROOM,
 ) -> ReviewCyclePlanningPrice:
     """Read observed review-cycle spend from the substrate and derive one price.
 
-    Descends the ladder most-specific first. The panel a story will actually
-    seat is the best predictor of what its cycles cost — a three-reviewer panel
-    and a two-reviewer panel are different quantities, and averaging them
-    misprices both — so that history governs whenever it can support a price.
-    Below the floor the same phase's cost across every panel still describes
-    review, and only a total absence of observation reaches the ceiling.
+    Descends the ladder most-specific first:
+
+    1. ``complexity_score`` — review spend on stories that scored the same. This
+       rung is first because it is the only one drawn from the population a
+       band-derived allocation prices. Verification of a score-2 story costs
+       what verifying score-2 stories has cost; charging it the review
+       population's average charges it for verifying work it is not (#2287).
+    2. ``composition`` — the panel a story will actually seat is the best
+       predictor of what its cycles cost among stories of every size: a
+       three-reviewer panel and a two-reviewer panel are different quantities,
+       and averaging them misprices both.
+    3. review at large — the same phase's cost across every score and panel
+       still describes review.
+
+    Only a total absence of observation reaches the ceiling. ``complexity_score``
+    is optional and defaults to ``None``, which leaves the ladder exactly as it
+    was for callers that do not know a score.
     """
     from theforge.coordinator import audit_substrate  # noqa: PLC0415
 
@@ -501,9 +569,31 @@ def derive_review_cycle_planning_price(
                 conn.close()
 
     panel = composition_key(composition)
+    try:
+        score = None if complexity_score is None else int(complexity_score)
+    except (TypeError, ValueError):
+        score = None
     planning: ReviewCyclePlanningPrice | None = None
 
-    if panel is not None:
+    if score is not None:
+        score_samples, score_excluded = _extract_review_cycle_cost_samples(
+            records, complexity_score=score
+        )
+        if len(score_samples) >= min_samples:
+            planning = review_cycle_planning_from_samples(
+                score_samples,
+                configured_ceiling_usd,
+                excluded_for_taint=score_excluded,
+                min_samples=min_samples,
+                headroom_multiplier=headroom_multiplier,
+                derived_basis=BASIS_OBSERVED_SCORE,
+                scope_suffix=f" on stories at complexity score {score}",
+                composition=panel,
+                complexity_score=score,
+                requested_complexity_score=score,
+            )
+
+    if planning is None and panel is not None:
         panel_samples, panel_excluded = _extract_review_cycle_cost_samples(
             records, composition=panel
         )
@@ -517,6 +607,7 @@ def derive_review_cycle_planning_price(
                 derived_basis=BASIS_OBSERVED_COMPOSITION,
                 scope_suffix=" run by this exact panel",
                 composition=panel,
+                requested_complexity_score=score,
             )
 
     if planning is None:
@@ -528,6 +619,7 @@ def derive_review_cycle_planning_price(
             min_samples=min_samples,
             headroom_multiplier=headroom_multiplier,
             composition=panel,
+            requested_complexity_score=score,
         )
 
     if reason_prefix:
@@ -771,6 +863,7 @@ RECONCILE_NO_DEV_ESTIMATE = "no_dev_estimate"
 RECONCILE_NO_REVIEW_COST = "no_review_cost"
 RECONCILE_COST_UNKNOWN = "cost_unknown"
 RECONCILE_NONCOMPARABLE_DEV_ESTIMATE = "dev_estimate_not_comparable"
+RECONCILE_NONCOMPARABLE_REVIEW_COST = "review_cost_not_comparable"
 RECONCILE_AFFORDABLE = "within_allocation"
 RECONCILE_REDUCED = "review_max_reduced"
 RECONCILE_UNFUNDABLE = "review_unfundable"
@@ -812,6 +905,14 @@ def reconcile_review_cycles(
     ``review_unfundable`` when not even one cycle fits, which is the case the
     caller must refuse before dev spends.
 
+    Refusing takes a price on the allocation's own terms. When nothing fits but
+    the review price was borrowed from a population wider than the score the
+    allocation prices, the action is ``review_cost_not_comparable`` instead: the
+    permission stands, nothing is reserved, and the mismatch is recorded on
+    ``review_cycle_cost_comparable`` (#2287). Otherwise the cheapest complexity
+    band is refused as a matter of arithmetic between two unrelated populations,
+    and no story scoring that low can ever run.
+
     Only a band-derived allocation governs here. The configured fallback is by
     construction one pass through every role (see ``_configured_story_budget``),
     so it funds exactly one review cycle for arithmetic reasons that say nothing
@@ -838,6 +939,9 @@ def reconcile_review_cycles(
         "review_cycle_cost_headroom_multiplier": None,
         "review_cycle_cost_reason": None,
         "review_cycle_cost_composition": None,
+        "review_cycle_cost_complexity_score": None,
+        "review_cycle_cost_requested_complexity_score": None,
+        "review_cycle_cost_comparable": None,
         "dev_cost_estimate_basis": None,
         "dev_cost_estimate_basis_reason": None,
         "dev_cost_estimate_statistic": None,
@@ -919,6 +1023,16 @@ def reconcile_review_cycles(
         )
         record["review_cycle_cost_reason"] = review_cycle_planning.get("reason")
         record["review_cycle_cost_composition"] = review_cycle_planning.get("composition")
+        record["review_cycle_cost_complexity_score"] = review_cycle_planning.get(
+            "complexity_score"
+        )
+        record["review_cycle_cost_requested_complexity_score"] = review_cycle_planning.get(
+            "requested_complexity_score"
+        )
+    review_price_comparable = _review_price_comparable_to_allocation(
+        review_cycle_planning, allocation
+    )
+    record["review_cycle_cost_comparable"] = review_price_comparable
 
     if requested_review_max <= 0:
         record["action"] = RECONCILE_AFFORDABLE
@@ -942,6 +1056,16 @@ def reconcile_review_cycles(
     record["affordable_review_cycles"] = affordable
     if affordable == 0:
         record["reconciled_review_max"] = int(requested_review_max)
+        if not review_price_comparable:
+            # Nothing fits — but the price that says so was borrowed from a
+            # wider population than the allocation prices. A figure drawn from
+            # bigger work describes bigger work, and refusing a story on it
+            # asserts something the observation does not support (#2287).
+            # Record the mismatch and change nothing: the requested permission
+            # stands, nothing is reserved, and the dispatch-time check against
+            # measured spend remains the honest refusal if money really runs out.
+            record["action"] = RECONCILE_NONCOMPARABLE_REVIEW_COST
+            return record
         record["action"] = RECONCILE_UNFUNDABLE
         record["shortfall_usd"] = round(cycle_cost - remaining, 4)
         return record
@@ -1000,6 +1124,34 @@ def _dev_estimate_comparable_to_allocation(
     return basis_score == allocation_score
 
 
+def _review_price_comparable_to_allocation(
+    review_cycle_planning: dict | None,
+    allocation: dict | None,
+) -> bool:
+    """Whether the review price describes the population the allocation prices.
+
+    The same test the dev estimate has to pass, applied to the other side of the
+    subtraction. A band-derived allocation is the observed cost distribution at
+    ONE complexity score; a review price may be subtracted from it hard enough
+    to refuse the story only when it, too, was measured on stories at that
+    score. Every wider rung — the seated panel across all sizes, review at
+    large, a sparse handful, the configured ceiling — is recorded and left to
+    reduce or to fund, but never to refuse: the difference between a $1.69
+    allocation and a $3.21 price drawn from review of far larger stories is a
+    fact about the two populations, not about this story.
+    """
+    if not isinstance(review_cycle_planning, dict):
+        return False
+    if review_cycle_planning.get("basis") not in COMPARABLE_REVIEW_CYCLE_BASES:
+        return False
+    try:
+        price_score = int(review_cycle_planning.get("complexity_score"))
+        allocation_score = int((allocation or {}).get("complexity_score"))
+    except (TypeError, ValueError):
+        return False
+    return price_score == allocation_score
+
+
 def _format_dev_estimate_basis(record: dict) -> str:
     source = record.get("dev_cost_estimate_basis")
     score = record.get("dev_cost_estimate_complexity_score")
@@ -1036,10 +1188,15 @@ def _review_cycle_basis_text(record: dict) -> str:
     if isinstance(sample_count, (int, float)):
         sample_text = f" over {int(sample_count)} cycle(s)"
 
-    if basis in (BASIS_OBSERVED_COMPOSITION, BASIS_OBSERVED_REVIEW_CYCLE):
+    if basis in (BASIS_OBSERVED_SCORE, BASIS_OBSERVED_COMPOSITION, BASIS_OBSERVED_REVIEW_CYCLE):
         median = record.get("review_cycle_cost_median_usd")
         if median is not None and headroom is not None:
-            scope = "this panel" if basis == BASIS_OBSERVED_COMPOSITION else "review at large"
+            if basis == BASIS_OBSERVED_SCORE:
+                scope = f"complexity score {record.get('review_cycle_cost_complexity_score')}"
+            elif basis == BASIS_OBSERVED_COMPOSITION:
+                scope = "this panel"
+            else:
+                scope = "review at large"
             return (
                 f" (observed median ${float(median):.2f} x "
                 f"{float(headroom):.2f} headroom{sample_text}, {scope})"
@@ -1089,6 +1246,22 @@ def format_reconciliation(record: dict) -> str:
             f"{allocation_score if allocation_score is not None else '?'}; the "
             f"${float(record['dev_cost_estimate_usd']):.2f} dev estimate is a "
             f"{_format_dev_estimate_basis(record)}. Nothing reserved for review."
+        )
+    if action == RECONCILE_NONCOMPARABLE_REVIEW_COST:
+        # Deliberately not a dollar shortfall, for the same reason the dev-side
+        # message is not: the constraint is the scope of the price, not the size
+        # of the budget. Raising the budget would not make this comparison mean
+        # anything, and recording review history at this score would.
+        allocation_score = record.get("complexity_score")
+        return (
+            f"review_max left at {record['requested_review_max']}: no review cycle fits the "
+            f"${float(record['allocation_usd']):.2f} allocation at "
+            f"${float(record['review_cycle_cost_usd']):.2f} each{basis}, but that price and the "
+            f"allocation are not on a common population, so the story was not refused. The "
+            f"allocation prices complexity score "
+            f"{allocation_score if allocation_score is not None else '?'}; no review history at "
+            f"that score was available to price against. Nothing reserved for review; the "
+            f"dispatch-time check against measured spend still applies."
         )
     if action == RECONCILE_AFFORDABLE:
         return f"allocation funds the permitted {record['requested_review_max']} review cycle(s)."

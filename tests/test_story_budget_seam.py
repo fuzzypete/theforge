@@ -61,19 +61,21 @@ def _seed_band(project_root: Path, score: int, costs: list[float]) -> None:
         conn.close()
 
 
-def _seed_review_cycle_history(project_root: Path, cycle_costs: list[float]) -> None:
+def _seed_review_cycle_history(
+    project_root: Path, cycle_costs: list[float], *, complexity_score: int = 5
+) -> None:
     runs = sub.runs_dir(project_root)
     runs.mkdir(parents=True, exist_ok=True)
     records = []
     for index, cycle_cost in enumerate(cycle_costs):
         rec = {
-            "run_id": f"review-cycle-{index}",
-            "task": {"slug": f"review-cycle-{index}", "name": "seed"},
+            "run_id": f"review-cycle-s{complexity_score}-{index}",
+            "task": {"slug": f"review-cycle-s{complexity_score}-{index}", "name": "seed"},
             "outcome": {"success": True, "final_phase": "DONE"},
             "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
             "cost": {"total_usd": cycle_cost},
             "totals": {"cost_usd": cycle_cost, "duration_s": 60.0},
-            "preflight": {"complexity": "medium", "complexity_score": 5},
+            "preflight": {"complexity": "medium", "complexity_score": complexity_score},
             "iterations": {
                 "review_cycles_total": 1,
                 "review_loop": [{"iteration": 1, "cost_usd": cycle_cost}],
@@ -641,6 +643,10 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
 
         config = self._adaptive_config(tmp_path, dev_budget_usd=25.0428, reviewer_budget_usd=5.85)
         _seed_dev_profile_history(tmp_path, avg_cost_usd=20.03424, avg_iterations=4.0)
+        # Review history AT THIS STORY'S OWN SCORE, so the price refusing it is
+        # drawn from the population its allocation is drawn from (#2287). A
+        # refusal is only honest on comparable figures.
+        _seed_review_cycle_history(tmp_path, [8.00, 8.00, 8.00], complexity_score=9)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path, 30.0)
 
@@ -655,13 +661,13 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         assert state.error_type == "allocation_exhausted"
         assert state.allocation_exhausted is not None
         assert state.allocation_exhausted["participants"] == ["a", "b", "c"]
-        assert state.allocation_exhausted["planned_usd"] == 17.55
+        assert state.allocation_exhausted["planned_usd"] == round(8.00 * 1.25, 4)
         assert "test-task" in state.error
         assert "Decided at seating" in state.error
-        assert (
-            state.adaptive_limits_audit["review_cycle_reconciliation"]["action"]
-            == sb.RECONCILE_UNFUNDABLE
-        )
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert record["action"] == sb.RECONCILE_UNFUNDABLE
+        assert record["review_cycle_cost_basis"] == sb.BASIS_OBSERVED_SCORE
+        assert record["review_cycle_cost_comparable"] is True
 
     def test_seating_uses_observed_review_cycle_price_plus_headroom(self, tmp_path: Path) -> None:
         from coord_test_helpers import _make_task
@@ -693,6 +699,103 @@ class TestSeatingReconcilesPermissionsWithTheAllocation:
         assert state.adaptive_limits_audit["review_cycle_planning"]["reason"] == (
             "derived from median observed review-cycle spend $3.64 x 1.25 headroom over 3 cycle(s)"
         )
+
+    def _cheapest_band_state(self, tmp_path: Path):
+        """The issue's own story: score 2, $1.69 allocation (max $1.35 x 1.25)."""
+        state = CoordinatorState()
+        state.preflight_complexity = "small"
+        state.preflight_complexity_score = 2
+        state.workspace_path = tmp_path
+        state.branch_name = "feat/test"
+        state.story_allocation = {
+            "allocation_usd": 1.69,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 2,
+            "median_usd": 0.46,
+            "p90_usd": 1.35,
+            "max_usd": 1.35,
+            "sample_count": 8,
+        }
+        return state
+
+    def test_seating_prices_review_at_the_story_own_complexity_score(self, tmp_path: Path) -> None:
+        """The coordinator hands its score to the pricing call before seating (#2287).
+
+        With review history at the story's own score, verification is charged at
+        what verifying stories this size has cost — and the cheapest band funds
+        its cycles instead of being refused.
+        """
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=0.67, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(
+            tmp_path, avg_cost_usd=0.536, avg_iterations=2.0, complexity_score=2
+        )
+        # Verifying score-2 stories has cost ~$0.24/cycle; review at large runs
+        # an order of magnitude higher and is seeded alongside it.
+        _seed_review_cycle_history(tmp_path, [0.22, 0.24, 0.26], complexity_score=2)
+        _seed_review_cycle_history(tmp_path, [3.10, 3.64, 4.20], complexity_score=9)
+        task = _make_task(tmp_path)
+        state = self._cheapest_band_state(tmp_path)
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        planning = state.adaptive_review_cycle_planning
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert planning["basis"] == sb.BASIS_OBSERVED_SCORE
+        assert planning["complexity_score"] == 2
+        assert planning["planned_cost_usd"] == round(0.24 * 1.25, 4)
+        assert record["review_cycle_cost_comparable"] is True
+        # The story is scheduled AND can pay for its own verification.
+        assert record["action"] in (sb.RECONCILE_AFFORDABLE, sb.RECONCILE_REDUCED)
+        assert state.adaptive_review_max >= 1
+        assert record["reserved_review_cycles"] >= 1
+        assert state.allocation_exhausted is None
+
+    def test_the_cheapest_band_is_not_refused_on_a_price_borrowed_from_bigger_work(
+        self, tmp_path: Path
+    ) -> None:
+        """The reported defect: no score-2 story could run, whatever it did (#2287)."""
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.engine import _coordinator_loop
+
+        config = self._adaptive_config(tmp_path, dev_budget_usd=0.67, reviewer_budget_usd=5.85)
+        _seed_dev_profile_history(
+            tmp_path, avg_cost_usd=0.536, avg_iterations=2.0, complexity_score=2
+        )
+        # Review history exists only for far larger stories: $3.21 a cycle,
+        # nearly twice the whole $1.69 allocation.
+        _seed_review_cycle_history(tmp_path, [2.50, 2.568, 2.70], complexity_score=9)
+        task = _make_task(tmp_path)
+        state = self._cheapest_band_state(tmp_path)
+
+        class _StopAtDev(Exception):
+            pass
+
+        with patch("theforge.coordinator.engine._run_dev_phase", side_effect=_StopAtDev()):
+            with pytest.raises(_StopAtDev):
+                _coordinator_loop(state, config, task, "story", task_start=0.0)
+
+        planning = state.adaptive_review_cycle_planning
+        record = state.adaptive_limits_audit["review_cycle_reconciliation"]
+        assert planning["basis"] != sb.BASIS_OBSERVED_SCORE
+        assert planning["requested_complexity_score"] == 2
+        assert record["affordable_review_cycles"] == 0
+        assert record["action"] == sb.RECONCILE_NONCOMPARABLE_REVIEW_COST
+        assert record["review_cycle_cost_comparable"] is False
+        # Not refused before it ran: dev was reached, the permission stands, and
+        # the mismatch is on the audit trail where an operator can act on it.
+        assert state.allocation_exhausted is None
+        assert state.adaptive_review_max == record["requested_review_max"]
+        assert "not on a common population" in state.adaptive_limits_audit["rationale"]
 
     def test_a_sufficient_allocation_leaves_the_permitted_cycles_intact(
         self, tmp_path: Path
