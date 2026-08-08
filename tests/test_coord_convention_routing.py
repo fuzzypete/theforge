@@ -5,6 +5,7 @@ Covers: TestConventionViolationRouting.
 
 import dataclasses
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from coord_test_helpers import (
@@ -18,6 +19,11 @@ from coord_test_helpers import (
 from theforge.config.types import HardConventionsConfig
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase, RetryReason
+from theforge.coordinator.validate_phase import (
+    _check_conventions_parallel,
+    _run_validate_phase,
+    _ValidateOutcome,
+)
 from theforge.task import TaskStory
 
 
@@ -229,3 +235,143 @@ class TestConventionViolationRouting:
             " dev iterations and review cycles are both exhausted"
         )
         assert len(result.state.review_results) == 0
+
+
+def _violation(rule: str, file: str, detail: str, blocking: bool) -> SimpleNamespace:
+    return SimpleNamespace(rule=rule, file=file, detail=detail, blocking=blocking)
+
+
+def _write(path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+
+
+def _in_process_check_conventions(
+    workspace_path: Path, command: str, payload: dict, timeout: int = 120
+) -> dict:
+    """Run the worktree eval command in-process, exercising the real wire format."""
+    from theforge.coordinator._subprocess_eval import _COMMANDS
+
+    return _COMMANDS[command](payload)
+
+
+class TestModuleSizeRatchetSeam:
+    """The two convention channels VALIDATE consumes carry different views.
+
+    ``net_new`` is the ratchet (ADR-0008) and blocks; ``all_violations`` is the
+    plain scan and feeds the advisory artifact, which must keep stating distance
+    from the *configured* limit even for a module governed by a higher frozen
+    ceiling.
+    """
+
+    def test_ratchet_violation_blocks_while_advisory_keeps_the_configured_limit(self, tmp_path):
+        base_config = _make_config(tmp_path)
+        config = dataclasses.replace(
+            base_config,
+            conventions_hard=HardConventionsConfig(max_module_lines=600),
+        )
+        task = _make_task(tmp_path)
+        state = CoordinatorState(dev_iteration=1)
+        state.budget.max_iterations = config.retry.max_dev_iterations
+        state.dev_results.append(_make_agent_result())
+        state.dev_durations.append(1.0)
+        state.last_dev_start_commit = "HEAD"
+
+        module = "src/theforge/sprint/runner.py"
+        advisory_scan = [
+            _violation(
+                "max_module_lines",
+                module,
+                f"{module} has 7153 lines (limit 600)",
+                blocking=False,
+            )
+        ]
+        ratchet = [
+            _violation(
+                "max_module_lines",
+                module,
+                f"{module} has 7153 lines and may not exceed 6953 (exceeds it by 200) — "
+                "it was already over the 600-line limit at the branch point, so it is "
+                "frozen at that size and may not grow (it may shrink freely)",
+                blocking=True,
+            )
+        ]
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            if cmd == "git status --porcelain":
+                return True, " M src/theforge/sprint/runner.py"
+            if cmd.startswith("git diff --name-only"):
+                return True, "src/theforge/sprint/runner.py"
+            return True, ""
+
+        with (
+            patch(
+                "theforge.coordinator.validate_phase.run_gate_full",
+                return_value=("PASS", None, "OK", "pytest tests/", 0),
+            ),
+            patch(
+                "theforge.coordinator.validate_phase._get_raw_dev_notes",
+                return_value="summary: grew the module",
+            ),
+            patch("theforge.coordinator.validate_phase._deindex_forge_artifacts"),
+            patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
+            patch("theforge.coordinator.validate_phase.subprocess.run"),
+            patch(
+                "theforge.coordinator.validate_phase._check_conventions_parallel",
+                return_value=(advisory_scan, ratchet),
+            ),
+            patch(
+                "theforge.coordinator.validate_phase.update_advisory_violations",
+                return_value={"path": "advisory.yaml", "entry_count": 1, "newly_filed_issues": []},
+            ) as mock_advisory,
+        ):
+            outcome, result = _run_validate_phase(
+                state, config, task, tmp_path, notify=False, logger=None
+            )
+
+        # Gate PASSed; the ratchet violation is what refuses the change.
+        assert outcome is not _ValidateOutcome.PASS
+        assert result is None or result.success is False
+        assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
+        assert module in (state.human_feedback or "")
+        assert "may not exceed 6953" in (state.human_feedback or "")
+        assert "exceeds it by 200" in (state.human_feedback or "")
+
+        # The advisory channel receives the plain scan, still measured against 600.
+        advisory_arg = mock_advisory.call_args.args[1]
+        assert advisory_arg == [
+            {
+                "rule": "max_module_lines",
+                "file": module,
+                "detail": f"{module} has 7153 lines (limit 600)",
+                "blocking": False,
+            }
+        ]
+
+    def test_missing_baseline_fails_closed_on_oversized_modules(self, tmp_path):
+        """With no baseline tree there is no derived ceiling, so the limit is it."""
+        config = dataclasses.replace(
+            _make_config(tmp_path),
+            conventions_hard=HardConventionsConfig(max_module_lines=600),
+        )
+        _write(tmp_path / "src" / "theforge" / "big.py", "\n" * 900)
+        _write(tmp_path / "tests" / "test_big.py", "\n" * 1200)
+
+        with (
+            patch(
+                "theforge.coordinator.validate_phase._get_convention_baseline_ref",
+                return_value=None,
+            ),
+            patch(
+                "theforge.coordinator.util._run_worktree_eval",
+                side_effect=_in_process_check_conventions,
+            ),
+        ):
+            all_v, net_v = _check_conventions_parallel(config, tmp_path)
+
+        # Advisory view is untouched — still the non-blocking configured-limit scan.
+        assert [v.blocking for v in all_v] == [False, False]
+        blocking = {v.file: v.blocking for v in net_v}
+        assert blocking["src/theforge/big.py"] is True
+        # Test-file size is not part of the module ratchet; it stays advisory.
+        assert blocking["tests/test_big.py"] is False

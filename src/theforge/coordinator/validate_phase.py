@@ -20,6 +20,7 @@ from theforge.task import TaskStory
 
 from . import util as _cu
 from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
+from .convention_baseline import resolve_convention_baseline_ref
 from .dev_phase import extract_failed_tests, record_dev_iteration_telemetry
 from .gate import (
     _is_gate_skip,
@@ -480,6 +481,11 @@ def _check_conventions_parallel(
         return None
     _config_dict = dataclasses.asdict(config.conventions_hard)
     baseline_ref = _get_convention_baseline_ref(workspace_path, config.workspace.base_branch)
+    # Which commit supplied the ceilings decides what this story is answerable
+    # for, so record it rather than leaving it to be reconstructed (ADR-0008).
+    _log_verbose(
+        f"  Convention baseline: {baseline_ref or 'none — configured limit is the ceiling'}"
+    )
     if baseline_ref is not None:
         result = _cu._run_worktree_eval(
             workspace_path,
@@ -490,16 +496,16 @@ def _check_conventions_parallel(
                 "baseline_ref": baseline_ref,
             },
         )
-        all_v = [types.SimpleNamespace(**d) for d in result["all_violations"]]
-        net_v = [types.SimpleNamespace(**d) for d in result["violations"]]
     else:
         result = _cu._run_worktree_eval(
             workspace_path,
             "check_conventions",
             {"config": _config_dict, "project_root": str(workspace_path)},
         )
-        all_v = [types.SimpleNamespace(**d) for d in result["violations"]]
-        net_v = all_v
+    # Both branches answer the same two questions: "all_violations" is the plain
+    # scan the advisory artifact reads, "violations" is what blocks.
+    all_v = [types.SimpleNamespace(**d) for d in result["all_violations"]]
+    net_v = [types.SimpleNamespace(**d) for d in result["violations"]]
     return all_v, net_v
 
 
@@ -1231,15 +1237,4 @@ def _run_validate_phase(
 
 def _get_convention_baseline_ref(workspace_path: Path, base_branch: str) -> str | None:
     """Resolve a git ref representing pre-existing convention debt."""
-    try:
-        proc = subprocess.run(
-            ["git", "merge-base", "HEAD", base_branch],
-            cwd=workspace_path,
-            capture_output=True,
-            timeout=10,
-            check=True,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
-        return None
-    ref = proc.stdout.decode().strip()
-    return ref or None
+    return resolve_convention_baseline_ref(workspace_path, base_branch)

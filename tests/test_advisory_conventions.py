@@ -302,3 +302,41 @@ def test_update_advisory_violations_disabled_filing_does_not_report_prior_issue_
         assert entry["issue"]["url"] == "https://github.com/example/repo/issues/99", (
             f"{run_id}: prior issue block must be preserved in artifact"
         )
+
+
+def test_advisory_entry_measures_against_the_configured_limit_not_a_frozen_ceiling(tmp_path):
+    """A module compliant with its ADR-0008 ceiling stays visible as over the limit.
+
+    The ratchet blocks through a separate channel whose violations are
+    ``blocking=True`` and phrased against the frozen ceiling. What reaches the
+    advisory artifact is the plain scan, so the recorded gap must remain the
+    distance from the configured limit — otherwise a 7,153-line module frozen at
+    7,153 reads as compliant and its real size disappears from the report.
+    """
+    config = _make_config(tmp_path)
+    observed_at = dt.datetime(2026, 8, 8, 12, 0, tzinfo=dt.timezone.utc)
+    module = "src/theforge/sprint/runner.py"
+
+    result = update_advisory_violations(
+        config,
+        [
+            _violation(file=module, line_count=7153, limit=600),
+            # The ratchet violation for the same module, as VALIDATE sees it.
+            {
+                "rule": "max_module_lines",
+                "file": module,
+                "detail": (f"{module} has 7153 lines and may not exceed 7153 (exceeds it by 0)"),
+                "blocking": True,
+            },
+        ],
+        observed_at=observed_at,
+        run_id="run-1",
+        story_slug="story-1",
+    )
+
+    assert result["entry_count"] == 1
+    entry = next(iter(result["entries"].values()))
+    assert entry["line_count"] == 7153
+    assert entry["limit"] == 600
+    assert entry["gap"] == 6553
+    assert entry["detail"] == f"{module} has 7153 lines (limit 600)"
