@@ -67,6 +67,17 @@ class AgentResult:
     transport_fallback_fired: bool = False  # invocation switched transport mid-attempt
     transport_fallback_reason: str | None = None  # classifier reason that triggered fallback
     transport_used: str | None = None  # transport that actually ran last: "cli" or "api"
+    # Why an *eligible* transport fallback was never attempted. A recorded
+    # ``transport_fallback_reason`` with ``fired=False`` states an intention;
+    # this field states the outcome, so the audit says why nothing happened
+    # rather than leaving the operator to infer it (#2298). None whenever a
+    # fallback fired, or when the failure was never fallback-eligible.
+    transport_fallback_not_applied_reason: str | None = None
+    # The reset time the provider stated alongside a quota refusal, verbatim
+    # (e.g. "Aug 8th, 2026 7:59 AM"). Present only when the provider named one:
+    # that is the difference between a failure worth retrying and one that is
+    # certain to repeat until the stated time.
+    provider_quota_reset_at: str | None = None
     # Best-effort observed tool calls, retained even when the run crashes/times
     # out so downstream phases can salvage the exploration a failed agent did.
     # Each entry is {"tool": <name>, "target": <path/pattern or None>}. Empty
