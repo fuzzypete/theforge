@@ -23,6 +23,7 @@ from .landing_record import build_landing_record
 from .state import CoordinatorResult, CoordinatorState
 from .trust_status import derive_trust_status
 from .util import _round_cost as _util_round_cost
+from .worktree_provenance import PROVENANCE_CHANGED
 
 # Per-run audit-record schema version and the reader-side migration registry
 # are owned by audit_substrate (the reader). They are re-exported here so
@@ -721,6 +722,23 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "workspace": {
             "path": str(state.workspace_path) if state.workspace_path else None,
             "branch": state.branch_name,
+            # Whether the story text that produced this workspace's contents is
+            # the text the run executed — the same provenance question the
+            # resume record answers about phase records, asked about the
+            # artifacts those phases produced (#2288).
+            "story_provenance": state.workspace_provenance_status,
+            # Derived from the provenance status, never from the prompt note:
+            # the note is a one-shot channel the dev phase consumes on the first
+            # iteration, so reading it here reported False for exactly the runs
+            # that did inherit superseded work. The status is written once at
+            # WORKSPACE and never consumed.
+            "inherited_superseded_work": (state.workspace_provenance_status == PROVENANCE_CHANGED),
+            # Whether the dev agent was actually told. Distinct from the line
+            # above: a run can inherit superseded work and stop before DEV (or
+            # be resumed past it), and an audit that could not separate those
+            # cases would make an unwarned dev indistinguishable from a warned
+            # one.
+            "inherited_work_surfaced_to_dev": state.workspace_inherited_work_surfaced_to_dev,
             # Run-level substrate decision: which forge-owned sandbox capability
             # profile widened containment, and to exactly what (#1947).
             "sandbox_capabilities": (

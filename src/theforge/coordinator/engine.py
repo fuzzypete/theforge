@@ -95,6 +95,7 @@ from .workspace import (
 )
 from .workspace_scrub import _scrub_forge_history
 from .worktree_drift import is_drift_classification
+from .worktree_provenance import inherited_work_note, last_worktree_provenance
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
 # Populated by _ensure_runners() at entry points.
@@ -1124,6 +1125,7 @@ def run_task(
                 if base_lands_locally is not None
                 else _base_branch_lands_locally(config, auto_merge=auto_merge)
             ),
+            story_content=story_content,
         )
         if err:
             state.phase = Phase.ESCALATE
@@ -1150,6 +1152,22 @@ def run_task(
         assert branch_name is not None
         state.workspace_path = workspace_path
         state.branch_name = branch_name
+
+        # Whether the story text that produced this workspace's contents still
+        # governs. Recorded on the state (and from there the audit) for every
+        # run; where it does not govern, the dev agent is told so its first
+        # iteration is not spent silently undoing superseded work (#2288).
+        _provenance = last_worktree_provenance(config.project_root, task.slug)
+        if _provenance is not None:
+            state.workspace_provenance_status = _provenance.status
+            state.workspace_inherited_work_note = inherited_work_note(_provenance)
+            logger._safe_emit(
+                "workspace_provenance",
+                status=_provenance.status,
+                adopted=_provenance.adopted,
+                recorded_story_content_hash=_provenance.recorded_hash,
+                current_story_content_hash=_provenance.current_hash,
+            )
         logger._safe_emit("phase_end", phase="WORKSPACE", outcome="success")
 
         # ── Plan injection (--plan) ─────────────────────────────────
