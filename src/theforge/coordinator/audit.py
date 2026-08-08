@@ -721,6 +721,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "workspace": {
             "path": str(state.workspace_path) if state.workspace_path else None,
             "branch": state.branch_name,
+            # Whether the story text that produced this workspace's contents is
+            # the text the run executed — the same provenance question the
+            # resume record answers about phase records, asked about the
+            # artifacts those phases produced (#2288).
+            "story_provenance": state.workspace_provenance_status,
+            "inherited_superseded_work": state.workspace_inherited_work_note is not None,
             # Run-level substrate decision: which forge-owned sandbox capability
             # profile widened containment, and to exactly what (#1947).
             "sandbox_capabilities": (

@@ -508,6 +508,14 @@ class CoordinatorState:
     story_content: str | None = None  # story text as loaded before any runtime mutation
     workspace_path: Path | None = None
     branch_name: str | None = None
+    # Provenance of the workspace's contents (#2288): whether the story text
+    # that produced them is the text this run executes. One of the
+    # ``worktree_provenance.PROVENANCE_*`` values, or None when workspace setup
+    # recorded no judgement.
+    workspace_provenance_status: str | None = None
+    # Dev-prompt text for an adopted worktree whose producing story text has
+    # since changed; None whenever there is nothing superseded to report.
+    workspace_inherited_work_note: str | None = None
     dev_session_id: str | None = None
     pending_dev_transport_retry_count: int = 0
     pending_dev_transport_retry_events: list[dict[str, Any]] = field(default_factory=list)

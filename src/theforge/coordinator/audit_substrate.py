@@ -86,7 +86,7 @@ SUBSTRATE_SCHEMA_VERSION = 8
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 22
+CURRENT_RECORD_SCHEMA_VERSION = 23
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1451,6 +1451,35 @@ def _migrate_v21_to_v22(record: dict) -> dict:
     return {**record, "landing_review": None}
 
 
+def _migrate_v22_to_v23(record: dict) -> dict:
+    """Add workspace story provenance — which story text produced the tree (issue #2288).
+
+    v23 records say whether the workspace the run executed in was created fresh,
+    adopted from an earlier attempt against the same story text, or adopted
+    against text that has since changed — and whether the dev agent was told it
+    had inherited superseded work.
+
+    ``None`` is the honest backfill for ``story_provenance``: a v22 run adopted
+    an existing worktree on identity alone and never asked the question, so
+    claiming ``fresh_worktree`` or ``story_content_match`` would assert exactly
+    the fact this field exists to make checkable. ``inherited_superseded_work``
+    backfills False because no v22 run could have surfaced the condition — the
+    channel did not exist. The stored record is never rewritten (ADR-0002
+    refusal-to-forget).
+    """
+    workspace = record.get("workspace")
+    if not isinstance(workspace, dict) or "story_provenance" in workspace:
+        return record
+    return {
+        **record,
+        "workspace": {
+            **workspace,
+            "story_provenance": None,
+            "inherited_superseded_work": False,
+        },
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1481,6 +1510,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     19: _migrate_v19_to_v20,
     20: _migrate_v20_to_v21,
     21: _migrate_v21_to_v22,
+    22: _migrate_v22_to_v23,
 }
 
 
