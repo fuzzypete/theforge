@@ -13,10 +13,17 @@ sprint completion, the on-demand ``forge rca`` verb, and tests.
 Classification is **mechanical first**: pattern scans over logs/captured agent
 output, audit-field lookups, and summary-field correlation. Every rule carries a
 stable ``rule_id`` so evidence can cite the rule that fired and operators can
-grep the taxonomy. The residual class ``unknown_needs_rca`` covers stories no
-mechanical rule matched — they never silently drop; LLM-assisted classification
-(``forge diagnose``) is reserved for that residual and is intentionally out of
-this pure engine.
+grep the taxonomy. The residual class ``unknown_needs_rca`` covers stories for
+which *no mechanical signal was available at all* — they never silently drop;
+LLM-assisted classification (``forge diagnose``) is reserved for that residual
+and is intentionally out of this pure engine.
+
+A story that no rule classified but whose run recorded its **own** determinate
+cause code is a different situation and gets its own class, ``taxonomy_gap``
+(#2292): the cause is already determined — forge generated it — so paying for an
+investigation would re-derive what the run already states. What is missing is a
+rule to receive it, and the entry says so, which is how the rule set grows from
+the failures that actually occur.
 
 Each story entry carries a *primary* failure class plus explicit *contributing
 factors* — a real failure usually has one root cause and one or more amplifiers,
@@ -43,15 +50,36 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 9
+RULESET_VERSION = 10
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
 # sprint-summary.yaml; the RCA file is the recovery surface for everything else.
 DONE_OUTCOMES = frozenset({"DONE", "ALREADY_DONE"})
 
-# Residual class assigned when no mechanical primary rule matches a story.
+# Residual class assigned when no mechanical signal was available for a story.
 UNKNOWN_CLASS = "unknown_needs_rca"
+
+# Class assigned when no primary rule matched but the run recorded a determinate
+# cause code of its own that the taxonomy has no rule for (#2292). It is a
+# statement about the *rule set*, not about the story: the cause is known, the
+# receiving rule is missing, and an LLM investigation would only restate what the
+# run already says.
+TAXONOMY_GAP_CLASS = "taxonomy_gap"
+
+# ``error_type`` the coordinator stamps when a story's monetary allocation (or the
+# non-review part of it a review reservation leaves) can no longer fund the work.
+# Matched as a literal for the same reason as the abort code below — keep in sync
+# with the ``state.error_type`` assignments in ``coordinator.engine`` and
+# ``coordinator.review_pool``.
+_ALLOCATION_EXHAUSTED_ERROR_TYPE = "allocation_exhausted"
+
+# A cause code forge assigned to its own termination is lower-snake-case
+# (``allocation_exhausted``, ``infrastructure_abort``); a Python exception class
+# name that merely propagated into the field is not (``TimeoutError``,
+# ``StoryCancelled``). Only the former is a *statement of cause* the taxonomy can
+# be said to be missing a rule for.
+_FORGE_CAUSE_CODE_RE = re.compile(r"[a-z][a-z0-9_]*\Z")
 
 # Drop reason string a re-exec launch guard records for a worktree that belongs
 # to a prior generation's *unfinished* story (stranded sprint state) rather than
@@ -110,8 +138,10 @@ class RcaRule:
 
     ``rule_id`` is stable and greppable; evidence cites it. ``role`` is
     ``"primary"`` (can be a story's root cause), ``"contributing"`` (an
-    amplifier that never stands alone), or ``"informational"`` (baseline
-    evidence that never affects classification).
+    amplifier that never stands alone), ``"informational"`` (baseline evidence
+    that never affects classification), or ``"residual"`` (applies only when no
+    primary rule matched at all — it describes the state of the rule set rather
+    than competing with a classification).
     """
 
     rule_id: str
@@ -311,6 +341,18 @@ RULES: tuple[RcaRule, ...] = (
         role="primary",
         description="Dev or review hit its iteration limit and the story failed.",
     ),
+    RcaRule(
+        rule_id="story_allocation_exhausted",
+        failure_class="allocation_exhaustion",
+        role="primary",
+        description=(
+            "The story's monetary allocation — or the non-review part of it a "
+            "review reservation leaves — could no longer fund the work, so the "
+            "coordinator refused the next attempt and said so. Exhausting a "
+            "budget of money is the same kind of event as exhausting a budget "
+            "of iterations: an operator-set limit was reached, not a defect."
+        ),
+    ),
     # ── contributing factors (amplifiers) ────────────────────────────────────
     RcaRule(
         rule_id="pending_decision_auto_rejected",
@@ -348,6 +390,17 @@ RULES: tuple[RcaRule, ...] = (
         failure_class="review_iteration_limit",
         role="contributing",
         description="Review exhausted its iteration budget.",
+    ),
+    # ── residual (applies only when nothing classified the story) ────────────
+    RcaRule(
+        rule_id="unclassified_forge_cause_code",
+        failure_class=TAXONOMY_GAP_CLASS,
+        role="residual",
+        description=(
+            "The run recorded a determinate cause code of its own making that no "
+            "rule in this taxonomy classifies. The cause was found, not missing — "
+            "the rule to receive it is."
+        ),
     ),
     # ── informational baseline (never classifies) ────────────────────────────
     RcaRule(
@@ -395,6 +448,12 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     # succeed, so "raise the budget" funds a repeat of the same failure. The
     # configuration gap is the cause; the exhausted budget is its symptom.
     "capability_profile_gap",
+    # A story the coordinator refused to fund stopped on the money, whatever else
+    # it had already spent: the iteration limit it may also have reached is not
+    # what ended it, and raising that limit funds nothing (#2292). The capability
+    # gap above still outranks it for the #2029 reason — a story that could never
+    # build burned its allocation on attempts that could not succeed.
+    "allocation_exhaustion",
     "iteration_exhaustion",
 )
 
@@ -596,12 +655,22 @@ def _classify_story(
     # Correlated once here (not inside the signal pass) so the matched preset is
     # available to both the evidence and the recommended action.
     capability_gap = _capability_profile_gap_evidence(audit, text_sources)
+    # Correlated once here for the same reason: the shortfall the coordinator
+    # recorded supplies both the evidence excerpt and the figures the recommended
+    # action names (#2292).
+    allocation_shortfall = _allocation_shortfall(story, audit)
 
     hits: list[tuple[str, str, str, str | None, str]] = []
     hits.extend(_text_rule_hits(text_sources))
     hits.extend(
         _signal_rule_hits(
-            story, audit, summary_path, sprint_log_dir, logs_root, capability_gap=capability_gap
+            story,
+            audit,
+            summary_path,
+            sprint_log_dir,
+            logs_root,
+            capability_gap=capability_gap,
+            allocation_shortfall=allocation_shortfall,
         )
     )
 
@@ -616,6 +685,7 @@ def _classify_story(
     # surface at least the captured outcome). Cite the *resolved* summary file
     # (e.g. run-<id>-summary.yaml for a historical run), never the legacy pointer.
     summary_source = _rel(summary_path, logs_root)
+    audit_source = _rel(sprint_log_dir / slug / "audit.yaml", logs_root)
     error = _nonempty(story.get("error"))
     baseline_excerpt = f"outcome={outcome or 'UNKNOWN'}"
     if error:
@@ -655,6 +725,28 @@ def _classify_story(
         elif rule.role == "contributing":
             contributing_hits.append((rule.failure_class, source_kind))
 
+    primary = _select_primary(structured_primary_classes, text_primary_classes)
+    unclassified_code: str | None = None
+    if primary is None:
+        # Nothing classified the story. Before falling to the residual — which
+        # tells the operator to stop reading and buy an investigation — ask
+        # whether the run stated a cause of its own that this taxonomy simply has
+        # no rule for (#2292). That is a gap in the rule set, and saying so is
+        # both cheaper and truer than calling a stated cause unknown.
+        gap = _unclassified_cause_code(story, audit, summary_source, audit_source)
+        if gap is not None:
+            unclassified_code, gap_source, gap_excerpt = gap
+            evidence.append(
+                {
+                    "source": gap_source,
+                    "rule_id": "unclassified_forge_cause_code",
+                    "excerpt": gap_excerpt,
+                }
+            )
+            primary = TAXONOMY_GAP_CLASS
+        else:
+            primary = UNKNOWN_CLASS
+
     # Always append the baseline outcome evidence last.
     evidence.append(
         {
@@ -664,10 +756,6 @@ def _classify_story(
         }
     )
 
-    primary = _select_primary(structured_primary_classes, text_primary_classes)
-    if primary is None:
-        primary = UNKNOWN_CLASS
-
     # Contributing factors: unique, in rule-declaration order, minus whichever
     # class was elevated to primary.
     #
@@ -676,12 +764,14 @@ def _classify_story(
     # and asserting one confidently — plus the remediation the operator is then
     # told to go perform — on a run forge has just declared unexplained costs more
     # trust than declining to guess. Field-derived (structured) factors are the
-    # run's own recorded facts, not an inference, so they still stand.
+    # run's own recorded facts, not an inference, so they still stand. A taxonomy
+    # gap is the same state of knowledge — no rule classified the story — so it
+    # withholds text-derived amplifiers on the same grounds.
     contributing = _dedupe_ordered(
         [
             failure_class
             for failure_class, source_kind in contributing_hits
-            if primary != UNKNOWN_CLASS or source_kind == "structured"
+            if primary not in {UNKNOWN_CLASS, TAXONOMY_GAP_CLASS} or source_kind == "structured"
         ]
     )
 
@@ -692,6 +782,8 @@ def _classify_story(
         story,
         capability_preset=capability_gap.preset if capability_gap else None,
         capability_profile_note=capability_gap.profile_note if capability_gap else None,
+        allocation_shortfall=allocation_shortfall,
+        unclassified_code=unclassified_code,
     )
 
     return {
@@ -1205,6 +1297,146 @@ def _infrastructure_abort_evidence(
     )
 
 
+def _allocation_shortfall(story: dict, audit: dict) -> dict | None:
+    """Return the allocation-exhausted payload the coordinator recorded, if any.
+
+    The coordinator writes the shortfall it refused on, in a shape it owns, to
+    three places that reach this engine: the per-story audit's ``cost`` block, the
+    ``story_allocation`` block on the summary row, and — for a run whose payload
+    did not survive — the ``allocation_exhausted`` ``error_type`` on either. The
+    payload is preferred wherever present because it carries the figures as
+    separate values, so the evidence and the operator action can name them
+    without re-parsing the sentence the run already formatted (#2292).
+
+    A bare ``{}`` payload is not a shortfall: the field is written unconditionally
+    and is empty on every run that never exhausted anything.
+    """
+    candidates: list[object] = []
+    cost = audit.get("cost") if isinstance(audit, dict) else None
+    if isinstance(cost, dict):
+        candidates.append(cost.get("allocation_exhausted"))
+    allocation_block = story.get("story_allocation")
+    if isinstance(allocation_block, dict):
+        candidates.append(allocation_block.get("allocation_exhausted"))
+    for payload in candidates:
+        if isinstance(payload, dict) and payload:
+            return payload
+    # No payload — fall back to the run's own terminal cause code / status, which
+    # still says *which* condition stopped the story even when the figures are
+    # gone. Returning an empty dict keeps "exhausted, figures unavailable"
+    # distinguishable from "not exhausted" (None).
+    outcome_block = audit.get("outcome") if isinstance(audit, dict) else None
+    codes = {
+        (_nonempty(story.get("error_type")) or "").lower(),
+        (_nonempty(story.get("outcome_code")) or "").lower(),
+        (
+            (_nonempty(outcome_block.get("error_type")) or "").lower()
+            if isinstance(outcome_block, dict)
+            else ""
+        ),
+        (
+            (_nonempty(allocation_block.get("status")) or "").lower()
+            if isinstance(allocation_block, dict)
+            else ""
+        ),
+    }
+    if _ALLOCATION_EXHAUSTED_ERROR_TYPE in codes:
+        return {}
+    return None
+
+
+def _money(value: object) -> str | None:
+    """Format a recorded dollar figure, or ``None`` when it is not a number."""
+    try:
+        return f"${float(value):.2f}"  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def _allocation_exhaustion_excerpt(shortfall: dict) -> str:
+    """Describe the shortfall from the figures the coordinator separated out."""
+    recorded_phase = _nonempty(shortfall.get("phase"))
+    phase = recorded_phase or "further"
+    allocation = _money(shortfall.get("allocation_usd"))
+    observed = _money(shortfall.get("observed_usd"))
+    allocation_clause = f" of a {allocation} allocation" if allocation else ""
+    if shortfall.get("nonreview_exhausted"):
+        nonreview = _money(shortfall.get("nonreview_allocation_usd"))
+        reserved = _money(shortfall.get("reserved_review_usd"))
+        cycles = shortfall.get("reserved_review_cycles")
+        detail = (
+            f"spent {observed} of the {nonreview} left for non-review work"
+            if observed and nonreview
+            else "the non-review balance is gone"
+        )
+        reserve = f"; {reserved} stays reserved for {cycles} review cycle(s)" if reserved else ""
+        return _truncate(
+            f"story allocation exhausted: {detail}{allocation_clause}, so no further "
+            f"{phase} attempt is funded{reserve}"
+        )
+    planned = _money(shortfall.get("planned_usd"))
+    remaining = _money(shortfall.get("remaining_usd"))
+    if shortfall.get("projected"):
+        need = f" needs {planned} for {phase}," if planned else ""
+        left = f" {remaining} left" if remaining else ""
+        return _truncate(
+            f"story allocation exhausted at seating, before dev spent:{need}{left}"
+            f"{allocation_clause} (projected spend {observed or 'unmeasured'})"
+        )
+    if planned and remaining:
+        return _truncate(
+            f"story allocation exhausted: {phase} needs {planned}, {remaining} left"
+            f"{allocation_clause} (observed {observed or 'unmeasured'})"
+        )
+    refused = f"the next {recorded_phase} attempt" if recorded_phase else "further work"
+    return _truncate(
+        f"story allocation exhausted: the coordinator refused to fund {refused}{allocation_clause}"
+    )
+
+
+def _unclassified_cause_code(
+    story: dict,
+    audit: dict,
+    summary_source: str,
+    audit_source: str,
+) -> tuple[str, str, str] | None:
+    """Return the run's own unclassified cause code, or ``None`` (#2292).
+
+    Only ``error_type`` is consulted, and only when it is lower-snake-case. A
+    cause code forge assigned to its own termination is generated, not matched,
+    which makes it the most reliable material this classifier can hold — but
+    ``outcome_code`` degrades to the lowercased outcome (``failed``, ``escalate``)
+    when no error type was set, and an exception class name that merely
+    propagated into ``error_type`` (``TimeoutError``) names a Python type, not a
+    cause. Neither is a statement of cause, so neither may be reported as one the
+    taxonomy is missing a rule for.
+    """
+    outcome = str(story.get("outcome") or "").strip().lower()
+    outcome_block = audit.get("outcome") if isinstance(audit, dict) else None
+    audit_error = (
+        _nonempty(outcome_block.get("error")) if isinstance(outcome_block, dict) else None
+    )
+    audit_code = (
+        _nonempty(outcome_block.get("error_type")) if isinstance(outcome_block, dict) else None
+    )
+    for code, source, detail in (
+        (_nonempty(story.get("error_type")), summary_source, _nonempty(story.get("error"))),
+        (audit_code, audit_source, audit_error or _nonempty(story.get("error"))),
+    ):
+        if not code or not _FORGE_CAUSE_CODE_RE.match(code) or code.lower() == outcome:
+            continue
+        said = f": {detail}" if detail else ""
+        return (
+            code,
+            source,
+            _truncate(
+                f"the run recorded its own terminal cause code '{code}', which no rule in "
+                f"this taxonomy classifies{said}"
+            ),
+        )
+    return None
+
+
 def _signal_rule_hits(
     story: dict,
     audit: dict,
@@ -1212,6 +1444,7 @@ def _signal_rule_hits(
     sprint_log_dir: Path,
     logs_root: Path,
     capability_gap: _CapabilityGap | None = None,
+    allocation_shortfall: dict | None = None,
 ) -> list[tuple[str, str, str, str | None, str]]:
     """Fire field-derived (signal) rules from summary/audit structured fields.
 
@@ -1355,6 +1588,26 @@ def _signal_rule_hits(
                 "review_changes_requested",
                 audit_source if audit else summary_source,
                 _truncate(f"final review verdict REQUEST_CHANGES; outcome={outcome}"),
+                "structured",
+            )
+        )
+
+    # Monetary allocation exhaustion (#2292) — the coordinator's own refusal,
+    # read from the shortfall payload it recorded rather than scanned for in the
+    # sentence it formatted. Emitted before the iteration signals below because
+    # both can be present on the same story and only one of them ended it.
+    if allocation_shortfall is not None:
+        allocation_source = (
+            audit_source
+            if isinstance(audit.get("cost"), dict)
+            and (audit["cost"].get("allocation_exhausted") or {})
+            else summary_source
+        )
+        hits.append(
+            (
+                "story_allocation_exhausted",
+                allocation_source,
+                _allocation_exhaustion_excerpt(allocation_shortfall),
                 "structured",
             )
         )
@@ -1553,6 +1806,75 @@ def _capability_gap_action(preset: str | None, ref: str, profile_note: str | Non
     )
 
 
+def _allocation_exhaustion_action(ref: str, shortfall: dict | None) -> str:
+    """Next step for a story the coordinator refused to fund further (#2292).
+
+    Money and iterations are the same kind of limit, so the advice has the same
+    shape: raise the limit or reduce the work. What differs is *which* limit,
+    and that follows from the basis the allocation was derived on — a configured
+    per-story budget is a number the operator can raise, while a band-derived one
+    says this story cost more than its complexity band ever has.
+
+    Deliberately never proposes ``forge diagnose``: the coordinator stated the
+    cause when it stopped, so an investigation would be paid to conclude it.
+    """
+    shortfall = shortfall or {}
+    allocation = _money(shortfall.get("allocation_usd"))
+    named = f" ({allocation} for this story)" if allocation else ""
+    basis = _nonempty(shortfall.get("basis"))
+    if basis == "configured_fallback":
+        raise_it = (
+            f"raise the configured per-story budget (models.budget_usd){named} — the "
+            "allocation is the configured fallback, its complexity band having too "
+            "little history to derive one"
+        )
+    elif basis:
+        score = shortfall.get("complexity_score")
+        band = f" complexity score {score}" if score is not None else " its complexity band"
+        raise_it = (
+            f"narrow or split {ref}, or raise its allocation{named} — the allocation is "
+            f"derived from what{band} has actually cost, so the story spent beyond "
+            "everything its band has ever spent"
+        )
+    else:
+        raise_it = f"raise {ref}'s allocation{named} or narrow its scope"
+
+    if shortfall.get("projected"):
+        return (
+            f"reduce the review cycles seated for {ref} (or raise its allocation), then "
+            "re-run — the seating check refused before dev spent anything: the permitted "
+            f"review cycles cost more than the allocation{named} leaves after the dev "
+            "estimate. Nothing is wrong with the change; there is nothing to diagnose"
+        )
+    if shortfall.get("nonreview_exhausted"):
+        reserved = _money(shortfall.get("reserved_review_usd"))
+        held = (
+            f" ({reserved} is still held for the review cycles it was seated with)"
+            if reserved
+            else ""
+        )
+        return (
+            f"{raise_it}, then re-run — non-review spend reached everything the "
+            f"allocation leaves for it{held}. This is a spending limit forge enforced "
+            "deliberately, not a defect in the change: there is nothing to diagnose"
+        )
+    return (
+        f"{raise_it}, then re-run — the story's monetary allocation ran out, so the "
+        "coordinator refused to fund more work. This is an operator-set limit reached, "
+        "not a defect in the change: there is nothing to diagnose"
+    )
+
+
+def _taxonomy_gap_action(ref: str, code: str | None) -> str:
+    """Next step when the run stated a cause the taxonomy has no rule for (#2292)."""
+    named = f"'{code}'" if code else "the cause code recorded above"
+    return (
+        f"add a classifier rule for {named} to the RULES set in theforge/sprint/rca.py "
+        f"and file the taxonomy gap — {ref}'s cause is already determined by forge's own "
+        "record of its own execution, so an LLM investigation would be paid to restate it"
+    )
+
+
 def _recommend_actions(
     primary: str,
     contributing: list[str],
@@ -1560,6 +1882,8 @@ def _recommend_actions(
     *,
     capability_preset: str | None = None,
     capability_profile_note: str | None = None,
+    allocation_shortfall: dict | None = None,
+    unclassified_code: str | None = None,
 ) -> list[str]:
     """Map primary class + contributing factors to actionable next steps."""
     ref = _story_ref(story)
@@ -1618,6 +1942,8 @@ def _recommend_actions(
         "iteration_exhaustion": (
             f"raise the iteration budget for {ref} or narrow its scope, then re-run"
         ),
+        "allocation_exhaustion": _allocation_exhaustion_action(ref, allocation_shortfall),
+        TAXONOMY_GAP_CLASS: _taxonomy_gap_action(ref, unclassified_code),
         UNKNOWN_CLASS: (
             f"run 'forge diagnose --issue {diagnose_ref}' for LLM-assisted root cause"
         ),
@@ -1633,6 +1959,9 @@ def _recommend_actions(
     # names a cause the evidence contradicts (issue #1946).
     iteration_advice_applies = primary not in {
         "iteration_exhaustion",
+        # The story stopped on money, not on iterations. Raising an iteration
+        # budget buys attempts the allocation will not fund (#2292).
+        "allocation_exhaustion",
         # The iteration limit is how a capability gap *presents*; the budget was
         # never the constraint, so budget advice here would restate the wrong
         # cause the class exists to replace (#2029).
