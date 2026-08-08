@@ -193,6 +193,7 @@ def _escalation_block(state: "CoordinatorState") -> dict[str, Any] | None:
     """The escalate-gate decision and its advisory, or None when none was made."""
     if (
         state.escalate_decision is None
+        and state.escalate_declined_action is None
         and not state.advisory_generated
         and not state.advisory_launch_failure
     ):
@@ -200,6 +201,11 @@ def _escalation_block(state: "CoordinatorState") -> dict[str, Any] | None:
     return {
         "decision": state.escalate_decision,
         "selected_action": state.escalate_selected_action,
+        # What the operator chose that the gate could not carry out (#2300).
+        # Survives the process so the selection is recoverable from the run
+        # rather than existing only as a log line.
+        "declined_action": state.escalate_declined_action,
+        "declined_reason": state.escalate_declined_reason,
         "reason": state.escalate_reason,
         "advisory_generated": bool(state.advisory_generated),
         "advisory_report": _jsonable(state.advisory_report),
@@ -640,6 +646,12 @@ def _apply_escalation(state: "CoordinatorState", block: dict[str, Any]) -> bool:
     applied = _set_if_unset(state, "escalate_decision", block.get("decision")) or applied
     applied = (
         _set_if_unset(state, "escalate_selected_action", block.get("selected_action")) or applied
+    )
+    applied = (
+        _set_if_unset(state, "escalate_declined_action", block.get("declined_action")) or applied
+    )
+    applied = (
+        _set_if_unset(state, "escalate_declined_reason", block.get("declined_reason")) or applied
     )
     applied = _set_if_unset(state, "escalate_reason", block.get("reason")) or applied
     applied = _set_if_unset(state, "advisory_report", block.get("advisory_report")) or applied

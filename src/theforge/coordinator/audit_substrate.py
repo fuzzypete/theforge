@@ -86,7 +86,7 @@ SUBSTRATE_SCHEMA_VERSION = 8
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 21
+CURRENT_RECORD_SCHEMA_VERSION = 22
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1430,6 +1430,27 @@ def _migrate_v20_to_v21(record: dict) -> dict:
     return record
 
 
+def _migrate_v21_to_v22(record: dict) -> dict:
+    """Add ``landing_review`` — which review a landing was taken on (issue #2300).
+
+    v22 records name the provenance of the ReviewResult that landed:
+    ``merged_cycle_review`` for the ordinary path, or ``escalate_gate_selection``
+    when an operator accepted at the escalate gate on a reviewer verdict that
+    survived a quorum collapse and therefore never became a merged review.
+
+    ``None`` is the honest backfill for a v21 record, and no provenance is
+    inferred from the presence of review results. A v21 landing was resolved by
+    re-reading ``review_results[-1]`` at landing time, so the record never
+    established WHICH review the merge actually carried — synthesizing
+    ``merged_cycle_review`` here would assert exactly the fact this field exists
+    to make checkable. Older records read as "this run did not say", which is
+    true. The stored record is never rewritten (ADR-0002 refusal-to-forget).
+    """
+    if "landing_review" in record:
+        return record
+    return {**record, "landing_review": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1459,6 +1480,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     18: _migrate_v18_to_v19,
     19: _migrate_v19_to_v20,
     20: _migrate_v20_to_v21,
+    21: _migrate_v21_to_v22,
 }
 
 

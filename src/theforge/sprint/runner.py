@@ -5673,11 +5673,12 @@ def run_sprint(
         )
 
         with integration_lock(config.project_root):
-            from ..coordinator.completion import land_story  # noqa: PLC0415
-
-            parsed_review = (
-                result.state.review_results[-1] if result.state.review_results else None
+            from ..coordinator.completion import (  # noqa: PLC0415
+                land_story,
+                resolve_landing_review,
             )
+
+            parsed_review = resolve_landing_review(result.state)
             merge_info, landing_status = land_story(
                 config,
                 task,
