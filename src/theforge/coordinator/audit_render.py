@@ -282,6 +282,12 @@ def build_reviews(state: CoordinatorState) -> list[dict]:
             ),
             "pool_models": meta.pool_models,
             "successful": meta.successful,
+            # Which concrete model produced each reviewer's output for THIS
+            # cycle (#2226). A parse retry can be served by a different version
+            # than the invocation it superseded, so the cycle's own attribution
+            # is not reconstructable from the per-invocation records alone —
+            # it has to be visible in the record it describes.
+            "resolved_by_reviewer": dict(getattr(meta, "resolved_by_reviewer", None) or {}),
             "failed": meta.failed,
             "failed_detail": meta.failed_detail,
             "synthesized": meta.synthesized,

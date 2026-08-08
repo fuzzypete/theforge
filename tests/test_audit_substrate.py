@@ -1202,8 +1202,10 @@ class TestRendererIndexerModelIdentitySeam:
             self._agent_result(model_used="claude-sonnet-4-6"), "dev", "dev", 12.0
         )
 
+        # #2226: the served version resolves to its OWN pinned identity, never
+        # onto the ``anthropic/sonnet/cli`` shorthand that selected it.
         assert self._index_detail(tmp_path, self._record_with_agent_entry(entry)) == (
-            "anthropic/sonnet/cli",
+            "anthropic/claude-sonnet-4-6/cli",
             "direct",
             "canonical",
         )
@@ -1291,8 +1293,16 @@ class TestRendererIndexerModelIdentitySeam:
             "unresolved",
         )
 
-    def test_one_model_spelled_three_ways_indexes_under_one_identity(self, tmp_path: Path) -> None:
-        """The #2225 regression: canonical id, shorthand and concrete version agree."""
+    def test_alias_spellings_agree_but_a_served_version_stays_distinct(
+        self, tmp_path: Path
+    ) -> None:
+        """#2225 de-fragmentation holds for alias spellings; #2226 splits versions off.
+
+        ``anthropic/sonnet/cli`` and ``sonnet`` are two spellings of one subject
+        and must index together. ``claude-sonnet-4-6`` is a different subject —
+        one specific model — and indexing it with them is what let an alias's
+        history describe two models at once.
+        """
         conn = sub.create_or_open(tmp_path)
         try:
             for i, spelling in enumerate(("anthropic/sonnet/cli", "sonnet", "claude-sonnet-4-6")):
@@ -1302,12 +1312,15 @@ class TestRendererIndexerModelIdentitySeam:
             conn.commit()
             rows = conn.execute(
                 "SELECT dev_model, COUNT(*) FROM audit_records "
-                "WHERE run_id LIKE 'frag-%' GROUP BY dev_model"
+                "WHERE run_id LIKE 'frag-%' GROUP BY dev_model ORDER BY dev_model"
             ).fetchall()
         finally:
             conn.close()
 
-        assert [tuple(r) for r in rows] == [("anthropic/sonnet/cli", 3)]
+        assert [tuple(r) for r in rows] == [
+            ("anthropic/claude-sonnet-4-6/cli", 1),
+            ("anthropic/sonnet/cli", 2),
+        ]
 
     def test_model_config_only_entry_indexes_as_recovered_identity(self, tmp_path: Path) -> None:
         """No recorded model_used → reconstruct from invocation config, marked recovered."""
@@ -1425,7 +1438,11 @@ class TestRendererIndexerModelIdentitySeam:
         assert version == str(sub.SUBSTRATE_SCHEMA_VERSION)
 
     def test_reindex_recanonicalizes_a_schema_5_substrate(self, tmp_path: Path) -> None:
-        """A version-5 row holds the runner's spelling; opening it normalizes (#2225)."""
+        """A version-5 row holds the runner's spelling; opening it normalizes (#2225).
+
+        Under #2226 the normalized target is the served version's own pinned
+        identity rather than the family shorthand.
+        """
         rec = _make_record(run_id="v5-1")
         rec["cost"]["agents"] = [{"role": "dev", "model_used": "claude-sonnet-4-6"}]
         conn = sub.create_or_open(tmp_path)
@@ -1452,4 +1469,4 @@ class TestRendererIndexerModelIdentitySeam:
         finally:
             conn.close()
 
-        assert row == ("anthropic/sonnet/cli", "direct", "canonical")
+        assert row == ("anthropic/claude-sonnet-4-6/cli", "direct", "canonical")

@@ -92,6 +92,98 @@ models:
       input_per_mtok: 1.00
       output_per_mtok: 5.00
 
+  # ── Anthropic (pinned concrete versions) ─────────────────────────────
+  #
+  # #2226. The shorthands above are moving targets: the version they name is
+  # whatever the CLI currently ships, so evidence gathered under one describes a
+  # subject that can change underneath the key, and an *earlier* generation is
+  # not expressible as a candidate at all — even when it is cheaper and
+  # sufficient for the work being routed.
+  #
+  # These entries name concrete served versions *alongside* — not instead of —
+  # the shorthands. Both stay valid, and they are separate registry identities:
+  # `anthropic/opus/cli` is "whatever Anthropic currently sells as its flagship"
+  # and keeps tracking releases, while `anthropic/claude-opus-4-6/cli` is one
+  # specific model that does not move. A configuration naming only shorthands is
+  # unaffected by their presence.
+  #
+  # Unlike the shorthands, a pinned model string IS the identity the vendor
+  # bills under (runners/schema_utils.PRICING_TABLE keys them identically), so
+  # where a price has been observed for one it carries pricing_provenance and its
+  # band derives from that price — no cost_rank_basis needed. Where no price has
+  # been attributed yet, the band restates the vendor's tier naming exactly as
+  # the shorthand's does, and says so.
+
+  # Current flagship. No per-MTok figure has been attributed to this identity in
+  # this repo yet (PRICING_TABLE has none), so it declares no cost block and
+  # bands on the vendor's own tier naming rather than borrowing the shorthand's
+  # indicative literal.
+  - provider: anthropic
+    model: claude-opus-5
+    transport: {kind: cli}
+    routing:
+      tier: strong
+      capability: 10
+      cost_rank: 3
+      cost_rank_basis: vendor-tier
+
+  # Current mid-priced workhorse. Same attribution position as claude-opus-5.
+  - provider: anthropic
+    model: claude-sonnet-5
+    transport: {kind: cli}
+    routing:
+      tier: fast
+      capability: 7
+      cost_rank: 1
+      cost_rank_basis: vendor-tier
+
+  # Prior flagship generation — the candidate the shorthand cannot name. Priced
+  # under its own billed identity, so its band (3) is derived, and it is
+  # visibly *not* the cheap alternative its successor is.
+  - provider: anthropic
+    model: claude-opus-4-6
+    transport: {kind: cli}
+    routing:
+      tier: strong
+      capability: 9
+      cost_rank: 3
+    cost:
+      input_per_mtok: 15.00
+      output_per_mtok: 75.00
+      pricing_provenance: claude-opus-4-6
+
+  # Prior mid generation. Note the band (2) disagrees with the `sonnet`
+  # shorthand's (1): the shorthand bands on vendor tier, this one on its own
+  # attributable price. Both are correct about different subjects.
+  - provider: anthropic
+    model: claude-sonnet-4-6
+    transport: {kind: cli}
+    routing:
+      tier: fast
+      capability: 7
+      cost_rank: 2
+    cost:
+      input_per_mtok: 3.00
+      output_per_mtok: 15.00
+      pricing_provenance: claude-sonnet-4-6
+
+  # Cheap tier, pinned. dev_capable/phase_eligibility mirror the `haiku`
+  # shorthand: the run history those restrictions were derived from is this
+  # model's.
+  - provider: anthropic
+    model: claude-haiku-4-5
+    transport: {kind: cli}
+    routing:
+      tier: cheap
+      capability: 6
+      cost_rank: 1
+      dev_capable: false
+      phase_eligibility: [preflight, review]
+    cost:
+      input_per_mtok: 1.00
+      output_per_mtok: 5.00
+      pricing_provenance: claude-haiku-4-5
+
   # ── OpenAI (Codex CLI) ───────────────────────────────────────────────
   #
   # Unlike the Claude-CLI shorthands above, these model strings are the identity

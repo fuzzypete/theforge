@@ -20,8 +20,66 @@ def cmd_audits(args: object) -> int:
         return _cmd_audits_show(args)
     if sub == "skips":
         return _cmd_audits_skips(args)
+    if sub == "alias-drift":
+        return _cmd_audits_alias_drift(args)
     print(f"forge audits: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
+
+
+def _cmd_audits_alias_drift(args: object) -> int:
+    """Report what each configured model identity resolved to (issue #2226).
+
+    A family alias (``anthropic/opus/cli``) names whichever version the vendor
+    currently ships, so the identity recorded against a run does not say what
+    ran. This reads the substrate's per-invocation identity index and reports,
+    per configured identity, the ordered set of concrete identities it resolved
+    to. An alias whose resolution changed shows more than one — which is the
+    point: the change becomes something an operator can query rather than
+    something they infer from a behavioural surprise.
+
+    Thin by construction (CLI CONVENTIONS): the grouping lives in
+    ``audit_substrate.alias_resolution_timeline``; this renders it.
+    """
+    config_path = _find_config(Path(args.config).resolve() if args.config else None)
+    if config_path is None:
+        print("[forge] forge.yaml not found. Run from a forge project root.", file=sys.stderr)
+        return 1
+    project_root = config_path.parent
+    try:
+        conn = audit_substrate.require_substrate(project_root)
+    except audit_substrate.SubstrateError as exc:
+        print(f"[forge] {exc}", file=sys.stderr)
+        return 1
+    try:
+        timeline = audit_substrate.alias_resolution_timeline(conn)
+    finally:
+        conn.close()
+
+    if getattr(args, "changed_only", False):
+        timeline = [entry for entry in timeline if entry["changed"]]
+    if not timeline:
+        print("[forge] no recorded invocation carries both a configured and a resolved identity.")
+        return 0
+
+    for entry in timeline:
+        marker = "CHANGED" if entry["changed"] else "stable"
+        print(
+            f"{entry['configured_model']}  "
+            f"[{marker}: {entry['distinct_resolved']} resolved identit"
+            f"{'ies' if entry['distinct_resolved'] != 1 else 'y'} over "
+            f"{entry['invocations']} invocation(s)]"
+        )
+        for resolved in entry["resolved_models"]:
+            window = resolved["first_seen"] or "?"
+            if resolved["last_seen"] and resolved["last_seen"] != resolved["first_seen"]:
+                window = f"{window} → {resolved['last_seen']}"
+            print(
+                f"    {resolved['resolved_model']:<40} "
+                f"{resolved['invocations']:>4} invocation(s)  "
+                f"[{resolved['resolution'] or '?'}]  {window}"
+            )
+        print()
+    return 0
 
 
 def _cmd_audits_skips(args: object) -> int:
@@ -453,6 +511,20 @@ def register_parser(subparsers: object) -> None:
         help="Output path (default: .forge/assignment_history.yaml)",
     )
     export_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+
+    alias_drift_parser = audits_sub.add_parser(
+        "alias-drift",
+        help="Report what each configured model identity resolved to across recorded runs",
+    )
+    alias_drift_parser.add_argument(
+        "--changed-only",
+        action="store_true",
+        help="Only show configured identities that resolved to more than one model",
+    )
+    alias_drift_parser.add_argument(
         "--config",
         help="Path to forge.yaml (default: auto-detect)",
     )

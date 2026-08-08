@@ -83,13 +83,38 @@ def test_verbatim_identity_reports_unresolved_resolution() -> None:
     )
 
 
-def test_concrete_anthropic_version_folds_onto_the_registry_shorthand() -> None:
-    """The three live spellings of one model project to one identity."""
-    identities = {
+def test_alias_spellings_fold_but_a_served_version_projects_to_its_own_identity() -> None:
+    """#2226: two spellings of the alias are one subject; the version is another.
+
+    ``anthropic/sonnet/cli`` and ``sonnet`` name the same moving target and must
+    project together. ``claude-sonnet-4-6`` names one specific model, and folding
+    it in with them is what made evidence about two models look like evidence
+    about one.
+    """
+    alias = {
         ai.entry_model_identity_detail({"role": "dev", "model_used": spelling})[0]
-        for spelling in ("anthropic/sonnet/cli", "sonnet", "claude-sonnet-4-6")
+        for spelling in ("anthropic/sonnet/cli", "sonnet")
     }
-    assert identities == {"anthropic/sonnet/cli"}
+    assert alias == {"anthropic/sonnet/cli"}
+    assert ai.entry_model_identity_detail({"role": "dev", "model_used": "claude-sonnet-4-6"}) == (
+        "anthropic/claude-sonnet-4-6/cli",
+        ai.SOURCE_DIRECT,
+        ai.RESOLUTION_CANONICAL,
+    )
+
+
+def test_a_served_version_the_catalog_has_not_pinned_stays_unresolved() -> None:
+    """An alias that moved to a version the catalog lacks is visibly unresolved.
+
+    The pre-#2226 heuristic folded any ``claude-<family>-*`` onto the family
+    shorthand, which is precisely how an advance in what an alias means became
+    invisible. Reporting the served spelling verbatim keeps it detectable.
+    """
+    assert ai.entry_model_identity_detail({"role": "dev", "model_used": "claude-opus-4-8"}) == (
+        "claude-opus-4-8",
+        ai.SOURCE_DIRECT,
+        ai.RESOLUTION_UNRESOLVED,
+    )
 
 
 def test_transport_used_disambiguates_a_bare_model_name() -> None:
@@ -124,8 +149,11 @@ def test_dev_model_identity_detail_prefers_the_direct_entry() -> None:
         }
     }
     assert ai.dev_model_identity_detail(record) == (
-        "anthropic/sonnet/cli",
+        "anthropic/claude-sonnet-4-6/cli",
         ai.SOURCE_DIRECT,
         ai.RESOLUTION_CANONICAL,
     )
-    assert ai.dev_model_identity(record) == ("anthropic/sonnet/cli", ai.SOURCE_DIRECT)
+    assert ai.dev_model_identity(record) == (
+        "anthropic/claude-sonnet-4-6/cli",
+        ai.SOURCE_DIRECT,
+    )
