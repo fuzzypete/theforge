@@ -1067,6 +1067,10 @@ def _run_dev_phase(
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None  # consumed
+            if state.workspace_inherited_work_note is not None:
+                # Sticky record that the warning reached an agent, kept because
+                # the note itself is cleared on the next line.
+                state.workspace_inherited_work_surfaced_to_dev = True
             state.workspace_inherited_work_note = None  # consumed
         case _:
             raise ValueError(f"Unrecognized retry_reason: {state.retry_reason!r}")

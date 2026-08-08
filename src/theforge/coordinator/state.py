@@ -514,8 +514,16 @@ class CoordinatorState:
     # recorded no judgement.
     workspace_provenance_status: str | None = None
     # Dev-prompt text for an adopted worktree whose producing story text has
-    # since changed; None whenever there is nothing superseded to report.
+    # since changed; None whenever there is nothing superseded to report. This
+    # is a ONE-SHOT channel: the dev phase clears it after the first prompt
+    # carries it, so nothing may derive a run-level fact from it — see
+    # workspace_inherited_work_surfaced_to_dev below and
+    # workspace_provenance_status above, both of which are written once and
+    # never consumed.
     workspace_inherited_work_note: str | None = None
+    # Sticky "the dev agent was told it inherited superseded work". Set when the
+    # note is injected into a dev prompt, never cleared.
+    workspace_inherited_work_surfaced_to_dev: bool = False
     dev_session_id: str | None = None
     pending_dev_transport_retry_count: int = 0
     pending_dev_transport_retry_events: list[dict[str, Any]] = field(default_factory=list)

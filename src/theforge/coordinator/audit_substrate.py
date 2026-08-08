@@ -1462,10 +1462,10 @@ def _migrate_v22_to_v23(record: dict) -> dict:
     ``None`` is the honest backfill for ``story_provenance``: a v22 run adopted
     an existing worktree on identity alone and never asked the question, so
     claiming ``fresh_worktree`` or ``story_content_match`` would assert exactly
-    the fact this field exists to make checkable. ``inherited_superseded_work``
-    backfills False because no v22 run could have surfaced the condition — the
-    channel did not exist. The stored record is never rewritten (ADR-0002
-    refusal-to-forget).
+    the fact this field exists to make checkable. The two booleans backfill
+    False because no v22 run could have detected the condition or told an agent
+    about it — neither channel existed. The stored record is never rewritten
+    (ADR-0002 refusal-to-forget).
     """
     workspace = record.get("workspace")
     if not isinstance(workspace, dict) or "story_provenance" in workspace:
@@ -1476,6 +1476,7 @@ def _migrate_v22_to_v23(record: dict) -> dict:
             **workspace,
             "story_provenance": None,
             "inherited_superseded_work": False,
+            "inherited_work_surfaced_to_dev": False,
         },
     }
 

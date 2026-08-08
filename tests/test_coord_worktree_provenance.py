@@ -307,6 +307,62 @@ class TestWorkspaceAdoptionProvenance:
 # ── Seam: the judgement reaches the agent and the audit ──────────────────
 
 
+def _superseded_state() -> CoordinatorState:
+    """State as WORKSPACE leaves it after adopting a tree the story text outran."""
+    state = CoordinatorState()
+    state.workspace_provenance_status = PROVENANCE_CHANGED
+    state.workspace_inherited_work_note = inherited_work_note(
+        WorktreeProvenance(
+            status=PROVENANCE_CHANGED,
+            recorded_hash="a" * 64,
+            current_hash="b" * 64,
+            adopted=True,
+        )
+    )
+    return state
+
+
+def _run_dev_once(tmp_path: Path, state: CoordinatorState) -> str:
+    """Drive one real _run_dev_phase over a git repo; return the prompt it built."""
+    from unittest.mock import MagicMock
+
+    from theforge.coordinator.dev_phase import _run_dev_phase
+    from theforge.runners import AgentResult
+
+    _git(tmp_path, "init", "--initial-branch=main")
+    _git(tmp_path, "config", "user.email", "test@example.com")
+    _git(tmp_path, "config", "user.name", "Test")
+    (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
+    _git(tmp_path, "add", ".")
+    _git(tmp_path, "commit", "-m", "initial")
+    _git(tmp_path, "checkout", "-q", "-b", "feat/t")
+
+    failed = AgentResult(
+        success=False,
+        output="",
+        session_id=None,
+        cost_usd=0.0,
+        exit_code=-2,
+        raw={},
+        profile_name="dev",
+    )
+    with (
+        patch("theforge.coordinator.dev_phase.run_agent", return_value=failed) as mock_agent,
+        patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock()),
+    ):
+        _run_dev_phase(
+            state,
+            _make_config(tmp_path, "t"),
+            TaskStory(name="t", slug="t"),
+            STORY_V2,
+            tmp_path,
+            "feat/t",
+            notify=False,
+            logger=None,
+        )
+    return str(mock_agent.call_args.kwargs["prompt"])
+
+
 class TestInheritedWorkReachesTheDevAgent:
     def test_dev_prompt_carries_the_warning_when_a_note_is_supplied(self, tmp_path: Path) -> None:
         note = inherited_work_note(
@@ -340,53 +396,24 @@ class TestInheritedWorkReachesTheDevAgent:
 
     def test_dev_phase_injects_the_note_once_and_consumes_it(self, tmp_path: Path) -> None:
         """Seam: the WORKSPACE judgement carried on state reaches the dev prompt."""
-        from unittest.mock import MagicMock
+        state = _superseded_state()
+        prompt = _run_dev_once(tmp_path, state)
 
-        from theforge.coordinator.dev_phase import _run_dev_phase
-        from theforge.runners import AgentResult
-
-        _git(tmp_path, "init", "--initial-branch=main")
-        _git(tmp_path, "config", "user.email", "test@example.com")
-        _git(tmp_path, "config", "user.name", "Test")
-        (tmp_path / "f.txt").write_text("x\n", encoding="utf-8")
-        _git(tmp_path, "add", ".")
-        _git(tmp_path, "commit", "-m", "initial")
-        _git(tmp_path, "checkout", "-q", "-b", "feat/t")
-
-        config = _make_config(tmp_path, "t")
-        task = TaskStory(name="t", slug="t")
-        state = CoordinatorState()
-        state.workspace_provenance_status = PROVENANCE_CHANGED
-        state.workspace_inherited_work_note = inherited_work_note(
-            WorktreeProvenance(
-                status=PROVENANCE_CHANGED,
-                recorded_hash="a" * 64,
-                current_hash="b" * 64,
-                adopted=True,
-            )
-        )
-        failed = AgentResult(
-            success=False,
-            output="",
-            session_id=None,
-            cost_usd=0.0,
-            exit_code=-2,
-            raw={},
-            profile_name="dev",
-        )
-
-        with (
-            patch("theforge.coordinator.dev_phase.run_agent", return_value=failed) as mock_agent,
-            patch("theforge.coordinator.dev_phase.log_agent_result", new=MagicMock()),
-        ):
-            _run_dev_phase(
-                state, config, task, STORY_V2, tmp_path, "feat/t", notify=False, logger=None
-            )
-
-        prompt = mock_agent.call_args.kwargs["prompt"]
         assert "## ⚠ Inherited Working Tree — Story Text Has Changed Since" in prompt
         # Consumed: a later iteration is looking at its own work, not the inheritance.
         assert state.workspace_inherited_work_note is None
+        # ...but that the agent was told survives the consumption.
+        assert state.workspace_inherited_work_surfaced_to_dev is True
+
+    def test_dev_phase_records_nothing_surfaced_when_there_was_nothing_to_say(
+        self, tmp_path: Path
+    ) -> None:
+        state = CoordinatorState()
+        state.workspace_provenance_status = PROVENANCE_MATCH
+        prompt = _run_dev_once(tmp_path, state)
+
+        assert "Inherited Working Tree" not in prompt
+        assert state.workspace_inherited_work_surfaced_to_dev is False
 
 
 class TestProvenanceReachesTheAudit:
@@ -397,12 +424,36 @@ class TestProvenanceReachesTheAudit:
         return generate_audit_log(config, task, result)
 
     def test_superseded_adoption_is_recorded(self, tmp_path: Path) -> None:
-        state = CoordinatorState()
-        state.workspace_provenance_status = PROVENANCE_CHANGED
-        state.workspace_inherited_work_note = "note"
+        workspace = self._audit(tmp_path, _superseded_state())["workspace"]
+        assert workspace["story_provenance"] == PROVENANCE_CHANGED
+        assert workspace["inherited_superseded_work"] is True
+
+    def test_superseded_adoption_survives_the_dev_phase_consuming_the_note(
+        self, tmp_path: Path
+    ) -> None:
+        """The real state flow: DEV clears the one-shot note before the audit is built.
+
+        Deriving the audit boolean from that note reported False for exactly the
+        runs that inherited superseded work — every run that reached DEV.
+        """
+        state = _superseded_state()
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        _run_dev_once(worktree, state)
+        assert state.workspace_inherited_work_note is None  # consumed, as designed
+
         workspace = self._audit(tmp_path, state)["workspace"]
         assert workspace["story_provenance"] == PROVENANCE_CHANGED
         assert workspace["inherited_superseded_work"] is True
+        assert workspace["inherited_work_surfaced_to_dev"] is True
+
+    def test_inheriting_run_that_never_reached_dev_says_the_agent_was_not_told(
+        self, tmp_path: Path
+    ) -> None:
+        """Inheriting superseded work and warning an agent about it are separate facts."""
+        workspace = self._audit(tmp_path, _superseded_state())["workspace"]
+        assert workspace["inherited_superseded_work"] is True
+        assert workspace["inherited_work_surfaced_to_dev"] is False
 
     def test_ordinary_run_records_the_judgement_it_made(self, tmp_path: Path) -> None:
         state = CoordinatorState()
