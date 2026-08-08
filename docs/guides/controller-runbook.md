@@ -113,6 +113,33 @@ never merge, so a PR-landing sprint whose only edges are of that kind runs
 against a dirty root untouched. Workflows where nothing merges into the local
 checkout are genuinely unaffected.
 
+### Worktree provenance — the story text changed under an existing tree (issue #2288)
+
+When a run finds an existing worktree for a story, it now asks the same question
+the resume record already asks about phase records: was what is in there
+produced against the story text this run is executing? Editing an issue body
+while its story is stopped makes the answer no, and the log says so:
+
+```
+↻ WORKSPACE  reusing existing worktree: .../issue-2284
+⚠ WORKSPACE  story text changed since this worktree's contents were produced
+  produced against story 4f3c1ab90d2e, now running story 9b71c0de4415
+```
+
+**The work is kept, never deleted** — a stopped story's tree is usually exactly
+what should continue, and discarding it on a wording change would be worse. What
+changes is that the fact is stated: the dev agent's first prompt carries an
+*Inherited Working Tree* section telling it to inspect what is already there and
+say in its handoff what it kept and what it discarded, and the run audit records
+`workspace.story_provenance` (`fresh_worktree`, `story_content_match`,
+`story_content_changed`, or `unknown`) plus `workspace.inherited_superseded_work`.
+
+Operator call when you see the warning: continuing is fine if the edit was a
+clarification; if you rewrote the diagnosis, remove the worktree
+(`git worktree remove --force <path>` plus `git branch -D feat/<slug>`) before
+re-running so the dev starts clean. `unknown` just means the tree predates the
+record — it is not a defect.
+
 ## 2. Branch & forward-port model
 
 - Fixes land on the **base branch**. `forward-port.yml` then auto-carries every

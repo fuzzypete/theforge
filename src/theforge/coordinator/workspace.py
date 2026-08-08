@@ -23,6 +23,13 @@ from .gate import _run_gate
 from .git_lock import FETCH_LOCK
 from .run_setup import _rebase_onto_main
 from .worktree_drift import DRIFT_HEADER, classify_rebase_conflict
+from .worktree_provenance import (
+    WorktreeProvenance,
+    clear_worktree_provenance,
+    evaluate_worktree_provenance,
+    provenance_log_lines,
+    record_worktree_provenance,
+)
 
 # Populated lazily on first call to _resolve_merge_conflicts.
 run_agent = None
@@ -1099,18 +1106,47 @@ def _sync_run_forge_yaml(config: ForgeConfig, workspace_path: Path) -> None:
     sync_forge_yaml_into_worktree(config.project_root, workspace_path, label="WORKSPACE")
 
 
+def _judge_worktree_provenance(
+    config: ForgeConfig,
+    task: TaskStory,
+    story_content: str | None,
+    *,
+    adopted: bool,
+) -> WorktreeProvenance:
+    """Decide whether the story text that produced this tree still governs, and say so.
+
+    Adopting an existing worktree carries an earlier attempt's output into this
+    run, and a working tree carries no provenance an agent can read — so the
+    same question the resume record answers about phase records is asked here
+    about artifacts, and the answer goes into the run log (#2288). The tree is
+    never discarded on the strength of it: see :mod:`worktree_provenance`.
+    """
+    provenance = evaluate_worktree_provenance(
+        config.project_root, task.slug, story_content, adopted=adopted
+    )
+    for line in provenance_log_lines(provenance):
+        _cu._log(line)
+    return provenance
+
+
 def _create_workspace(
     config: ForgeConfig,
     task: TaskStory,
     *,
     no_pull: bool = False,
     lands_locally: bool | None = None,
+    story_content: str | None = None,
 ) -> tuple[Path | None, str | None, str | None]:
     """Create an isolated workspace. Returns (path, branch, error).
 
     ``lands_locally`` is forwarded to the base-branch publication guard: when
     this run merges stories into the local base checkout, the branch is
     expected to run ahead of origin and the guard stands down.
+
+    ``story_content`` is the story text this run executes. Every path out of
+    here records it as the provenance of the workspace's contents, and every
+    path that *adopts* contents an earlier attempt produced first compares it
+    against what is recorded.
     """
     slug = task.slug
     cmd = config.workspace.create_command.format(
@@ -1150,8 +1186,11 @@ def _create_workspace(
         _cu._log(f"  {info_line}")
         if is_stale:
             _remove_worktree(workspace_path, branch_name, config.project_root, info_line)
+            # The contents whose provenance was recorded no longer exist.
+            clear_worktree_provenance(config.project_root, task.slug)
         else:
             _cu._log(f"↻ WORKSPACE  reusing existing worktree: {workspace_path}")
+            provenance = _judge_worktree_provenance(config, task, story_content, adopted=True)
             if not no_pull:
                 sync_err = _sync_base_before_worktree_use(config, lands_locally=lands_locally)
                 if sync_err is not None:
@@ -1171,6 +1210,7 @@ def _create_workspace(
                     return None, None, f"Workspace setup command failed: {out_s}"
             _deindex_forge_artifacts(workspace_path, purge=True)
             _propagate_claude_memory(config.project_root, workspace_path)
+            record_worktree_provenance(config.project_root, task.slug, provenance)
             return workspace_path, branch_name, None
 
     if not no_pull:
@@ -1194,6 +1234,7 @@ def _create_workspace(
         if existing_wt is not None:
             if existing_wt.exists():
                 _cu._log(f"↻ WORKSPACE  reusing existing worktree (registered): {existing_wt}")
+                provenance = _judge_worktree_provenance(config, task, story_content, adopted=True)
                 if not no_pull:
                     sync_err = _sync_base_before_worktree_use(config, lands_locally=lands_locally)
                     if sync_err is not None:
@@ -1213,6 +1254,7 @@ def _create_workspace(
                         return None, None, f"Workspace setup command failed: {out_s}"
                 _deindex_forge_artifacts(existing_wt, purge=True)
                 _propagate_claude_memory(config.project_root, existing_wt)
+                record_worktree_provenance(config.project_root, task.slug, provenance)
                 return existing_wt, branch_name, None
             else:
                 _cu._log("⚠ WORKSPACE  linked worktree directory missing — pruning")
@@ -1227,6 +1269,7 @@ def _create_workspace(
 
         if commits_ahead:
             _cu._log(f"↻ WORKSPACE  branch has commits, reattaching worktree: {branch_name}")
+            provenance = _judge_worktree_provenance(config, task, story_content, adopted=True)
             if not no_pull:
                 sync_err = _sync_base_before_worktree_use(config, lands_locally=lands_locally)
                 if sync_err is not None:
@@ -1251,6 +1294,7 @@ def _create_workspace(
                     return None, None, f"Workspace setup command failed: {out_s}"
             _deindex_forge_artifacts(workspace_path, purge=True)
             _propagate_claude_memory(config.project_root, workspace_path)
+            record_worktree_provenance(config.project_root, task.slug, provenance)
             return workspace_path, branch_name, None
         else:
             _cu._log(
@@ -1284,4 +1328,9 @@ def _create_workspace(
 
     _deindex_forge_artifacts(workspace_path, purge=True)
     _propagate_claude_memory(config.project_root, workspace_path)
+    record_worktree_provenance(
+        config.project_root,
+        task.slug,
+        _judge_worktree_provenance(config, task, story_content, adopted=False),
+    )
     return workspace_path, branch_name, None

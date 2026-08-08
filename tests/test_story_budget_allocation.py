@@ -33,6 +33,35 @@ def _comparable_dev_estimate_basis(score: int = 8, *, sample_count: int = 12) ->
     }
 
 
+def _comparable_review_planning(
+    cost_usd: float,
+    score: int = 8,
+    *,
+    sample_count: int = 6,
+) -> dict:
+    """A review price on the allocation's own population: score-scoped history.
+
+    ``score`` must match the allocation under test — a price drawn from the
+    review population at large is exactly what seating refuses to refuse a
+    story on (#2287).
+    """
+    return {
+        "planned_cost_usd": cost_usd,
+        "basis": sb.BASIS_OBSERVED_SCORE,
+        "fallback_configured_usd": cost_usd,
+        "sample_count": sample_count,
+        "median_usd": round(cost_usd / sb.REVIEW_CYCLE_PRICE_HEADROOM, 4),
+        "p90_usd": cost_usd,
+        "max_usd": cost_usd,
+        "headroom_multiplier": sb.REVIEW_CYCLE_PRICE_HEADROOM,
+        "reason": "test fixture: score-scoped review history",
+        "excluded_for_taint": 0,
+        "composition": None,
+        "complexity_score": score,
+        "requested_complexity_score": score,
+    }
+
+
 # Observed distribution for score 2 in the issue's table (n=24, median $0.46,
 # p90 $1.08, max $1.35), compressed to the sample floor.
 _SCORE_2_COSTS = [0.21, 0.30, 0.38, 0.46, 0.52, 0.61, 1.08, 1.35]
@@ -488,6 +517,122 @@ class TestReviewCyclePricingLadder:
         assert planning.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
         assert planning.planned_cost_usd == 3.00
 
+    def test_the_story_own_score_governs_over_the_review_population(self, tmp_path: Path) -> None:
+        """A score-2 story is priced from verifying score-2 stories (#2287).
+
+        The defect in the raw: review at large is dominated by far larger work,
+        so a small story is allocated as small and charged as average.
+        """
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="small",
+                    score=2,
+                    cost=1.35,
+                    review_cycle_costs=[0.40, 0.44, 0.48],
+                    review_pools=[_PAIR, _PAIR, _PAIR],
+                ),
+                _record(
+                    run_id="big",
+                    score=9,
+                    cost=40.64,
+                    review_cycle_costs=[3.20, 3.21, 3.30, 3.40],
+                    review_pools=[_TRIO, _TRIO, _TRIO, _TRIO],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, composition=_TRIO, complexity_score=2
+        )
+
+        assert planning.basis == sb.BASIS_OBSERVED_SCORE
+        assert planning.derived is True
+        assert planning.complexity_score == 2
+        assert planning.requested_complexity_score == 2
+        assert planning.sample_count == 3
+        assert planning.planned_cost_usd == round(0.44 * 1.25, 4)
+        assert "at complexity score 2" in planning.reason
+        # The seated panel's own history would have priced this at $4.01 — nine
+        # times what verifying a story this size has ever cost.
+        assert planning.planned_cost_usd < 3.21
+
+    def test_a_score_without_enough_review_history_falls_to_the_wider_rungs(
+        self, tmp_path: Path
+    ) -> None:
+        """A score below the floor is not guessed at, and the fallback is recorded."""
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(run_id="small", score=2, cost=1.35, review_cycle_costs=[0.40]),
+                _record(
+                    run_id="big",
+                    score=9,
+                    cost=40.64,
+                    review_cycle_costs=[4.00, 4.00, 4.00],
+                    review_pools=[_TRIO, _TRIO, _TRIO],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, composition=_TRIO, complexity_score=2
+        )
+
+        assert planning.basis == sb.BASIS_OBSERVED_COMPOSITION
+        # Not scoped to the score, and the record says the score was known and
+        # unmatched rather than never asked for.
+        assert planning.complexity_score is None
+        assert planning.requested_complexity_score == 2
+
+    def test_a_score_free_caller_gets_the_pre_existing_ladder(self, tmp_path: Path) -> None:
+        """The score rung is opt-in: callers with no score see today's behavior."""
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="small",
+                    score=2,
+                    cost=1.35,
+                    review_cycle_costs=[0.40, 0.44, 0.48],
+                    review_pools=[_TRIO, _TRIO, _TRIO],
+                ),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, composition=_TRIO
+        )
+
+        assert planning.basis == sb.BASIS_OBSERVED_COMPOSITION
+        assert planning.complexity_score is None
+        assert planning.requested_complexity_score is None
+
+    def test_a_run_with_no_recorded_score_is_not_evidence_about_any_score(
+        self, tmp_path: Path
+    ) -> None:
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(
+                    run_id="unscored", score=None, cost=4.0, review_cycle_costs=[1.0, 1.0, 1.0]
+                ),
+                _record(run_id="scored", score=2, cost=1.0, review_cycle_costs=[0.40]),
+            ],
+        )
+
+        planning = sb.derive_review_cycle_planning_price(
+            tmp_path, configured_ceiling_usd=17.55, complexity_score=2
+        )
+
+        # Only one score-2 cycle exists; the three unscored ones do not join it,
+        # so the score rung is below its floor and review at large answers with
+        # all four cycles.
+        assert planning.basis == sb.BASIS_OBSERVED_REVIEW_CYCLE
+        assert planning.complexity_score is None
+        assert planning.sample_count == 4
+
     def test_no_history_whatsoever_reaches_the_ceiling(self, tmp_path: Path) -> None:
         _seed_substrate(
             tmp_path,
@@ -627,11 +772,13 @@ class TestReviewCycleReconciliation:
             dev_cost_estimate_usd=25.0428,
             dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
+            review_cycle_planning=_comparable_review_planning(17.55),
             requested_review_max=5,
             spent_so_far_usd=6.0,
         )
 
         assert record["action"] == sb.RECONCILE_UNFUNDABLE
+        assert record["review_cycle_cost_comparable"] is True
         assert record["affordable_review_cycles"] == 0
         assert record["spent_so_far_usd"] == 6.0
         assert record["shortfall_usd"] == round(17.55 - (48.02 - 6.0 - 25.0428), 4)
@@ -693,6 +840,113 @@ class TestReviewCycleReconciliation:
         ):
             assert record["reconciled_review_max"] == record["requested_review_max"]
 
+    def _score_2_allocation(self) -> dict:
+        """The issue's own figures: 8 score-2 samples, max $1.35, allocated 1.25x."""
+        return {
+            "allocation_usd": 1.69,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 2,
+            "median_usd": 0.46,
+            "p90_usd": 1.35,
+            "max_usd": 1.35,
+            "sample_count": 8,
+        }
+
+    def _wider_review_planning(self, cost_usd: float = 3.21) -> dict:
+        """A price from review at large, with the score it could not be scoped to."""
+        return sb.ReviewCyclePlanningPrice(
+            planned_cost_usd=cost_usd,
+            basis=sb.BASIS_OBSERVED_REVIEW_CYCLE,
+            fallback_configured_usd=17.55,
+            sample_count=31,
+            median_usd=round(cost_usd / sb.REVIEW_CYCLE_PRICE_HEADROOM, 4),
+            p90_usd=cost_usd,
+            max_usd=cost_usd,
+            requested_complexity_score=2,
+        ).as_dict()
+
+    def test_a_price_borrowed_from_bigger_work_does_not_refuse_a_small_story(self) -> None:
+        """The issue: $1.69 allocation vs a $3.21 review-population price (#2287).
+
+        Every story at the cheapest scored band was refused before it ran, on a
+        subtraction between an allocation scoped to its own score and a price
+        scoped to review as a whole. Nothing about the story entered into it.
+        """
+        record = sb.reconcile_review_cycles(
+            self._score_2_allocation(),
+            dev_cost_estimate_usd=0.67,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(2, sample_count=8),
+            review_cycle_cost_usd=3.21,
+            review_cycle_planning=self._wider_review_planning(),
+            requested_review_max=3,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_NONCOMPARABLE_REVIEW_COST
+        # Nothing fits — and that is exactly what is not acted on.
+        assert record["affordable_review_cycles"] == 0
+        assert record["review_cycle_cost_comparable"] is False
+        assert record["review_cycle_cost_complexity_score"] is None
+        assert record["review_cycle_cost_requested_complexity_score"] == 2
+        # The permission stands and nothing is reserved: the dispatch-time check
+        # against measured spend remains the honest refusal.
+        assert record["reconciled_review_max"] == 3
+        assert record["reserved_review_cycles"] == 0
+        assert record["reserved_review_usd"] == 0.0
+        assert "shortfall_usd" not in record
+        # No seating refusal is emitted for it.
+        assert sb.seating_shortfall(self._score_2_allocation(), record, participants=["a"]) is None
+
+        message = sb.format_reconciliation(record)
+        assert "not on a common population" in message
+        assert "complexity score 2" in message
+
+    def test_a_comparable_price_that_cannot_fund_a_cycle_still_refuses(self) -> None:
+        """Genuine exhaustion survives: the guard is scope, not size (#2238)."""
+        record = sb.reconcile_review_cycles(
+            self._score_2_allocation(),
+            dev_cost_estimate_usd=0.67,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(2, sample_count=8),
+            review_cycle_cost_usd=3.21,
+            review_cycle_planning=_comparable_review_planning(3.21, 2),
+            requested_review_max=3,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_UNFUNDABLE
+        assert record["review_cycle_cost_comparable"] is True
+        assert record["shortfall_usd"] == round(3.21 - (1.69 - 0.67), 4)
+
+    def test_a_wider_price_that_still_funds_a_cycle_is_acted_on_normally(self) -> None:
+        """Non-comparability only suppresses refusal — reduction is unaffected."""
+        record = sb.reconcile_review_cycles(
+            self._allocation(),
+            dev_cost_estimate_usd=25.0428,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
+            review_cycle_cost_usd=17.55,
+            review_cycle_planning=self._wider_review_planning(17.55),
+            requested_review_max=5,
+            spent_so_far_usd=0.0,
+        )
+
+        assert record["action"] == sb.RECONCILE_REDUCED
+        assert record["review_cycle_cost_comparable"] is False
+        assert record["reconciled_review_max"] == 1
+        assert record["reserved_review_usd"] == 17.55
+
+    def test_a_score_scoped_price_reads_as_such_in_the_operator_line(self) -> None:
+        record = sb.reconcile_review_cycles(
+            self._allocation(),
+            dev_cost_estimate_usd=25.0428,
+            dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
+            review_cycle_cost_usd=17.55,
+            review_cycle_planning=_comparable_review_planning(17.55),
+            requested_review_max=5,
+            spent_so_far_usd=0.0,
+        )
+
+        assert "complexity score 8" in sb.format_reconciliation(record)
+
     def test_unfundable_seating_reports_the_existing_shortfall_shape(self) -> None:
         allocation = self._allocation(usd=30.0)
         record = sb.reconcile_review_cycles(
@@ -700,6 +954,7 @@ class TestReviewCycleReconciliation:
             dev_cost_estimate_usd=25.0,
             dev_cost_estimate_basis=_comparable_dev_estimate_basis(),
             review_cycle_cost_usd=17.55,
+            review_cycle_planning=_comparable_review_planning(17.55),
             requested_review_max=5,
             spent_so_far_usd=0.0,
         )
@@ -910,6 +1165,7 @@ class TestReviewFundingReservation:
             dev_cost_estimate_usd=2.38,
             dev_cost_estimate_basis=_comparable_dev_estimate_basis(3, sample_count=20),
             review_cycle_cost_usd=1.01,
+            review_cycle_planning=_comparable_review_planning(1.01, 3),
             requested_review_max=1,
             spent_so_far_usd=0.0,
         )

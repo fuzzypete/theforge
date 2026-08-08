@@ -262,6 +262,7 @@ def build_dev_prompt(
     plan_review_advisory: str | None = None,
     iteration: int = 1,
     escalation_note: str | None = None,
+    inherited_work_note: str | None = None,
     cycle_history: list[CycleHistory] | None = None,
     preflight_sufficiency: str | None = None,
     contract_change: bool = False,
@@ -324,6 +325,15 @@ def build_dev_prompt(
 
             {escalation_note}
         """)
+
+    if inherited_work_note:
+        # Built without dedent(): the note is multi-line prose whose own lines
+        # carry no indentation, so dedent() on the interpolated result would
+        # find no common prefix and leave the heading indented into a code block.
+        feedback_section += (
+            "\n## ⚠ Inherited Working Tree — Story Text Has Changed Since\n\n"
+            f"{inherited_work_note}\n"
+        )
 
     if cycle_history:
         history_lines = []
