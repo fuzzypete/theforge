@@ -1568,6 +1568,25 @@ def land_story(
         )
 
 
+def resolve_landing_review(state: CoordinatorState) -> "ReviewResult | None":
+    """Return the ReviewResult a deferred landing should carry, or None.
+
+    Every ``land_story`` caller resolves its ``parsed_review`` through here so
+    the object that lands is the one the approval was made on. ``merge-pr``
+    fails closed on a missing review, and reading ``state.review_results``
+    directly loses an escalate-gate accept taken on a retained quorum-unmet
+    survivor — the run would then report "no review result available" for an
+    action the gate had offered and the operator had chosen (#2300).
+
+    Falls back to the last merged review so callers that reach landing without a
+    stamp (older resume records, direct invocations) behave as before.
+    """
+    stamped = getattr(state, "landing_review_result", None)
+    if stamped is not None:
+        return stamped
+    return state.review_results[-1] if state.review_results else None
+
+
 def _finalize_approve(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -1602,7 +1621,27 @@ def _finalize_approve(
     effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
 
     if effective_on_approve in ("merge", "merge-pr"):
-        # Defer to land_story() — no git operations here.
+        # Defer to land_story() — no git operations here. Landing happens in a
+        # different call (and, for sprints, a different thread), so the review
+        # this approval was made ON is stamped here rather than re-derived
+        # there: merge-pr needs a ReviewResult to post, and an escalate-gate
+        # accept on a retained quorum-unmet survivor has nothing in
+        # state.review_results for the landing caller to find (#2300).
+        state.landing_review_result = parsed_review
+        # Instrument WHICH review is landing, not just that one is: a landing
+        # taken on a gate-selected survivor is a materially different provenance
+        # from one taken on a merged cycle review, and the audit has to show that
+        # without the reader reconstructing it.
+        state.landing_review_source = (
+            "merged_cycle_review"
+            if any(rr is parsed_review for rr in state.review_results)
+            else "escalate_gate_selection"
+        )
+        if state.landing_review_source != "merged_cycle_review":
+            _log(
+                f"  Landing on the reviewer verdict selected at the escalate gate: "
+                f"{parsed_review.verdict} (no merged cycle review was recorded)"
+            )
         merge_info = {"action": effective_on_approve, "pending": True}
         landing_status = "pending_integration"
     elif effective_on_approve == "pr":

@@ -547,6 +547,21 @@ def _emit_fix_claim_check(
     )
 
 
+def _parse_pool_outputs(successful: list) -> list[ReviewResult]:
+    """Parse each surviving reviewer's output into a ReviewResult, in pool order.
+
+    Shared by the normal synthesis path and the quorum-collapse path so a
+    survivor's verdict is read the same way whether or not quorum was met.
+    """
+    parsed: list[ReviewResult] = []
+    for r in successful:
+        if r.structured_data:
+            parsed.append(parse_review_json(r.structured_data, r.profile_name))
+        else:
+            parsed.append(parse_review_output(r.output, r.profile_name))
+    return parsed
+
+
 def _run_review_pool(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -573,6 +588,9 @@ def _run_review_pool(
     merged_result is None when all reviewers failed or budget exceeded;
     in that case state.phase and state.error are already set — caller
     just needs to call _escalate_notify and return a CoordinatorResult.
+    On a quorum collapse merged_result is None but individual_parsed/named_parsed
+    still carry any surviving reviewer's verdict (#2300): quorum decides whether
+    the run may proceed automatically, not whether the verdict exists.
 
     individual_parsed contains per-reviewer ReviewResult objects that passed
     schema validation (after per-reviewer retries).  Callers use this for
@@ -1000,7 +1018,18 @@ def _run_review_pool(
                 f"Quorum unmet: {len(successful)}/{eligible_pool_size} succeeded "
                 f"< threshold {quorum_threshold}; {_shortfall}"
             )
-            return successful, failed_results, None, [], []
+            # The collapse still escalates and still merges nothing — quorum
+            # governs automatic progression. But a verdict a surviving reviewer
+            # actually produced must not cease to exist for every later decision
+            # (#2300): return it in the individual/named slots so the escalate
+            # gate can show it, the audit can record it, and an operator who
+            # knows quorum was unmet can still act on it explicitly.
+            _survivor_parsed = _parse_pool_outputs(successful)
+            _survivor_named = [
+                (r.profile_name, parsed) for r, parsed in zip(successful, _survivor_parsed)
+            ]
+            _survivor_individual = [p for p in _survivor_parsed if not p.parse_errors]
+            return successful, failed_results, None, _survivor_individual, _survivor_named
 
     if failed_results and meta.quorum_met:
         _log(
@@ -1013,12 +1042,7 @@ def _run_review_pool(
     )
 
     # ── Parse initial outputs ─────────────────────────────────────────
-    parsed_results: list[ReviewResult] = []
-    for r in successful:
-        if r.structured_data:
-            parsed_results.append(parse_review_json(r.structured_data, r.profile_name))
-        else:
-            parsed_results.append(parse_review_output(r.output, r.profile_name))
+    parsed_results: list[ReviewResult] = _parse_pool_outputs(successful)
     names = [r.profile_name for r in successful]
 
     # Attempt-completion invariant (#1388): every reviewer invocation is recorded
