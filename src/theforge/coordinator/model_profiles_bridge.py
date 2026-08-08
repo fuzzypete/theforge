@@ -47,31 +47,28 @@ def _review_resolved_cycle_counts(state: CoordinatorState) -> dict[str, dict[str
     would be a false claim about which model produced that evidence — the exact
     failure this story exists to end, one level down.
 
-    The join is per (reviewer, cycle), against the reviewer-attempt records,
-    which are written one per invocation and carry both the cycle number and the
-    served identity. Cycles whose attempt recorded no served identity are simply
-    absent, so the breakdown under-claims rather than over-claims: it never sums
-    past the cycle count it explains.
+    Both this and :func:`_extract_reviewers` iterate ``review_cycle_metadata``
+    and count the same ``meta.successful`` participants, so the cycle count and
+    its version breakdown are derived from one source and cannot disagree. The
+    served identity comes from ``meta.resolved_by_reviewer``, which the pool
+    records against the invocation whose output the cycle actually *used* — a
+    parse retry supersedes the initial output and can be served by a different
+    version, and the per-invocation attempt log cannot express which of its
+    entries survived.
+
+    A reviewer whose cycle recorded no served identity is simply absent, so the
+    breakdown under-claims rather than over-claims: it never sums past the cycle
+    count it explains.
     """
-    per_cycle: dict[tuple[str, int], str] = {}
-    for attempt in state.reviewer_attempts or []:
-        if not isinstance(attempt, dict):
-            continue
-        name, resolved, cycle = (
-            attempt.get("name"),
-            attempt.get("resolved_model"),
-            attempt.get("cycle"),
-        )
-        if not (name and resolved) or not isinstance(cycle, int):
-            continue
-        # One reviewer can be invoked several times inside one cycle (a parse
-        # retry). They are the same cycle of evidence, so the cycle maps to one
-        # served identity — the last invocation that reported one.
-        per_cycle[(str(name), cycle)] = str(resolved)
     counts: dict[str, dict[str, int]] = {}
-    for (name, _cycle), resolved in per_cycle.items():
-        by_version = counts.setdefault(name, {})
-        by_version[resolved] = by_version.get(resolved, 0) + 1
+    for meta in state.review_cycle_metadata or []:
+        resolved_by_reviewer = getattr(meta, "resolved_by_reviewer", None) or {}
+        for name in list(meta.successful or []):
+            served = resolved_by_reviewer.get(name)
+            if not served:
+                continue
+            by_version = counts.setdefault(str(name), {})
+            by_version[str(served)] = by_version.get(str(served), 0) + 1
     return counts
 
 

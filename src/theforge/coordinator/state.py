@@ -469,6 +469,15 @@ class ReviewCycleMetadata:
     degraded_quorum: bool = False
     # Human-readable audit note describing a degraded-quorum decision, or None.
     degraded_quorum_warning: str | None = None
+    # Reviewer profile name → the concrete model identity that produced the
+    # output this cycle actually used (#2226). A parse retry supersedes the
+    # initial invocation's output, and can be served by a different version, so
+    # "which model produced this cycle's evidence" is a property of the cycle,
+    # not something reconstructable from the per-invocation attempt log. Recorded
+    # here so the findings/cost fold (which counts cycles via ``successful``) and
+    # its version breakdown read the same source and cannot disagree. Absent for
+    # a reviewer whose result reported no served identity.
+    resolved_by_reviewer: dict[str, str] = field(default_factory=dict)
     # ── Reviewed-commit provenance (#2052) ────────────────────────────
     # The repository HEAD this cycle's reviewers judged, and the verification
     # state of that exact commit. Both stay None for metadata deserialized from
