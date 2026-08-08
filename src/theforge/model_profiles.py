@@ -39,6 +39,7 @@ disappears from the ledger.
 from __future__ import annotations
 
 import logging
+import re
 import statistics
 from copy import deepcopy
 from dataclasses import dataclass, field
@@ -2799,6 +2800,17 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
     stays **unresolved**, which is a fact the operator can act on (see
     ``forge audit alias-drift``), unlike a silent fold into the shorthand.
 
+    A **provider-reported release date** appended to an otherwise-resolvable
+    version is normalized away and the undated form re-resolved (#2311):
+    ``claude-haiku-4-5-20251001`` → ``anthropic/claude-haiku-4-5/cli``. This is
+    not the #2226 fold: the date suffix is a precision the provider added to a
+    name that is *already* a concrete version, so the dated and undated spellings
+    name the same subject, whereas a family shorthand and a version do not. The
+    normalization is a last resort — a catalog entry pinning the dated spelling
+    itself still wins — and it only ever *removes* the date, so a version with no
+    catalog entry (``claude-opus-4-8-20260101``) stays unresolved exactly as its
+    undated form does.
+
     ``entry`` is the optional record the key was read from — either a profiles
     storage entry (``_identity`` metadata) or an audit ``cost.agents`` entry
     (``transport_used``). It is only ever used as a *hint*; a key that stays
@@ -2829,6 +2841,44 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
                 entry_transport = hint
                 break
 
+    resolved = _resolve_canonical_key(key, entry_transport)
+    if resolved is not None:
+        return resolved
+
+    undated = _strip_release_date(key)
+    if undated is not None:
+        return _resolve_canonical_key(undated, entry_transport)
+    return None
+
+
+# A provider-appended release date: ``-20251001`` (Anthropic) or ``-2024-08-06``
+# (OpenAI), optionally ahead of a ``-cli``/``-api`` transport suffix. The year is
+# pinned to ``20xx`` and the month/day ranges are checked below so a model name
+# that merely ends in digits (``claude-sonnet-4-6``) can never be mistaken for a
+# dated release.
+_RELEASE_DATE_SUFFIX = re.compile(
+    r"-(?P<year>20\d{2})(?P<sep>-?)(?P<month>\d{2})(?P=sep)(?P<day>\d{2})"
+    r"(?P<transport>-(?:cli|api))?$"
+)
+
+
+def _strip_release_date(key: str) -> str | None:
+    """Return ``key`` with a provider release-date suffix removed, or ``None``.
+
+    ``None`` means "no date suffix here" — distinct from a key that had one — so
+    the caller does not re-resolve an unchanged key a second time.
+    """
+    match = _RELEASE_DATE_SUFFIX.search(key)
+    if match is None:
+        return None
+    if not (1 <= int(match.group("month")) <= 12 and 1 <= int(match.group("day")) <= 31):
+        return None
+    base = key[: match.start()] + (match.group("transport") or "")
+    return base or None
+
+
+def _resolve_canonical_key(key: str, entry_transport: str | None) -> str | None:
+    """Resolution rules 2–5 for one exact spelling. See the caller's docstring."""
     # Already canonical?
     parts = key.split("/")
     if len(parts) == 3 and parts[2] in ("cli", "api"):
