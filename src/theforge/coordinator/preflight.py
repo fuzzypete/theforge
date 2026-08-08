@@ -1375,6 +1375,7 @@ def _apply_preflight_config(
             domains=list(state.preflight_domains or []),
             excluded_for_taint=_excluded_for_taint,
             sprint_exploration_budget=explore_budget,
+            transport_fallbacks=config.transport_fallbacks,
         )
 
     _explore_remaining = _explore_budget.remaining_budget(

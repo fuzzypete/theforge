@@ -9,6 +9,7 @@ Provider-specific runners live in dedicated modules:
 
 from __future__ import annotations
 
+import re
 import subprocess
 import threading
 import time
@@ -180,6 +181,34 @@ _CLI_MODEL_FALLBACK_PATTERNS = (
 # fallback_models lists for CLI profiles.
 _KNOWN_CLI_NAMES = frozenset({"claude", "codex", "gemini", "ghaw"})
 
+# Quota refusals that name a reset moment. A limit with a stated reset time is a
+# different fact from a limit without one: repeating the first is certain to
+# reproduce it until that time, so the coordinator is entitled to stop rather
+# than spend the remaining budget re-asking (#2298). Deliberately does NOT match
+# the vague "try again later" — that carries no such certainty.
+_CLI_QUOTA_RESET_PATTERNS = (
+    re.compile(r"try again (?:at|after|on)\s+([^.\n]{3,80})", re.IGNORECASE),
+    re.compile(r"(?:limit |quota )?resets?\s+(?:at|on|in)\s+([^.\n]{3,80})", re.IGNORECASE),
+    re.compile(r"available again\s+(?:at|on|in)\s+([^.\n]{3,80})", re.IGNORECASE),
+)
+
+
+def _parse_quota_reset(output: str) -> str | None:
+    """Return the reset moment a quota refusal stated, or None if it stated none."""
+    for pattern in _CLI_QUOTA_RESET_PATTERNS:
+        match = pattern.search(output)
+        if match:
+            return match.group(1).strip().rstrip(",;")
+    return None
+
+
+def _fallback_unavailable_reason(profile: ModelProfile) -> str:
+    """Explain why no transport fallback could be attempted for ``profile``."""
+    provider = profile.provider_family or profile.provider or "unknown"
+    if profile.api_fallback is None and not profile.fallback_models:
+        return f"no transport fallback configured for provider {provider!r}"
+    return f"no configured fallback for provider {provider!r} resolved to an API transport"
+
 
 @dataclass(frozen=True)
 class _CliFallbackDecision:
@@ -332,6 +361,24 @@ def _maybe_run_api_fallback(
     reason = decision.reason
 
     def _annotate_cli_result(cli_result: AgentResult) -> AgentResult:
+        """Annotate a failure for which no fallback was ever attempted.
+
+        The failure was classified as fallback-eligible, so recording only the
+        reason would describe a decision without its outcome. Say why nothing
+        was attempted, and — for a quota refusal that named its own reset time —
+        carry that time forward so the coordinator can tell a failure certain to
+        repeat from one merely likely to (#2298).
+        """
+        not_applied = _fallback_unavailable_reason(profile)
+        reset_at = (
+            _parse_quota_reset(cli_result.output or "")
+            if decision.cli_quota_error_observed
+            else None
+        )
+        _log(
+            f"  ⚠ {cli_label} CLI failed ({reason}); no transport fallback applied "
+            f"— {not_applied}" + (f"; provider stated reset at {reset_at}" if reset_at else "")
+        )
         return replace(
             cli_result,
             model_config=model_config,
@@ -339,6 +386,8 @@ def _maybe_run_api_fallback(
             cli_quota_error_observed=decision.cli_quota_error_observed,
             transport_fallback_fired=False,
             transport_fallback_reason=reason,
+            transport_fallback_not_applied_reason=not_applied,
+            provider_quota_reset_at=reset_at,
             transport_used="cli",
         )
 
