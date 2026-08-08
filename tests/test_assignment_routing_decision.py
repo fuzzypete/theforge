@@ -414,6 +414,67 @@ def test_reasoning_effort_axis_recorded_as_score_controlled_per_phase(_keys_exce
             }
 
 
+def test_dev_cost_tiebreak_block_records_selected_cohort(_keys_except_deepseek):
+    decision = assign_models(
+        _agents(),
+        _cfg(),
+        complexity="HIGH",
+        complexity_score=9,
+        model_profiles={
+            "models": {
+                "anthropic/opus/cli": {
+                    "dev": {
+                        "runs": 8,
+                        "success_rate": 0.8,
+                        "by_complexity": {"large": {"runs": 8, "success_rate": 0.8}},
+                    }
+                },
+                "openai/gpt-5.4/api": {
+                    "dev": {
+                        "runs": 8,
+                        "success_rate": 0.8,
+                        "by_complexity": {"large": {"runs": 8, "success_rate": 0.8}},
+                    }
+                },
+            }
+        },
+        observed_costs={
+            "anthropic/opus/cli": {
+                "DEV|HIGH|high": {
+                    "role": "DEV",
+                    "complexity": "HIGH",
+                    "reasoning_effort": "high",
+                    "observations": [
+                        {
+                            "cost_usd": 1.1,
+                            "started_at": "2026-08-01T12:00:00+00:00",
+                            "cost_provenance": "provider_reported",
+                        },
+                        {
+                            "cost_usd": 1.2,
+                            "started_at": "2026-08-01T12:00:00+00:00",
+                            "cost_provenance": "provider_reported",
+                        },
+                        {
+                            "cost_usd": 1.0,
+                            "started_at": "2026-08-01T12:00:00+00:00",
+                            "cost_provenance": "provider_reported",
+                        },
+                    ],
+                }
+            }
+        },
+    )
+    block = decision.routing_decision["dev"]["cost_tiebreak"]
+    assert block["source"] in {"observed", "seed"}
+    assert block["observations"] is not None
+    assert block["cohort"] == {
+        "role": "DEV",
+        "complexity": "HIGH",
+        "reasoning_effort": "high",
+    }
+
+
 def test_score_policy_low_score_routes_to_min_reviewers(_keys_except_deepseek):
     """A low complexity score selects the min reviewer-count bucket — the coarse
     3-bucket shape is intentional and its boundary is auditable."""

@@ -1290,6 +1290,11 @@ def _apply_preflight_config(
     # aside (ADR-0006 clause 4). The count is surfaced in the routing_decision
     # block (clause 7) so operators see how much history was discounted.
     _esc_history, _excluded_for_taint = _load_esc_history_substrate(config.project_root)
+    from theforge.coordinator.audit_substrate import (  # noqa: PLC0415
+        load_observed_cost_cohorts as _load_observed_cost_cohorts,
+    )
+    _observed_costs, _observed_costs_excluded = _load_observed_cost_cohorts(config.project_root)
+    _excluded_for_taint = max(_excluded_for_taint, _observed_costs_excluded)
 
     from theforge.model_profiles import load_profiles as _load_profiles  # noqa: PLC0415
 
@@ -1360,6 +1365,7 @@ def _apply_preflight_config(
             explicit_profiles=_explicit if _explicit else None,
             secrets=config.secrets,
             model_profiles=_model_profiles,
+            observed_costs=_observed_costs,
             unhealthy_models=_unhealthy if _unhealthy else None,
             domains=list(state.preflight_domains or []),
             excluded_for_taint=_excluded_for_taint,
