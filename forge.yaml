@@ -10,7 +10,8 @@ project: theforge
 models:
   enabled:
     - anthropic/sonnet/cli        # CLI alias auto-tracks: Sonnet 5 as of 2026-07 ($3/$15)
-    - anthropic/opus/cli          # CLI alias auto-tracks: Opus 4.8 as of 2026-07 ($5/$25)
+    - anthropic/opus/cli          # CLI alias auto-tracks: claude-opus-5 as of 2026-08 (#2207; audit
+    #                                 records show claude-opus-5, not the Opus 4.8 this line claimed)
     - openai/gpt-5.4/cli          # value strong tier ($2.50/$15); still served, no deprecation (verified 2026-07-07)
     - openai/gpt-5.4-mini/cli     # cheap tier ($0.75/$4.50). Tried list-first 2026-07-11 to force dispatch via
     #                                 the cheap-bucket tie-break: got 4 preflights (at sonnet-equal cost, no
@@ -21,39 +22,56 @@ models:
     # key: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna. Declared api rather than cli because the
     # family ships no -codex variant (5.1/5.2/5.3 do), so Codex CLI support is unconfirmed; the
     # api transport is the one the identifiers were verified on and check-providers can probe it.
-    # Luna omitted — no published price found, and an unpriced entry seeds the cost band with a
-    # default rather than a figure. Prices below are secondary-source seeds, not provider-attested;
-    # that is exactly the provenance gap #2203 gated on and #2206 replaces with observed cost.
-    # BLOCKED 2026-08-05 — cannot be enabled until the temperature bug is fixed. check-providers
-    # live-probe returned 400 on both: "'temperature' does not support 0 with this model. Only the
-    # default (1) value". Verified directly against /v1/chat/completions: gpt-5.6-sol succeeds with
-    # no temperature and fails with temperature=0, so the model is fine and the adapter is not —
-    # _is_reasoning_model in runners/schema_utils.py matches only ^o\d plus two deepseek prefixes.
-    # Uncomment once that lands; identifiers and probe method are already verified.
-    # - provider: openai
-    #   model: gpt-5.6-sol
-    #   transport: {kind: api}
-    #   routing: {tier: strong, capability: 9, cost_rank: 2}
-    #   cost: {input_per_mtok: 2.50, output_per_mtok: 15.00}
-    # - provider: openai
-    #   model: gpt-5.6-terra
-    #   transport: {kind: api}
-    #   routing: {tier: fast, capability: 8, cost_rank: 2}
-    #   cost: {input_per_mtok: 1.00, output_per_mtok: 6.00}
-    # Haiku — cheap tier for the Anthropic adapter (#2207). Already billed inside invocations as a
-    # component model (claude-haiku-4-5 appears in cost.agents[].model_usage) while absent from the
-    # catalog entirely. dev_capable and phase_eligibility stated explicitly rather than inherited:
-    # introduced for preflight and review only until it has run history of its own.
-    - provider: anthropic
-      model: haiku
-      transport: {kind: cli}
+    # UNBLOCKED 2026-08-08 (#2207). The BLOCKED gate here was the temperature bug: check-providers
+    # live-probe returned 400 on both ("'temperature' does not support 0 with this model. Only the
+    # default (1) value") because _is_reasoning_model in runners/schema_utils.py matched only ^o\d
+    # plus two deepseek prefixes. #2222 removed temperature from all adapters, so the gate is gone.
+    #
+    # Prices below are now provider-attested — read from OpenAI's own model docs 2026-08-08, not the
+    # secondary-source seeds this block previously carried. Those seeds were wrong by exactly 2x on
+    # both entries (sol $2.50/$15 vs actual $5/$30; terra $1/$6 vs actual $2/$12), which would have
+    # ranked both as cheaper than they are and biased exploration toward them. pricing_provenance is
+    # set so the figures are routing-effective rather than indicative; #2206 supersedes them with
+    # observed cost once these models have run history.
+    - provider: openai
+      model: gpt-5.6-sol
+      transport: {kind: api}
+      routing: {tier: strong, capability: 9, cost_rank: 3}
+      cost: {input_per_mtok: 5.00, output_per_mtok: 30.00, pricing_provenance: gpt-5.6-sol}
+    - provider: openai
+      model: gpt-5.6-terra
+      transport: {kind: api}
+      routing: {tier: fast, capability: 8, cost_rank: 2}
+      cost: {input_per_mtok: 2.00, output_per_mtok: 12.00, pricing_provenance: gpt-5.6-terra}
+    # Luna was omitted on 2026-08-05 for "no published price found". A price is published: $0.20/
+    # $1.20 (OpenAI cut it 80% on 2026-07-30; OpenRouter's $0.10/$0.60 is a temporary 50% promo, so
+    # list price is the seed). OpenAI positions it as the nano tier — "roughly corresponds to the
+    # nano model tier used in earlier GPT-5 families" — not a sol-priced strong model. Introduced
+    # the same way haiku was: dev_capable false and phase_eligibility restricted until it has run
+    # history of its own, because tier/capability gate eligibility and never self-correct.
+    - provider: openai
+      model: gpt-5.6-luna
+      transport: {kind: api}
       routing:
         tier: cheap
         capability: 6
         cost_rank: 1
         dev_capable: false
         phase_eligibility: [preflight, review]
-      cost: {input_per_mtok: 1.00, output_per_mtok: 5.00}
+      cost: {input_per_mtok: 0.20, output_per_mtok: 1.20, pricing_provenance: gpt-5.6-luna}
+    # Haiku — cheap tier for the Anthropic adapter (#2207, migrated #2219). This was an inline
+    # declaration of anthropic/haiku/cli, which the shipped catalog also defines; the two diverged
+    # on routing-effective price and every config load warned about it. Resolved by enabling the
+    # catalog's *pinned* identity instead of redeclaring the shorthand.
+    #
+    # Not a policy change: the builtin claude-haiku-4-5 entry carries the identical tier, capability,
+    # cost_rank, dev_capable and phase_eligibility this block declared, plus pricing_provenance.
+    # Dropping the declaration while leaving the `haiku` shorthand enabled would NOT have been
+    # behaviour-preserving — builtin shorthands deliberately carry no pricing_provenance (they are
+    # indicative only and routing ignores them), so the price would have gone unattributable and
+    # fallen out of selection. The pinned entry keeps it routing-effective, and is the identity
+    # actually billed: claude-haiku-4-5 is what appears in cost.agents[].model_usage.
+    - anthropic/claude-haiku-4-5/cli
     - google/gemini-3.5-flash/api  # Google re-entry (2026-07-16, the registry story flagged below): stable/GA
     #                                 since 2026-05, Google's recommended model for agentic+coding. Beats
     #                                 3.1-pro on tool-call chaining (MCP Atlas 83.6%, Terminal-Bench 76.2 vs
@@ -67,45 +85,28 @@ models:
     #   been re-tested since. Re-test in a bounded exploration slot (assignment.exploration caps the
     #   blast radius); re-bench only if the SAME failure class recurs, and record the run id here.
     #   Checkable by asking: has this model run at all since the fix date recorded on its line?
-    # - deepseek/deepseek-reasoner/api  # benched 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
+    # UNBENCHED 2026-08-08 (#2207) under the RE-TEST TRIGGER above: each bench predates the fix for
+    # the failure that caused it, and neither had been re-tested since. Re-bench only if the SAME
+    # failure class recurs, and record the run id on the line. This takes the reviewer pool from
+    # 3 of 4 provider families to 4 of 4, which is what cross-provider reviewer preference assumes.
+    - deepseek/deepseek-reasoner/api  # benched 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
     #                                  Fixes landed AFTER the bench: #1574 provider-health signal (2026-05-12),
     #                                  #1434 reviewer crash retries instead of escalating (2026-07-09).
-    #                                  Not re-tested since either. See RE-TEST TRIGGER above.
-    # - google/gemini-3.1-pro-preview/api  # benched 2026-07-09: reviewer completed without calling submit_review
+    #                                  Re-test failure class: hang / crash mid-review.
+    - google/gemini-3.1-pro-preview/api  # benched 2026-07-09: reviewer completed without calling submit_review
     #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
     #                                      #1598 closed 2026-07-12 — three days AFTER this bench — and fixes
     #                                      precisely this failure (no retry, no substitute on a non-submitting
-    #                                      reviewer). Not re-tested since. See RE-TEST TRIGGER above.
+    #                                      reviewer). Re-test failure class: completes without submit_review.
     #                                      Still the only Google pro tier (never GA'd; 3.5 Pro delayed to
     #                                      mid-July 2026 over recursive tool-calling failures — bench it
     #                                      separately if it GAs). gemini-3.5-flash re-entry shipped above.
-  custom:
-    # GPT-5.5 — user-declared registry overlay (shipped #1184, v0.10.0).
-    # #1355 (overlay bypassed by AGENT_REGISTRY direct-readers) fixed during the
-    # v0.10 rc ladder; #1358 (P2 falsy-dict follow-up) still open but benign for
-    # a non-empty custom block. GPT-5.6 launch imminent (2026-07) — expect a
-    # re-pin here shortly.
-    openai/gpt-5.5/cli:
-      provider: openai
-      model: gpt-5.5
-      transport:
-        kind: cli                 # Codex CLI. Set kind: api for the OpenAI API adapter.
-      tier: strong
-      input_cost_per_mtok: 5.00
-      output_cost_per_mtok: 30.00
-    # Gemini 3.5 Flash — Google re-entry via overlay; AGENT_REGISTRY has no
-    # 3.5-line entry yet (registry story tracked in the enabled-list comment).
-    # tier strong (capability 9): it replaces 3.1-pro-preview's reviewer slot
-    # and outbenches it on the agentic axes that matter for submit_review
-    # discipline. $1.50/$9 lands in cost_rank 2.
-    google/gemini-3.5-flash/api:
-      provider: google
-      model: gemini-3.5-flash
-      transport:
-        kind: api                 # Google API adapter — same reviewer path 3.1-pro was benched on
-      tier: strong
-      input_cost_per_mtok: 1.50
-      output_cost_per_mtok: 9.00
+  # models.custom removed 2026-08-08 (#2219, depends_on #2204). This block held two overlays —
+  # openai/gpt-5.5/cli (#1184) and google/gemini-3.5-flash/api (#1598) — in the deprecated
+  # project-declared mapping. The deployed release now ships both in the unified catalog, promoted
+  # from these very overlays (#2226 and #2252 respectively), each carrying the same tier, capability
+  # and cost_rank they had here plus a pricing_provenance the overlay shape could not express.
+  # Both remain enabled by identity in the list above; this is a format move, not a policy change.
 
 # CLI→API transport fallback, keyed by provider family. The provider never
 # changes across a fallback — only the transport does.
@@ -237,12 +238,12 @@ notifications:
   #
   # 600→3600 (2026-08-07): 10m guaranteed an auto-escalate on anything launched
   # and left to run; three stories died that way in a week, none on merit.
-  # 3600→300 (2026-08-08): set for unattended overnight runs, where the "chance
-  # to answer" half is worth nothing and the wait is pure dead time before the
-  # same preserved outcome. Raise it back to 3600 when working at the keyboard —
-  # at 300 a gate expires before an operator has finished reading it.
+  # 300→3600 (2026-08-08): back up for keyboard-attended work. At 300 a gate
+  # expires before an operator has finished reading it. Drop to 300 again for
+  # unattended overnight runs, where the "chance to answer" half is worth
+  # nothing and the wait is pure dead time before the same preserved outcome.
   #
-  # Revisit when #2279 lands: once expiry applies the advisory recommendation
-  # instead of discarding it, expiring stops being a failure and this becomes a
-  # question about how long to defer a decision rather than whether to lose one.
-  human_review_timeout_seconds: 300
+  # #2279 has landed: expiry now applies the advisory recommendation instead of
+  # discarding it, so expiring is no longer a failure. This is now a question of
+  # how long to defer a decision, not whether to lose one.
+  human_review_timeout_seconds: 3600
