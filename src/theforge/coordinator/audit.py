@@ -956,6 +956,19 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         "merge": result.merge,
         "landing": build_landing_record(result.merge),
         "landing_status": getattr(result, "landing_status", None),
+        # Which review the landing was taken on: a merged cycle review, or a
+        # reviewer verdict selected at the escalate gate when no merged review
+        # existed (#2300). None when nothing was landed.
+        "landing_review": (
+            {
+                "source": state.landing_review_source,
+                "verdict": state.landing_review_result.verdict
+                if state.landing_review_result is not None
+                else None,
+            }
+            if state.landing_review_source is not None
+            else None
+        ),
         "landing_event": (
             {
                 "landing_status": result.landing_status,

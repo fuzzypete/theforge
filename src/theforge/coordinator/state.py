@@ -775,6 +775,15 @@ class CoordinatorState:
     # recorded, and no downstream reader sees an outcome nobody chose.
     escalate_declined_action: str | None = None
     escalate_declined_reason: str | None = None
+    # The ReviewResult an approval was taken ON, stamped by _finalize_approve
+    # when landing is deferred. Landing runs in a later call (and, for sprints, a
+    # another thread), and merge-pr needs a review to post; re-deriving it from
+    # review_results there loses an escalate-gate accept taken on a retained
+    # quorum-unmet survivor, which has no merged result (#2300). Read through
+    # completion.resolve_landing_review, never directly.
+    landing_review_result: ReviewResult | None = None
+    # Provenance of the above: "merged_cycle_review" or "escalate_gate_selection".
+    landing_review_source: str | None = None
     advisory_generated: bool = False  # True when a valid advisory report was produced
     advisory_packet: dict | None = None  # serialized EvidencePacket fed to the advisor
     advisory_report: dict | None = None  # serialized AdvisoryReport the advisor produced

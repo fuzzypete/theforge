@@ -1388,10 +1388,14 @@ def run_task(
         # When defer_landing=True (sprint worker path), skip: the scheduler
         # thread will call _attempt_integration under integration_lock.
         if result.success and result.landing_status == "pending_integration" and not defer_landing:
-            from .completion import land_story, mark_merge_failed  # noqa: PLC0415
+            from .completion import (  # noqa: PLC0415
+                land_story,
+                mark_merge_failed,
+                resolve_landing_review,
+            )
 
             _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
-            _parsed_review = state.review_results[-1] if state.review_results else None
+            _parsed_review = resolve_landing_review(state)
             _merge_info, _landing_status = land_story(
                 config,
                 task,
@@ -1737,10 +1741,14 @@ def _run_resume_coordinator(
         # ── Landing (single-story resume path) ───────────────────────
         # Skip when defer_landing=True (sprint worker): scheduler handles it.
         if result.success and result.landing_status == "pending_integration" and not defer_landing:
-            from .completion import land_story, mark_merge_failed  # noqa: PLC0415
+            from .completion import (  # noqa: PLC0415
+                land_story,
+                mark_merge_failed,
+                resolve_landing_review,
+            )
 
             _effective_on_approve = "merge" if auto_merge else config.workspace.on_approve
-            _parsed_review = state.review_results[-1] if state.review_results else None
+            _parsed_review = resolve_landing_review(state)
             _rws = state.workspace_path or workspace_path
             _merge_info, _landing_status = land_story(
                 config,
