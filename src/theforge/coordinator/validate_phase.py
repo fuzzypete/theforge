@@ -490,16 +490,16 @@ def _check_conventions_parallel(
                 "baseline_ref": baseline_ref,
             },
         )
-        all_v = [types.SimpleNamespace(**d) for d in result["all_violations"]]
-        net_v = [types.SimpleNamespace(**d) for d in result["violations"]]
     else:
         result = _cu._run_worktree_eval(
             workspace_path,
             "check_conventions",
             {"config": _config_dict, "project_root": str(workspace_path)},
         )
-        all_v = [types.SimpleNamespace(**d) for d in result["violations"]]
-        net_v = all_v
+    # Both branches answer the same two questions: "all_violations" is the plain
+    # scan the advisory artifact reads, "violations" is what blocks.
+    all_v = [types.SimpleNamespace(**d) for d in result["all_violations"]]
+    net_v = [types.SimpleNamespace(**d) for d in result["violations"]]
     return all_v, net_v
 
 

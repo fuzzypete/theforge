@@ -34,6 +34,7 @@ def _cmd_check_conventions(data: dict) -> dict:
         check_hard_conventions,
         new_hard_convention_violations_since_ref,
     )
+    from theforge.line_count_conventions import fail_closed_module_violations
 
     config = HardConventionsConfig(**data["config"])
     project_root = Path(data["project_root"])
@@ -55,8 +56,15 @@ def _cmd_check_conventions(data: dict) -> dict:
             "violations": [_v_to_dict(v) for v in net_new_v],
         }
     else:
+        # No baseline tree, so no frozen ceiling can be derived. The advisory
+        # view keeps the plain scan (distance from the configured limit); the
+        # blocking view fails closed at that limit rather than letting an
+        # oversized module pass unchecked (ADR-0008).
         violations = check_hard_conventions(config, project_root)
-        return {"violations": [_v_to_dict(v) for v in violations]}
+        return {
+            "all_violations": [_v_to_dict(v) for v in violations],
+            "violations": [_v_to_dict(v) for v in fail_closed_module_violations(violations)],
+        }
 
 
 _COMMANDS = {

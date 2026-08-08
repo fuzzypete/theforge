@@ -720,8 +720,11 @@ hooks:
 # ── Conventions ────────────────────────────────────────────
 conventions:
   hard:                            # mechanically enforced; omit section = no checks
-    max_module_lines: 500
-    max_test_file_lines: 1000
+    max_module_lines: 500          # ratcheted: a module already over this at the
+                                   # branch point may not grow (it may shrink
+                                   # freely); one within it is refused for
+                                   # crossing it — see docs/adr/0008
+    max_test_file_lines: 1000      # advisory only
     no_circular_imports: true
     test_mirrors_source: true
     no_scratch_files: true
