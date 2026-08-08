@@ -50,7 +50,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 10
+RULESET_VERSION = 11
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -65,6 +65,11 @@ UNKNOWN_CLASS = "unknown_needs_rca"
 # statement about the *rule set*, not about the story: the cause is known, the
 # receiving rule is missing, and an LLM investigation would only restate what the
 # run already says.
+# A skip whose recorded reason no rule receives lands here too (#2312): the run
+# stated why it stopped and the receiving rule is what is missing, which is the
+# same state of knowledge this class already names. The entry quotes the recorded
+# sentence, so an operator reads what the run said instead of acting on a class
+# assembled from somewhere else.
 TAXONOMY_GAP_CLASS = "taxonomy_gap"
 
 # ``error_type`` the coordinator stamps when a story's monetary allocation (or the
@@ -165,6 +170,40 @@ class RcaRule:
     # dev/reviewer agent could plausibly write about the project under
     # development; see ``_text_source_kind_for_path``.
     forge_emitted_only: bool = False
+
+
+@dataclass(frozen=True)
+class _SkipReasonRule:
+    """Maps a reason the sprint recorded when it skipped a story to a rule.
+
+    A skip is a decision the sprint made and wrote down in a sentence it
+    controls (``_record_current_story_entry(..., error=reason)`` in
+    ``sprint.runner``). That sentence — not the story's declared dependencies,
+    and not text found in artifacts a *different* generation left in the story's
+    log directory — is the material a skip classification is built from (#2312).
+    """
+
+    rule_id: str
+    # Lowercased prefixes of the recorded reason. Prefix-matched (not substring)
+    # so the reason must *begin* by stating this cause, which is how the runner
+    # formats every one of them.
+    prefixes: tuple[str, ...]
+
+
+# Keep the prefixes in sync with the ``reason=``/``error=`` strings the runner
+# records at each skip site. Order is match order.
+_SKIP_REASON_RULES: tuple[_SkipReasonRule, ...] = (
+    _SkipReasonRule("sprint_budget_unverifiable", ("budget unverifiable",)),
+    _SkipReasonRule("sprint_budget_exhausted", ("budget exhausted",)),
+    # "blocked" covers both "blocked: <ref>" (unresolved external dependency) and
+    # the bare "blocked" the DAG sweep records.
+    _SkipReasonRule("dependency_blocked", ("blocked", "dependency failed:")),
+    _SkipReasonRule(
+        "agent_credential_rejected",
+        ("agent credential rejected", "cancelled mid-flight:"),
+    ),
+    _SkipReasonRule("collision_gate_stood_down", ("collision gate stood down",)),
+)
 
 
 # ── Classifier rule set (single discoverable location) ────────────────────────
@@ -323,7 +362,49 @@ RULES: tuple[RcaRule, ...] = (
         rule_id="dependency_blocked",
         failure_class="dependency_skip",
         role="primary",
-        description="Story skipped because an unmet dependency blocked launch.",
+        description=(
+            "Story skipped because a dependency blocked launch — read from the "
+            "reason the sprint recorded for the skip, not inferred from the "
+            "presence of a depends_on list."
+        ),
+    ),
+    RcaRule(
+        rule_id="sprint_budget_unverifiable",
+        failure_class="sprint_budget_unverifiable",
+        role="primary",
+        description=(
+            "The sprint refused to dispatch the story because it could not verify "
+            "its own spend against the budget cap — some spend was unmeasured, so "
+            "the measured total is a lower bound and the cap cannot be evaluated."
+        ),
+    ),
+    RcaRule(
+        rule_id="sprint_budget_exhausted",
+        failure_class="sprint_budget_exhausted",
+        role="primary",
+        description=(
+            "The sprint's measured spend met or passed the run's budget cap before "
+            "the story was dispatched, so the story never started."
+        ),
+    ),
+    RcaRule(
+        rule_id="agent_credential_rejected",
+        failure_class="agent_auth_rejected",
+        role="primary",
+        description=(
+            "The substrate rejected the agent credential, so the sprint stopped "
+            "presenting it — the story was skipped or cancelled by that circuit "
+            "breaker, not judged."
+        ),
+    ),
+    RcaRule(
+        rule_id="collision_gate_stood_down",
+        failure_class="collision_stand_down",
+        role="primary",
+        description=(
+            "The collision gate stood the story down before DEV: the files it "
+            "planned to change are held by preserved work that has not landed."
+        ),
     ),
     RcaRule(
         rule_id="sandbox_capability_profile_missing",
@@ -441,6 +522,14 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     "operator_action",
     "sprint_state_stranded",
     "launch_collision",
+    # Run-level stop decisions the sprint took *about itself* before it dispatched
+    # the story (#2312). They outrank dependency_skip because a story the sprint
+    # never offered to a worker was not held back by its dependencies, whatever
+    # its depends_on list still says.
+    "agent_auth_rejected",
+    "sprint_budget_unverifiable",
+    "sprint_budget_exhausted",
+    "collision_stand_down",
     "dependency_skip",
     # A story whose dev agent could not run its toolchain because the project
     # declared no capability profile outranks the iteration exhaustion it
@@ -660,6 +749,18 @@ def _classify_story(
     # action names (#2292).
     allocation_shortfall = _allocation_shortfall(story, audit)
 
+    # A skip the sprint recorded a reason for is classified from that reason and
+    # from nothing else (#2312). The sprint stated why it stopped, in a sentence
+    # it controls; every other signal available for a skipped story is either
+    # about a different subject (a declared depends_on list the skip decision
+    # never consulted) or, for a story that was never dispatched, about a
+    # different run entirely (audit/log artifacts a prior generation left in the
+    # story's log directory). Neither classifies the story, and neither is
+    # carried as evidence for it — report surfaces quote evidence as the cause,
+    # which is exactly how the wrong reason reached the operator.
+    recorded_skip_reason = _recorded_skip_reason(story)
+    skip_rule = _skip_reason_rule(recorded_skip_reason) if recorded_skip_reason else None
+
     hits: list[tuple[str, str, str, str | None, str]] = []
     hits.extend(_text_rule_hits(text_sources))
     hits.extend(
@@ -705,8 +806,23 @@ def _classify_story(
         rule = RULES_BY_ID.get(rule_id)
         if rule is None:
             continue
+        if skip_rule is not None and rule_id != skip_rule.rule_id:
+            # Dropped entirely — not even as evidence. The sprint stated why it
+            # skipped this story; every other hit was matched in material the
+            # skip decision never consulted (a declared depends_on list) or that
+            # a *different* generation left behind (the story's log directory is
+            # not rewritten for a story this run never dispatched). Carrying such
+            # a hit as evidence is how the wrong reason reached the operator in
+            # the first place: report surfaces quote evidence as the cause.
+            continue
         seen_rules.add(rule_id)
         evidence.append({"source": source, "rule_id": rule_id, "excerpt": excerpt})
+        if recorded_skip_reason is not None and source_kind != "structured":
+            # The reason was recorded but no rule receives it. Other structured
+            # facts of the run may still classify the story; a pattern matched in
+            # scanned text may not — for a story that never ran, that text was
+            # written by some other run about some other attempt.
+            continue
         if rule.role == "primary":
             if _is_ambiguous_primary(
                 rule,
@@ -727,6 +843,24 @@ def _classify_story(
 
     primary = _select_primary(structured_primary_classes, text_primary_classes)
     unclassified_code: str | None = None
+    unclassified_skip_reason: str | None = None
+    if primary is None and recorded_skip_reason is not None:
+        # The sprint said why it skipped the story and no rule receives that
+        # sentence. Report exactly that (#2312): naming a class from anything
+        # else here would send the operator to a subject the run never named,
+        # while the reason it did name sits unread in the log.
+        unclassified_skip_reason = recorded_skip_reason
+        evidence.append(
+            {
+                "source": summary_source,
+                "rule_id": "unclassified_forge_cause_code",
+                "excerpt": _truncate(
+                    "the sprint recorded this reason for skipping the story, which no "
+                    f"rule in this taxonomy classifies: {recorded_skip_reason}"
+                ),
+            }
+        )
+        primary = TAXONOMY_GAP_CLASS
     if primary is None:
         # Nothing classified the story. Before falling to the residual — which
         # tells the operator to stop reading and buy an investigation — ask
@@ -746,6 +880,13 @@ def _classify_story(
             primary = TAXONOMY_GAP_CLASS
         else:
             primary = UNKNOWN_CLASS
+
+    # Evidence that supports the primary classification leads (#2312). Rendering
+    # surfaces quote the first non-baseline excerpt as *the* reason a story
+    # stopped, so an unrelated hit sitting first — a pattern matched in some
+    # other run's leftover log — is displayed as the cause under a class it did
+    # not produce. Ordering is otherwise preserved, and nothing is dropped.
+    evidence = _primary_evidence_first(evidence, primary)
 
     # Always append the baseline outcome evidence last.
     evidence.append(
@@ -784,6 +925,7 @@ def _classify_story(
         capability_profile_note=capability_gap.profile_note if capability_gap else None,
         allocation_shortfall=allocation_shortfall,
         unclassified_code=unclassified_code,
+        unclassified_skip_reason=unclassified_skip_reason,
     )
 
     return {
@@ -1437,6 +1579,28 @@ def _unclassified_cause_code(
     return None
 
 
+def _recorded_skip_reason(story: dict) -> str | None:
+    """Return the reason the sprint recorded when it skipped this story (#2312).
+
+    ``None`` when the story did not finish SKIPPED, or when the sprint recorded
+    no reason — a distinction that matters, because a recorded reason is a
+    statement the run made about itself and its absence is not evidence of
+    anything.
+    """
+    if str(story.get("outcome") or "").upper() != "SKIPPED":
+        return None
+    return _nonempty(story.get("error"))
+
+
+def _skip_reason_rule(reason: str) -> _SkipReasonRule | None:
+    """Return the skip rule whose recorded reason this is, or ``None``."""
+    text = reason.strip().lower()
+    for rule in _SKIP_REASON_RULES:
+        if any(text.startswith(prefix) for prefix in rule.prefixes):
+            return rule
+    return None
+
+
 def _signal_rule_hits(
     story: dict,
     audit: dict,
@@ -1539,16 +1703,37 @@ def _signal_rule_hits(
             )
         )
     if outcome == "SKIPPED":
-        deps = list(story.get("depends_on") or [])
-        if deps:
+        skip_reason = _recorded_skip_reason(story)
+        skip_rule = _skip_reason_rule(skip_reason) if skip_reason else None
+        if skip_rule is not None:
+            # The sprint's own sentence, quoted. Nothing is added to it and nothing
+            # is inferred around it.
             hits.append(
                 (
-                    "dependency_blocked",
+                    skip_rule.rule_id,
                     summary_source,
-                    _truncate(f"skipped; unmet dependencies: {', '.join(str(d) for d in deps)}"),
+                    _truncate(f"skipped; the sprint recorded: {skip_reason}"),
                     "structured",
                 )
             )
+        elif skip_reason is None:
+            # No reason was recorded at all, so there is nothing of the run's own
+            # to read. A declared dependency list is the one remaining structured
+            # signal; it is reported as what it is — a declared dependency, not a
+            # verified-unmet one.
+            deps = list(story.get("depends_on") or [])
+            if deps:
+                hits.append(
+                    (
+                        "dependency_blocked",
+                        summary_source,
+                        _truncate(
+                            "skipped with no recorded reason; declared dependencies: "
+                            + ", ".join(str(d) for d in deps)
+                        ),
+                        "structured",
+                    )
+                )
 
     # Review verdict — from the per-story audit reviews (or summary verdict).
     verdict = _last_review_verdict(story, audit)
@@ -1865,14 +2050,46 @@ def _allocation_exhaustion_action(ref: str, shortfall: dict | None) -> str:
     )
 
 
-def _taxonomy_gap_action(ref: str, code: str | None) -> str:
-    """Next step when the run stated a cause the taxonomy has no rule for (#2292)."""
+def _taxonomy_gap_action(ref: str, code: str | None, *, skip_reason: str | None = None) -> str:
+    """Next step when the run stated a cause the taxonomy has no rule for (#2292).
+
+    ``skip_reason`` is the sprint's own recorded reason for skipping the story
+    when that sentence is what went unclassified (#2312). The operator is told
+    the reason was not classified, and pointed at the sentence — not at a
+    remediation for a class this engine could not establish.
+    """
+    if skip_reason is not None:
+        return (
+            f'read the skip reason the sprint recorded for {ref} — "{_truncate(skip_reason)}" — '
+            "which no rule in this taxonomy classifies; add a classifier rule for it to the "
+            "RULES set in theforge/sprint/rca.py. No remediation is recommended here: the "
+            "reason is stated but its class is not established, and acting on a guessed class "
+            "costs more than acting on none"
+        )
     named = f"'{code}'" if code else "the cause code recorded above"
     return (
         f"add a classifier rule for {named} to the RULES set in theforge/sprint/rca.py "
         f"and file the taxonomy gap — {ref}'s cause is already determined by forge's own "
         "record of its own execution, so an LLM investigation would be paid to restate it"
     )
+
+
+def _primary_evidence_first(evidence: list[dict], primary: str) -> list[dict]:
+    """Stable-partition ``evidence`` so hits for the primary class come first."""
+    leading = [
+        item for item in evidence if _rule_failure_class(str(item.get("rule_id") or "")) == primary
+    ]
+    if not leading:
+        return evidence
+    trailing = [
+        item for item in evidence if _rule_failure_class(str(item.get("rule_id") or "")) != primary
+    ]
+    return leading + trailing
+
+
+def _rule_failure_class(rule_id: str) -> str | None:
+    rule = RULES_BY_ID.get(rule_id)
+    return rule.failure_class if rule is not None else None
 
 
 def _recommend_actions(
@@ -1884,6 +2101,7 @@ def _recommend_actions(
     capability_profile_note: str | None = None,
     allocation_shortfall: dict | None = None,
     unclassified_code: str | None = None,
+    unclassified_skip_reason: str | None = None,
 ) -> list[str]:
     """Map primary class + contributing factors to actionable next steps."""
     ref = _story_ref(story)
@@ -1936,6 +2154,27 @@ def _recommend_actions(
             "discard partial work"
         ),
         "dependency_skip": _dependency_action(story, ref),
+        "sprint_budget_unverifiable": (
+            f"{ref} was never dispatched: the sprint could not verify its spend against "
+            "the budget cap because some spend was unmeasured (the sources are named in "
+            "the evidence above), so it stopped rather than work against a total it "
+            f"knows is a lower bound — resolve the unmeasured spend or re-sprint {ref} "
+            "in a run whose cap can be evaluated"
+        ),
+        "sprint_budget_exhausted": (
+            f"the sprint's budget cap was reached before {ref} was dispatched — raise the "
+            f"budget or re-sprint {ref} in a new run; nothing about {ref}'s own work was "
+            "judged"
+        ),
+        "agent_auth_rejected": (
+            f"re-authenticate the agent credential the run recorded as rejected, then "
+            f"re-sprint {ref} — the credential circuit breaker stopped the story, so "
+            "this is not a judgment about its work"
+        ),
+        "collision_stand_down": (
+            f"land or clear the preserved work holding the files {ref} planned to change, "
+            f"then re-sprint {ref}"
+        ),
         "capability_profile_gap": _capability_gap_action(
             capability_preset, ref, capability_profile_note
         ),
@@ -1943,7 +2182,9 @@ def _recommend_actions(
             f"raise the iteration budget for {ref} or narrow its scope, then re-run"
         ),
         "allocation_exhaustion": _allocation_exhaustion_action(ref, allocation_shortfall),
-        TAXONOMY_GAP_CLASS: _taxonomy_gap_action(ref, unclassified_code),
+        TAXONOMY_GAP_CLASS: _taxonomy_gap_action(
+            ref, unclassified_code, skip_reason=unclassified_skip_reason
+        ),
         UNKNOWN_CLASS: (
             f"run 'forge diagnose --issue {diagnose_ref}' for LLM-assisted root cause"
         ),
@@ -1980,10 +2221,31 @@ def _recommend_actions(
 
 
 def _dependency_action(story: dict, ref: str) -> str:
-    deps = [str(d) for d in (story.get("depends_on") or [])]
+    # Prefer the dependencies the sprint named in its own skip reason over the
+    # story's declared depends_on list (#2312): the declared list also contains
+    # dependencies that already landed, and sending an operator to a satisfied
+    # dependency spends the time the real blocker needed.
+    deps = _recorded_blocking_deps(story) or [str(d) for d in (story.get("depends_on") or [])]
     if deps:
         return f"land blocking dependencies ({', '.join(deps)}) then re-sprint {ref}"
     return f"resolve the blocker preventing {ref} from launching, then re-sprint it"
+
+
+def _recorded_blocking_deps(story: dict) -> list[str]:
+    """Dependencies named in the sprint's own recorded skip reason, if any.
+
+    The runner formats these as ``blocked: a, b`` / ``dependency failed: a``. A
+    bare ``blocked`` names none, and none are invented for it.
+    """
+    reason = _recorded_skip_reason(story)
+    if not reason:
+        return []
+    lowered = reason.strip().lower()
+    for prefix in ("blocked:", "dependency failed:"):
+        if lowered.startswith(prefix):
+            listed = reason.strip()[len(prefix) :]
+            return [part.strip() for part in listed.split(",") if part.strip()]
+    return []
 
 
 # ── Small helpers ─────────────────────────────────────────────────────────────
