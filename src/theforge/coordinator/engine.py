@@ -487,11 +487,18 @@ def _coordinator_loop(
         # explicit headroom, not from the reviewers' execution ceilings. The
         # exact seated figure is persisted on state so dispatch cannot silently
         # re-price the same granted cycle later in the run.
+        #
+        # The story's complexity score goes in because the allocation this price
+        # is about to be subtracted from is scoped to that score (#2287). Pricing
+        # verification from the review population at large charges a small story
+        # for verifying an average one, and at the cheapest band that alone
+        # exceeds the whole allocation.
         _reviewer_names = [profile.name for profile in config.review_pool]
         _review_cycle_planning = _story_budget.derive_review_cycle_planning_price(
             config.project_root,
             configured_ceiling_usd=sum(float(p.budget_usd) for p in config.review_pool),
             composition=_reviewer_names,
+            complexity_score=state.preflight_complexity_score,
         ).as_dict()
         _reconciliation = _story_budget.reconcile_review_cycles(
             state.story_allocation,
@@ -530,6 +537,7 @@ def _coordinator_loop(
             _story_budget.RECONCILE_REDUCED,
             _story_budget.RECONCILE_UNFUNDABLE,
             _story_budget.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE,
+            _story_budget.RECONCILE_NONCOMPARABLE_REVIEW_COST,
         ):
             _audit["rationale"] = (
                 f"{_audit.get('rationale', '')} "

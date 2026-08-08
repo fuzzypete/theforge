@@ -655,6 +655,7 @@ def _run_review_pool(
                 config.project_root,
                 configured_ceiling_usd=configured_ceiling_usd,
                 composition=[p.name for p in pool],
+                complexity_score=state.preflight_complexity_score,
             ).as_dict()
             state.adaptive_review_cycle_planning = review_cycle_planning
         # A cycle the seating reconciliation reserved is funded from that
