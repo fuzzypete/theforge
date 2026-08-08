@@ -95,6 +95,7 @@ from .workspace import (
 )
 from .workspace_scrub import _scrub_forge_history
 from .worktree_drift import is_drift_classification
+from .worktree_provenance import inherited_work_note, last_worktree_provenance
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
 # Populated by _ensure_runners() at entry points.
@@ -487,11 +488,18 @@ def _coordinator_loop(
         # explicit headroom, not from the reviewers' execution ceilings. The
         # exact seated figure is persisted on state so dispatch cannot silently
         # re-price the same granted cycle later in the run.
+        #
+        # The story's complexity score goes in because the allocation this price
+        # is about to be subtracted from is scoped to that score (#2287). Pricing
+        # verification from the review population at large charges a small story
+        # for verifying an average one, and at the cheapest band that alone
+        # exceeds the whole allocation.
         _reviewer_names = [profile.name for profile in config.review_pool]
         _review_cycle_planning = _story_budget.derive_review_cycle_planning_price(
             config.project_root,
             configured_ceiling_usd=sum(float(p.budget_usd) for p in config.review_pool),
             composition=_reviewer_names,
+            complexity_score=state.preflight_complexity_score,
         ).as_dict()
         _reconciliation = _story_budget.reconcile_review_cycles(
             state.story_allocation,
@@ -530,6 +538,7 @@ def _coordinator_loop(
             _story_budget.RECONCILE_REDUCED,
             _story_budget.RECONCILE_UNFUNDABLE,
             _story_budget.RECONCILE_NONCOMPARABLE_DEV_ESTIMATE,
+            _story_budget.RECONCILE_NONCOMPARABLE_REVIEW_COST,
         ):
             _audit["rationale"] = (
                 f"{_audit.get('rationale', '')} "
@@ -1116,6 +1125,7 @@ def run_task(
                 if base_lands_locally is not None
                 else _base_branch_lands_locally(config, auto_merge=auto_merge)
             ),
+            story_content=story_content,
         )
         if err:
             state.phase = Phase.ESCALATE
@@ -1142,6 +1152,22 @@ def run_task(
         assert branch_name is not None
         state.workspace_path = workspace_path
         state.branch_name = branch_name
+
+        # Whether the story text that produced this workspace's contents still
+        # governs. Recorded on the state (and from there the audit) for every
+        # run; where it does not govern, the dev agent is told so its first
+        # iteration is not spent silently undoing superseded work (#2288).
+        _provenance = last_worktree_provenance(config.project_root, task.slug)
+        if _provenance is not None:
+            state.workspace_provenance_status = _provenance.status
+            state.workspace_inherited_work_note = inherited_work_note(_provenance)
+            logger._safe_emit(
+                "workspace_provenance",
+                status=_provenance.status,
+                adopted=_provenance.adopted,
+                recorded_story_content_hash=_provenance.recorded_hash,
+                current_story_content_hash=_provenance.current_hash,
+            )
         logger._safe_emit("phase_end", phase="WORKSPACE", outcome="success")
 
         # ── Plan injection (--plan) ─────────────────────────────────

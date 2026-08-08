@@ -1058,10 +1058,20 @@ def _run_dev_phase(
                 conventions=config.conventions_soft,
                 assembled_context=dev_context,
                 p2_policy=config.dev.p2_policy,
+                # The first dev prompt built for this run is the one that can
+                # still act on an inherited tree; consumed below so later
+                # iterations, which are looking at their own work, do not
+                # re-read the warning as though it were about them (#2288).
+                inherited_work_note=state.workspace_inherited_work_note,
                 **_verification_prompt_kwargs,
             )
             state.dev_prompt_injected_finding_ids.append([])
             state.escalation_note = None  # consumed
+            if state.workspace_inherited_work_note is not None:
+                # Sticky record that the warning reached an agent, kept because
+                # the note itself is cleared on the next line.
+                state.workspace_inherited_work_surfaced_to_dev = True
+            state.workspace_inherited_work_note = None  # consumed
         case _:
             raise ValueError(f"Unrecognized retry_reason: {state.retry_reason!r}")
     state.retry_reason = None  # consumed
