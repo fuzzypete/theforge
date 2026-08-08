@@ -364,7 +364,10 @@ shrink freely, but a change that grows it is refused, naming the module, the
 size it may not exceed, and by how much the change exceeds it. A module within
 the limit stays governed by the limit itself, and a module absent from the
 baseline is governed from its first commit. The ceilings are derived from the
-tree on every check, never recorded in a list.
+tree on every check, never recorded in a list. The branch point they are read
+from resolves against the remote-tracking base ref when the local one is behind
+it, so a `main` nobody fast-forwarded cannot charge this story with the growth
+of every story that landed since.
 
 The advisory report is unchanged and still states distance from the configured
 limit, so a module compliant with a frozen ceiling and still many times the
