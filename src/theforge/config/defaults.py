@@ -110,6 +110,12 @@ retry:
   max_dev_transport_retries: 1  # retry one transient dev provider failure
   max_plan_transport_retries: 2  # retry transient plan draft/regen provider failures
   max_review_cycles: 2     # full dev→review loops before escalation
+  escalate_policy: prompt  # "prompt" | "auto_approve" | "reject"
+  # What an escalate gate that EXPIRES without an operator selection does.
+  # "preserve" (default) waits for an operator; "apply_advice" applies the
+  # advisory recommendation as if an operator had selected it — except for
+  # `elevate` or no usable recommendation, which still wait.
+  escalate_timeout_policy: preserve  # "preserve" | "apply_advice"
 
 context:
   preflight_budget: 200

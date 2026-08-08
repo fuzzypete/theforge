@@ -358,7 +358,7 @@ RULES: tuple[RcaRule, ...] = (
         rule_id="pending_decision_auto_rejected",
         failure_class="operator_gate_timeout",
         role="contributing",
-        description="An operator decision gate timed out and auto-escalated.",
+        description="An operator decision gate timed out with no decision received.",
         patterns=("pending decision timed out after",),
     ),
     RcaRule(

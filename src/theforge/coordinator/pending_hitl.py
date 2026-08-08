@@ -292,6 +292,29 @@ def _pending_escalate_gate(
     return decision
 
 
+def cleanup_escalate_pending(
+    task: "TaskStory",
+    config: "ForgeConfig",
+    run_id: str = "",
+) -> None:
+    """Remove the escalate gate's pending checkpoint after it has been resolved.
+
+    :func:`_pending_escalate_gate` preserves (and refreshes) the checkpoint on
+    timeout so an operator can still act on it. When something else resolves that
+    expired gate — today, the opt-in ``retry.escalate_timeout_policy:
+    apply_advice`` applying the advisory recommendation (#2279) — the checkpoint
+    must go, exactly as it does for an explicit selection: a resolved decision
+    that leaves a pending file behind reads as still-awaiting-an-operator.
+
+    Lives here, next to the writer, so the effective run id / project root are
+    resolved by the same rule that wrote the file rather than by a caller's
+    reconstruction of it.
+    """
+    from theforge import pending as _pending
+
+    _pending.cleanup_pending(run_id or task.slug, getattr(config, "project_root", None))
+
+
 def _build_packet_stub(state: "_cs.CoordinatorState", escalate_reason: str) -> "EvidencePacket":
     """Reconstruct a lightweight EvidencePacket from the serialized state payload.
 

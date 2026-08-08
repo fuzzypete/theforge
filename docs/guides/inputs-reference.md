@@ -661,6 +661,18 @@ retry:
                              # complexity; the max_* fields above act as the floor
   max_dev_iterations_cap: 0  # hard ceiling for adaptive growth; 0 = same as
   max_review_cycles_cap: 0   # floor (no growth). Set explicitly to opt in.
+  escalate_policy: prompt    # "prompt" | "auto_approve" | "reject" — how an
+                             # escalation is decided while it is open
+  escalate_timeout_policy: preserve  # what an escalate gate that EXPIRES means.
+                             # "preserve" (default) keeps the pending checkpoint
+                             # and waits for an operator — unchanged behaviour.
+                             # "apply_advice" applies the escalation advisor's
+                             # recommendation as if an operator had selected it,
+                             # for unattended overnight runs. A recommendation of
+                             # `elevate`, an unusable/absent report, or one this
+                             # run cannot perform still preserves the story — no
+                             # fallback action is ever substituted. A selection
+                             # that arrives before expiry always governs.
   # More retry knobs exist (plan/plan-review/review transport retries, quorum,
   # degrade policy, …) — see RetryPolicy in src/theforge/config/types.py.
 

@@ -201,6 +201,13 @@ def _escalation_block(state: "CoordinatorState") -> dict[str, Any] | None:
     return {
         "decision": state.escalate_decision,
         "selected_action": state.escalate_selected_action,
+        # Provenance of the decision, and — for an expiry — whether the advisory
+        # recommendation was applied or which absence stopped it (#2279). Kept in
+        # the durable record so a resumed run reports the same "who decided this"
+        # as the live one did.
+        "decision_source": state.escalate_decision_source,
+        "timeout_advice": state.escalate_timeout_advice,
+        "awaiting_operator": state.escalate_decision == "advisory_pending",
         # What the operator chose that the gate could not carry out (#2300).
         # Survives the process so the selection is recoverable from the run
         # rather than existing only as a log line.
@@ -654,6 +661,12 @@ def _apply_escalation(state: "CoordinatorState", block: dict[str, Any]) -> bool:
         _set_if_unset(state, "escalate_declined_reason", block.get("declined_reason")) or applied
     )
     applied = _set_if_unset(state, "escalate_reason", block.get("reason")) or applied
+    applied = (
+        _set_if_unset(state, "escalate_decision_source", block.get("decision_source")) or applied
+    )
+    applied = (
+        _set_if_unset(state, "escalate_timeout_advice", block.get("timeout_advice")) or applied
+    )
     applied = _set_if_unset(state, "advisory_report", block.get("advisory_report")) or applied
     applied = (
         _set_if_unset(state, "human_review_waited_seconds", block.get("waited_seconds")) or applied

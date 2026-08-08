@@ -39,6 +39,55 @@ class Phase(Enum):
     ESCALATE = auto()
 
 
+# ── Escalate-gate decision provenance (#2279) ─────────────────────────
+#
+# Every escalate-gate outcome names who or what produced it. The value is
+# recorded on CoordinatorState.escalate_decision_source, carried into the audit
+# record and the resume record, and is the field an operator reads to tell a
+# decision they made from one made for them.
+ESCALATE_SOURCE_OPERATOR = "operator"  # an explicit selection at a gate surface
+ESCALATE_SOURCE_OPERATOR_DECLINED = "operator_declined"  # selection the gate refused
+ESCALATE_SOURCE_POLICY_REJECT = "policy_reject"  # retry.escalate_policy=reject
+ESCALATE_SOURCE_POLICY_AUTO_APPROVE = "policy_auto_approve"  # escalate_policy=auto_approve
+ESCALATE_SOURCE_NO_INTERACTION = "coordinator_no_interaction"  # no gate surface available
+ESCALATE_SOURCE_TIMEOUT_PENDING = "timeout_pending"  # expired; still awaiting an operator
+ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT = "advisor_on_timeout"  # advice applied on expiry
+ESCALATE_DECISION_SOURCES: tuple[str, ...] = (
+    ESCALATE_SOURCE_OPERATOR,
+    ESCALATE_SOURCE_OPERATOR_DECLINED,
+    ESCALATE_SOURCE_POLICY_REJECT,
+    ESCALATE_SOURCE_POLICY_AUTO_APPROVE,
+    ESCALATE_SOURCE_NO_INTERACTION,
+    ESCALATE_SOURCE_TIMEOUT_PENDING,
+    ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT,
+)
+
+# Why the advisory recommendation was (or was not) applied at an expired gate.
+# Only ``applied`` changes the outcome; every other value is a preserve, and
+# they are kept distinct because "the advisor never launched", "it produced
+# nothing parseable", "it recommended nothing", "it recommended elevate", and
+# "it recommended something this run cannot perform" are five different
+# situations with different repairs.
+ADVICE_APPLIED = "applied"
+ADVICE_ELEVATE = "elevate"  # deliberate no-automated-choice signal
+ADVICE_NOT_PERFORMABLE = "not_performable"  # recommendation withheld by this run's state
+ADVICE_NO_RECOMMENDATION = "no_recommendation"  # valid report, empty recommendation
+ADVICE_UNPARSEABLE = "unparseable_report"  # advisor ran, report failed validation
+ADVICE_LAUNCH_FAILURE = "launch_failure"  # advisor never reached the model
+ADVICE_UNAVAILABLE = "advisor_unavailable"  # no advisory on this gate surface at all
+ADVICE_POLICY_PRESERVE = "policy_preserve"  # opt-in not enabled; expiry preserves
+ESCALATE_TIMEOUT_ADVICE_STATUSES: tuple[str, ...] = (
+    ADVICE_APPLIED,
+    ADVICE_ELEVATE,
+    ADVICE_NOT_PERFORMABLE,
+    ADVICE_NO_RECOMMENDATION,
+    ADVICE_UNPARSEABLE,
+    ADVICE_LAUNCH_FAILURE,
+    ADVICE_UNAVAILABLE,
+    ADVICE_POLICY_PRESERVE,
+)
+
+
 _PHASE_NAME_MAP: dict[str, Phase] = {
     "workspace": Phase.WORKSPACE,
     "preflight": Phase.PREFLIGHT,
@@ -791,6 +840,17 @@ class CoordinatorState:
     # recorded, and no downstream reader sees an outcome nobody chose.
     escalate_declined_action: str | None = None
     escalate_declined_reason: str | None = None
+    # WHO or WHAT produced the escalate-gate outcome (#2279). escalate_decision
+    # says what happened; this says who is answerable for it, so an operator
+    # reading a run afterwards can tell an action they chose from one applied on
+    # their behalf from a gate still waiting — without inferring it from
+    # timestamps. One of ESCALATE_DECISION_SOURCES; None until a gate runs.
+    escalate_decision_source: str | None = None
+    # Why the advisory recommendation was or was not applied when a gate expired
+    # (#2279). One of ESCALATE_TIMEOUT_ADVICE_STATUSES; None when no gate
+    # expired. An absent recommendation is the absence of advice, not consent to
+    # any outcome — this field names WHICH absence it was.
+    escalate_timeout_advice: str | None = None
     # The ReviewResult an approval was taken ON, stamped by _finalize_approve
     # when landing is deferred. Landing runs in a later call (and, for sprints, a
     # another thread), and merge-pr needs a review to post; re-deriving it from
