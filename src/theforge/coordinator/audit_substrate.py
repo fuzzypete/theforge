@@ -32,6 +32,7 @@ from typing import Iterable
 from .agent_identity import (
     dev_identity_ledger,
     dev_model_identity_detail,
+    entry_identity_ledger,
     invocation_identity_rows,
 )
 
@@ -2230,6 +2231,168 @@ def derive_cost_samples_by_score(
     for entry in admissible:
         out.setdefault(int(entry["complexity_score"]), []).append(float(entry["total_cost_usd"]))
     return out
+
+
+def derive_observed_cost_cohorts(
+    conn: sqlite3.Connection,
+    *,
+    stats: dict | None = None,
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Return observed invocation-cost cohorts keyed by model and cohort tuple.
+
+    The final assignment tie-break compares spend only within like-for-like
+    cohorts: role, complexity band, and requested reasoning effort. This reader
+    projects those cohorts from the invocation ledger (#2226), not from the
+    profile aggregates, because the ledger is the only substrate that carries
+    all three cohort dimensions together with the measured invocation cost.
+
+    Returned shape::
+
+        {
+          "<model identity>": {
+            "dev|MEDIUM|high": {
+              "role": "dev",
+              "complexity": "MEDIUM",
+              "reasoning_effort": "high",
+              "observations": [
+                {"cost_usd": 2.1, "started_at": "...", "cost_provenance": "..."},
+                ...
+              ],
+            },
+          },
+        }
+
+    Only complete observations are kept: a full ledger, a configured-or-resolved
+    model identity, usage metadata, a numeric ``cost_usd``, and the cohort
+    dimensions required by the selector. Tainted runs are filtered by the same
+    centralized gate every other router-consumed history projection uses.
+    """
+    from .trust_status import filter_tainted_records  # noqa: PLC0415
+
+    rows = conn.execute(
+        "SELECT raw_json, record_schema_version, started_at FROM audit_records "
+        "ORDER BY COALESCE(started_at, '') ASC"
+    ).fetchall()
+    candidates: list[dict[str, object]] = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            raw = row["raw_json"]
+            ver = row["record_schema_version"]
+            started_at = row["started_at"]
+        else:
+            raw, ver, started_at = row[0], row[1], row[2]
+        record = _load_migrated(raw, ver)
+        if not isinstance(record, dict):
+            continue
+        trust = record.get("trust_status")
+        timing = record.get("timing") if isinstance(record.get("timing"), dict) else {}
+        candidates.append(
+            {
+                "record": record,
+                "trust_status": trust if isinstance(trust, str) else None,
+                "started_at": (
+                    started_at
+                    or timing.get("started_at")
+                    or timing.get("finished_at")
+                    or record.get("started_at")
+                    or record.get("finished_at")
+                ),
+            }
+        )
+
+    admissible, excluded = filter_tainted_records(candidates)
+    if stats is not None:
+        stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
+
+    out: dict[str, dict[str, dict[str, object]]] = {}
+    for item in admissible:
+        record = item.get("record")
+        if not isinstance(record, dict):
+            continue
+        started_at = item.get("started_at")
+        cost = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+        agents = cost.get("agents") if isinstance(cost, dict) else None
+        if not isinstance(agents, list):
+            continue
+        for entry in agents:
+            if not isinstance(entry, dict):
+                continue
+            projection = entry_identity_ledger(entry)
+            if not isinstance(projection, dict) or not projection.get("full_ledger"):
+                continue
+            ledger = entry.get("ledger")
+            if not isinstance(ledger, dict):
+                continue
+            usage = ledger.get("usage")
+            cost_usd = projection.get("cost_usd")
+            role = projection.get("role")
+            complexity = projection.get("complexity")
+            effort = projection.get("reasoning_effort")
+            provenance = projection.get("cost_provenance")
+            if not isinstance(usage, dict) or not usage:
+                continue
+            if not isinstance(cost_usd, (int, float)):
+                continue
+            if not isinstance(role, str) or not role.strip():
+                continue
+            if not isinstance(complexity, str) or not complexity.strip():
+                continue
+            if not isinstance(effort, str) or not effort.strip():
+                continue
+            if not isinstance(provenance, str) or not provenance.strip():
+                continue
+            configured = projection.get("configured")
+            resolved = projection.get("resolved")
+            identity = None
+            if isinstance(configured, tuple) and configured and configured[0]:
+                identity = str(configured[0])
+            elif isinstance(resolved, tuple) and resolved and resolved[0]:
+                identity = str(resolved[0])
+            if not identity:
+                continue
+            cohort_key = f"{role.upper()}|{complexity.upper()}|{effort.lower()}"
+            cohort = out.setdefault(identity, {}).setdefault(
+                cohort_key,
+                {
+                    "role": str(role).upper(),
+                    "complexity": str(complexity).upper(),
+                    "reasoning_effort": str(effort).lower(),
+                    "observations": [],
+                },
+            )
+            observations = cohort.get("observations")
+            if not isinstance(observations, list):
+                observations = []
+                cohort["observations"] = observations
+            observations.append(
+                {
+                    "cost_usd": round(float(cost_usd), 6),
+                    "started_at": str(started_at or ""),
+                    "cost_provenance": str(provenance),
+                }
+            )
+    return out
+
+
+def load_observed_cost_cohorts(
+    project_root: Path,
+) -> tuple[dict[str, dict[str, dict[str, object]]], int]:
+    """Return ``(observed_cost_cohorts, excluded_for_taint)`` from substrate.
+
+    Mirrors the escalation-history loader's runtime contract: a genuinely fresh
+    repo returns an empty mapping; an existing but unreadable substrate remains
+    an operator-facing error rather than silently degrading to no history.
+    """
+    sub_path = substrate_path(project_root)
+    if not sub_path.exists() and not has_audit_inputs(project_root):
+        return {}, 0
+    conn = require_substrate(project_root)
+    try:
+        stats: dict[str, object] = {}
+        cohorts = derive_observed_cost_cohorts(conn, stats=stats)
+        return cohorts, int(stats.get("excluded_for_taint", 0))
+    finally:
+        conn.close()
 
 
 def derive_assignment_history(

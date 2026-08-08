@@ -31,7 +31,13 @@ def _routing_block(*, dev_override: bool = False, reviewer_fired: bool = False) 
                     "runs": 12,
                     "floor": "pass",
                     "rate": 0.8,
-                }
+                },
+                "cost_tiebreak": {
+                    "value": 1.1,
+                    "source": "observed",
+                    "observations": 3,
+                    "cohort": {"role": "DEV", "complexity": "HIGH", "reasoning_effort": "high"},
+                },
             },
         },
         {"name": "deepseek", "tier": "strong", "included": False, "reason": "auth_missing"},
@@ -59,6 +65,14 @@ def _routing_block(*, dev_override: bool = False, reviewer_fired: bool = False) 
             "score": 9,
             "base_tier_from_score": "strong",
             "candidate_pool": dev_pool,
+            "cost_tiebreak": {
+                "selected_model": "opus",
+                "value": 1.1,
+                "source": "observed",
+                "observations": 3,
+                "cohort": {"role": "DEV", "complexity": "HIGH", "reasoning_effort": "high"},
+                "reason": "observed_median",
+            },
             "promotion_check": {
                 "mechanism": "_check_promotion",
                 "fired": False,
@@ -162,6 +176,8 @@ def test_render_signals_show_raw_weighted_and_floor() -> None:
     assert "weighted=0.8000" in text
     assert "runs=12" in text
     assert "sample-floor pass" in text
+    assert "cost_tiebreak: value=1.1 source=observed observations=3 cohort=DEV/HIGH/high" in text
+    assert "cost tiebreak: observed value=1.1 observations=3 cohort=DEV/HIGH/high" in text
 
 
 def test_render_excluded_reason_is_scannable() -> None:

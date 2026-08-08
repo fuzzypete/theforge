@@ -626,14 +626,25 @@ def _apply_post_plan_dev_checkpoint(
     # routing, mirroring assign_models (static mode ignores profile learning).
     _adaptive_enabled = config.assignment.adaptive_enabled
     _model_profiles = None
+    _observed_costs = None
     _recency = None
     _domains = None
+    _reasoning_effort = None
     if _adaptive_enabled:
+        from theforge.assignment import _requested_dev_reasoning_effort  # noqa: PLC0415
+        from theforge.coordinator.audit_substrate import (  # noqa: PLC0415
+            load_observed_cost_cohorts,
+        )
         from theforge.model_profiles import load_profiles  # noqa: PLC0415
 
         _model_profiles = load_profiles(config.project_root / ".forge" / "model_profiles.yaml")
+        _observed_costs, _ = load_observed_cost_cohorts(config.project_root)
         _recency = config.assignment.recency
         _domains = list(state.preflight_domains or [])
+        _reasoning_effort = _requested_dev_reasoning_effort(
+            state.preflight_complexity_score,
+            config.assignment.reasoning_effort,
+        )
 
     _latest_meta = state.plan_attempt_metadata[-1] if state.plan_attempt_metadata else {}
     _updated = apply_post_plan_checkpoint(
@@ -648,6 +659,8 @@ def _apply_post_plan_dev_checkpoint(
         explicit_roles=getattr(state, "_explicit_roles", set()),
         secrets=config.secrets,
         model_profiles=_model_profiles,
+        observed_costs=_observed_costs,
+        reasoning_effort=_reasoning_effort,
         domains=_domains,
         recency=_recency,
     )
