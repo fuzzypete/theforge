@@ -67,6 +67,7 @@
   "cost.agents[].process_teardown": "dict",
   "cost.agents[].process_teardown.action": "str",
   "cost.agents[].process_teardown.completed": "bool",
+  "cost.agents[].process_teardown.escaped_pids": "list",
   "cost.agents[].process_teardown.member_count": "int",
   "cost.agents[].process_teardown.members": "list",
   "cost.agents[].process_teardown.pgid": "int",

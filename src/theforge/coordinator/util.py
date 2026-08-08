@@ -21,6 +21,7 @@ from theforge.log_util import _log_line
 from theforge.process_group import (
     KILL_GRACE_SECONDS,
     is_killable_pgid,
+    open_process_lease,
     register_agent_group,
     release_group_record,
 )
@@ -386,6 +387,13 @@ def _run_shell_detailed(
     swallowed, since a caller that cannot record the handle it asked for would
     otherwise silently lose its ability to cancel.
     """
+    # The lease is stamped into the environment every descendant of this command
+    # inherits, so teardown can reach a test worker or daemon that left the
+    # process group by calling setsid — what a pgid by construction cannot
+    # describe (#2309).
+    leased_env, lease = open_process_lease(
+        env if env is not None else build_workspace_env(cwd, expected_python=expected_python)
+    )
     try:
         proc = subprocess.Popen(
             cmd,
@@ -394,11 +402,7 @@ def _run_shell_detailed(
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(cwd),
-            env=(
-                env
-                if env is not None
-                else build_workspace_env(cwd, expected_python=expected_python)
-            ),
+            env=leased_env,
             start_new_session=True,
         )
     except Exception as e:
@@ -418,7 +422,7 @@ def _run_shell_detailed(
     # cannot denote a real group out of the registry (#1793).
     pgid: int | None = proc.pid if is_killable_pgid(proc.pid) else None
     if pgid is not None:
-        register_agent_group(pgid, sandbox_dir=str(cwd))
+        register_agent_group(pgid, sandbox_dir=str(cwd), lease=lease)
     # False only while a drain thread still owns the streams, in which case that
     # thread closes them and this one must not touch them (see _drain_partial_output).
     owns_streams = True
@@ -452,8 +456,7 @@ def _run_shell_detailed(
         # that exited cleanly is not evidence its group did: `make gate` can
         # return while a pytest-xdist worker it started is still on the CPU, so
         # release checks and kills rather than assuming (#2309).
-        if pgid is not None:
-            release_group_record(pgid, group_killed=group_gone, sandbox_dir=str(cwd))
+        release_group_record(pgid, group_killed=group_gone, sandbox_dir=str(cwd), lease=lease)
         if owns_streams:
             for stream_name in ("stdout", "stderr"):
                 stream = getattr(proc, stream_name, None)

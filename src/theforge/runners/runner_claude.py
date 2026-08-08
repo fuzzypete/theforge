@@ -731,6 +731,10 @@ def _run_claude(
     # Unset CLAUDECODE so the subprocess isn't blocked by the nested-session check
     env = build_workspace_env(working_dir, extra=secrets)
     env.pop("CLAUDECODE", None)
+    # Stamp the spawn's lease into the env every descendant inherits, so teardown
+    # can still reach a tool the agent started that left the process group by
+    # calling setsid — the escape group isolation alone cannot cover (#2309).
+    env, lease = process_group.open_process_lease(env)
 
     label = profile.name or profile.identity_label
     if not quiet:
@@ -746,7 +750,7 @@ def _run_claude(
     # clean up if the sprint is SIGKILL-ed mid-run. Defined before the try so the
     # finally can unregister even if Popen itself raises.
     pgid: int | None = None
-    # Set by the finally when the group did not end on its own, so every result
+    # Set by the finally when something did not end on its own, so every result
     # this function can return says whether the invocation left processes behind
     # and what had to be done about them (#2309).
     teardown: process_group.ProcessTeardown | None = None
@@ -808,7 +812,7 @@ def _run_claude(
             # OSError: child already gone. TypeError: non-int pid (test doubles).
             pgid = None
         if pgid is not None:
-            process_group.register_agent_group(pgid, sandbox_dir=working_dir)
+            process_group.register_agent_group(pgid, sandbox_dir=working_dir, lease=lease)
         assert proc.stdin is not None
         # Send the initial prompt as a stream-json user message. stdin is kept
         # open so stuck-detection nudges can be injected as additional user
@@ -916,12 +920,12 @@ def _run_claude(
         # is no longer taken as proof the group went with the child: an agent
         # that started a long-running command and returned first leaves it
         # running, and release kills it rather than letting it outlive the story.
-        if pgid is not None:
-            teardown = process_group.release_group_record(
-                pgid,
-                group_killed=not group_kill_failed.is_set(),
-                sandbox_dir=working_dir,
-            )
+        teardown = process_group.release_group_record(
+            pgid,
+            group_killed=not group_kill_failed.is_set(),
+            sandbox_dir=working_dir,
+            lease=lease,
+        )
 
     if stuck_monitor.should_terminate:
         partial_output = "".join(lines)

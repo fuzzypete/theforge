@@ -234,6 +234,7 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
                 action=TEARDOWN_KILLED_SURVIVORS,
                 member_count=2,
                 members=(4242, 4243),
+                escaped_pids=(4299,),
                 sandbox_dir="/tmp/forge/worktrees/test",
                 completed=True,
             ),

@@ -316,14 +316,29 @@ class TestReapVerifiesGroupIdentity(_SidecarWriter):
         case `release_group_record` keeps the sidecar for. The survivors it
         records are what lets the later sweep prove the leaderless group it finds
         is this one.
+
+        The stand-in sandbox denies signalling the grandchild by pid as well as
+        by group, which is what "teardown reached only the direct child" means. A
+        host that permits the per-pid kill no longer reaches the reaper at all:
+        the lease sweep ends the survivor at release (covered separately in
+        test_process_teardown_lifecycle.py).
         """
+        pidfile = tmp_path / "gc.pid"
+
+        def _kill_only_the_direct_child(pid: int) -> bool:
+            try:
+                grandchild = int(pidfile.read_text().strip())
+            except (OSError, ValueError):
+                grandchild = -1
+            if pid == grandchild:
+                return False
+            os.kill(pid, signal.SIGKILL)
+            return True
+
         monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
         monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
-        monkeypatch.setattr(
-            process_group, "_kill_pid", lambda pid: os.kill(pid, signal.SIGKILL) is None
-        )
+        monkeypatch.setattr(process_group, "_kill_pid", _kill_only_the_direct_child)
 
-        pidfile = tmp_path / "gc.pid"
         script = (
             "import subprocess,sys,pathlib,time;"
             "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"

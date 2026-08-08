@@ -35,6 +35,11 @@ Controlled via FAKE_CLAUDE_MODE environment variable:
                 stop. Nothing here is a timeout or an error, so only a teardown
                 that checks the group on a CLEAN exit reaps the grandchild
                 (#2309).
+  escapee_success
+              — like grandchild_success, but the grandchild starts its OWN
+                session (start_new_session, i.e. setsid), so it leaves the
+                spawned process group entirely. No pgid-based teardown can see
+                it; only the inherited lease token can (#2309).
 """
 from __future__ import annotations
 
@@ -117,17 +122,22 @@ def _spawn_grandchild_and_hang(*, stream_first: bool = False) -> None:
     sys.exit(0)
 
 
-def _spawn_grandchild(detach_io: bool = False) -> None:
+def _spawn_grandchild(detach_io: bool = False, own_session: bool = False) -> None:
     """Spawn a sleeping grandchild in this process group and record its PID.
 
     ``detach_io`` closes the grandchild off from our stdout/stderr, which the
     clean-exit mode needs: a grandchild holding the runner's capture pipe keeps
     it reading past the CLI's own exit, which would turn a clean-exit test into
     a timeout test and prove nothing about #2309.
+
+    ``own_session`` makes it leave the process group (setsid), the way a test
+    runner or a daemonising helper does — the escape a pgid cannot describe.
     """
     io = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if detach_io else {}
     grandchild = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], **io
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=own_session,
+        **io,
     )
     pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
     if pidfile:
@@ -136,6 +146,13 @@ def _spawn_grandchild(detach_io: bool = False) -> None:
 
 
 def main() -> None:
+    if MODE == "escapee_success":
+        # Succeed normally, having started work that is no longer in our group.
+        _read_user_msg()
+        _spawn_grandchild(detach_io=True, own_session=True)
+        _emit(_RESULT_EVENT)
+        sys.exit(0)
+
     if MODE == "grandchild_success":
         # Succeed normally while leaving live work behind — the shape of a dev
         # agent that ran `pytest -n auto` and returned before the workers did.

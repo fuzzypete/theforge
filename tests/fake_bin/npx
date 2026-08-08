@@ -46,12 +46,18 @@ Codex (FAKE_CODEX_MODE):
                 — spawn the same grandchild but then succeed normally and exit 0,
                   so only a teardown that checks the group on a CLEAN exit reaps
                   it (#2309).
+  escapee_success
+                — like grandchild_success, but the grandchild starts its own
+                  session (setsid) and so leaves the process group entirely; only
+                  the inherited lease token can still reach it (#2309).
 
 Gemini (FAKE_GEMINI_MODE):
   happy  — print {"response": "Task complete."} to stdout, exit 0 (default)
   grandchild_success
          — spawn a long-sleeping grandchild in the same process group, record its
            PID in $FAKE_GRANDCHILD_PID_FILE, then print the happy JSON and exit 0
+  escapee_success
+         — same, but the grandchild starts its own session and leaves the group
 """
 from __future__ import annotations
 
@@ -64,17 +70,22 @@ import time
 args = sys.argv[1:]
 
 
-def _spawn_grandchild(detach_io: bool = False) -> None:
+def _spawn_grandchild(detach_io: bool = False, own_session: bool = False) -> None:
     """Spawn a sleeping grandchild in this process group and record its PID.
 
     ``detach_io`` closes the grandchild off from our stdout/stderr, which the
     clean-exit modes need: a grandchild holding the capture pipe keeps the
     runner's ``communicate()`` blocked until the timeout, which would turn a
     clean-exit test into a timeout test and prove nothing about #2309.
+
+    ``own_session`` makes it leave the process group (setsid), the way a test
+    runner or a daemonising helper does — the escape a pgid cannot describe.
     """
     io = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if detach_io else {}
     grandchild = subprocess.Popen(
-        [sys.executable, "-c", "import time; time.sleep(30)"], **io
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=own_session,
+        **io,
     )
     pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
     if pidfile:
@@ -188,10 +199,11 @@ if any(a.startswith("@openai/codex") for a in args):
         print("tokens used")
         print("11,374")
         sys.exit(0)
-    if mode == "grandchild_success":
+    if mode in ("grandchild_success", "escapee_success"):
         # Succeed normally while leaving live work behind — only a teardown that
-        # checks the group on a CLEAN exit reaps the grandchild (#2309).
-        _spawn_grandchild(detach_io=True)
+        # checks the group on a CLEAN exit reaps the grandchild, and only the
+        # lease reaches it once it has left the group (#2309).
+        _spawn_grandchild(detach_io=True, own_session=mode == "escapee_success")
         output_text = "Task complete."
         if output_file:
             with open(output_file, "w") as fh:
@@ -211,8 +223,8 @@ if any(a.startswith("@openai/codex") for a in args):
 
 elif "@google/gemini-cli" in args:
     mode = os.environ.get("FAKE_GEMINI_MODE", "happy")
-    if mode == "grandchild_success":
-        _spawn_grandchild(detach_io=True)
+    if mode in ("grandchild_success", "escapee_success"):
+        _spawn_grandchild(detach_io=True, own_session=mode == "escapee_success")
         print(json.dumps({"response": "Task complete."}))
         sys.exit(0)
     if mode == "happy":
