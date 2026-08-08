@@ -117,17 +117,22 @@ def persist_accepted_unmeasured_spend(
     sprint_name: str,
     project_root: Path | None,
     records: list[dict],
-) -> None:
+) -> bool:
     """Persist operator acceptances of unmeasured spend, keeping stories intact.
 
     Written on its own rather than through the story-state path so a resolution
     an operator made once survives every later run of the sprint without the
     flag being repeated (#2310) — and so the story writer, which knows nothing
     about acceptances, cannot erase one by omission.
+
+    Returns whether the resolution actually reached disk. An acceptance that
+    exists only in memory is a decision the operator will have to make again
+    without being told, so the caller must report a failure rather than log the
+    acceptance as recorded.
     """
     if not sprint_id or not project_root:
-        return
-    _save_accumulated_stories(
+        return False
+    return _save_accumulated_stories(
         sprint_id,
         sprint_name,
         project_root,
@@ -356,11 +361,13 @@ def _save_accumulated_stories(
     project_root: Path,
     stories: list[dict],
     accepted_unmeasured_spend: list[dict] | None = None,
-) -> None:
+) -> bool:
     """Save story entries to .forge/sprints/<sprint_id>/state.yaml.
 
     Each entry should have a ``canonical_ref`` field for cross-run matching.
-    Writes atomically via a temp file.
+    Writes atomically via a temp file. Returns whether the write landed —
+    failure stays non-fatal for the story path, which can rebuild its state, but
+    a caller persisting something that only exists here has to be able to tell.
 
     ``accepted_unmeasured_spend`` of ``None`` carries the persisted acceptances
     forward unchanged: a caller that has nothing to say about them must not
@@ -382,8 +389,9 @@ def _save_accumulated_stories(
         with open(tmp_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         tmp_path.replace(state_path)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _load_story_summary_entry_from_audit(

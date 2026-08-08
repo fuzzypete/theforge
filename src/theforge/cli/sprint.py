@@ -1452,10 +1452,12 @@ def register_parser(subparsers: object) -> None:
             "so the story runs again. The source id is the one printed in the "
             "'budget unverifiable' refusal (e.g. issue-2206 or "
             "carried:issue-2206 — both name the same work). A source with no "
-            "derivable ceiling is refused and the guard stays closed. The "
-            "resolution is recorded in sprint-audit.yaml under "
-            "sprint.accepted_unmeasured_spend; the cost stays reported as "
-            "unmeasured."
+            "derivable ceiling is refused and the guard stays closed. An "
+            "acceptance resolves the recorded occurrence, not the story: if "
+            "that story goes unmeasured again it is a new unknown and the guard "
+            "closes on it again. The resolution is recorded in "
+            "sprint-audit.yaml under sprint.accepted_unmeasured_spend; the cost "
+            "stays reported as unmeasured."
         ),
     )
     sprint_parser.add_argument(

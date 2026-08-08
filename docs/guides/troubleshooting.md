@@ -558,6 +558,13 @@ derivable ceiling: it is refused with the reason logged and the guard stays
 closed, because accepting an unbounded unknown would defeat the measurement it
 stands in for.
 
+An acceptance covers the **occurrence** it was made for — one recorded call, at
+one recorded ceiling, in one recorded run — not the story. If the same story
+runs again and *again* finishes with cost unmeasured, that is a second unknown
+nobody has bounded, and the guard closes on it exactly as it did the first time.
+A story that keeps needing acceptance is telling you its transport or provider
+is not reporting cost; fix that rather than re-accepting.
+
 ---
 
 ### Large diffs degrade quality

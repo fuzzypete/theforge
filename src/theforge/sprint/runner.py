@@ -3706,13 +3706,26 @@ def run_sprint(
     # evaluate rather than dispatch more work against an understated total
     # (#1992). Guarded by ``cost_lock`` alongside ``accumulated_cost``.
     unmeasured_spend: list[str] = []
+    # The subset of ``unmeasured_spend`` this generation produced itself, as
+    # opposed to inherited under a ``carried:`` prefix. An operator acceptance
+    # stands in for one recorded call at one recorded ceiling; spend that
+    # happened HERE is a new unknown nobody has bounded, so it must never be
+    # absorbed by an acceptance made for an earlier occurrence of the same story
+    # (#2310). Guarded by ``cost_lock`` alongside ``unmeasured_spend``.
+    current_generation_unmeasured: set[str] = set()
+
+    def _flag_unmeasured_here(source: str) -> None:
+        """Record a source whose unmeasured spend occurred in THIS run."""
+        unmeasured_spend.append(source)
+        current_generation_unmeasured.add(source)
+
     # Entry-level intake remediation runs in the CLI before run_sprint and
     # spends the same sprint-authorized budget; fold its agent cost into
     # the sprint total so operator-visible accounting matches actual spend.
     if entry_intake_outcomes:
         for _issue_num, _entry_outcome in entry_intake_outcomes.items():
             if _intake_outcome_cost_measured(_entry_outcome) is None:
-                unmeasured_spend.append(f"entry-intake:issue-{_issue_num}")
+                _flag_unmeasured_here(f"entry-intake:issue-{_issue_num}")
         _entry_intake_cost = sum(_intake_outcome_cost(o) for o in entry_intake_outcomes.values())
         if _entry_intake_cost > 0.0:
             accumulated_cost += _entry_intake_cost
@@ -3916,12 +3929,22 @@ def run_sprint(
     if _newly_accepted:
         # Written before any dispatch: the resolution is what makes this run
         # legal, so it must be on disk even if the run dies mid-sprint.
-        persist_accepted_unmeasured_spend(
+        if not persist_accepted_unmeasured_spend(
             _sprint_id,
             resolved.name,
             config.project_root,
             [r.as_dict() for r in accepted_unmeasured.values()],
-        )
+        ):
+            # Reporting the acceptance as recorded when it is not would leave an
+            # operator to rediscover the same refusal with no idea they had
+            # already answered it. It still applies to this run — nothing was
+            # lost yet — but say plainly that it will not survive.
+            _log(
+                "WARNING: could not persist the unmeasured-spend acceptance to "
+                f"{config.project_root / '.forge' / 'sprints' / (_sprint_id or '?')}"
+                "/state.yaml — it applies to THIS run only and must be passed "
+                "again on the next one."
+            )
 
     _state_writer: SprintStateWriter | None = None
     stopped_reason: str | None = None
@@ -3968,13 +3991,36 @@ def run_sprint(
         )
         if prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
-        if _prior_sprint_cost_incomplete(config.project_root, _sprint_id, accepted_unmeasured):
+        if _prior_sprint_cost_incomplete(config.project_root, _sprint_id):
             # The carried total came from a generation that recorded incomplete
-            # cost, so it is a lower bound too (#1992) — unless every source that
-            # generation named has an accepted ceiling standing in for it, in
-            # which case the whole-generation carry has nothing left to say that
-            # the per-source records do not already say (#2310).
-            unmeasured_spend.append("carried:prior-generation")
+            # cost, so it is a lower bound too (#1992). An accepted ceiling can
+            # stand in for it — but only per source, and only if the ledger
+            # actually carries that source. Clearing the whole-generation marker
+            # without re-surfacing what it stood for would let the acceptance
+            # open the guard while its ceiling was charged to nothing, under a
+            # cap the ceiling might not even fit (#2310 review).
+            _cleared_by_acceptance = not _prior_sprint_cost_incomplete(
+                config.project_root, _sprint_id, accepted_unmeasured
+            )
+            if _cleared_by_acceptance:
+                _carried_already = {
+                    unmeasured_spend_policy.normalize_source_id(s) for s in unmeasured_spend
+                }
+                for _prior_source in _prior_unmeasured_spend_sources(
+                    config.project_root, _sprint_id
+                ):
+                    _prior_norm = unmeasured_spend_policy.normalize_source_id(_prior_source)
+                    if not _prior_norm or _prior_norm in _carried_already:
+                        continue
+                    # Accepted, and nothing else in this run's ledger names it —
+                    # typically because the accumulated story row was pruned.
+                    # It is still spend this sprint carries, so it goes in the
+                    # ledger by name: its ceiling gets charged, the audit records
+                    # it, and the total stays a lower bound.
+                    unmeasured_spend.append(f"carried:{_prior_norm}")
+                    _carried_already.add(_prior_norm)
+            else:
+                unmeasured_spend.append("carried:prior-generation")
         if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
@@ -4485,7 +4531,7 @@ def run_sprint(
     # excludes every dollar spent on intake auto-fix attempts.
     for _intake_slug, _intake_outcome in intake_outcomes.items():
         if _intake_outcome_cost_measured(_intake_outcome) is None:
-            unmeasured_spend.append(f"intake:{_intake_slug}")
+            _flag_unmeasured_here(f"intake:{_intake_slug}")
     _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
     if _intake_remediation_cost > 0.0:
         accumulated_cost += _intake_remediation_cost
@@ -5084,7 +5130,7 @@ def run_sprint(
                 if _recovered_stranded is not None:
                     _stranded_cost = _recovered_stranded
             if _stranded_cost is None:
-                unmeasured_spend.append(f"stranded-unmeasured:{slug}")
+                _flag_unmeasured_here(f"stranded-unmeasured:{slug}")
             _set_outcome(
                 slug,
                 StoryOutcome.DROPPED,
@@ -5141,7 +5187,7 @@ def run_sprint(
             _carried_cost = _attribute_prior_generation_cost(slug)
             if work_detail:
                 if _carried_cost is None:
-                    unmeasured_spend.append(f"dropped-with-work:{slug}")
+                    _flag_unmeasured_here(f"dropped-with-work:{slug}")
                 _set_outcome(
                     slug,
                     StoryOutcome.DROPPED,
@@ -5947,7 +5993,9 @@ def run_sprint(
                     _budget_accumulated = accumulated_cost
                     _budget_prior = prior_cost
                     _budget_unresolved, _budget_applied = unmeasured_spend_policy.partition(
-                        list(unmeasured_spend), accepted_unmeasured
+                        list(unmeasured_spend),
+                        accepted_unmeasured,
+                        current_generation=set(current_generation_unmeasured),
                     )
                 # Origin/ceiling lookup reads per-story audits, so it runs
                 # outside ``cost_lock`` — it is reporting, not accounting.
@@ -6506,7 +6554,7 @@ def run_sprint(
                     # spend. Record the shortfall alongside it so the dispatch
                     # check knows the running total is a lower bound (#1992).
                     if result.state.total_cost_measured is None:
-                        unmeasured_spend.append(slug)
+                        _flag_unmeasured_here(slug)
                     accumulated_cost += result.state.total_cost
 
                 spec_str = slug_to_spec[slug]
@@ -6884,7 +6932,9 @@ def run_sprint(
     # source keeps the sprint total reported as a lower bound. What acceptance
     # changes is which figure the cap was verified against (#2310).
     _final_unresolved, _final_accepted = unmeasured_spend_policy.partition(
-        list(unmeasured_spend), accepted_unmeasured
+        list(unmeasured_spend),
+        accepted_unmeasured,
+        current_generation=set(current_generation_unmeasured),
     )
     _final_accepted_ceiling = unmeasured_spend_policy.accepted_ceiling_total(_final_accepted)
     _budget_verification_usd = budget_verification_spend(

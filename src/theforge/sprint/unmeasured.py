@@ -15,6 +15,11 @@ cost as measured — ``cost_complete`` stays false and the measured total stays 
 lower bound. What acceptance changes is only which number the cap is verified
 against: the accepted ceiling is charged in place of an unknown.
 
+An acceptance also resolves one OCCURRENCE, not a story. It stands in for a
+specific recorded call, at a specific recorded ceiling, in a specific recorded
+run. If the same story goes unmeasured again, that is a second unknown nobody
+has bounded, and the guard closes on it again — see :func:`partition`.
+
 Pure and stdlib-only apart from one narrow YAML read of a per-story audit, so
 the policy is testable without a live sprint.
 """
@@ -420,16 +425,31 @@ def accept(
 def partition(
     raw_sources: Sequence[str],
     accepted: Mapping[str, AcceptedUnmeasuredSpend],
+    *,
+    current_generation: Iterable[str] = (),
 ) -> tuple[list[str], list[AcceptedUnmeasuredSpend]]:
     """Split raw sources into the unresolved ones and the acceptances in force.
 
     Only acceptances whose source actually appears in ``raw_sources`` are
     returned: a ceiling is charged for spend this run is carrying, never for a
     stale record of work it is not.
+
+    ``current_generation`` names the raw sources THIS run produced itself — a
+    story that completed unmeasured here, an intake pass that ran here. An
+    acceptance resolves the occurrence it was made for, not the story: it stands
+    in for one recorded call, at one recorded ceiling, in one recorded run. A
+    second unmeasured call is a second unknown, of an amount nobody has bounded
+    and nobody has accepted, so the guard closes on it exactly as it did the
+    first time. Without this an operator's one-time acceptance would silently
+    become a standing licence for that story to spend unmeasured forever.
     """
+    fresh = {str(s) for s in current_generation}
     unresolved: list[str] = []
     applied: dict[str, AcceptedUnmeasuredSpend] = {}
     for raw in raw_sources:
+        if str(raw) in fresh:
+            unresolved.append(str(raw))
+            continue
         normalized = normalize_source_id(raw)
         record = accepted.get(normalized)
         if record is None:
