@@ -24,9 +24,11 @@ from .config import (
     AssignmentConfig,
     ModelProfile,
     ReasoningEffortConfig,
+    TransportFallbackConfig,
 )
 from .config.auth import check_agent_auth
 from .config.pricing import price_tiebreak_signal_for
+from .config.profiles import _apply_transport_fallback
 from .routing import (
     KNOB_EFFORT,
     KNOB_NONE,
@@ -1739,14 +1741,23 @@ def _agent_to_profile(
     *,
     role: str,
     allowed_tools: tuple[str, ...] = (),
+    transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
 ) -> ModelProfile:
-    """Convert AgentDef to ModelProfile with appropriate defaults."""
+    """Convert AgentDef to ModelProfile with appropriate defaults.
+
+    ``transport_fallbacks`` is the operator's resolved provider→API fallback
+    configuration. It is applied here, at the one boundary where routing turns a
+    catalog agent into a runnable profile, so a phase whose model was *selected*
+    survives a provider outage on the same terms as a phase whose model was
+    *declared* (#2298). A fallback the catalog entry states explicitly wins: the
+    configured provider-level entry only fills an otherwise-empty slot.
+    """
     if not allowed_tools:
         if role == "dev":
             allowed_tools = DEFAULT_DEV_PROFILE.allowed_tools
         else:
             allowed_tools = DEFAULT_REVIEW_PROFILE.allowed_tools
-    return ModelProfile(
+    profile = ModelProfile(
         name=agent.name,
         cli=agent.cli,
         provider=agent.provider,
@@ -1761,6 +1772,9 @@ def _agent_to_profile(
         registry_id=agent.registry_id,
         registry_source=agent.registry_source,
     )
+    if transport_fallbacks and profile.api_fallback is None:
+        profile = _apply_transport_fallback(profile, transport_fallbacks)
+    return profile
 
 
 # ── Routing explainability (#1391) ─────────────────────────────────────
@@ -2805,6 +2819,7 @@ def apply_post_plan_checkpoint(
     reasoning_effort: str | None = None,
     domains: list[str] | None = None,
     recency: object | None = None,
+    transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
 ) -> AssignmentDecision:
     """Re-evaluate ONLY the dev tier after plan-review completes (#1387).
 
@@ -2963,7 +2978,7 @@ def apply_post_plan_checkpoint(
         rationale="plan_review_clean_medium",
         final_tier=target_tier,
     )
-    new_dev = _agent_to_profile(target_agent, role="dev")
+    new_dev = _agent_to_profile(target_agent, role="dev", transport_fallbacks=transport_fallbacks)
     if dev_block is not None:
         # Overwrite the unified routing rationale (#1389): the post-plan
         # checkpoint is the concrete demotion that fired on this story, so the
@@ -3132,11 +3147,17 @@ def assign_models(
     excluded_for_taint: int = 0,
     sprint_exploration_budget: int | None = None,
     explore_rng: random.Random | None = None,
+    transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
     Returns an AssignmentDecision with model profiles for each phase.
     explicit_profiles keys: "preflight", "planner", "dev", "code_review", "plan_review"
+
+    ``transport_fallbacks`` is the operator's resolved provider→API fallback map
+    (``ForgeConfig.transport_fallbacks``). Routed profiles receive it exactly as
+    role-declared profiles do at config load, so a phase's outage survival does
+    not depend on whether its model was named or selected (#2298).
 
     ``unhealthy_models`` is the set of agent names whose latest provider-shape
     failure (capacity, rate-limit, 5xx, quota) is still within the health
@@ -3392,7 +3413,9 @@ def assign_models(
                     dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
                     rationale["dev"] += " (fallback: cheapest, no auth checked)"
         dev_selected_tier = dev_agent.tier
-        dev_profile = _agent_to_profile(dev_agent, role="dev")
+        dev_profile = _agent_to_profile(
+            dev_agent, role="dev", transport_fallbacks=transport_fallbacks
+        )
 
         # ── Challenger-sampling exploration (#325, ADR-0006 clause 8) ──────
         # The single sanctioned deviation from deterministic routing. Only
@@ -3416,7 +3439,9 @@ def assign_models(
             if _exp.route_agent is not None:
                 dev_agent = _exp.route_agent
                 dev_selected_tier = dev_agent.tier
-                dev_profile = _agent_to_profile(dev_agent, role="dev")
+                dev_profile = _agent_to_profile(
+                    dev_agent, role="dev", transport_fallbacks=transport_fallbacks
+                )
                 _dev_effective_tier = dev_agent.tier
                 if _dev_exploration.get("mode") == "challenger":
                     # Challenger-tier budget envelope (clause 8): the run spends
@@ -3465,6 +3490,7 @@ def assign_models(
             agent,
             role="preflight",
             allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+            transport_fallbacks=transport_fallbacks,
         )
         rationale["preflight"] = f"tier {tier} (${agent.budget_usd:.2f})"
 
@@ -3495,7 +3521,9 @@ def assign_models(
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
             agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
-        planner_profile = _agent_to_profile(agent, role="review")
+        planner_profile = _agent_to_profile(
+            agent, role="review", transport_fallbacks=transport_fallbacks
+        )
         if score is not None:
             rationale["planner"] = (
                 f"complexity score {score} → tier {tier} (${agent.budget_usd:.2f})"
@@ -3549,7 +3577,10 @@ def assign_models(
             value_signals_out=_pr_value_signals,
             value_audit=_pr_value_audit,
         )
-        plan_reviewers = [_agent_to_profile(a, role="review") for a in selected]
+        plan_reviewers = [
+            _agent_to_profile(a, role="review", transport_fallbacks=transport_fallbacks)
+            for a in selected
+        ]
         providers = [a.effective_provider for a in selected]
         score_note = f", complexity score {score}" if score is not None else ""
         shortfall_note = (
@@ -3613,7 +3644,10 @@ def assign_models(
             value_audit=_cr_value_audit,
             value_phase="code_review",
         )
-        code_reviewers = [_agent_to_profile(a, role="review") for a in selected]
+        code_reviewers = [
+            _agent_to_profile(a, role="review", transport_fallbacks=transport_fallbacks)
+            for a in selected
+        ]
         providers = [a.effective_provider for a in selected]
         score_note = f", complexity score {score}" if score is not None else ""
         shortfall_note = (

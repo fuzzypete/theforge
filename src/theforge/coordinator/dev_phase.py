@@ -34,6 +34,8 @@ from theforge.task import (
 from theforge.traces import write_trace
 
 from .agent_failure import (
+    CATEGORY_TRANSPORT,
+    AgentInvocationFailure,
     classify_agent_failure,
     mark_infrastructure_abort,
     record_invocation_failure,
@@ -265,6 +267,34 @@ def _runner_display_name(config: ForgeConfig) -> str:
     return config.dev_profile.cli or config.dev_profile.provider or config.dev_profile.name
 
 
+def _unrecoverable_provider_quota(result: object) -> str | None:
+    """Explain a dev failure that is certain to repeat, or return None (#2298).
+
+    Certainty needs all three facts together: the provider refused on quota, it
+    named the moment that quota resets, and no configured transport fallback was
+    applicable. A quota refusal without a stated reset time may clear on its own,
+    so repeating it is reasonable; one that names its reset time will not, and
+    spending the remaining iteration budget re-asking is a choice the run should
+    not make on its own.
+    """
+    from theforge.agent_types import AgentResult as _AgentResult  # noqa: PLC0415
+
+    if not isinstance(result, _AgentResult):
+        raise TypeError(f"Expected AgentResult, got {type(result)}")
+    if result.success or result.transport_fallback_fired:
+        return None
+    if not result.cli_quota_error_observed:
+        return None
+    if not result.provider_quota_reset_at:
+        return None
+    if not result.transport_fallback_not_applied_reason:
+        return None
+    return (
+        f"provider quota exhausted until {result.provider_quota_reset_at}; "
+        f"{result.transport_fallback_not_applied_reason}"
+    )
+
+
 def _is_transient_dev_failure(
     result: object, runner_failure: tuple[str, str] | None = None
 ) -> bool:
@@ -274,6 +304,11 @@ def _is_transient_dev_failure(
     if not isinstance(result, _AgentResult):
         raise TypeError(f"Expected AgentResult, got {type(result)}")
     if result.success or result.startup_failure or runner_failure is not None:
+        return False
+    # A quota refusal with a stated reset time and no applicable fallback is the
+    # one provider failure that is known not to be transient — retrying it before
+    # the stated time reproduces it by construction (#2298).
+    if _unrecoverable_provider_quota(result) is not None:
         return False
     failure_code = (result.failure_code or "").lower()
     if failure_code in {"rate_limit", "provider_internal_error", "connection_reset"}:
@@ -1472,6 +1507,64 @@ def _run_dev_phase(
                         iteration=state.dev_iteration,
                         reason=_failure_detail,
                     )
+        # ── Provider quota exhausted with no applicable fallback (#2298) ─
+        # The provider stated when its limit resets and no configured transport
+        # fallback applied, so every remaining iteration would re-ask a provider
+        # that has already answered. Stop here instead of spending the budget to
+        # rediscover the same refusal. This is an infrastructure abort, not an
+        # escalation: no model judged this story, so the run must not leave a
+        # story-quality verdict — or router-teaching evidence — behind it.
+        _quota_halt = _unrecoverable_provider_quota(dev_result)
+        if _quota_halt is not None:
+            _quota_failure = AgentInvocationFailure(
+                phase="DEV",
+                category=CATEGORY_TRANSPORT,
+                exit_code=dev_result.exit_code,
+                failure_code=dev_result.failure_code,
+                detail=_quota_halt,
+                profile_name=getattr(config.dev_profile, "name", None),
+                extra={
+                    "provider_quota_reset_at": dev_result.provider_quota_reset_at,
+                    "transport_fallback_reason": dev_result.transport_fallback_reason,
+                    "transport_fallback_not_applied_reason": (
+                        dev_result.transport_fallback_not_applied_reason
+                    ),
+                },
+            )
+            record_invocation_failure(state, _quota_failure)
+            state.phase = Phase.ESCALATE
+            state.error = (
+                f"Dev provider refused on quota and no transport fallback was "
+                f"applicable ({_quota_halt}) — halting rather than spending the "
+                f"remaining {state.budget.remaining()} iteration(s) against a "
+                "provider that has stopped answering"
+            )
+            mark_infrastructure_abort(state, _quota_failure, message=state.error)
+            record_dev_iteration_telemetry(
+                state,
+                workspace_path,
+                max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+                gate_result="DEV_PROVIDER_QUOTA_EXHAUSTED",
+            )
+            _log(f"✗ ABORT   {state.error}")
+            if logger:
+                logger._safe_emit(
+                    "infrastructure_abort",
+                    phase="DEV",
+                    reason=state.error,
+                    category=_quota_failure.category,
+                    provider_quota_reset_at=dev_result.provider_quota_reset_at,
+                    transport_fallback_not_applied_reason=(
+                        dev_result.transport_fallback_not_applied_reason
+                    ),
+                )
+            return CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+                infrastructure_failure=True,
+            )
         # ── Timeout retry (iterations remaining) ─────────────────────────
         # A per-iteration timeout is a retryable failure, not a terminal
         # escalation. Running out of time is not the same event as crashing or
