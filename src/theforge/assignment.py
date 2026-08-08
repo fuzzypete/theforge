@@ -521,6 +521,28 @@ def _agents_by_tier(agents: list[AgentDef], tier: str) -> list[AgentDef]:
     )
 
 
+def _requested_dev_reasoning_effort(
+    score: int | None,
+    cfg: ReasoningEffortConfig,
+) -> str | None:
+    """Resolve the model-independent dev effort bucket for cohort matching.
+
+    This is the selector-side cohort key, not the transport-applied profile
+    field: provider passthrough differences must not change which historical
+    invocations count as "like-for-like" work.
+    """
+    if not cfg.enabled or score is None:
+        return None
+    block = axis_decision(
+        "reasoning_effort",
+        score,
+        phase="dev",
+        overrides=cfg.phase_buckets,
+    )
+    output = block.get("output")
+    return str(output).lower() if isinstance(output, str) and output else None
+
+
 def _rerank_by_profiles(
     candidates: list[AgentDef],
     model_profiles: dict | None,
@@ -530,8 +552,11 @@ def _rerank_by_profiles(
     signals_out: dict[str, dict] | None = None,
     domains: list[str] | None = None,
     domain_signals_out: dict[str, dict] | None = None,
+    cost_signals_out: dict[str, dict] | None = None,
     rerank_audit: dict[str, object] | None = None,
     recency: object | None = None,
+    observed_costs: dict | None = None,
+    reasoning_effort: str | None = None,
 ) -> list[AgentDef]:
     """Stable-sort candidates: high-success-rate first when enough data exists.
 
@@ -555,13 +580,17 @@ def _rerank_by_profiles(
     """
     if not model_profiles or role != "dev":
         return candidates
-    from theforge.model_profiles import get_dev_domain_signal, get_dev_signal  # noqa: PLC0415
+    from theforge.model_profiles import (  # noqa: PLC0415
+        get_dev_domain_signal,
+        get_dev_signal,
+        get_observed_cost_tiebreak_signal,
+    )
 
     requested_domains = [d for d in (domains or []) if isinstance(d, str) and d]
 
     # One profile read per candidate feeds ranking AND the explainability signals
     # (#1391 AC: no profile re-reads). Collect once, then sort in-memory.
-    rows: list[tuple[AgentDef, dict, dict | None]] = []
+    rows: list[tuple[AgentDef, dict, dict | None, dict]] = []
     for agent in candidates:
         signal = get_dev_signal(
             model_profiles,
@@ -588,20 +617,36 @@ def _rerank_by_profiles(
             )
             if domain_signals_out is not None:
                 domain_signals_out[agent.name] = dsignal
-        rows.append((agent, signal, dsignal))
+        cost_signal = get_observed_cost_tiebreak_signal(
+            observed_costs,
+            agent.name,
+            role=role,
+            complexity=complexity,
+            reasoning_effort=reasoning_effort,
+            seed=price_tiebreak_signal_for(agent),
+            actual_model=agent.model,
+            provider=agent.provider,
+            cli=agent.cli,
+        )
+        if cost_signals_out is not None:
+            cost_signals_out[agent.name] = cost_signal
+        rows.append((agent, signal, dsignal, cost_signal))
 
-    def _price(agent: AgentDef) -> float:
-        return price_tiebreak_signal_for(agent)
+    def _cost(row: tuple[AgentDef, dict, dict | None, dict]) -> float:
+        value = row[3].get("value")
+        if isinstance(value, (int, float)):
+            return float(value)
+        return price_tiebreak_signal_for(row[0])
 
-    def _complexity_key(row: tuple[AgentDef, dict, dict | None]) -> tuple:
-        agent, signal, _ = row
+    def _complexity_key(row: tuple[AgentDef, dict, dict | None, dict]) -> tuple:
+        _, signal, _, _ = row
         rate = signal["rate"]
         if rate is None:
-            return (1, 0.0, _price(agent))
-        return (0, -rate, _price(agent))
+            return (1, 0.0, _cost(row))
+        return (0, -rate, _cost(row))
 
-    def _domain_aware_key(row: tuple[AgentDef, dict, dict | None]) -> tuple:
-        agent, signal, dsignal = row
+    def _domain_aware_key(row: tuple[AgentDef, dict, dict | None, dict]) -> tuple:
+        _, signal, dsignal, _ = row
         rate = signal["rate"]
         # Admissible domain rate becomes the tiebreak between the complexity rate
         # and price; no admissible domain data → 0.0 (neutral, not a penalty).
@@ -609,8 +654,8 @@ def _rerank_by_profiles(
         if rate is None:
             # Cold start on complexity: keep static price ordering; domain is not
             # a tiebreaker here (nothing to break — no complexity standing yet).
-            return (1, 0.0, 0.0, _price(agent))
-        return (0, -rate, -drate, _price(agent))
+            return (1, 0.0, 0.0, _cost(row))
+        return (0, -rate, -drate, _cost(row))
 
     domain_sorted = [r[0] for r in sorted(rows, key=_domain_aware_key)]
 
@@ -700,6 +745,7 @@ def _pick_agent(
     signals_out: dict[str, dict] | None = None,
     domains: list[str] | None = None,
     domain_signals_out: dict[str, dict] | None = None,
+    cost_signals_out: dict[str, dict] | None = None,
     rerank_audit: dict[str, object] | None = None,
     recency: object | None = None,
     reliability_role: str | None = None,
@@ -707,6 +753,8 @@ def _pick_agent(
     reliability_min_runs: int = 5,
     reliability_signals_out: dict[str, dict] | None = None,
     reliability_audit: dict[str, object] | None = None,
+    observed_costs: dict | None = None,
+    reasoning_effort: str | None = None,
 ) -> AgentDef | None:
     """Pick cheapest agent of the given tier that has usable auth.
 
@@ -736,8 +784,11 @@ def _pick_agent(
         signals_out=signals_out,
         domains=domains,
         domain_signals_out=domain_signals_out,
+        cost_signals_out=cost_signals_out,
         rerank_audit=rerank_audit,
         recency=recency,
+        observed_costs=observed_costs,
+        reasoning_effort=reasoning_effort,
     )
     if reliability_role:
         candidates = _rerank_single_by_reliability(
@@ -2358,6 +2409,7 @@ def _build_routing_decision(
     unhealthy_models: set[str] | None = None,
     domains: list[str] | None = None,
     dev_domain_signals: dict[str, dict] | None = None,
+    dev_cost_signals: dict[str, dict] | None = None,
     dev_domain_match: dict[str, object] | None = None,
     excluded_for_taint: int = 0,
     dev_exploration: dict[str, object] | None = None,
@@ -2398,6 +2450,7 @@ def _build_routing_decision(
         agents, dev_effective_tier, decision.dev.name, "dev" in explicit_roles, secrets
     )
     dev_domain_signals = dev_domain_signals or {}
+    dev_cost_signals = dev_cost_signals or {}
     requested_domains = [d for d in (domains or []) if isinstance(d, str) and d]
     for entry in dev_pool:
         if entry.get("included") and entry["name"] in dev_signals:
@@ -2407,7 +2460,21 @@ def _build_routing_decision(
             # raw/weighted values are all reconstructable from the audit (#155).
             if requested_domains and entry["name"] in dev_domain_signals:
                 signals["domain"] = dev_domain_signals[entry["name"]]
+            if entry["name"] in dev_cost_signals:
+                signals["cost_tiebreak"] = dev_cost_signals[entry["name"]]
             entry["signals"] = signals
+
+    selected_cost_signal = dev_cost_signals.get(decision.dev.name)
+    cost_tiebreak_block: dict[str, object] | None = None
+    if isinstance(selected_cost_signal, dict):
+        cost_tiebreak_block = {
+            "selected_model": decision.dev.name,
+            "value": selected_cost_signal.get("value"),
+            "source": selected_cost_signal.get("source"),
+            "observations": selected_cost_signal.get("observations"),
+            "cohort": selected_cost_signal.get("cohort"),
+            "reason": selected_cost_signal.get("reason"),
+        }
 
     # Domain-match block (#155 / ADR-0006 clause 7). Present but explicitly
     # non-influential when domains exist yet did not move the selection; omitted
@@ -2539,6 +2606,7 @@ def _build_routing_decision(
             # range, selected tier, and rationale, sourced from theforge.routing.
             "score_policy": {"dev_tier": axis_decision("dev_tier", score)},
             "candidate_pool": dev_pool,
+            **({"cost_tiebreak": cost_tiebreak_block} if cost_tiebreak_block is not None else {}),
             # Domain preference (#155): the story's tags, the matching profile
             # slice per candidate (on each pool entry's ``signals.domain``), and
             # whether the domain tiebreak changed the selection. Absent when the
@@ -2733,6 +2801,8 @@ def apply_post_plan_checkpoint(
     explicit_roles: set[str] | None = None,
     secrets: dict[str, str] | None = None,
     model_profiles: dict | None = None,
+    observed_costs: dict | None = None,
+    reasoning_effort: str | None = None,
     domains: list[str] | None = None,
     recency: object | None = None,
 ) -> AssignmentDecision:
@@ -2870,6 +2940,8 @@ def apply_post_plan_checkpoint(
             model_profiles=model_profiles,
             role="dev",
             complexity=norm_complexity,
+            observed_costs=observed_costs,
+            reasoning_effort=reasoning_effort,
             domains=domains,
             recency=recency,
         )
@@ -3053,6 +3125,7 @@ def assign_models(
     explicit_profiles: dict[str, ModelProfile] | None = None,
     secrets: dict[str, str] | None = None,
     model_profiles: dict | None = None,
+    observed_costs: dict | None = None,
     unhealthy_models: set[str] | None = None,
     routing_origin: str = "preflight",
     domains: list[str] | None = None,
@@ -3093,6 +3166,7 @@ def assign_models(
     # tiebreak actually moved the selection so the routing_decision block can mark
     # the decision influential or explicitly non-influential.
     _dev_domain_signals: dict[str, dict] = {}
+    _dev_cost_signals: dict[str, dict] = {}
     _dev_domain_match: dict[str, object] = {}
     # Reviewer completion-rate rerank accumulators (#1388), per reviewer role.
     # Populated by _select_reviewers and consumed by _build_routing_decision so
@@ -3152,6 +3226,7 @@ def assign_models(
     # escalation/promotion learning — fall through to PHASE_TIER + min_reviewers.
     score = _normalize_complexity_score(complexity_score) if adaptive_enabled else None
     effective_profiles = model_profiles if adaptive_enabled else None
+    effective_observed_costs = observed_costs if adaptive_enabled else None
     # Recency-weighting params (#1392): the dev signal ranks on the decayed view
     # of admissible history. Only consulted under adaptive routing (static mode
     # ignores profile learning entirely).
@@ -3159,6 +3234,10 @@ def assign_models(
     # Domain preference only applies under adaptive routing; in static mode the
     # horizontal axis is ignored like the numeric score and profile learning.
     effective_domains = domains if adaptive_enabled else None
+    dev_requested_reasoning_effort = _requested_dev_reasoning_effort(
+        score,
+        assignment_config.reasoning_effort,
+    )
     locked_roles = set(explicit_profiles)
     if not adaptive_enabled:
         rationale["adaptive_enabled"] = "false (static band-only routing)"
@@ -3185,6 +3264,8 @@ def assign_models(
             role="dev",
             complexity=norm_complexity,
             recency=effective_recency,
+            observed_costs=effective_observed_costs,
+            reasoning_effort=dev_requested_reasoning_effort,
         )
         dev_model_name = dev_agent_for_check.name if dev_agent_for_check else ""
         # Profile-backed dev pre-promotion (#158): the selected dev model's
@@ -3239,8 +3320,11 @@ def assign_models(
             signals_out=_dev_signals,
             domains=effective_domains,
             domain_signals_out=_dev_domain_signals,
+            cost_signals_out=_dev_cost_signals,
             rerank_audit=_dev_domain_match,
             recency=effective_recency,
+            observed_costs=effective_observed_costs,
+            reasoning_effort=dev_requested_reasoning_effort,
         )
         if dev_agent is not None and effective_profiles:
             from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
@@ -3591,6 +3675,7 @@ def assign_models(
             unhealthy_models=unhealthy_models,
             domains=effective_domains,
             dev_domain_signals=_dev_domain_signals,
+            dev_cost_signals=_dev_cost_signals,
             dev_domain_match=_dev_domain_match,
             excluded_for_taint=excluded_for_taint,
             dev_exploration=_dev_exploration,

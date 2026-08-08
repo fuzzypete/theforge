@@ -39,6 +39,7 @@ disappears from the ledger.
 from __future__ import annotations
 
 import logging
+import statistics
 from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -84,6 +85,8 @@ DEFAULT_RECENCY_WINDOW = 200
 # while leaving headroom to tune ``window`` upward without losing history; a
 # configured ``window`` beyond this simply consults everything stored.
 CAPABILITY_RECENCY_WINDOW = 200
+OBSERVED_COST_TIEBREAK_MIN_SAMPLES = 3
+OBSERVED_COST_TIEBREAK_RECENCY_DAYS = 30
 
 
 # ── Data carrier ──────────────────────────────────────────────────────────
@@ -2219,6 +2222,102 @@ def get_dev_domain_complexity_signal(
         "weighting": {"mode": mode, "half_life_runs": half_life, "window": window},
         "rate": weighted if floor_ok else None,
     }
+
+
+def get_observed_cost_tiebreak_signal(
+    observed_costs: dict | None,
+    model_key: str,
+    *,
+    role: str,
+    complexity: str | None,
+    reasoning_effort: str | None,
+    seed: float,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+    min_samples: int = OBSERVED_COST_TIEBREAK_MIN_SAMPLES,
+    max_age_days: int = OBSERVED_COST_TIEBREAK_RECENCY_DAYS,
+    now: datetime | None = None,
+) -> dict[str, object]:
+    """Return the cohort-aware cost tiebreak signal for one candidate.
+
+    Observed spend is admissible only when the model has a matched invocation
+    cohort on role, complexity, and requested reasoning effort, the cohort meets
+    its sample floor, and its newest observation is recent enough. Otherwise the
+    router falls back to the deterministic declared-price seed it already uses.
+    """
+    canonical = canonical_id_from_identity(actual_model=actual_model, provider=provider, cli=cli)
+    storage_key = canonical or model_key
+    cohort = {
+        "role": str(role or "").upper(),
+        "complexity": str(complexity or "").upper() if complexity else None,
+        "reasoning_effort": str(reasoning_effort or "").lower() if reasoning_effort else None,
+    }
+    signal: dict[str, object] = {
+        "value": seed,
+        "source": "seed",
+        "seed": seed,
+        "reason": "no_matching_cohort",
+        "observations": 0,
+        "cohort": cohort,
+    }
+    if not observed_costs:
+        return signal
+    if not (cohort["role"] and cohort["complexity"] and cohort["reasoning_effort"]):
+        signal["reason"] = "cohort_incomplete"
+        return signal
+    raw_model = observed_costs.get(storage_key)
+    if not isinstance(raw_model, dict):
+        return signal
+    cohort_key = f"{cohort['role']}|{cohort['complexity']}|{cohort['reasoning_effort']}"
+    raw_cohort = raw_model.get(cohort_key)
+    if not isinstance(raw_cohort, dict):
+        return signal
+    observations = raw_cohort.get("observations")
+    if not isinstance(observations, list):
+        signal["reason"] = "cohort_malformed"
+        return signal
+    signal["observations"] = len(observations)
+    floor = max(1, int(min_samples))
+    if len(observations) < floor:
+        signal["reason"] = "below_sample_floor"
+        return signal
+    latest_seen: datetime | None = None
+    costs: list[float] = []
+    for obs in observations:
+        if not isinstance(obs, dict):
+            continue
+        cost = obs.get("cost_usd")
+        if not isinstance(cost, (int, float)):
+            continue
+        costs.append(float(cost))
+        stamp = obs.get("started_at")
+        if not isinstance(stamp, str) or not stamp.strip():
+            continue
+        try:
+            parsed = datetime.fromisoformat(stamp)
+        except ValueError:
+            continue
+        parsed = parsed.replace(tzinfo=UTC) if parsed.tzinfo is None else parsed.astimezone(UTC)
+        latest_seen = parsed if latest_seen is None or parsed > latest_seen else latest_seen
+    signal["observations"] = len(costs)
+    if len(costs) < floor:
+        signal["reason"] = "below_sample_floor"
+        return signal
+    if latest_seen is None:
+        signal["reason"] = "stale_or_undated"
+        return signal
+    as_of = now.astimezone(UTC) if isinstance(now, datetime) else datetime.now(UTC)
+    age_days = (as_of - latest_seen).total_seconds() / 86400.0
+    signal["latest_started_at"] = latest_seen.isoformat()
+    signal["max_age_days"] = int(max_age_days)
+    if age_days > float(max_age_days):
+        signal["reason"] = "stale"
+        return signal
+    signal["value"] = round(float(statistics.median(costs)), 6)
+    signal["source"] = "observed"
+    signal["reason"] = "observed_median"
+    return signal
 
 
 def _windowed_rate(recent: list[int], *, fallback: float | None) -> float | None:

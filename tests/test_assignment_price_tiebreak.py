@@ -12,6 +12,7 @@ by its real per-MTok price — across every ranking helper the fix touches:
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -37,6 +38,7 @@ from theforge.config.profiles import _agents_from_models, _auto_assign_models
 from theforge.config.role_derivation import derive_roles
 from theforge.config.types import PlanConfig
 from theforge.coordinator.preflight import _apply_complexity_adaptation, _build_pool_entries
+from theforge.model_profiles import get_observed_cost_tiebreak_signal
 
 # The reported pool: cheap tier holds both sonnet and gpt-5.4-mini at
 # cost_rank=1, capability=7. Sonnet is listed FIRST — the exact ordering that
@@ -141,6 +143,70 @@ def _two_cheap_agents() -> list[AgentDef]:
     return _agents_from_models(_POOL_SONNET_FIRST, budget_usd=50.0)
 
 
+def _equal_reliability_profiles(rate: float = 0.8) -> dict:
+    return {
+        "models": {
+            "anthropic/sonnet/cli": {
+                "dev": {
+                    "runs": 10,
+                    "success_rate": rate,
+                    "by_complexity": {"small": {"runs": 10, "success_rate": rate}},
+                }
+            },
+            "openai/gpt-5.4-mini/cli": {
+                "dev": {
+                    "runs": 10,
+                    "success_rate": rate,
+                    "by_complexity": {"small": {"runs": 10, "success_rate": rate}},
+                }
+            },
+        }
+    }
+
+
+def _fresh_stamp() -> str:
+    """A timestamp inside the recency window *whenever the suite runs*.
+
+    A literal date would pass today and silently start failing the day it aged
+    past ``OBSERVED_COST_TIEBREAK_RECENCY_DAYS`` — the cohort would fall back to
+    the seed and the assertions below would be testing the fallback while
+    claiming to test observation.
+    """
+    return (datetime.now(UTC) - timedelta(days=1)).isoformat()
+
+
+def _observed_costs(*, sonnet: list[float], mini: list[float], effort: str = "low") -> dict:
+    def _obs(values: list[float]) -> list[dict[str, object]]:
+        stamp = _fresh_stamp()
+        return [
+            {
+                "cost_usd": value,
+                "started_at": stamp,
+                "cost_provenance": "provider_reported",
+            }
+            for value in values
+        ]
+
+    return {
+        "anthropic/sonnet/cli": {
+            f"DEV|LOW|{effort}": {
+                "role": "DEV",
+                "complexity": "LOW",
+                "reasoning_effort": effort,
+                "observations": _obs(sonnet),
+            }
+        },
+        "openai/gpt-5.4-mini/cli": {
+            f"DEV|LOW|{effort}": {
+                "role": "DEV",
+                "complexity": "LOW",
+                "reasoning_effort": effort,
+                "observations": _obs(mini),
+            }
+        },
+    }
+
+
 def test_rerank_cold_start_orders_unobserved_by_price():
     """With no history, the cheaper unobserved model is explored first."""
     agents = _two_cheap_agents()
@@ -166,6 +232,127 @@ def test_rerank_observed_still_beats_cheaper_unobserved():
     }
     ranked = _rerank_by_profiles(agents, profiles, role="dev", complexity="LOW")
     assert ranked[0].model == "sonnet"
+
+
+def test_assign_models_uses_observed_cost_for_final_dev_tiebreak(_all_authed):
+    agents = _two_cheap_agents()
+    decision = assign_models(
+        agents,
+        AssignmentConfig(
+            enabled=True,
+            min_reviewers=1,
+            max_reviewers=1,
+            prefer_cross_provider=False,
+            max_cost_per_story_usd=None,
+            escalation_memory=False,
+        ),
+        complexity="LOW",
+        complexity_score=2,
+        model_profiles=_equal_reliability_profiles(),
+        observed_costs=_observed_costs(sonnet=[1.1, 1.2, 1.0], mini=[2.8, 2.9, 3.0]),
+    )
+    assert decision.dev.model == "sonnet"
+    assert decision.routing_decision["dev"]["cost_tiebreak"]["source"] == "observed"
+    assert decision.routing_decision["dev"]["cost_tiebreak"]["observations"] == 3
+    assert decision.routing_decision["dev"]["cost_tiebreak"]["cohort"] == {
+        "role": "DEV",
+        "complexity": "LOW",
+        "reasoning_effort": "low",
+    }
+
+
+def test_observed_cost_never_beats_stronger_reliability(_all_authed):
+    agents = _two_cheap_agents()
+    profiles = _equal_reliability_profiles()
+    # Sonnet is the cheaper candidate on observed cost but the weaker one on
+    # reliability evidence; cost must not buy it the lead.
+    for key, rate in (("anthropic/sonnet/cli", 0.7), ("openai/gpt-5.4-mini/cli", 0.9)):
+        dev = profiles["models"][key]["dev"]
+        dev["success_rate"] = rate
+        dev["by_complexity"]["small"]["success_rate"] = rate
+    decision = assign_models(
+        agents,
+        AssignmentConfig(
+            enabled=True,
+            min_reviewers=1,
+            max_reviewers=1,
+            prefer_cross_provider=False,
+            max_cost_per_story_usd=None,
+            escalation_memory=False,
+        ),
+        complexity="LOW",
+        complexity_score=2,
+        model_profiles=profiles,
+        observed_costs=_observed_costs(sonnet=[0.8, 0.9, 1.0], mini=[3.0, 3.1, 2.9]),
+    )
+    assert decision.dev.model == "gpt-5.4-mini"
+
+
+def test_observed_cost_mismatched_effort_falls_back_to_declared_seed(_all_authed):
+    agents = _two_cheap_agents()
+    decision = assign_models(
+        agents,
+        AssignmentConfig(
+            enabled=True,
+            min_reviewers=1,
+            max_reviewers=1,
+            prefer_cross_provider=False,
+            max_cost_per_story_usd=None,
+            escalation_memory=False,
+        ),
+        complexity="LOW",
+        complexity_score=2,
+        model_profiles=_equal_reliability_profiles(),
+        observed_costs=_observed_costs(
+            sonnet=[1.1, 1.2, 1.0], mini=[2.8, 2.9, 3.0], effort="high"
+        ),
+    )
+    assert decision.dev.model == "gpt-5.4-mini"
+    assert decision.routing_decision["dev"]["cost_tiebreak"]["source"] == "seed"
+
+
+def test_observed_cost_below_floor_and_stale_fall_back_to_seed():
+    below_floor = _observed_costs(sonnet=[1.0, 1.1], mini=[2.0, 2.1])
+    signal = get_observed_cost_tiebreak_signal(
+        below_floor,
+        "anthropic/sonnet/cli",
+        role="dev",
+        complexity="LOW",
+        reasoning_effort="low",
+        seed=15.0,
+    )
+    assert signal["source"] == "seed"
+    assert signal["reason"] == "below_sample_floor"
+
+    stale_costs = _observed_costs(sonnet=[1.0, 1.1, 1.2], mini=[2.0, 2.1, 2.2])
+    stale_costs["anthropic/sonnet/cli"]["DEV|LOW|low"]["observations"] = [
+        {
+            "cost_usd": 1.0,
+            "started_at": "2026-06-01T12:00:00+00:00",
+            "cost_provenance": "provider_reported",
+        },
+        {
+            "cost_usd": 1.1,
+            "started_at": "2026-06-01T12:00:00+00:00",
+            "cost_provenance": "provider_reported",
+        },
+        {
+            "cost_usd": 1.2,
+            "started_at": "2026-06-01T12:00:00+00:00",
+            "cost_provenance": "provider_reported",
+        },
+    ]
+    stale = get_observed_cost_tiebreak_signal(
+        stale_costs,
+        "anthropic/sonnet/cli",
+        role="dev",
+        complexity="LOW",
+        reasoning_effort="low",
+        seed=15.0,
+        now=datetime(2026, 8, 8, 12, 0, tzinfo=UTC),
+    )
+    assert stale["source"] == "seed"
+    assert stale["reason"] == "stale"
 
 
 # ── derive_roles (load-time) ───────────────────────────────────────────

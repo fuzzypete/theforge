@@ -173,6 +173,7 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
 
     def _fake_assign_models(*args, **kwargs):
         captured["model_profiles"] = kwargs.get("model_profiles")
+        captured["observed_costs"] = kwargs.get("observed_costs")
         captured["complexity_score"] = kwargs.get("complexity_score")
         # Return a minimal decision with the configured dev profile to avoid
         # exercising the real logic.
@@ -193,6 +194,7 @@ def test_preflight_passes_model_profiles_to_assign_models(tmp_path, monkeypatch)
 
     assert "model_profiles" in captured
     assert captured["model_profiles"] == seeded
+    assert captured["observed_costs"] == {}
     assert captured["complexity_score"] == 5
 
 
