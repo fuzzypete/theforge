@@ -1659,3 +1659,275 @@ class TestAcceptancePersistenceIsReportedHonestly:
         err = capsys.readouterr().err
         assert "could not persist the unmeasured-spend acceptance" in err
         assert "THIS run only" in err
+
+
+class TestAcceptablePriorSources:
+    """The whole-generation marker is not a source anyone can accept."""
+
+    def test_the_marker_is_never_offered_as_acceptable(self) -> None:
+        from theforge.sprint.unmeasured import acceptable_prior_sources
+
+        # The exact list run 6796605f9982 left behind.
+        assert acceptable_prior_sources(["carried:issue-2206", "carried:prior-generation"]) == [
+            "issue-2206"
+        ]
+        # A record naming only the marker leaves nothing to resolve.
+        assert acceptable_prior_sources(["carried:prior-generation"]) == []
+        # One source named twice is one source.
+        assert acceptable_prior_sources(["issue-2206", "carried:issue-2206", ""]) == ["issue-2206"]
+
+    def test_a_record_with_nothing_acceptable_never_reads_as_resolved(self) -> None:
+        from theforge.sprint.unmeasured import all_sources_accepted
+
+        assert (
+            all_sources_accepted(["carried:prior-generation"], {"issue-2206": object()}) is False
+        )
+        assert all_sources_accepted([], {}) is False
+
+
+class TestReportedShapeIsResolvable:
+    """The exact record run 6796605f9982 left must not be an absorbing state.
+
+    Its prior audit named both the carried story source and the derived
+    whole-generation marker. The marker has no origin, no ceiling and no accept
+    path, so re-surfacing it after the story source was accepted refuses the run
+    on a condition no operator action can satisfy — the story never dispatches,
+    on that resume or any later one.
+    """
+
+    @staticmethod
+    def _arrange(tmp_path: Path, *, extra_specs: list[str] | None = None):
+        from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
+
+        from theforge.sprint.audit import persist_accumulated_story_state
+
+        _make_spec_file(tmp_path, "Issue 2206", "issue-2206")
+        specs = ["issue-2206.md", *(extra_specs or [])]
+        manifest_path = _make_manifest(tmp_path, specs, budget=100.0)
+        config = _make_config(tmp_path)
+
+        sprint_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_dir.mkdir(parents=True, exist_ok=True)
+        (sprint_dir / ".sprint_id").write_text("sprint-2310", encoding="utf-8")
+        _write_story_audit(tmp_path, "Test Sprint", "issue-2206", _bounded_story_audit())
+
+        audits = tmp_path / ".forge" / "audits"
+        audits.mkdir(parents=True, exist_ok=True)
+        (audits / "sprint-audit.yaml").write_text(
+            yaml.safe_dump(
+                {
+                    "sprint": {
+                        "sprint_id": "sprint-2310",
+                        "total_cost_usd": None,
+                        "total_cost_measured_usd": 0.0,
+                        "cost_complete": False,
+                        "unmeasured_spend_sources": [
+                            "carried:issue-2206",
+                            "carried:prior-generation",
+                        ],
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        persist_accumulated_story_state(
+            "sprint-2310",
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue-2206.md",
+                    "slug": "issue-2206",
+                    "path": "issue-2206.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                }
+            ],
+        )
+        return config, manifest_path
+
+    @staticmethod
+    def _run(config, manifest_path, **kwargs):
+        from unittest.mock import patch
+
+        from test_sprint_resume import _make_coordinator_result
+
+        from theforge.sprint import run_sprint
+        from theforge.sprint.dag import StoryTriage
+
+        def _triage(spec_path, *args, **kw):
+            return StoryTriage(
+                story_path=str(spec_path),
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+            )
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=_triage):
+            with patch(
+                "theforge.sprint.runner.run_task",
+                side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
+            ) as mock_run:
+                result = run_sprint(config, manifest_path, resume=True, **kwargs)
+        return result, mock_run
+
+    def test_resume_without_acceptance_is_still_refused(self, tmp_path: Path) -> None:
+        config, manifest_path = self._arrange(tmp_path)
+        result, mock_run = self._run(config, manifest_path)
+
+        assert mock_run.call_count == 0
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        assert "carried:prior-generation" in result.unresolved_unmeasured_spend_sources
+
+    def test_accepting_the_story_source_clears_the_derived_marker(self, tmp_path: Path) -> None:
+        config, manifest_path = self._arrange(tmp_path)
+        result, mock_run = self._run(config, manifest_path, accept_unmeasured_spend=["issue-2206"])
+
+        assert mock_run.call_count == 1
+        assert result.stopped_reason is None
+        # The marker is gone entirely — not re-surfaced under any spelling.
+        assert result.unresolved_unmeasured_spend_sources == ()
+        assert not any("prior-generation" in s for s in result.unmeasured_spend_sources), (
+            result.unmeasured_spend_sources
+        )
+        # The accepted source is still charged and still reported as unmeasured.
+        assert [r["source"] for r in result.accepted_unmeasured_spend] == ["issue-2206"]
+        assert result.budget_verification_spend_usd >= 4.5
+        assert result.cost_complete is False
+
+    def test_a_later_resume_reads_the_recorded_resolution(self, tmp_path: Path) -> None:
+        """The story must not become unrunnable again on the next resume."""
+        config, manifest_path = self._arrange(tmp_path)
+        self._run(config, manifest_path, accept_unmeasured_spend=["issue-2206"])
+
+        # Re-arm the reported shape exactly as a stopped generation would, and
+        # resume with no flag: the recorded resolution still stands.
+        self._arrange(tmp_path)
+        result, mock_run = self._run(config, manifest_path)
+
+        assert mock_run.call_count == 1
+        assert result.stopped_reason is None
+        assert [r["source"] for r in result.accepted_unmeasured_spend] == ["issue-2206"]
+
+
+class TestOccurrenceIdentitySurvivesAResume:
+    """A stale acceptance must not clear an occurrence recorded after it.
+
+    Within one process the two occurrences are told apart by when they were
+    recorded. Once the run is resumed that distinction is gone — both are simply
+    carried — so identity has to come from the record: which run the unmeasured
+    call actually happened in.
+    """
+
+    @staticmethod
+    def _arrange(tmp_path: Path, *, audit_run_id: str, accepted_run_id: str):
+        from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
+
+        from theforge.sprint.audit import (
+            persist_accepted_unmeasured_spend,
+            persist_accumulated_story_state,
+        )
+
+        _make_spec_file(tmp_path, "Issue 2206", "issue-2206")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["issue-2206.md", "feature-b.md"], budget=100.0)
+        config = _make_config(tmp_path)
+
+        sprint_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_dir.mkdir(parents=True, exist_ok=True)
+        (sprint_dir / ".sprint_id").write_text("sprint-2310", encoding="utf-8")
+        # The per-story audit records the occurrence CURRENTLY carried.
+        _write_story_audit(
+            tmp_path, "Test Sprint", "issue-2206", _bounded_story_audit(run_id=audit_run_id)
+        )
+        persist_accumulated_story_state(
+            "sprint-2310",
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue-2206.md",
+                    "slug": "issue-2206",
+                    "path": "issue-2206.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                }
+            ],
+        )
+        # The acceptance on record was made for the run named here.
+        persist_accepted_unmeasured_spend(
+            "sprint-2310",
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "source": "issue-2206",
+                    "accepted_ceiling_usd": 4.5,
+                    "measured_lower_bound_usd": _MEASURED_BEFORE_FAILURE,
+                    "ceiling_basis": "story_allocation",
+                    "origin_run_id": accepted_run_id,
+                    "accepted_at": "2026-08-08T00:00:00+00:00",
+                    "reason": "reviewer hit a provider quota",
+                }
+            ],
+        )
+        return config, manifest_path
+
+    @staticmethod
+    def _run(config, manifest_path):
+        from unittest.mock import patch
+
+        from test_sprint_resume import _make_coordinator_result
+
+        from theforge.sprint import run_sprint
+        from theforge.sprint.dag import StoryTriage
+
+        def _triage(spec_path, *args, **kw):
+            return StoryTriage(
+                story_path=str(spec_path),
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+            )
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=_triage):
+            with patch(
+                "theforge.sprint.runner.run_task",
+                side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
+            ) as mock_run:
+                result = run_sprint(config, manifest_path, resume=True)
+        return result, mock_run
+
+    def test_a_second_occurrence_is_not_cleared_by_the_first_acceptance(
+        self, tmp_path: Path
+    ) -> None:
+        # Accepted for run-1; the ledger now carries the run-2 occurrence.
+        config, manifest_path = self._arrange(
+            tmp_path, audit_run_id="run-2", accepted_run_id="run-1"
+        )
+        result, mock_run = self._run(config, manifest_path)
+
+        assert mock_run.call_count == 0
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        assert "carried:issue-2206" in result.unresolved_unmeasured_spend_sources
+        # Nothing is charged either — an acceptance of some earlier call is not
+        # a ceiling on this one.
+        assert result.accepted_unmeasured_spend == ()
+
+    def test_the_occurrence_that_was_accepted_still_resolves(self, tmp_path: Path) -> None:
+        config, manifest_path = self._arrange(
+            tmp_path, audit_run_id="run-1", accepted_run_id="run-1"
+        )
+        result, mock_run = self._run(config, manifest_path)
+
+        assert mock_run.call_count == 2
+        assert result.stopped_reason is None
+        assert [r["source"] for r in result.accepted_unmeasured_spend] == ["issue-2206"]
+
+    def test_an_acceptance_with_no_recorded_origin_still_applies(self, tmp_path: Path) -> None:
+        """Unknown identity is not evidence of a mismatch."""
+        config, manifest_path = self._arrange(tmp_path, audit_run_id="run-2", accepted_run_id="")
+        result, mock_run = self._run(config, manifest_path)
+
+        assert mock_run.call_count == 2
+        assert result.stopped_reason is None

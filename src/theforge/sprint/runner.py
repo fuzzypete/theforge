@@ -4003,14 +4003,21 @@ def run_sprint(
                 config.project_root, _sprint_id, accepted_unmeasured
             )
             if _cleared_by_acceptance:
+                # The marker itself is never re-surfaced. It is a derived
+                # statement that SOME source that generation named was
+                # unmeasured, so once every one of those sources is accepted it
+                # asserts nothing the per-source records do not already assert —
+                # and it has no origin, no ceiling and no accept path, so
+                # carrying it forward would refuse the run on a condition no
+                # operator action can satisfy (#2310 review). Only the named,
+                # acceptable sources come across.
                 _carried_already = {
                     unmeasured_spend_policy.normalize_source_id(s) for s in unmeasured_spend
                 }
-                for _prior_source in _prior_unmeasured_spend_sources(
-                    config.project_root, _sprint_id
+                for _prior_norm in unmeasured_spend_policy.acceptable_prior_sources(
+                    _prior_unmeasured_spend_sources(config.project_root, _sprint_id)
                 ):
-                    _prior_norm = unmeasured_spend_policy.normalize_source_id(_prior_source)
-                    if not _prior_norm or _prior_norm in _carried_already:
+                    if _prior_norm in _carried_already:
                         continue
                     # Accepted, and nothing else in this run's ledger names it —
                     # typically because the accumulated story row was pruned.
@@ -4049,6 +4056,19 @@ def run_sprint(
             _log(
                 f"  {triage.slug:<20} {triage.action.upper().replace('_', ' ')} ({triage.reason})"
             )
+
+    # Pin which run each inherited unmeasured source belongs to, BEFORE any story
+    # can rewrite its per-story audit. That file is the only durable record of a
+    # source's occurrence identity, and a story re-running here overwrites it —
+    # so read once, up front, or a source carried from run A would later be
+    # measured against run B's record and an acceptance the operator legitimately
+    # made would be silently discarded (#2310 review).
+    carried_occurrence_ids: dict[str, str | None] = {}
+    for _carried_raw in unmeasured_spend:
+        if _carried_raw in current_generation_unmeasured:
+            continue
+        _carried_origin = _describe_unmeasured_source(_carried_raw).origin
+        carried_occurrence_ids[_carried_raw] = _carried_origin.get("run_id")
 
     def _recorded_prior_done(slug: str, canonical_ref: str | None = None) -> bool:
         """True when this sprint already recorded the story as run-to-DONE.
@@ -5996,6 +6016,7 @@ def run_sprint(
                         list(unmeasured_spend),
                         accepted_unmeasured,
                         current_generation=set(current_generation_unmeasured),
+                        occurrence_ids=carried_occurrence_ids,
                     )
                 # Origin/ceiling lookup reads per-story audits, so it runs
                 # outside ``cost_lock`` — it is reporting, not accounting.
@@ -6935,6 +6956,7 @@ def run_sprint(
         list(unmeasured_spend),
         accepted_unmeasured,
         current_generation=set(current_generation_unmeasured),
+        occurrence_ids=carried_occurrence_ids,
     )
     _final_accepted_ceiling = unmeasured_spend_policy.accepted_ceiling_total(_final_accepted)
     _budget_verification_usd = budget_verification_spend(

@@ -561,9 +561,15 @@ stands in for.
 An acceptance covers the **occurrence** it was made for — one recorded call, at
 one recorded ceiling, in one recorded run — not the story. If the same story
 runs again and *again* finishes with cost unmeasured, that is a second unknown
-nobody has bounded, and the guard closes on it exactly as it did the first time.
-A story that keeps needing acceptance is telling you its transport or provider
-is not reporting cost; fix that rather than re-accepting.
+nobody has bounded, and the guard closes on it exactly as it did the first time,
+on that run and on every later resume. A story that keeps needing acceptance is
+telling you its transport or provider is not reporting cost; fix that rather
+than re-accepting.
+
+You never accept `carried:prior-generation`. That entry is derived — it says
+only that *some* source the previous generation named went unmeasured — so it
+has no origin and no ceiling of its own. Accept the named sources beside it and
+it goes away.
 
 ---
 

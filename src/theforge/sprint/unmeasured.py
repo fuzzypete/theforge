@@ -31,15 +31,20 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 #: Prefix the runner stamps on spend inherited from an earlier generation of the
-#: same sprint. ``carried:issue-2206`` and ``issue-2206`` name the same work —
+#: same sprint. ``carried:issue-2206`` and ``issue-2206`` name the same STORY —
 #: the first is how a resume sees it, the second is how the generation that ran
-#: it did — so acceptance keys on the normalized form or a re-run that again
-#: completes unmeasured would re-block despite the recorded acceptance.
+#: it did — so acceptance is looked up on the normalized form. Which of that
+#: story's unmeasured calls a given entry stands for is a separate question, and
+#: is settled by occurrence identity rather than by the prefix (see
+#: :func:`partition`).
 CARRIED_PREFIX = "carried:"
 
 #: The whole-generation marker the resume path adds when the prior sprint audit
-#: recorded an incomplete cost. It is not a story, so it has no allocation of
-#: its own; it clears when every source that generation named has been accepted.
+#: recorded an incomplete cost. It is derived, not observed: it says only that
+#: SOME source that generation named went unmeasured. So it has no story, no
+#: allocation, no origin and no accept path, and it is never carried forward once
+#: every source it stood for has been accepted — see
+#: :func:`acceptable_prior_sources`.
 PRIOR_GENERATION_SOURCE = "prior-generation"
 
 #: Where a ceiling came from. Only ``derived`` bounds may be accepted.
@@ -427,6 +432,7 @@ def partition(
     accepted: Mapping[str, AcceptedUnmeasuredSpend],
     *,
     current_generation: Iterable[str] = (),
+    occurrence_ids: Mapping[str, str | None] | None = None,
 ) -> tuple[list[str], list[AcceptedUnmeasuredSpend]]:
     """Split raw sources into the unresolved ones and the acceptances in force.
 
@@ -434,16 +440,31 @@ def partition(
     returned: a ceiling is charged for spend this run is carrying, never for a
     stale record of work it is not.
 
+    An acceptance resolves the OCCURRENCE it was made for, not the story: it
+    stands in for one recorded call, at one recorded ceiling, in one recorded
+    run. A second unmeasured call is a second unknown, of an amount nobody has
+    bounded and nobody has accepted, so the guard closes on it exactly as it did
+    the first time. Without this an operator's one-time acceptance would
+    silently become a standing licence for that story to spend unmeasured
+    forever. Two independent tests carry that, because the two occurrences look
+    different depending on when you ask:
+
     ``current_generation`` names the raw sources THIS run produced itself — a
-    story that completed unmeasured here, an intake pass that ran here. An
-    acceptance resolves the occurrence it was made for, not the story: it stands
-    in for one recorded call, at one recorded ceiling, in one recorded run. A
-    second unmeasured call is a second unknown, of an amount nobody has bounded
-    and nobody has accepted, so the guard closes on it exactly as it did the
-    first time. Without this an operator's one-time acceptance would silently
-    become a standing licence for that story to spend unmeasured forever.
+    story that completed unmeasured here, an intake pass that ran here. Nothing
+    accepted before this run began can stand in for them.
+
+    ``occurrence_ids`` maps a raw source to the run its unmeasured call happened
+    in. Once the stopped run is resumed, its two occurrences are no longer
+    distinguishable by *when* they were recorded — both are simply carried — so
+    identity has to come from the record instead. An acceptance whose
+    ``origin_run_id`` names a different run than the occurrence now in the ledger
+    is an acceptance of some earlier call, and does not resolve this one. Either
+    side being unrecorded falls back to matching on the source alone: an unknown
+    identity is not evidence of a mismatch, and refusing there would strand an
+    acceptance the operator legitimately made.
     """
     fresh = {str(s) for s in current_generation}
+    ids = occurrence_ids or {}
     unresolved: list[str] = []
     applied: dict[str, AcceptedUnmeasuredSpend] = {}
     for raw in raw_sources:
@@ -452,11 +473,18 @@ def partition(
             continue
         normalized = normalize_source_id(raw)
         record = accepted.get(normalized)
-        if record is None:
+        if record is None or not _same_occurrence(record, ids.get(str(raw))):
             unresolved.append(str(raw))
         else:
             applied.setdefault(normalized, record)
     return unresolved, list(applied.values())
+
+
+def _same_occurrence(record: AcceptedUnmeasuredSpend, occurrence_id: str | None) -> bool:
+    """Whether an acceptance was made for the occurrence now in the ledger."""
+    if not record.origin_run_id or not occurrence_id:
+        return True
+    return str(record.origin_run_id) == str(occurrence_id)
 
 
 def accepted_ceiling_total(records: Iterable[AcceptedUnmeasuredSpend]) -> float:
@@ -480,18 +508,43 @@ def accepted_by_source(
     return index
 
 
+def acceptable_prior_sources(recorded_sources: Sequence[str]) -> list[str]:
+    """Normalized sources from a prior generation's record an operator can accept.
+
+    The whole-generation marker is excluded, and this is the single place that
+    exclusion is decided so no caller can drift from it. The marker names no work
+    of its own: it is a DERIVED statement that some source in that generation was
+    unmeasured, so it has no origin, no ceiling and no accept path by
+    construction. Anything that treats it as a source — a completeness test, or a
+    ledger re-surfacing pass — makes the generation permanently unresolvable,
+    because the operator is then required to accept something nothing can bound.
+
+    Order is preserved and duplicates collapse, since a source named twice by one
+    record is one source as far as acceptance is concerned.
+    """
+    seen: set[str] = set()
+    usable: list[str] = []
+    for raw in recorded_sources:
+        normalized = normalize_source_id(raw)
+        if not normalized or normalized == PRIOR_GENERATION_SOURCE or normalized in seen:
+            continue
+        seen.add(normalized)
+        usable.append(normalized)
+    return usable
+
+
 def all_sources_accepted(
     recorded_sources: Sequence[str],
     accepted: Mapping[str, AcceptedUnmeasuredSpend],
 ) -> bool:
     """Whether every source a prior generation named has been accepted.
 
-    An empty ``recorded_sources`` is False, not vacuously True: a generation
-    that reported incomplete cost without naming what was unpriced carries a
-    claim nothing here can resolve, so the guard must stay closed on it.
+    A record with nothing acceptable in it is False, not vacuously True: a
+    generation that reported incomplete cost while naming only the derived
+    marker (or nothing at all) carries a claim nothing here can resolve, so the
+    guard must stay closed on it.
     """
-    normalized = [normalize_source_id(s) for s in recorded_sources]
-    usable = [s for s in normalized if s and s != PRIOR_GENERATION_SOURCE]
+    usable = acceptable_prior_sources(recorded_sources)
     if not usable:
         return False
     return all(s in accepted for s in usable)
