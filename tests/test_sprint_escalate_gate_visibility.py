@@ -31,10 +31,15 @@ PENDING_RUN_ID = "b05817e579cd"
 OPTIONS = ["accept", "redirect", "defer"]
 
 
-def _live_state(tmp_path: Path, *, slugs: tuple[str, ...] = (STORY,)) -> SprintStateWriter:
+def _live_state(
+    tmp_path: Path,
+    *,
+    slugs: tuple[str, ...] = (STORY,),
+    run_id: str = RUN_ID,
+) -> SprintStateWriter:
     """A live sprint state file with each slug running in REVIEW."""
     (tmp_path / ".forge" / "runs").mkdir(parents=True, exist_ok=True)
-    writer = SprintStateWriter(RUN_ID, tmp_path, "sprint")
+    writer = SprintStateWriter(run_id, tmp_path, "sprint")
     writer.init(
         [{"slug": slug, "path": slug, "status": "running", "phase": "REVIEW"} for slug in slugs]
     )
@@ -48,16 +53,34 @@ def _write_pending(
     run_id: str = PENDING_RUN_ID,
     timeout_seconds: int = 900,
     phase: str = "ESCALATE",
+    owner_run_id: str | None = RUN_ID,
 ) -> Path:
-    return pending_mod.write_pending(
-        run_id=run_id,
-        story=story,
-        phase=phase,
-        reason="ESCALATION — advisory report unavailable; select an action.",
-        options=OPTIONS,
-        timeout_seconds=timeout_seconds,
-        project_root=tmp_path,
-    )
+    """Write a checkpoint as the sprint process would.
+
+    ``owner_run_id`` is what ``detach.export_run_context`` publishes into the
+    environment of the run holding the gate; ``None`` writes the pre-#2313
+    record shape that carries no owning run at all.
+    """
+    env = {"FORGE_DETACHED_RUN_ID": owner_run_id} if owner_run_id else {}
+    with patch.dict(os.environ, env, clear=False):
+        if not owner_run_id:
+            os.environ.pop("FORGE_DETACHED_RUN_ID", None)
+        return pending_mod.write_pending(
+            run_id=run_id,
+            story=story,
+            phase=phase,
+            reason="ESCALATION — advisory report unavailable; select an action.",
+            options=OPTIONS,
+            timeout_seconds=timeout_seconds,
+            project_root=tmp_path,
+        )
+
+
+def _write_pid_file(tmp_path: Path, run_id: str, pid: int, slug: str = "sprint") -> None:
+    """Register ``run_id`` as the live run owned by ``pid``."""
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / f"{run_id}.pid").write_text(f"{pid}\n{slug}\n", encoding="utf-8")
 
 
 def _patch_pending_file(path: Path, **fields: object) -> None:
@@ -159,6 +182,71 @@ class TestPendingDecisionInLiveStatus:
         assert PENDING_RUN_ID in entry.detail
 
 
+class TestPendingDecisionIsScopedToItsRun:
+    """A checkpoint belongs to the run that opened it, not to a matching slug.
+
+    Two sprints can be live on the same story slug (a re-run alongside the
+    original, a second project checkout). Showing one run's gate on the other's
+    row points the operator at a decision that is not theirs and hands them
+    another run's id to resolve it with (#2313).
+    """
+
+    OTHER_RUN = "run-other"
+
+    def _two_live_runs(self, tmp_path: Path) -> None:
+        _live_state(tmp_path, run_id=RUN_ID)
+        _live_state(tmp_path, run_id=self.OTHER_RUN)
+
+    def test_only_the_owning_run_shows_the_pending_decision(self, tmp_path: Path) -> None:
+        self._two_live_runs(tmp_path)
+        _write_pending(tmp_path, owner_run_id=RUN_ID)
+
+        owner = next(e for e in read_live_status(RUN_ID, tmp_path) or [] if e.slug == STORY)
+        bystander = next(
+            e for e in read_live_status(self.OTHER_RUN, tmp_path) or [] if e.slug == STORY
+        )
+
+        assert owner.stage == OPERATOR_DECISION_STAGE
+        assert bystander.stage != OPERATOR_DECISION_STAGE
+        assert PENDING_RUN_ID not in bystander.detail
+
+    def test_a_legacy_record_owned_by_another_live_run_is_not_shown(self, tmp_path: Path) -> None:
+        # Written before owner_run_id existed: the owning PID is the only
+        # identity it carries, and that PID is the other run's sprint process.
+        self._two_live_runs(tmp_path)
+        _write_pending(tmp_path, owner_run_id=None)
+        _write_pid_file(tmp_path, self.OTHER_RUN, os.getpid())
+
+        entry = next(e for e in read_live_status(RUN_ID, tmp_path) or [] if e.slug == STORY)
+
+        assert entry.stage != OPERATOR_DECISION_STAGE
+
+    def test_a_legacy_record_owned_by_this_run_is_still_shown(self, tmp_path: Path) -> None:
+        self._two_live_runs(tmp_path)
+        _write_pending(tmp_path, owner_run_id=None)
+        _write_pid_file(tmp_path, RUN_ID, os.getpid())
+
+        entry = next(e for e in read_live_status(RUN_ID, tmp_path) or [] if e.slug == STORY)
+
+        assert entry.stage == OPERATOR_DECISION_STAGE
+
+    def test_a_reexeced_run_still_owns_the_checkpoint_it_opened(self, tmp_path: Path) -> None:
+        # The sprint opened the gate under its pre-re-exec run id; status is
+        # queried under the successor. Both name the same run.
+        _live_state(tmp_path, run_id="run-successor")
+        (tmp_path / ".forge" / "runs" / f"{RUN_ID}.redirect").write_text(
+            '{"new_run_id": "run-successor"}', encoding="utf-8"
+        )
+        _write_pending(tmp_path, owner_run_id=RUN_ID)
+
+        # The successor's rows still own the gate its predecessor opened.
+        entry = next(
+            e for e in read_live_status("run-successor", tmp_path) or [] if e.slug == STORY
+        )
+        assert entry.stage == OPERATOR_DECISION_STAGE
+        assert PENDING_RUN_ID in entry.detail
+
+
 class TestWatchRendersPendingDecisions:
     """read_live_status → status_watch.render_frame."""
 
@@ -182,6 +270,20 @@ class TestWatchRendersPendingDecisions:
         assert "forge decide" in text
         # The event age stays visible; only the warning framing is dropped.
         assert "46m00s" in text
+
+    def test_a_non_escalate_gate_renders_the_same_way(self, tmp_path: Path) -> None:
+        # The stage is about "a gate is waiting on a person", not about which
+        # gate — a human-review checkpoint must read the same in the view.
+        _live_state(tmp_path)
+        _write_pending(tmp_path, run_id="hr-checkpoint", phase="HUMAN_REVIEW")
+        entries = [e for e in read_live_status(RUN_ID, tmp_path) or [] if e.slug == STORY]
+
+        text = _frame(tmp_path, entries, age_seconds=46 * 60)
+
+        assert "stalled" not in text
+        assert "Awaiting operator decision" in text
+        assert "HUMAN_REVIEW" in text
+        assert "hr-checkpoint" in text
 
     def test_ordinary_stale_running_story_still_reports_stalled(self, tmp_path: Path) -> None:
         entry = StoryStatusEntry(

@@ -630,7 +630,80 @@ def _pending_remaining_text(entry: dict) -> str:
     return "window elapsed — still awaiting decision"
 
 
-def _select_pending_for_story(pending: list[dict], slug: str) -> dict | None:
+def _run_identity(run_id: str, project_root: Path, state_path: Path) -> set[str]:
+    """Every run id that names the run whose live state is being displayed.
+
+    A sprint that re-execs keeps its work under a new run id while status may
+    still be queried under the old one, so both ends of the redirect chain — and
+    the stem of the state file actually resolved — identify the same run.
+    """
+    import json  # noqa: PLC0415
+
+    ids = {run_id, state_path.stem}
+    for candidate in (run_id, state_path.stem):
+        if candidate:
+            ids.add(_follow_redirect_chain(candidate, project_root))
+
+    # Walk the redirect chain backwards too: a re-exec'd sprint opened its gates
+    # under the run id it carried before the handoff, and that is still this run.
+    predecessors: dict[str, list[str]] = {}
+    try:
+        redirect_files = sorted((project_root / ".forge" / "runs").glob("*.redirect"))
+    except OSError:
+        redirect_files = []
+    for redirect_file in redirect_files:
+        try:
+            data = json.loads(redirect_file.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        new_id = data.get("new_run_id") if isinstance(data, dict) else None
+        if isinstance(new_id, str) and new_id:
+            predecessors.setdefault(new_id, []).append(redirect_file.stem)
+
+    frontier = list(ids)
+    while frontier:
+        current = frontier.pop()
+        for previous in predecessors.get(current, []):
+            if previous and previous not in ids:
+                ids.add(previous)
+                frontier.append(previous)
+
+    return {i for i in ids if i}
+
+
+def _pending_belongs_to_run(entry: dict, identity: set[str], project_root: Path) -> bool:
+    """True when ``entry`` is a checkpoint held by the run being displayed.
+
+    A checkpoint is named after the *story* run id, which two concurrently live
+    sprints working the same slug can share — so slug equality alone would show
+    one sprint's gate on the other's row, sending the operator to a decision
+    that is not theirs to make (#2313).
+    """
+    owner_run_id = _nonempty_str(entry.get("owner_run_id"))
+    if owner_run_id:
+        return owner_run_id in identity
+
+    # A checkpoint written before ``owner_run_id`` existed still identifies its
+    # process. If that PID is a different live run's, the gate is that run's.
+    try:
+        owner_pid = int(entry.get("pid"))
+    except (TypeError, ValueError):
+        return False
+    try:
+        from theforge.detach import find_run_id_for_pid  # noqa: PLC0415
+
+        other_run_id = find_run_id_for_pid(project_root, owner_pid)
+    except Exception:
+        return True
+    return not other_run_id or other_run_id in identity
+
+
+def _select_pending_for_story(
+    pending: list[dict],
+    slug: str,
+    identity: set[str],
+    project_root: Path,
+) -> dict | None:
     """Pick the live pending record a story row should display, if any."""
     if not slug:
         return None
@@ -640,6 +713,7 @@ def _select_pending_for_story(pending: list[dict], slug: str) -> dict | None:
         if isinstance(entry, dict)
         and _nonempty_str(entry.get("story")) == slug
         and _pending_entry_is_live(entry)
+        and _pending_belongs_to_run(entry, identity, project_root)
     ]
     if not candidates:
         return None
@@ -1194,13 +1268,11 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
     stories_data = data.get("stories", [])
     # Read the pending checkpoints once per snapshot: a gate waiting on a person
     # writes one, and it is the only live record of that wait (#2313).
-    pending_records = (
-        _live_pending_records(project_root)
-        if any(
-            isinstance(s, dict) and s.get("status") in _IN_FLIGHT_STATUSES for s in stories_data
-        )
-        else []
+    has_in_flight = any(
+        isinstance(s, dict) and s.get("status") in _IN_FLIGHT_STATUSES for s in stories_data
     )
+    pending_records = _live_pending_records(project_root) if has_in_flight else []
+    run_identity = _run_identity(run_id, project_root, state_path) if pending_records else set()
     entries = []
     seen_slugs: set[str] = set()
     for story in stories_data:
@@ -1222,7 +1294,9 @@ def read_live_status(run_id: str, project_root: Path) -> list[StoryStatusEntry] 
         # would otherwise render: the phase says what the story was doing, the
         # checkpoint says what it is waiting for and who can clear it (#2313).
         if status_val in _IN_FLIGHT_STATUSES and pending_records:
-            pending_entry = _select_pending_for_story(pending_records, slug)
+            pending_entry = _select_pending_for_story(
+                pending_records, slug, run_identity, project_root
+            )
             if pending_entry is not None:
                 stage = OPERATOR_DECISION_STAGE
                 detail = _pending_decision_display(pending_entry)
