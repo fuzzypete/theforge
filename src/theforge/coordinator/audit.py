@@ -1008,6 +1008,19 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "gate_result": state.gate_decisions[-1] if state.gate_decisions else None,
                 "human_decision": state.escalate_decision,
                 "selected_action": state.escalate_selected_action,
+                # WHO or WHAT decided, and — for an expiry — whether the advisory
+                # recommendation was applied or which absence stopped it (#2279).
+                # Recorded so an operator reading a finished run can tell an
+                # action they chose from one applied on their behalf from a gate
+                # still waiting, without inferring it from timestamps.
+                "decision_source": state.escalate_decision_source,
+                "timeout_advice": state.escalate_timeout_advice,
+                "awaiting_operator": state.escalate_decision == "advisory_pending",
+                "advisory_recommendation": (
+                    (state.advisory_report or {}).get("recommendation")
+                    if isinstance(state.advisory_report, dict)
+                    else None
+                ),
                 # A selection the gate refused to carry out. Recorded alongside
                 # (not in place of) human_decision so the audit shows what the
                 # operator chose AND that no outcome was substituted for it

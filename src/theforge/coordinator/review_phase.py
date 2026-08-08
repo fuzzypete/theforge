@@ -14,12 +14,18 @@ from theforge.assignment import (
     MECHANISM_PERSISTENT_P1_DEV_ESCALATION,
     MECHANISM_RUN_SCOPED_RESET,
 )
-from theforge.config import ForgeConfig, apply_model_info
+from theforge.config import (
+    ESCALATE_TIMEOUT_APPLY_ADVICE,
+    ESCALATE_TIMEOUT_PRESERVE,
+    ForgeConfig,
+    apply_model_info,
+)
 from theforge.coordinator.context_scope import plan_file_list
 from theforge.escalation_advisor import (
     ACTION_FORGE_OPERATIONS,
     ACTION_LABELS,
     ACTION_TAXONOMY,
+    AdvisoryReport,
     action_disposition,
 )
 from theforge.review import (
@@ -36,6 +42,7 @@ from .completion import _append_cycle_history, _finalize_approve
 from .escalate_actions import (
     ACCEPT_UNAVAILABLE_REASON,
     approvable_review_result,
+    available_escalate_actions,
 )
 from .escalation_advisor_flow import run_escalation_advisor
 from .gate_contradiction import asserts_gate_verifiable_failure
@@ -51,6 +58,7 @@ from .notify import (
 from .pending_hitl import (
     _pending_escalate_gate,
     _pending_human_review,
+    cleanup_escalate_pending,
 )
 from .preflight import (
     _escalate_dev_model,
@@ -77,6 +85,21 @@ from .review_context import (
 from .review_pool import _run_review_pool
 from .run_setup import save_trajectory_state
 from .state import (
+    ADVICE_APPLIED,
+    ADVICE_ELEVATE,
+    ADVICE_LAUNCH_FAILURE,
+    ADVICE_NO_RECOMMENDATION,
+    ADVICE_NOT_PERFORMABLE,
+    ADVICE_POLICY_PRESERVE,
+    ADVICE_UNAVAILABLE,
+    ADVICE_UNPARSEABLE,
+    ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT,
+    ESCALATE_SOURCE_NO_INTERACTION,
+    ESCALATE_SOURCE_OPERATOR,
+    ESCALATE_SOURCE_OPERATOR_DECLINED,
+    ESCALATE_SOURCE_POLICY_AUTO_APPROVE,
+    ESCALATE_SOURCE_POLICY_REJECT,
+    ESCALATE_SOURCE_TIMEOUT_PENDING,
     CoordinatorResult,
     CoordinatorState,
     Phase,
@@ -202,6 +225,95 @@ def _record_reviewed_commit_provenance(
     )
 
 
+#: One sentence per reason an opted-in expiry did NOT apply the advice, appended
+#: to the preserve message so the run itself states which situation occurred
+#: rather than leaving it to be reconstructed (#2279). ``ADVICE_POLICY_PRESERVE``
+#: has no entry: a project that did not opt in is seeing its normal behaviour and
+#: has nothing to explain.
+_TIMEOUT_ADVICE_NOTES: dict[str, str] = {
+    ADVICE_ELEVATE: (
+        "The advisor recommended 'elevate' — the taxonomy's answer for a case no "
+        "automated choice fits — so the expiry deliberately made no selection and "
+        "routed this to a human design decision."
+    ),
+    ADVICE_NOT_PERFORMABLE: (
+        "The advisor's recommendation could not be applied because this run cannot "
+        "perform it, and no substitute action was chosen in its place."
+    ),
+    ADVICE_NO_RECOMMENDATION: (
+        "The advisory report recommended no action, so there was nothing to apply — "
+        "an absence of advice, not consent to a fallback."
+    ),
+    ADVICE_UNPARSEABLE: (
+        "The advisor ran but produced no parseable report, so there was no "
+        "recommendation to apply."
+    ),
+    ADVICE_LAUNCH_FAILURE: (
+        "The advisor never launched, so no recommendation was ever produced to apply."
+    ),
+    ADVICE_UNAVAILABLE: (
+        "This gate surface produced no advisory report, so there was no recommendation to apply."
+    ),
+}
+
+
+def _timeout_applies_advice(config: ForgeConfig) -> bool:
+    """True when this project opted in to applying advice at an expired gate.
+
+    Read through ``getattr`` so a ForgeConfig built by an older caller (or a test
+    fixture predating the field) means "preserve" rather than raising — the
+    default is the behaviour every project already has.
+    """
+    return getattr(config.retry, "escalate_timeout_policy", ESCALATE_TIMEOUT_PRESERVE) == (
+        ESCALATE_TIMEOUT_APPLY_ADVICE
+    )
+
+
+def _advice_for_expired_gate(
+    state: CoordinatorState,
+    advisory: "AdvisoryReport | None",
+) -> tuple[str | None, str]:
+    """Decide whether an expired gate can act on the advisory it produced.
+
+    Returns ``(action, status)``: ``action`` is the taxonomy action to apply, or
+    None when the gate must keep waiting; ``status`` is the
+    ``ESCALATE_TIMEOUT_ADVICE_STATUSES`` value naming why.
+
+    Every non-applied outcome is a *preserve*, never a fallback action. An absent
+    recommendation is the absence of advice, not consent to any particular
+    outcome, so the five ways advice can be missing are told apart rather than
+    collapsed into one silent default:
+
+    * the advisor never reached the model (a repairable forge defect),
+    * this gate surface produces no advisory at all (remote / interactive),
+    * the report failed schema validation,
+    * the report is valid but recommends nothing,
+    * the recommendation is real but this run cannot perform it (e.g. ``accept``
+      with no approvable reviewer result), which is the one case where applying
+      it would mean substituting an action nobody chose.
+
+    ``elevate`` is separate from all of those: the taxonomy already treats it as
+    the answer for a case no automated choice fits, so an advisor that returns it
+    has deliberately said "a human decides this" — and the expiry honours that by
+    leaving the story exactly where a non-opted-in project would leave it.
+    """
+    if advisory is None:
+        if state.advisory_launch_failure:
+            return None, ADVICE_LAUNCH_FAILURE
+        return None, ADVICE_UNAVAILABLE
+    if not advisory.ok:
+        return None, ADVICE_UNPARSEABLE
+    recommendation = (advisory.recommendation or "").strip().lower()
+    if not recommendation or recommendation not in ACTION_TAXONOMY:
+        return None, ADVICE_NO_RECOMMENDATION
+    if recommendation == "elevate":
+        return None, ADVICE_ELEVATE
+    performable, _omitted = available_escalate_actions(state, ACTION_TAXONOMY)
+    if recommendation not in performable:
+        return None, ADVICE_NOT_PERFORMABLE
+    return recommendation, ADVICE_APPLIED
+
+
 def _run_escalate_gate(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -293,6 +405,7 @@ def _run_escalate_gate_inner(
     if escalate_policy == "reject":
         state.escalate_decision = "reject"
         state.escalate_reason = escalate_reason
+        state.escalate_decision_source = ESCALATE_SOURCE_POLICY_REJECT
         return _make_escalate_result()
 
     # Policy: auto_approve — short-circuit when gate passed and majority approved
@@ -309,6 +422,7 @@ def _run_escalate_gate_inner(
                 )
                 state.escalate_decision = "approve"
                 state.escalate_reason = escalate_reason
+                state.escalate_decision_source = ESCALATE_SOURCE_POLICY_AUTO_APPROVE
                 _append_cycle_history(state, state.review_results[-1])
                 return _finalize_approve(
                     state,
@@ -331,7 +445,10 @@ def _run_escalate_gate_inner(
                     run_id=run_id,
                 )
 
-    # Determine interaction method
+    # Determine interaction method. `advisory` stays None on every surface that
+    # does not produce a report (remote / interactive / no-interaction), so the
+    # expiry branch below can ask for one without assuming which path ran.
+    advisory: "AdvisoryReport | None" = None
     if _is_pending_file_mode(notify, config):
         # Generate a fresh-context advisory report so the operator selects from the
         # fixed action taxonomy instead of the system auto-rejecting on timeout.
@@ -358,8 +475,44 @@ def _run_escalate_gate_inner(
         # No interaction method available — fall through to reject
         _log("  No interaction method available for escalate gate — rejecting (policy=prompt)")
         decision = "reject"
+        state.escalate_decision_source = ESCALATE_SOURCE_NO_INTERACTION
 
     state.escalate_reason = escalate_reason
+
+    # An expired gate, opted in: apply the advice rather than discarding it.
+    #
+    # Guarded on decision == "timeout" alone, which is exactly "no selection
+    # arrived". A selection that reached the gate before expiry — from the
+    # pending file, ntfy, or the terminal — never enters here, so an operator who
+    # is present always governs, whatever the advisor recommended.
+    if decision == "timeout" and _timeout_applies_advice(config):
+        applied, advice_status = _advice_for_expired_gate(state, advisory)
+        state.escalate_timeout_advice = advice_status
+        if applied is not None:
+            _log(
+                f"  Escalate gate expired with no operator selection — applying the advisory "
+                f"recommendation {applied!r} (retry.escalate_timeout_policy=apply_advice)"
+            )
+            # Resolved, not awaiting: the checkpoint _pending_escalate_gate
+            # refreshed on expiry must go, exactly as it does for an explicit
+            # selection. Leaving it would show a decided story as still pending.
+            cleanup_escalate_pending(task, config, run_id=run_id)
+            decision = applied
+            state.escalate_decision_source = ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
+        else:
+            _log(
+                f"  Escalate gate expired — advisory recommendation NOT applied "
+                f"({advice_status}); preserving for an operator decision"
+            )
+    elif decision == "timeout":
+        state.escalate_timeout_advice = ADVICE_POLICY_PRESERVE
+    else:
+        # Anything that is not an expiry came back from a gate surface an
+        # operator was answering, so the outcome is theirs — including a value
+        # the normalisation below rejects. The `or` preserves the
+        # no-interaction attribution set above, which is the one non-expiry
+        # decision no operator made.
+        state.escalate_decision_source = state.escalate_decision_source or ESCALATE_SOURCE_OPERATOR
 
     # Normalise legacy (approve/reject/continue) and taxonomy actions into a
     # coordinator disposition. Taxonomy actions come from the advisory-backed
@@ -391,6 +544,7 @@ def _run_escalate_gate_inner(
             state.escalate_selected_action = selected
             state.escalate_declined_action = selected
             state.escalate_declined_reason = ACCEPT_UNAVAILABLE_REASON
+            state.escalate_decision_source = ESCALATE_SOURCE_OPERATOR_DECLINED
             _log(
                 f"  ⚠ Escalate gate: {selected!r} selected but cannot be performed "
                 f"({ACCEPT_UNAVAILABLE_REASON}) — DECLINED; story left as it was "
@@ -477,6 +631,15 @@ def _run_escalate_gate_inner(
                 "Escalation preserved: an operator action selection is still "
                 "required (no auto-reject)."
             )
+        # Under the opt-in policy the operator asked for advice to be applied, so
+        # NOT applying it is the surprising outcome and has to say which of the
+        # possible absences occurred — an unusable report and a deliberate
+        # `elevate` are the same "still waiting" from the outside, and only one of
+        # them is a defect worth repairing.
+        advice_note = _TIMEOUT_ADVICE_NOTES.get(state.escalate_timeout_advice or "")
+        if advice_note:
+            preserve_message = f"{preserve_message} {advice_note}"
+        state.escalate_decision_source = ESCALATE_SOURCE_TIMEOUT_PENDING
         return _make_escalate_result("advisory_pending", message=preserve_message)
 
     # reject / defer_or_abandon / any unrecognised decision

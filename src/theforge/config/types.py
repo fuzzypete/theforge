@@ -660,6 +660,17 @@ class ValidationConfig:
         return None
 
 
+#: ``retry.escalate_timeout_policy`` — what an *expired* escalate gate means.
+#: ``preserve`` keeps today's behaviour (wait for an operator); ``apply_advice``
+#: opts in to applying the advisory recommendation on expiry (#2279).
+ESCALATE_TIMEOUT_PRESERVE = "preserve"
+ESCALATE_TIMEOUT_APPLY_ADVICE = "apply_advice"
+ESCALATE_TIMEOUT_POLICIES: tuple[str, ...] = (
+    ESCALATE_TIMEOUT_PRESERVE,
+    ESCALATE_TIMEOUT_APPLY_ADVICE,
+)
+
+
 @dataclass(frozen=True)
 class RetryPolicy:
     """Retry limits before escalating to human."""
@@ -740,6 +751,21 @@ class RetryPolicy:
         2  # consecutive plan rejections before escalating planner model
     )
     escalate_policy: str = "prompt"  # "prompt" | "auto_approve" | "reject"
+    # What an escalate gate does when it expires with no operator selection.
+    #
+    #   "preserve"     (default) — keep the pending checkpoint and wait for an
+    #                  operator. Unchanged from the behaviour every project has
+    #                  today; a project that has not opted in sees no change.
+    #   "apply_advice" — apply the advisory recommendation the gate just paid for,
+    #                  as if an operator had selected it deliberately. Only a
+    #                  valid report with a non-elevate recommendation this run can
+    #                  actually perform is applied; `elevate`, an absent
+    #                  recommendation, and an advisor that never produced one all
+    #                  fall back to "preserve" (#2279).
+    #
+    # An operator selection that arrives before expiry always governs — this
+    # field only decides what an *expiry* means.
+    escalate_timeout_policy: str = "preserve"  # "preserve" | "apply_advice"
     auto_model_escalation: bool = False  # escalate dev model on persistent P1; disabled by default
     # Adaptive iteration limits: scale max_dev_iterations / max_review_cycles
     # per-story from preflight complexity_score and historical usage. The
