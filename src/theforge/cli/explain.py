@@ -95,6 +95,18 @@ def _render_candidate_pool(pool: list[dict], lines: list[str]) -> None:
         success_rate = signals.get("success_rate")
         if isinstance(success_rate, dict):
             lines.append(f"        success_rate: {_fmt_signal(success_rate)}")
+        cost_tiebreak = signals.get("cost_tiebreak")
+        if isinstance(cost_tiebreak, dict):
+            cohort = cost_tiebreak.get("cohort") or {}
+            role = cohort.get("role", "?")
+            complexity = cohort.get("complexity", "?")
+            effort = cohort.get("reasoning_effort", "?")
+            lines.append(
+                "        cost_tiebreak: "
+                f"value={cost_tiebreak.get('value')} source={cost_tiebreak.get('source')} "
+                f"observations={cost_tiebreak.get('observations')} "
+                f"cohort={role}/{complexity}/{effort}"
+            )
 
 
 def _render_score_policy(role_block: dict, lines: list[str]) -> None:
@@ -345,6 +357,18 @@ def _render_final(role_block: dict, lines: list[str]) -> None:
     rationale = (final.get("rationale") or "").strip()
     if rationale:
         lines.append(f"    rationale: {rationale}")
+    cost = role_block.get("cost_tiebreak") or {}
+    if isinstance(cost, dict) and cost:
+        cohort = cost.get("cohort") or {}
+        role = cohort.get("role", "?")
+        complexity = cohort.get("complexity", "?")
+        effort = cohort.get("reasoning_effort", "?")
+        lines.append(
+            "    cost tiebreak: "
+            f"{cost.get('source')} value={cost.get('value')} "
+            f"observations={cost.get('observations')} "
+            f"cohort={role}/{complexity}/{effort}"
+        )
 
 
 def _render_reasoning_effort(reasoning: object, lines: list[str]) -> None:
