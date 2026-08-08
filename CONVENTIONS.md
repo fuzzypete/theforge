@@ -356,6 +356,27 @@ proportionality, and churn depends on that data being present.
 
 Source: `project_full_audit_trail.md`
 
+### Module size is ratcheted, not merely reported
+
+`max_module_lines` is enforced as a ratchet (ADR-0008). A module already over
+the limit at the story's branch point is frozen at the size it had there: it may
+shrink freely, but a change that grows it is refused, naming the module, the
+size it may not exceed, and by how much the change exceeds it. A module within
+the limit stays governed by the limit itself, and a module absent from the
+baseline is governed from its first commit. The ceilings are derived from the
+tree on every check, never recorded in a list. The branch point they are read
+from resolves against the remote-tracking base ref when the local one is behind
+it, so a `main` nobody fast-forwarded cannot charge this story with the growth
+of every story that landed since.
+
+The advisory report is unchanged and still states distance from the configured
+limit, so a module compliant with a frozen ceiling and still many times the
+convention is visible as both. When the ratchet refuses a change, the intended
+response is to put the new code elsewhere — not to grow the module and not to
+carry an unscoped extraction as a side effect of unrelated work.
+
+Source: `docs/adr/0008-module-size-ratchet.md`
+
 ### Review-cycle churn usually means missing cross-cycle context first
 
 When sprints churn through repeated review cycles, the first hypothesis should

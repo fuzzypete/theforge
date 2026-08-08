@@ -11,7 +11,6 @@ from theforge.conventions import (
     ConventionViolation,
     _check_circular_imports,
     _check_hard_conventions_at_git_ref,
-    _check_line_counts,
     _check_no_scratch_files,
     _check_stack_neutrality,
     _check_test_mirrors,
@@ -36,74 +35,6 @@ def _make_config(**kwargs) -> HardConventionsConfig:
 def _write(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(content, encoding="utf-8")
-
-
-# ── Line count tests ──────────────────────────────────────────────────
-
-
-class TestLineCountCheck:
-    def test_line_count_violation(self, tmp_path):
-        """File over max_module_lines is reported with blocking=False."""
-        py_file = tmp_path / "src" / "theforge" / "big.py"
-        _write(py_file, "\n" * 501)  # 501 lines (empty lines count)
-        cfg = _make_config(max_module_lines=500)
-        violations = _check_line_counts(cfg, tmp_path)
-        assert any(v.rule == "max_module_lines" and "big.py" in v.file for v in violations)
-        loc_violations = [v for v in violations if v.rule == "max_module_lines"]
-        assert all(v.blocking is False for v in loc_violations)
-
-    def test_line_count_ok(self, tmp_path):
-        """File at exactly the limit is not reported."""
-        py_file = tmp_path / "src" / "theforge" / "small.py"
-        _write(py_file, "\n" * 500)  # 500 lines
-        cfg = _make_config(max_module_lines=500)
-        violations = _check_line_counts(cfg, tmp_path)
-        assert not any(v.rule == "max_module_lines" and "small.py" in v.file for v in violations)
-
-    def test_test_file_line_count_violation(self, tmp_path):
-        """Test file over max_test_file_lines is reported with correct rule and blocking=False."""
-        py_file = tmp_path / "tests" / "test_big.py"
-        _write(py_file, "\n" * 1001)
-        cfg = _make_config(max_test_file_lines=1000)
-        violations = _check_line_counts(cfg, tmp_path)
-        assert any(v.rule == "max_test_file_lines" and "test_big.py" in v.file for v in violations)
-        test_loc_violations = [v for v in violations if v.rule == "max_test_file_lines"]
-        assert all(v.blocking is False for v in test_loc_violations)
-
-    def test_test_file_line_count_ok(self, tmp_path):
-        """Test file at limit is not reported."""
-        py_file = tmp_path / "tests" / "test_ok.py"
-        _write(py_file, "\n" * 1000)
-        cfg = _make_config(max_test_file_lines=1000)
-        violations = _check_line_counts(cfg, tmp_path)
-        assert not any(
-            v.rule == "max_test_file_lines" and "test_ok.py" in v.file for v in violations
-        )
-
-    def test_missing_src_dir_ok(self, tmp_path):
-        """No src/ dir → no violations, no crash."""
-        cfg = _make_config()
-        violations = _check_line_counts(cfg, tmp_path)
-        assert violations == []
-
-    def test_line_count_under_configured_root_outside_src(self, tmp_path):
-        """Oversized file under a configured root outside src/ is reported (AC3)."""
-        py_file = tmp_path / "analysis" / "big.py"
-        _write(py_file, "\n" * 501)
-        cfg = _make_config(max_module_lines=500, package_roots=("analysis",))
-        violations = _check_line_counts(cfg, tmp_path)
-        assert any(
-            v.rule == "max_module_lines" and "analysis/big.py" in v.file for v in violations
-        )
-
-    def test_line_count_configured_roots_no_double_report(self, tmp_path):
-        """Overlapping configured roots don't report the same file twice."""
-        py_file = tmp_path / "src" / "pipeline" / "big.py"
-        _write(py_file, "\n" * 501)
-        cfg = _make_config(max_module_lines=500, package_roots=("src", "src/pipeline"))
-        violations = _check_line_counts(cfg, tmp_path)
-        matches = [v for v in violations if v.rule == "max_module_lines" and "big.py" in v.file]
-        assert len(matches) == 1
 
 
 # ── Circular import tests ─────────────────────────────────────────────
@@ -527,21 +458,114 @@ class TestConventionBaseline:
         assert not any("legacy.py" in v.file for v in net_new)
         assert any("new_hotness.py" in v.file for v in net_new)
 
-    def test_worsened_line_count_violation_is_not_treated_as_net_new(self, tmp_path):
-        """A pre-existing line-count violation remains existing debt if it grows."""
+
+class TestModuleSizeRatchet:
+    """ADR-0008: an over-limit module is frozen at its baseline size.
+
+    It may shrink freely; a module within the limit stays governed by the limit.
+    """
+
+    @staticmethod
+    def _baseline_with_legacy(tmp_path, baseline_lines: int | None) -> str:
         _init_git_repo(tmp_path)
-        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 501)
+        if baseline_lines is not None:
+            _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * baseline_lines)
         _write(tmp_path / "tests" / "test_legacy.py", "# mirror\n")
         _git(tmp_path, "add", ".")
-        _git(tmp_path, "commit", "-m", "baseline debt")
-        baseline_ref = _git(tmp_path, "rev-parse", "HEAD")
+        _git(tmp_path, "commit", "-m", "baseline")
+        return _git(tmp_path, "rev-parse", "HEAD")
 
+    def test_growth_of_an_over_limit_module_is_blocking(self, tmp_path):
+        """Over-limit and growing is refused, naming ceiling and excess."""
+        baseline_ref = self._baseline_with_legacy(tmp_path, 501)
         _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 520)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        _current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        blocked = [v for v in net_new if "legacy.py" in v.file]
+        assert len(blocked) == 1
+        assert blocked[0].rule == "max_module_lines"
+        assert blocked[0].blocking is True
+        # The refusal states the module, the size it may not exceed, and by how
+        # much the change exceeds it.
+        assert "legacy.py" in blocked[0].detail
+        assert "520" in blocked[0].detail
+        assert "may not exceed 501" in blocked[0].detail
+        assert "exceeds it by 19" in blocked[0].detail
+
+    def test_shrinking_over_limit_module_is_not_blocking(self, tmp_path):
+        """Reducing an over-limit module is never blocked by it being over the limit."""
+        baseline_ref = self._baseline_with_legacy(tmp_path, 700)
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 650)
 
         cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
         current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
 
+        assert not any("legacy.py" in v.file for v in net_new)
+        # Still over the configured limit, so still advisory-visible.
         assert any("legacy.py" in v.file for v in current)
+
+    def test_unchanged_over_limit_module_is_not_blocking(self, tmp_path):
+        """Unchanged size is not growth."""
+        baseline_ref = self._baseline_with_legacy(tmp_path, 700)
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 700)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        assert not any("legacy.py" in v.file for v in net_new)
+        assert any("legacy.py" in v.file for v in current)
+
+    def test_module_within_limit_is_governed_by_the_limit(self, tmp_path):
+        """A small module's ceiling is the configured limit, not its current size."""
+        baseline_ref = self._baseline_with_legacy(tmp_path, 420)
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 510)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        _current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        blocked = [v for v in net_new if "legacy.py" in v.file]
+        assert len(blocked) == 1
+        assert "may not exceed 500" in blocked[0].detail
+        assert "exceeds it by 10" in blocked[0].detail
+
+    def test_growth_within_the_limit_is_not_blocking(self, tmp_path):
+        """Nothing licenses a refusal below the configured limit."""
+        baseline_ref = self._baseline_with_legacy(tmp_path, 420)
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 480)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        assert not any("legacy.py" in v.file for v in net_new)
+        assert not any("legacy.py" in v.file for v in current)
+
+    def test_new_oversized_module_is_blocked_from_its_first_commit(self, tmp_path):
+        """A module absent from the baseline is governed by the configured limit."""
+        baseline_ref = self._baseline_with_legacy(tmp_path, None)
+        _write(tmp_path / "src" / "theforge" / "brand_new.py", "\n" * 900)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        _current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        blocked = [v for v in net_new if "brand_new.py" in v.file]
+        assert len(blocked) == 1
+        assert blocked[0].blocking is True
+        assert "may not exceed 500" in blocked[0].detail
+
+    def test_current_scan_still_reports_distance_from_the_configured_limit(self, tmp_path):
+        """A module compliant with its frozen ceiling stays visible as over the limit."""
+        baseline_ref = self._baseline_with_legacy(tmp_path, 7000)
+        _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 7000)
+
+        cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+
+        advisory = [v for v in current if "legacy.py" in v.file]
+        assert len(advisory) == 1
+        assert advisory[0].blocking is False
+        assert advisory[0].detail.endswith("has 7000 lines (limit 500)")
         assert not any("legacy.py" in v.file for v in net_new)
 
 
