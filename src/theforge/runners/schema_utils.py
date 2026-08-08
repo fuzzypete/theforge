@@ -73,6 +73,9 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("openai", "gpt-5.5"): (5.00, 30.00),
     ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
     ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
+    # Mirrors the figures the `haiku` shorthand carries and the pinned
+    # `anthropic/claude-haiku-4-5/cli` catalog entry attributes to this name.
+    ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),
     ("google", "gemini-3.5-flash"): (1.50, 9.00),  # mirrors forge.yaml overlay
     ("google", "gemini-3.1-pro-preview"): (2.00, 12.00),  # ≤200k tokens
     ("google", "gemini-3.1-pro-preview-customtools"): (2.00, 12.00),

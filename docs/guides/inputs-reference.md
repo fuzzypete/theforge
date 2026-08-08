@@ -458,6 +458,47 @@ record but cannot vouch for. `cost_rank_basis` states why the band holds when it
 is not simply this entry's own attributable price band; a band that is neither
 price-attributable nor explained is a load error rather than a silent guess.
 
+**Aliases and versions are both valid model strings.** A `model:` may name a
+vendor *family alias* (`opus`, `sonnet`, `haiku` — the Claude CLI shorthands) or
+a *concrete version* (`claude-opus-4-6`). Both ship in the catalog, side by
+side, as separate identities:
+
+```yaml
+models:
+  enabled:
+    - anthropic/opus/cli               # whatever Anthropic currently ships
+    - anthropic/claude-opus-4-6/cli    # one specific model, forever
+```
+
+They mean different things and neither replaces the other:
+
+- An **alias** tracks the family's current release. It is a reasonable default
+  and is why an alias-only configuration keeps working and keeps getting the
+  newest version with no edit. Its identity can move, so its price literal
+  carries no `pricing_provenance` and its band states a `cost_rank_basis`.
+- A **version** is the identity the vendor bills under. It never moves, its
+  figures are attributable, and — the reason it exists as a candidate — an
+  *earlier* generation can be named and offered as a cheaper alternative, which
+  an alias by construction cannot express.
+
+**A recorded run distinguishes what was configured from what served.** When an
+alias is selected, the vendor picks the version at invocation time. Every
+recorded invocation stores both identities separately (`ledger.configured_identity`
+and `ledger.resolved_primary_identity` in the audit record; the
+`invocation_identities` table in the audit substrate), so:
+
+- profile evidence gathered under an alias is attributable to the versions that
+  produced it — every routing signal reports a `resolved_population` saying
+  which concrete models the population describes and whether it is `mixed`;
+- a change in what an alias resolves to is queryable rather than surprising:
+  `forge audits alias-drift` groups recorded invocations by configured identity
+  and lists the versions each resolved to over time, `--changed-only` for just
+  the ones that moved.
+
+A served version the catalog has not pinned is recorded verbatim and reported
+`unresolved` rather than folded into the family alias — "the alias moved to
+something we do not have an entry for" is a fact worth surfacing.
+
 **Overlaying a shipped definition.** A declaration whose identity matches a
 shipped one refines it: fields you state win, fields you omit keep the shipped
 value. `forge check-config` reports which source supplied each field.

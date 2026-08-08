@@ -15,8 +15,61 @@ from theforge.config import ForgeConfig
 from theforge.model_profiles import ReviewerAttempt, RoleAttempt, RunOutcome, update_from_run
 from theforge.reviewer_value import PlanReviewerValueSample, ReviewerValueSample
 
+from .agent_identity import resolved_identity_for_result
 from .state import CoordinatorState
 from .trust_status import derive_trust_status, is_tainted
+
+
+def _last_resolved_identity(results: object) -> str | None:
+    """Resolved identity of the newest invocation in a list of AgentResults.
+
+    The phase-level identity fold records one identity for a phase that may have
+    run several invocations. The newest one that reported a served model is the
+    truthful answer: it is what the phase most recently ran, and an earlier
+    attempt that reported nothing must not blank it out.
+    """
+    if not isinstance(results, list):
+        return None
+    for result in reversed(results):
+        resolved = resolved_identity_for_result(result)
+        if resolved:
+            return resolved
+    return None
+
+
+def _review_resolved_cycle_counts(state: CoordinatorState) -> dict[str, dict[str, int]]:
+    """Map reviewer name → {served identity: cycles it served}.
+
+    ``_extract_reviewers`` aggregates a reviewer's findings/cost across every
+    cycle it participated in, so the population under ``review.runs`` is counted
+    in CYCLES. One reviewer profile can be served by different concrete versions
+    across those cycles, and attributing the whole aggregate to a single version
+    would be a false claim about which model produced that evidence — the exact
+    failure this story exists to end, one level down.
+
+    Both this and :func:`_extract_reviewers` iterate ``review_cycle_metadata``
+    and count the same ``meta.successful`` participants, so the cycle count and
+    its version breakdown are derived from one source and cannot disagree. The
+    served identity comes from ``meta.resolved_by_reviewer``, which the pool
+    records against the invocation whose output the cycle actually *used* — a
+    parse retry supersedes the initial output and can be served by a different
+    version, and the per-invocation attempt log cannot express which of its
+    entries survived.
+
+    A reviewer whose cycle recorded no served identity is simply absent, so the
+    breakdown under-claims rather than over-claims: it never sums past the cycle
+    count it explains.
+    """
+    counts: dict[str, dict[str, int]] = {}
+    for meta in state.review_cycle_metadata or []:
+        resolved_by_reviewer = getattr(meta, "resolved_by_reviewer", None) or {}
+        for name in list(meta.successful or []):
+            served = resolved_by_reviewer.get(name)
+            if not served:
+                continue
+            by_version = counts.setdefault(str(name), {})
+            by_version[str(served)] = by_version.get(str(served), 0) + 1
+    return counts
 
 
 def _extract_reviewers(
@@ -74,6 +127,7 @@ def _extract_reviewer_attempts(state: CoordinatorState) -> list[ReviewerAttempt]
                 provider=a.get("provider"),
                 cli=a.get("cli"),
                 failure_reason=a.get("failure_reason"),
+                resolved_model=a.get("resolved_model"),
             )
         )
     return attempts
@@ -102,6 +156,10 @@ def _extract_plan_reviewer_values(state: CoordinatorState) -> list[PlanReviewerV
                 actual_model=v.get("actual_model"),
                 provider=v.get("provider"),
                 cli=v.get("cli"),
+                # Stamped on the row at capture time by the pool that ran it, so
+                # a reviewer served by different versions across attempts/cycles
+                # keeps each sample attributed to the invocation it measures.
+                resolved_model=v.get("resolved_model"),
             )
         )
     return samples
@@ -130,6 +188,10 @@ def _extract_code_reviewer_values(state: CoordinatorState) -> list[ReviewerValue
                 actual_model=v.get("actual_model"),
                 provider=v.get("provider"),
                 cli=v.get("cli"),
+                # Stamped on the row at capture time by the pool that ran it, so
+                # a reviewer served by different versions across attempts/cycles
+                # keeps each sample attributed to the invocation it measures.
+                resolved_model=v.get("resolved_model"),
             )
         )
     return samples
@@ -167,9 +229,24 @@ def _extract_preflight_attempts(state: CoordinatorState) -> list[RoleAttempt]:
                 provider=a.get("provider"),
                 cli=a.get("cli"),
                 cost_usd=a.get("cost_usd"),
+                # Each attempt carries its own ledger (#2205), so a fallback
+                # attempt is attributed to the version that served IT rather than
+                # to whatever the final attempt resolved to.
+                resolved_model=_ledger_resolved_identity(a.get("ledger")),
             )
         )
     return attempts
+
+
+def _ledger_resolved_identity(ledger: object) -> str | None:
+    """Read ``resolved_primary_identity.identity`` out of a recorded ledger block."""
+    if not isinstance(ledger, dict):
+        return None
+    block = ledger.get("resolved_primary_identity")
+    if not isinstance(block, dict):
+        return None
+    identity = str(block.get("identity") or block.get("raw") or "").strip()
+    return identity or None
 
 
 def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[RoleAttempt]:
@@ -194,7 +271,7 @@ def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[
     provider = getattr(planner_profile, "provider", None)
     cli = getattr(planner_profile, "cli", None)
 
-    def _attempt(completed: bool, cost: float | None) -> RoleAttempt:
+    def _attempt(completed: bool, cost: float | None, resolved: str | None) -> RoleAttempt:
         return RoleAttempt(
             name=name,
             completed=completed,
@@ -202,14 +279,23 @@ def _extract_planner_attempts(state: CoordinatorState, planner_profile) -> list[
             provider=provider,
             cli=cli,
             cost_usd=cost,
+            resolved_model=resolved,
         )
 
     attempts: list[RoleAttempt] = []
     for retry in state.plan_transport_retries or []:
         if isinstance(retry, dict):
-            attempts.append(_attempt(False, None))
+            # A transport failure produced no invocation identity to record: the
+            # call never reached a model that could report one.
+            attempts.append(_attempt(False, None, None))
     for r in state.plan_results or []:
-        attempts.append(_attempt(bool(getattr(r, "success", False)), getattr(r, "cost_usd", None)))
+        attempts.append(
+            _attempt(
+                bool(getattr(r, "success", False)),
+                getattr(r, "cost_usd", None),
+                resolved_identity_for_result(r),
+            )
+        )
     return attempts
 
 
@@ -294,6 +380,9 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         # Pass the cost-unknown signal through (None) instead of coercing to
         # $0.00, so unmeasured CLI-transport runs are recorded as unmeasured.
         dev_cost_usd=state.total_dev_cost_measured,
+        # The concrete model that served the dev phase (#2226) — distinct from
+        # ``dev_model``/``dev_actual_model``, which name what was selected.
+        dev_resolved_model=_last_resolved_identity(state.dev_results),
         preflight_model=config.preflight_profile.name
         if getattr(config, "preflight_profile", None)
         else None,
@@ -306,15 +395,20 @@ def build_run_outcome(config: ForgeConfig, state: CoordinatorState, success: boo
         preflight_cli=getattr(config.preflight_profile, "cli", None)
         if getattr(config, "preflight_profile", None)
         else None,
+        preflight_resolved_model=resolved_identity_for_result(state.preflight_result),
         preflight_cost_usd=state.total_preflight_cost_measured,
         preflight_attempts=preflight_attempts,
         planner_model=planner_model,
         planner_actual_model=planner_actual_model,
         planner_provider=planner_provider,
         planner_cli=planner_cli,
+        planner_resolved_model=_last_resolved_identity(state.plan_results),
         planner_cost_usd=planner_cost,
         planner_attempts=planner_attempts,
         reviewers=_extract_reviewers(state),
+        # Per-reviewer {served identity: cycles} (#2226). The findings/cost
+        # aggregate is cycle-denominated, so its version breakdown has to be too.
+        reviewer_resolved_cycles=_review_resolved_cycle_counts(state),
         reviewer_attempts=_extract_reviewer_attempts(state),
         plan_reviewer_values=_extract_plan_reviewer_values(state),
         code_reviewer_values=_extract_code_reviewer_values(state),

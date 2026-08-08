@@ -189,6 +189,187 @@ def entry_identity_ledger(entry: object) -> dict | None:
     }
 
 
+def resolved_identity_for_result(result: object) -> str | None:
+    """Return the identity an ``AgentResult`` actually served, or ``None``.
+
+    The live-object counterpart of ``ledger.resolved_primary_identity``: the
+    audit renderer reads the same two fields off the same object, so the value a
+    profile fold records and the value the audit record carries are the same
+    string. Duck-typed rather than importing ``AgentResult`` — this module is the
+    identity leaf and must stay importable from anywhere.
+
+    Returns the canonical id when the served spelling resolves onto one, and the
+    verbatim spelling when it does not. Reporting a served version the catalog
+    has not pinned is strictly better than reporting nothing, and the
+    resolution-status distinction is preserved wherever it matters (the ledger,
+    the substrate index) rather than being re-derived here.
+    """
+    model_used = str(getattr(result, "model_used", None) or "").strip()
+    if not model_used:
+        usage = getattr(result, "model_usage", None)
+        if isinstance(usage, list) and usage:
+            model_used = str(getattr(usage[-1], "model", None) or "").strip()
+    if not model_used:
+        return None
+    transport = str(getattr(result, "transport_used", None) or "").strip() or None
+    identity, _resolution = canonicalize_identity(
+        model_used, {"transport_used": transport} if transport else None
+    )
+    return identity
+
+
+def _record_ledgers(record: object) -> list[tuple[str, int, dict]]:
+    """Return ``(source, position, entry)`` for every recorded invocation.
+
+    Two sources, because "every recorded invocation" is genuinely two places:
+
+    * ``cost.agents`` — the per-agent breakdown covering every phase that
+      reached a completed invocation (preflight, plan, plan_review, dev, review,
+      synthesis).
+    * ``preflight.attempts`` — the preflight parse-retry and fallback attempts.
+      Only the *final* preflight attempt reaches ``cost.agents``, so an attempt
+      that ran, resolved to a concrete version and was then superseded exists
+      nowhere else (see ``preflight_flow._record_attempt``).
+
+    Restricting to ``cost.agents`` would make the index quietly incomplete for
+    exactly the retry path where a fallback model — a different identity from
+    the configured one — is most likely to have served.
+
+    The two sources **overlap by one entry**, and that overlap has to be removed
+    here or every ordinary preflight is counted twice. ``preflight.attempts``
+    records *every* attempt including the final one, and that final attempt is
+    what becomes ``state.preflight_result`` and therefore the ``cost.agents``
+    preflight entry. Only the last attempt can be that duplicate — an earlier
+    one was superseded by definition — so the de-duplication is positional, and
+    it is confirmed against the ``cost.agents`` ledger rather than assumed: a
+    record whose preflight result never reached ``cost.agents`` (the renderer's
+    defensive guard) still has its final attempt indexed, because there is
+    nothing there to duplicate.
+
+    De-duplicating by ledger identity alone would be wrong: a same-profile
+    parse-retry resolves to the same version as the attempt it replaced, so
+    identical signatures are expected and dropping on a signature match would
+    erase a real invocation.
+    """
+    if not isinstance(record, dict):
+        return []
+    found: list[tuple[str, int, dict]] = []
+    cost_agent_preflight: list[dict] = []
+    cost_block = record.get("cost")
+    if isinstance(cost_block, dict):
+        agents = cost_block.get("agents")
+        if isinstance(agents, list):
+            for position, entry in enumerate(agents):
+                if not isinstance(entry, dict):
+                    continue
+                found.append(("cost.agents", position, entry))
+                if entry.get("role") == "preflight" or entry.get("phase") == "preflight":
+                    cost_agent_preflight.append(entry)
+    preflight = record.get("preflight")
+    if isinstance(preflight, dict):
+        attempts = preflight.get("attempts")
+        if isinstance(attempts, list):
+            final_index = len(attempts) - 1
+            duplicated = {
+                _ledger_signature(entry.get("ledger")) for entry in cost_agent_preflight
+            } - {None}
+            for position, attempt in enumerate(attempts):
+                if not isinstance(attempt, dict):
+                    continue
+                if (
+                    position == final_index
+                    and _ledger_signature(attempt.get("ledger")) in duplicated
+                ):
+                    continue
+                found.append(("preflight.attempts", position, attempt))
+    return found
+
+
+def _ledger_signature(ledger: object) -> tuple | None:
+    """Identity fingerprint of one recorded ledger, for overlap detection only.
+
+    Compares what the two record surfaces would both have written for the same
+    invocation: the raw configured and resolved spellings plus the profile. Not
+    an identity in its own right — see :func:`_record_ledgers` for why a
+    signature match is only acted on positionally.
+    """
+    if not isinstance(ledger, dict):
+        return None
+
+    def _raw(key: str) -> str | None:
+        block = ledger.get(key)
+        return str(block.get("raw") or "") if isinstance(block, dict) else None
+
+    return (
+        _raw("configured_identity"),
+        _raw("resolved_primary_identity"),
+        str(ledger.get("profile") or ""),
+    )
+
+
+def invocation_identity_rows(record: object) -> list[dict]:
+    """Project a run record to one identity row per recorded invocation (#2226).
+
+    Role-neutral by construction: the dev-only ``dev_*`` projection above
+    answers "what ran the dev phase", which cannot answer "what did this alias
+    resolve to across the run" for any other phase. Each row is::
+
+        {
+          "source": "cost.agents" | "preflight.attempts",
+          "position": int,          # index within that source, for stable ordering
+          "role": str | None,
+          "profile": str | None,
+          "configured": (identity, source, resolution) | None,
+          "resolved": (identity, source, resolution) | None,
+          "differs": bool | None,
+          "full_ledger": bool,
+          "version": int | None,
+        }
+
+    A pre-ledger entry still produces a row: its reconstructed single identity is
+    reported as ``resolved`` with ``configured`` null and ``full_ledger`` False,
+    exactly as :func:`entry_identity_ledger` defines it. Entries carrying no
+    recoverable identity at all are dropped — a row naming neither side records
+    nothing.
+    """
+    rows: list[dict] = []
+    for source, position, entry in _record_ledgers(record):
+        if source == "preflight.attempts":
+            # The attempt's own ledger, when it recorded one. An attempt without
+            # a readable ledger has only the collapsed profile/model pair, which
+            # is not an invocation identity — skip rather than fabricate.
+            ledger = entry.get("ledger")
+            if not isinstance(ledger, dict):
+                continue
+            projection = entry_identity_ledger({"ledger": ledger})
+        else:
+            projection = entry_identity_ledger(entry)
+        if projection is None:
+            continue
+        if projection["configured"] is None and projection["resolved"] is None:
+            continue
+        role = projection["role"]
+        if not role:
+            role = entry.get("role") or entry.get("phase")
+            if source == "preflight.attempts" and not role:
+                role = "preflight"
+        profile = entry.get("profile") or entry.get("profile_name")
+        rows.append(
+            {
+                "source": source,
+                "position": position,
+                "role": str(role) if role else None,
+                "profile": str(profile) if profile else None,
+                "configured": projection["configured"],
+                "resolved": projection["resolved"],
+                "differs": projection["differs"],
+                "full_ledger": projection["full_ledger"],
+                "version": projection["version"],
+            }
+        )
+    return rows
+
+
 def is_dev_entry(entry: object) -> bool:
     """Return True when this ``cost.agents`` entry describes the dev agent.
 

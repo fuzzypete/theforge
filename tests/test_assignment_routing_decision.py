@@ -165,6 +165,9 @@ def test_profile_signal_entries_have_raw_weighted_runs_floor(monkeypatch):
     # Audit contract (#1392 / #1391): raw + weighted rate, admissible sample count
     # (runs), taint-excluded count, sample-floor result, and the weighting params
     # actually applied are all recorded so operators can see raw/weighted drift.
+    # ``resolved_population`` (#2226) adds *which concrete versions* the runs
+    # describe, so an alias candidate's rate is not read as one model's when it
+    # averages several.
     assert set(opus_sig) == {
         "raw",
         "weighted",
@@ -173,7 +176,11 @@ def test_profile_signal_entries_have_raw_weighted_runs_floor(monkeypatch):
         "floor",
         "weighting",
         "rate",
+        "resolved_population",
     }
+    # This hand-built profile records no served version, so the population is
+    # reported empty rather than fabricated as single-model.
+    assert opus_sig["resolved_population"] == {}
     assert opus_sig["raw"] == 0.75
     # This hand-built profile carries no `_recent` ring, so the weighted rate
     # falls back to raw — the recency mechanism never fabricates history.

@@ -35,6 +35,7 @@ from theforge.traces import write_trace
 
 from . import story_budget as _story_budget
 from . import util as _cu
+from .agent_identity import resolved_identity_for_result
 from .log_tee import _write_log_artifact
 from .review_context import (
     _get_commit_diffs,
@@ -260,6 +261,10 @@ def _append_reviewer_attempt(
                 provider=getattr(profile, "provider", None),
                 cli=getattr(profile, "cli", None),
             ),
+            # The concrete model that served THIS invocation (#2226). The
+            # identity fields above come off the profile — what was selected —
+            # which for a family alias does not say what ran.
+            "resolved_model": resolved_identity_for_result(result),
             "completed_parseable_verdict": bool(completed),
             "outcome": outcome,
             "failure_reason": reason,
@@ -1033,6 +1038,13 @@ def _run_review_pool(
     # prompt via run_agent up to max_review_parse_retries times.
     # meta.parse_retries accumulates the sum of per-reviewer retries attempted.
     _profile_by_name = {p.name: p for p in pool}
+    # The AgentResult backing each reviewer's FINAL parsed output (#2226). A
+    # successful parse retry replaces ``parsed_results[i]``, and that retry is a
+    # fresh invocation that can be served by a different concrete version than
+    # the initial one it supersedes. Anything attributing this cycle's evidence
+    # to a model has to follow the output that survived, so this list is updated
+    # in lockstep with ``parsed_results`` below.
+    _results_for_parsed = list(successful)
     for i, (name, parsed) in enumerate(zip(names, parsed_results)):
         if not parsed.parse_errors:
             continue
@@ -1094,6 +1106,7 @@ def _run_review_pool(
                     state, config, _prof, _retry_result, parseable=True, cycle_num=_cycle_num
                 )
                 parsed_results[i] = _retried
+                _results_for_parsed[i] = _retry_result
                 state.review_agent_results.append(_retry_result)
                 break
             else:
@@ -1138,6 +1151,15 @@ def _run_review_pool(
     # post a COMMENT with potentially empty findings/summary for those reviewers.
     named_parsed: list[tuple[str, ReviewResult]] = list(zip(names, parsed_results))
 
+    # Per-cycle served-version attribution (#2226). Recorded on the cycle rather
+    # than reconstructed from the attempt log: the attempt log holds every
+    # invocation, including the ones a retry superseded, and nothing in it says
+    # which invocation's output the cycle ended up using.
+    for _name, _result in zip(names, _results_for_parsed):
+        _served = resolved_identity_for_result(_result)
+        if _served:
+            meta.resolved_by_reviewer[_name] = _served
+
     # ── Per-code-reviewer mechanical value telemetry (#2156) ──────────────
     # The code-review counterpart of the plan-review capture in plan_flow.py:
     # deterministic, coordinator-computed, over the structured findings from THIS
@@ -1151,7 +1173,7 @@ def _run_review_pool(
     _profiles_by_name = {p.name: p for p in pool}
     _uniq_inputs = [(n, p.findings) for n, p in named_parsed if not p.parse_errors]
     _uniqueness = compute_reviewer_uniqueness(_uniq_inputs, anchor_text=code_review_anchor_text)
-    for _name, _parsed_r in named_parsed:
+    for _i, (_name, _parsed_r) in enumerate(named_parsed):
         _unique_p1, _total_p1 = _uniqueness.get(_name, (0, 0))
         _prof = _profiles_by_name.get(_name)
         state.code_reviewer_value.append(
@@ -1166,6 +1188,17 @@ def _run_review_pool(
                 "actual_model": getattr(_prof, "model", None),
                 "provider": getattr(_prof, "provider", None),
                 "cli": getattr(_prof, "cli", None),
+                # The concrete version that served the invocation whose output
+                # this sample measures (#2226). Read from ``_results_for_parsed``,
+                # not ``successful``: when a parse retry supersedes the initial
+                # output, the sample describes the RETRY's findings, so stamping
+                # it with the superseded invocation's version would attribute the
+                # measurement to a model that did not produce it.
+                "resolved_model": (
+                    resolved_identity_for_result(_results_for_parsed[_i])
+                    if _i < len(_results_for_parsed)
+                    else None
+                ),
             }
         )
 
