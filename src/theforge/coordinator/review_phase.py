@@ -33,6 +33,10 @@ from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
+from .escalate_actions import (
+    ACCEPT_UNAVAILABLE_REASON,
+    approvable_review_result,
+)
 from .escalation_advisor_flow import run_escalation_advisor
 from .gate_contradiction import asserts_gate_verifiable_failure
 from .logging import StructuredLogger
@@ -270,9 +274,12 @@ def _run_escalate_gate_inner(
     escalate_reason = state.error or "ESCALATE"
 
     def _make_escalate_result(
-        decision: str = "reject", message: str | None = None
+        decision: str | None = "reject", message: str | None = None
     ) -> CoordinatorResult:
-        state.escalate_decision = decision
+        # decision=None means "no decision was reached" — leave escalate_decision
+        # unset so a later operator selection is still recordable (#2300).
+        if decision is not None:
+            state.escalate_decision = decision
         state.escalate_reason = escalate_reason
         _escalate_notify(task, state, notify, config)
         return CoordinatorResult(
@@ -371,16 +378,40 @@ def _run_escalate_gate_inner(
         disposition = "reject"
 
     if disposition == "approve":
-        if not state.review_results:
-            _log("  ⚠ Approve requested but no review results available — rejecting instead")
-            return _make_escalate_result("reject")
+        # Resolve the ReviewResult this approval would finalize BEFORE acting.
+        # The gate filters `accept` out of its options when this is None, so
+        # reaching here means the selection is stale (a pending file written
+        # before the state degraded, or a legacy approve from another surface).
+        # A stale selection is DECLINED, not silently converted into its
+        # opposite: substituting reject would record an outcome nobody chose and
+        # would pick the one direction that cannot be revisited (#2300).
+        approvable = approvable_review_result(state)
+        if approvable is None:
+            selected = norm or "approve"
+            state.escalate_selected_action = selected
+            state.escalate_declined_action = selected
+            state.escalate_declined_reason = ACCEPT_UNAVAILABLE_REASON
+            _log(
+                f"  ⚠ Escalate gate: {selected!r} selected but cannot be performed "
+                f"({ACCEPT_UNAVAILABLE_REASON}) — DECLINED; story left as it was "
+                f"(no substitute decision recorded)"
+            )
+            return _make_escalate_result(
+                None,
+                message=(
+                    f"Escalation preserved: the selected action {selected!r} could not be "
+                    f"performed ({ACCEPT_UNAVAILABLE_REASON}). The selection was declined "
+                    "rather than substituted; the story is unchanged and an operator "
+                    "action selection is still required."
+                ),
+            )
         state.escalate_decision = norm if norm in ACTION_TAXONOMY else "approve"
-        _append_cycle_history(state, state.review_results[-1])
+        _append_cycle_history(state, approvable)
         return _finalize_approve(
             state,
             config,
             task,
-            state.review_results[-1],
+            approvable,
             workspace_path,
             branch_name,
             task_start,

@@ -769,6 +769,12 @@ class CoordinatorState:
     # must select one. These fields keep the packet, report, and selected action
     # visible in the audit trail so an escalation decision can be traced.
     escalate_selected_action: str | None = None  # taxonomy action the operator selected
+    # Set when the operator selected an action this run could not carry out and
+    # the gate DECLINED it (#2300). escalate_decision deliberately stays None in
+    # that case: nothing was decided, so a later operator selection can still be
+    # recorded, and no downstream reader sees an outcome nobody chose.
+    escalate_declined_action: str | None = None
+    escalate_declined_reason: str | None = None
     advisory_generated: bool = False  # True when a valid advisory report was produced
     advisory_packet: dict | None = None  # serialized EvidencePacket fed to the advisor
     advisory_report: dict | None = None  # serialized AdvisoryReport the advisor produced

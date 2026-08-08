@@ -32,7 +32,17 @@ def _escalate_gate_remote(
     reviewer_verdicts: dict[str, str],
     gate_result: "str | None",
 ) -> str:
-    """Ntfy-backed escalate gate. Returns 'approve' | 'reject' | 'continue'."""
+    """Ntfy-backed escalate gate. Returns 'approve' | 'reject' | 'continue'.
+
+    The Approve action button is published only when an approvable reviewer
+    result is retained — a notification must not offer a tap the run would have
+    to substitute away from (#2300).
+    """
+    from .escalate_actions import (  # noqa: PLC0415
+        ACCEPT_UNAVAILABLE_REASON,
+        approvable_review_result,
+    )
+
     ntfy = config.notifications.ntfy
     assert ntfy is not None
 
@@ -45,13 +55,18 @@ def _escalate_gate_remote(
         f"{approve_count}/{total_count} reviewers APPROVE" if reviewer_verdicts else "no verdicts"
     )
     gate_line = gate_result or ""
-    body = "\n".join(filter(None, [verdict_line, gate_line, escalate_reason[:120]]))
-
-    actions = (
-        f"http, Approve, {reply_url}, method=POST, body=approve; "
-        f"http, Reject, {reply_url}, method=POST, body=reject; "
-        f"http, Continue, {reply_url}, method=POST, body=continue"
+    can_approve = approvable_review_result(state) is not None
+    not_offered_line = "" if can_approve else f"Approve not offered: {ACCEPT_UNAVAILABLE_REASON}"
+    body = "\n".join(
+        filter(None, [verdict_line, gate_line, escalate_reason[:120], not_offered_line])
     )
+
+    _action_specs = []
+    if can_approve:
+        _action_specs.append(f"http, Approve, {reply_url}, method=POST, body=approve")
+    _action_specs.append(f"http, Reject, {reply_url}, method=POST, body=reject")
+    _action_specs.append(f"http, Continue, {reply_url}, method=POST, body=continue")
+    actions = "; ".join(_action_specs)
 
     _cu._log("─── Remote Escalate Gate (ntfy) ───")
     _cu._log(f"  Topic:   {ntfy.url}")

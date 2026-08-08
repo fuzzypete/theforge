@@ -977,6 +977,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "gate_result": state.gate_decisions[-1] if state.gate_decisions else None,
                 "human_decision": state.escalate_decision,
                 "selected_action": state.escalate_selected_action,
+                # A selection the gate refused to carry out. Recorded alongside
+                # (not in place of) human_decision so the audit shows what the
+                # operator chose AND that no outcome was substituted for it
+                # (#2300).
+                "declined_action": state.escalate_declined_action,
+                "declined_reason": state.escalate_declined_reason,
                 "advisory_generated": state.advisory_generated,
                 "advisory": state.advisory_report,
                 # A pre-turn advisor exit is a configuration defect that spent
@@ -990,7 +996,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                     else None
                 ),
             }
-            if state.escalate_decision is not None
+            if state.escalate_decision is not None or state.escalate_declined_action is not None
             else None
         ),
         "error": state.error,

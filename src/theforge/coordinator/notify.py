@@ -292,7 +292,17 @@ def _escalate_gate_interactive(
     reviewer_verdicts: dict[str, str],
     gate_result: "str | None",
 ) -> str:
-    """Interactive escalate gate prompt. Returns 'approve' | 'reject' | 'continue'."""
+    """Interactive escalate gate prompt. Returns 'approve' | 'reject' | 'continue'.
+
+    Approve is offered only when an approvable reviewer result is retained; a gate
+    must not present an action it would have to substitute away from (#2300).
+    """
+    from .escalate_actions import (  # noqa: PLC0415
+        ACCEPT_UNAVAILABLE_REASON,
+        approvable_review_result,
+    )
+
+    can_approve = approvable_review_result(state) is not None
     _cu._log("─── ESCALATE Gate ───")
     _cu._log(f"  Reason:   {escalate_reason}")
     if reviewer_verdicts:
@@ -307,21 +317,28 @@ def _escalate_gate_interactive(
     _cu._log(f"  Dev iter: {state.budget.total_count}  Review cycles: {state.review_cycle}")
     _cu._log("")
     _cu._log("  Choose:")
-    _cu._log("    [a] Approve  — treat as APPROVE, create PR / merge")
+    if can_approve:
+        _cu._log("    [a] Approve  — treat as APPROVE, create PR / merge")
+    else:
+        _cu._log(f"    [a] Approve  — NOT AVAILABLE: {ACCEPT_UNAVAILABLE_REASON}")
     _cu._log("    [r] Reject   — exit as ESCALATE, preserve worktree")
     _cu._log("    [c] Continue — run one more review cycle")
 
+    _keys = "a/r/c" if can_approve else "r/c"
     while True:
-        print("[forge] Choice [a/r/c]: ", end="", file=sys.stderr, flush=True)
+        print(f"[forge] Choice [{_keys}]: ", end="", file=sys.stderr, flush=True)
         raw = sys.stdin.readline()
         if not raw:
             _cu._log("EOF on stdin — rejecting.")
             return "reject"
         choice = raw.strip().lower()
         if choice in ("a", "approve"):
-            return "approve"
+            if can_approve:
+                return "approve"
+            _cu._log(f"Approve is not available: {ACCEPT_UNAVAILABLE_REASON}")
+            continue
         if choice in ("r", "reject"):
             return "reject"
         if choice in ("c", "continue"):
             return "continue"
-        _cu._log("Invalid choice. Enter 'a', 'r', or 'c'.")
+        _cu._log(f"Invalid choice. Enter {' or '.join(repr(k) for k in _keys.split('/'))}.")

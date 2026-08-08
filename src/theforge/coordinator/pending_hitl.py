@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from dataclasses import replace as _dc_replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -103,10 +104,15 @@ def _pending_escalate_gate(
 ) -> str:
     """Pending-file-based escalate gate with a fresh-context advisory report.
 
-    When ``advisory`` is a valid report, the pending file presents the fixed
-    action taxonomy (Accept / Land-core-defer-edges / Redirect / Decompose /
-    Elevate / Defer-or-Abandon) as the options and embeds the report + evidence
-    packet as structured payload; the operator must select one of those actions.
+    When ``advisory`` is a valid report, the pending file presents the action
+    taxonomy (Accept / Land-core-defer-edges / Redirect / Decompose / Elevate /
+    Defer-or-Abandon) as the options and embeds the report + evidence packet as
+    structured payload; the operator must select one of those actions.
+
+    The presented options are the taxonomy filtered to what the current state can
+    actually perform (see :mod:`.escalate_actions`) — ``accept`` is withheld when
+    no approvable reviewer result is retained. Withheld actions and their reasons
+    are named in the reason text and recorded under ``extra["omitted_actions"]``.
 
     The max-cycles path no longer auto-rejects on timeout: a timeout returns
     ``"timeout"`` so the caller preserves the escalation for an operator decision
@@ -120,6 +126,8 @@ def _pending_escalate_gate(
     )
     from theforge.notify_backends import send_notifications
 
+    from .escalate_actions import available_escalate_actions, omitted_actions_note
+
     timeout_seconds = config.notifications.human_review_timeout_seconds
     approve_count = sum(1 for v in reviewer_verdicts.values() if v == "APPROVE")
     total_count = len(reviewer_verdicts)
@@ -132,19 +140,52 @@ def _pending_escalate_gate(
     project_root = getattr(config, "project_root", None)
 
     advisory_ok = advisory is not None and advisory.ok
+
+    # Offer only what this state can carry out. An action presented here is a
+    # promise the gate keeps: presenting one it cannot perform converts the
+    # operator's wait into a wasted one and forces a substitution nobody chose
+    # (#2300). Withheld actions are named with their reason rather than silently
+    # dropped, so the absence is legible.
+    options, omitted_actions = available_escalate_actions(state, ACTION_TAXONOMY)
+    omitted_note = omitted_actions_note(omitted_actions)
+
     if advisory_ok:
-        options = list(ACTION_TAXONOMY)
+        assert advisory is not None
+        display_advisory = advisory
+        recommendation_withheld = advisory.recommendation in omitted_actions
+        if omitted_actions:
+            display_advisory = _dc_replace(
+                advisory,
+                options=[o for o in advisory.options if o.action not in omitted_actions],
+                # A recommendation the operator cannot select is not a
+                # recommendation; drop it from the rendered/persisted payload and
+                # explain the omission in the reason text below.
+                recommendation="" if recommendation_withheld else advisory.recommendation,
+            )
         extra: dict = {
-            "advisory": advisory.to_dict(),
+            "advisory": display_advisory.to_dict(),
             "evidence_packet": state.advisory_packet,
             "decision_required": True,
         }
-        reason = render_advisory_for_pending(advisory, _build_packet_stub(state, escalate_reason))
+        reason = render_advisory_for_pending(
+            display_advisory, _build_packet_stub(state, escalate_reason)
+        )
+        if omitted_actions:
+            extra["omitted_actions"] = dict(omitted_actions)
+            withheld_rec_note = (
+                f"NOTE: the advisor recommended {advisory.recommendation!r}, but this run "
+                "cannot perform it, so it is not offered."
+                if recommendation_withheld
+                else ""
+            )
+            reason = "\n".join(filter(None, [reason, "", omitted_note, withheld_rec_note]))
     else:
         # No usable advisory (agent failed / malformed). Still require an explicit
-        # operator decision — surface the taxonomy plus the raw escalation context.
-        options = list(ACTION_TAXONOMY)
+        # operator decision — surface the performable taxonomy plus the raw
+        # escalation context.
         extra = {"decision_required": True, "advisory_unavailable": True}
+        if omitted_actions:
+            extra["omitted_actions"] = dict(omitted_actions)
         launch_failed = bool(getattr(state, "advisory_launch_failure", False))
         if launch_failed:
             # An advisor that never started is a defect in forge's own
@@ -179,6 +220,7 @@ def _pending_escalate_gate(
                     verdict_line,
                     gate_line,
                     escalate_reason[:200],
+                    omitted_note,
                 ],
             )
         )
@@ -187,6 +229,9 @@ def _pending_escalate_gate(
     _cu._log(f"  Run ID:  {_eff_run_id}")
     _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
     _cu._log(f"  Options: {', '.join(options)}")
+    if omitted_actions:
+        for _action, _why in sorted(omitted_actions.items()):
+            _cu._log(f"  Not offered: {_action} — {_why}")
 
     _pending.write_pending(
         run_id=_eff_run_id,
