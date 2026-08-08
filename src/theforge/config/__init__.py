@@ -45,6 +45,9 @@ from .provenance import (
     resolved_config_sha256,
 )
 from .types import (
+    ESCALATE_TIMEOUT_APPLY_ADVICE,
+    ESCALATE_TIMEOUT_POLICIES,
+    ESCALATE_TIMEOUT_PRESERVE,
     SUPPORTED_PROVIDERS,
     AdvisoryConventionsConfig,
     AdvisoryIssueFilingConfig,
@@ -110,6 +113,9 @@ __all__ = [
     "PlanReviewConfig",
     "RecencyConfig",
     "RetryPolicy",
+    "ESCALATE_TIMEOUT_APPLY_ADVICE",
+    "ESCALATE_TIMEOUT_POLICIES",
+    "ESCALATE_TIMEOUT_PRESERVE",
     "SandboxConfig",
     "SlackConfig",
     "SprintBatchConfig",

@@ -87,7 +87,7 @@ def _escalate_gate_remote(
         if timeout_seconds > 0 and waited_so_far >= timeout_seconds:
             _cu._log(
                 f"  ESCALATE gate timed out after {_cu._fmt_duration(waited_so_far)}"
-                " — auto-escalating"
+                " — no decision received; preserving for an operator decision"
             )
             decision = "timeout"
             break
