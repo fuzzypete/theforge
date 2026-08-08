@@ -135,9 +135,14 @@ def poll_pending(
         if sleep_secs > 0:
             time.sleep(sleep_secs)
 
+    # Wording is deliberately neutral about what happens next: this poller is
+    # shared by the human-review, plan-review, and escalate gates, and none of
+    # them auto-escalates on expiry any more. What an expiry MEANS is the
+    # caller's decision (preserve for an operator, or apply advice under
+    # retry.escalate_timeout_policy), so the poller reports only the fact (#2279).
     _cu._log(
         f"  Pending decision timed out after {_cu._fmt_duration(timeout_seconds)}"
-        " — auto-escalating"
+        " — no decision received"
     )
     return "timeout", None
 

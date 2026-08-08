@@ -59,6 +59,8 @@ from .role_derivation import derive_roles
 from .sandbox_capabilities import get_preset
 from .secrets import _parse_notifications
 from .types import (
+    ESCALATE_TIMEOUT_POLICIES,
+    ESCALATE_TIMEOUT_PRESERVE,
     SUPPORTED_PROVIDERS,
     AdvisoryConventionsConfig,
     AdvisoryIssueFilingConfig,
@@ -1188,6 +1190,18 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     # Retry
     retry_data = raw.get("retry", {})
+    # Config loading is an integrity boundary: a typo here silently decides what
+    # an unattended overnight expiry does, so refuse it rather than falling back
+    # (#2279). Only the new field is validated — escalate_policy's existing
+    # tolerance is left exactly as it was so opting in changes nothing else.
+    escalate_timeout_policy = str(
+        retry_data.get("escalate_timeout_policy", ESCALATE_TIMEOUT_PRESERVE)
+    )
+    if escalate_timeout_policy not in ESCALATE_TIMEOUT_POLICIES:
+        raise ValueError(
+            f"retry.escalate_timeout_policy: unknown value {escalate_timeout_policy!r} "
+            f"(expected one of {', '.join(ESCALATE_TIMEOUT_POLICIES)})"
+        )
     retry = RetryPolicy(
         max_dev_iterations=int(retry_data.get("max_dev_iterations", 3)),
         max_dev_transport_retries=int(retry_data.get("max_dev_transport_retries", 1)),
@@ -1225,6 +1239,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         demotion_threshold=int(retry_data.get("demotion_threshold", 2)),
         plan_escalation_threshold=int(retry_data.get("plan_escalation_threshold", 2)),
         escalate_policy=str(retry_data.get("escalate_policy", "prompt")),
+        escalate_timeout_policy=escalate_timeout_policy,
         auto_model_escalation=bool(retry_data.get("auto_model_escalation", False)),
         adaptive_iterations=bool(retry_data.get("adaptive_iterations", True)),
         max_dev_iterations_cap=int(retry_data.get("max_dev_iterations_cap", 0)),
