@@ -19,6 +19,10 @@ import yaml
 from .coordinator import util as _cu
 from .pid import _is_pid_alive
 
+#: Env var carrying the run id of the process that owns this run. Exported by
+#: ``detach.export_run_context`` on both the detached and foreground paths.
+_OWNER_RUN_ID_ENV = "FORGE_DETACHED_RUN_ID"
+
 
 def _pending_dir(project_root: Path | None = None) -> Path:
     """Return .forge/pending/ relative to project root or cwd."""
@@ -61,6 +65,13 @@ def write_pending(
         "timeout_at": timeout_at.isoformat(),
         "pid": os.getpid(),
     }
+    # Which run is holding this gate. A checkpoint is keyed by the *story* run
+    # id, which two concurrently live sprints can share for the same slug — so
+    # the owning sprint run is recorded here, and a status view can tell whose
+    # gate it is looking at rather than inferring it from the slug (#2313).
+    owner_run_id = os.environ.get(_OWNER_RUN_ID_ENV)
+    if owner_run_id:
+        data["owner_run_id"] = owner_run_id
     if extra:
         for key, value in extra.items():
             data.setdefault(key, value)
