@@ -439,6 +439,341 @@ def test_unknown_needs_rca_residual(tmp_path: Path) -> None:
     assert any("diagnose" in a for a in entry["recommended_next_actions"])
 
 
+# ── Engine: monetary allocation exhaustion (#2292) ────────────────────────────
+
+
+def _nonreview_shortfall() -> dict:
+    """The shortfall payload the coordinator records, built by the real function.
+
+    Reproduces the figures reported for issue-2226: $33.82 spent of the $29.48 a
+    $48.02 allocation leaves for non-review work, $18.54 reserved for 5 cycles.
+    """
+    from theforge.coordinator import story_budget as _story_budget
+
+    shortfall = _story_budget.nonreview_funding_exhausted(
+        {"reserved_review_usd": 18.54, "reserved_review_cycles": 5},
+        {
+            "allocation_usd": 48.02,
+            "basis": "substrate_band",
+            "complexity_score": 5,
+            "median_usd": 12.0,
+            "p90_usd": 30.0,
+            "max_usd": 38.4,
+            "sample_count": 11,
+        },
+        observed_usd=40.0,
+        review_observed_usd=6.18,
+        participants=["reviewer-a"],
+    )
+    assert shortfall is not None
+    return shortfall
+
+
+def _allocation_exhausted_story(slug: str, shortfall: dict) -> dict:
+    """A summary row shaped like the one the sprint writer emits for a refusal."""
+    from theforge.coordinator import story_budget as _story_budget
+
+    return {
+        "slug": slug,
+        "outcome": "ESCALATE",
+        "error": _story_budget.format_shortfall(shortfall, story=slug),
+        "error_type": "allocation_exhausted",
+        "outcome_code": "allocation_exhausted",
+        "story_allocation": {
+            "allocation_usd": 48.02,
+            "status": "allocation_exhausted",
+            "allocation_exhausted": shortfall,
+        },
+    }
+
+
+def test_allocation_exhaustion_is_classified_not_unknown(tmp_path: Path) -> None:
+    """The coordinator's own stated cause classifies; no investigation is proposed."""
+    d = _sprint_dir(tmp_path, name="allocation-exhausted")
+    shortfall = _nonreview_shortfall()
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([_allocation_exhausted_story("issue-2226", shortfall)]),
+    )
+
+    entry = _build(d)["stories"]["issue-2226"]
+    assert entry["primary_failure_class"] == "allocation_exhaustion"
+    hit = next(ev for ev in entry["evidence"] if ev["rule_id"] == "story_allocation_exhausted")
+    # The figures the coordinator separated out are named, not re-parsed out of prose.
+    assert "$33.82" in hit["excerpt"]
+    assert "$29.48" in hit["excerpt"]
+    assert "$18.54" in hit["excerpt"]
+
+    actions = entry["recommended_next_actions"]
+    # The one thing the operator must NOT be sent to do: pay to learn what the run said.
+    assert not any("forge diagnose" in a for a in actions)
+    assert any("$48.02" in a for a in actions)
+    # Money ran out, so iteration-budget advice would fund nothing.
+    assert not any("iteration budget" in a for a in actions)
+
+
+def test_allocation_exhaustion_outranks_the_iteration_limit_it_coincides_with(
+    tmp_path: Path,
+) -> None:
+    """A funded-out story stopped on money even when it also reached its dev limit."""
+    d = _sprint_dir(tmp_path, name="allocation-vs-iteration")
+    shortfall = _nonreview_shortfall()
+    story = _allocation_exhausted_story("issue-2227", shortfall)
+    story["outcome"] = "FAILED"
+    story["iteration_usage"] = _exhausted_usage()
+    _write(d / "sprint-summary.yaml", _summary([story]))
+
+    entry = _build(d)["stories"]["issue-2227"]
+    assert entry["primary_failure_class"] == "allocation_exhaustion"
+    # The iteration limit is still recorded as an amplifier — it just is not the cause.
+    assert "dev_iteration_limit" in entry["contributing_factors"]
+    assert not any("iteration budget" in a for a in entry["recommended_next_actions"])
+
+
+def test_seating_time_shortfall_names_the_review_cycles_not_the_change(tmp_path: Path) -> None:
+    """A refusal decided at seating, before dev spent, gets the seating remedy."""
+    from theforge.coordinator import story_budget as _story_budget
+
+    d = _sprint_dir(tmp_path, name="allocation-seating")
+    reconciliation = {
+        "action": _story_budget.RECONCILE_UNFUNDABLE,
+        "spent_so_far_usd": 2.0,
+        "dev_cost_estimate_usd": 9.0,
+        "review_cycle_cost_usd": 6.5,
+        "requested_review_max": 3,
+    }
+    shortfall = _story_budget.seating_shortfall(
+        {"allocation_usd": 12.0, "basis": "configured_fallback", "complexity_score": 3},
+        reconciliation,
+        participants=["reviewer-a"],
+    )
+    assert shortfall is not None
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2228",
+                    "outcome": "ESCALATE",
+                    "error": _story_budget.format_shortfall(shortfall, story="issue-2228"),
+                    "error_type": "allocation_exhausted",
+                }
+            ]
+        ),
+    )
+    _write(d / "issue-2228" / "audit.yaml", {"cost": {"allocation_exhausted": shortfall}})
+
+    entry = _build(d)["stories"]["issue-2228"]
+    assert entry["primary_failure_class"] == "allocation_exhaustion"
+    hit = next(ev for ev in entry["evidence"] if ev["rule_id"] == "story_allocation_exhausted")
+    assert "before dev spent" in hit["excerpt"]
+    actions = entry["recommended_next_actions"]
+    assert any("review cycles" in a for a in actions)
+    assert not any("forge diagnose" in a for a in actions)
+
+
+def test_allocation_exhaustion_without_figures_still_classifies(tmp_path: Path) -> None:
+    """The cause code alone is enough; the figures only enrich the advice."""
+    d = _sprint_dir(tmp_path, name="allocation-bare-code")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2229",
+                    "outcome": "ESCALATE",
+                    "error": "Story allocation exhausted: story issue-2229 ...",
+                    "error_type": "allocation_exhausted",
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2229"]
+    assert entry["primary_failure_class"] == "allocation_exhaustion"
+    assert not any("forge diagnose" in a for a in entry["recommended_next_actions"])
+
+
+def test_story_that_never_exhausted_its_allocation_is_not_classified_as_such(
+    tmp_path: Path,
+) -> None:
+    """The allocation block is written on every story; only a shortfall is a cause."""
+    d = _sprint_dir(tmp_path, name="allocation-within")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2230",
+                    "outcome": "MERGE_FAILED",
+                    "error": "merge conflict",
+                    "story_allocation": {
+                        "allocation_usd": 48.02,
+                        "status": "within_allocation",
+                        "allocation_exhausted": None,
+                    },
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-2230" / "audit.yaml",
+        {"cost": {"total_usd": 3.0, "allocation_exhausted": None}},
+    )
+    entry = _build(d)["stories"]["issue-2230"]
+    assert entry["primary_failure_class"] == "merge_failed"
+    assert not any(ev["rule_id"] == "story_allocation_exhausted" for ev in entry["evidence"])
+
+
+def test_capability_gap_still_outranks_allocation_exhaustion(tmp_path: Path) -> None:
+    """A story that could never build burned its allocation on doomed attempts (#2029)."""
+    d = _sprint_dir(tmp_path, name="allocation-vs-capability")
+    story = _allocation_exhausted_story("issue-2231", _nonreview_shortfall())
+    story["outcome"] = "FAILED"
+    story["iteration_usage"] = _exhausted_usage()
+    _write(d / "sprint-summary.yaml", _summary([story]))
+    _write(d / "issue-2231" / "audit.yaml", _no_capability_audit())
+    (d / "issue-2231" / "dev-iteration-1.log").write_text(_SIMULATOR_DENIAL, encoding="utf-8")
+
+    entry = _build(d)["stories"]["issue-2231"]
+    assert entry["primary_failure_class"] == "capability_profile_gap"
+
+
+def test_allocation_exhaustion_seam_coordinator_audit_to_rca(tmp_path: Path) -> None:
+    """Seam: the real coordinator audit of a funding refusal → RCA classification.
+
+    Anchors the rule to the field ``generate_audit_log`` actually writes
+    (``cost.allocation_exhausted``) and to the payload ``story_budget`` actually
+    produces, rather than to a shape this test invented.
+    """
+    from coord_test_helpers import _make_config, _make_task
+
+    from theforge.coordinator import story_budget as _story_budget
+    from theforge.coordinator.audit import generate_audit_log
+    from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+
+    shortfall = _nonreview_shortfall()
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)
+    state = CoordinatorState(dev_iteration=1, review_cycle=0)
+    state.phase = Phase.ESCALATE
+    state.allocation_exhausted = shortfall
+    state.error = _story_budget.format_shortfall(shortfall, story=task.slug)
+    state.error_type = "allocation_exhausted"
+
+    audit = generate_audit_log(
+        config,
+        task,
+        CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message=state.error),
+    )
+    assert audit["cost"]["allocation_exhausted"] == shortfall
+
+    d = _sprint_dir(tmp_path, name="seam-allocation")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "test-task",
+                    "outcome": "ESCALATE",
+                    "error": state.error,
+                    "error_type": state.error_type,
+                }
+            ]
+        ),
+    )
+    _write(d / "test-task" / "audit.yaml", audit)
+
+    entry = _build(d)["stories"]["test-task"]
+    assert entry["primary_failure_class"] == "allocation_exhaustion"
+    assert not any("forge diagnose" in a for a in entry["recommended_next_actions"])
+
+
+# ── Engine: a stated cause with no rule is a taxonomy gap, not an unknown (#2292) ──
+
+
+def test_unclassified_forge_cause_code_is_a_taxonomy_gap(tmp_path: Path) -> None:
+    """A cause forge stated but the rule set cannot receive is visible as that."""
+    d = _sprint_dir(tmp_path, name="taxonomy-gap")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2240",
+                    "outcome": "ESCALATE",
+                    "error": "the substrate refused the handoff",
+                    "error_type": "some_future_refusal",
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2240"]
+    assert entry["primary_failure_class"] == "taxonomy_gap"
+    hit = next(ev for ev in entry["evidence"] if ev["rule_id"] == "unclassified_forge_cause_code")
+    assert "some_future_refusal" in hit["excerpt"]
+    actions = entry["recommended_next_actions"]
+    assert any("rca.py" in a for a in actions)
+    assert not any("forge diagnose" in a for a in actions)
+
+
+def test_exception_class_error_type_is_not_a_taxonomy_gap(tmp_path: Path) -> None:
+    """``TimeoutError`` names a Python type, not a cause forge determined.
+
+    The residual has to keep meaning "no mechanical signal was found", so only a
+    cause code forge itself assigned may downgrade it to a rule-set gap.
+    """
+    d = _sprint_dir(tmp_path, name="taxonomy-gap-exception")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2241",
+                    "outcome": "FAILED",
+                    "error": "something threw",
+                    "error_type": "ValueError",
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2241"]
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    assert any("forge diagnose" in a for a in entry["recommended_next_actions"])
+
+
+def test_outcome_code_echoing_the_outcome_is_not_a_stated_cause(tmp_path: Path) -> None:
+    """``outcome_code`` degrades to the lowercased outcome when no cause was set."""
+    d = _sprint_dir(tmp_path, name="taxonomy-gap-outcome-echo")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-2242", "outcome": "FAILED", "outcome_code": "failed"}]),
+    )
+    entry = _build(d)["stories"]["issue-2242"]
+    assert entry["primary_failure_class"] == UNKNOWN_CLASS
+    assert any("forge diagnose" in a for a in entry["recommended_next_actions"])
+
+
+def test_taxonomy_gap_does_not_displace_a_real_classification(tmp_path: Path) -> None:
+    """A classified story keeps its class even though it carries a cause code."""
+    d = _sprint_dir(tmp_path, name="taxonomy-gap-vs-class")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2243",
+                    "outcome": "MERGE_FAILED",
+                    "error": "required checks failed",
+                    "error_type": "merge_rejected_by_checks",
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2243"]
+    assert entry["primary_failure_class"] == "merge_failed"
+    assert not any(ev["rule_id"] == "unclassified_forge_cause_code" for ev in entry["evidence"])
+
+
 # ── Engine: cause codes come from forge's own run, not target-repo prose (#2031) ──
 
 
@@ -797,7 +1132,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 9
+    assert payload["ruleset_version"] == 10
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -1634,7 +1969,11 @@ def test_all_rule_ids_unique_and_indexed() -> None:
     assert len(ids) == len(set(ids))
     assert set(RULES_BY_ID.keys()) == set(ids)
     for rule in RULES:
-        assert rule.role in {"primary", "contributing", "informational"}
+        assert rule.role in {"primary", "contributing", "informational", "residual"}
+    # The residual role describes the state of the rule set rather than a cause,
+    # so exactly one rule may hold it — more than one would mean the engine has
+    # two ways to say "nothing classified this" (#2292).
+    assert [r.rule_id for r in RULES if r.role == "residual"] == ["unclassified_forge_cause_code"]
 
 
 # ── write / overwrite semantics ───────────────────────────────────────────────
