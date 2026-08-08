@@ -257,6 +257,18 @@ _TIMEOUT_ADVICE_NOTES: dict[str, str] = {
 }
 
 
+def _decided_by_advice(state: CoordinatorState) -> bool:
+    """True when this gate outcome came from advice applied at an expiry.
+
+    The outcome of an applied recommendation is deliberately identical to the
+    operator's — but the *account* of it must not be, or the run would tell the
+    operator they approved something while the record says otherwise (#2279).
+    Read from the same field the audit and resume records publish, so the
+    message and the provenance cannot disagree.
+    """
+    return state.escalate_decision_source == ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
+
+
 def _timeout_applies_advice(config: ForgeConfig) -> bool:
     """True when this project opted in to applying advice at an expired gate.
 
@@ -575,8 +587,17 @@ def _run_escalate_gate_inner(
             review_cost=state.total_review_cost_measured,
             review_elapsed=0.0,
             message=(
-                f"Task '{task.name}' completed. "
-                f"Human approved via escalate gate after {state.review_cycle} cycle(s). "
+                (
+                    f"Task '{task.name}' completed. "
+                    f"Escalate gate expired with no operator selection and the advisory "
+                    f"recommendation {state.escalate_decision!r} was applied after "
+                    f"{state.review_cycle} cycle(s). "
+                )
+                if _decided_by_advice(state)
+                else (
+                    f"Task '{task.name}' completed. "
+                    f"Human approved via escalate gate after {state.review_cycle} cycle(s). "
+                )
             ),
             run_id=run_id,
         )
@@ -594,12 +615,20 @@ def _run_escalate_gate_inner(
         # auto-reject that discards the work.
         op = ACTION_FORGE_OPERATIONS.get(norm, norm)
         label = ACTION_LABELS.get(norm, norm)
-        _log(f"  Escalate gate: {label} selected — next operation: {op}")
+        by_advice = _decided_by_advice(state)
+        how = "applied from the advisory on expiry" if by_advice else "selected"
+        _log(f"  Escalate gate: {label} {how} — next operation: {op}")
         return _make_escalate_result(
             norm,
             message=(
                 f"Escalation resolved as {label}: {op}. "
-                f"Worktree preserved for the operator to run the named operation."
+                + (
+                    "The gate expired with no operator selection and the advisory "
+                    "recommendation was applied. "
+                    if by_advice
+                    else ""
+                )
+                + "Worktree preserved for the operator to run the named operation."
             ),
         )
 

@@ -157,8 +157,13 @@ def _drive_gate(
     launch_failure: bool = False,
     run_id: str = "run-t",
     config=None,
+    finalize_calls: dict | None = None,
 ):
-    """Run the escalate gate with a stubbed advisor + gate surface."""
+    """Run the escalate gate with a stubbed advisor + gate surface.
+
+    ``finalize_calls`` collects the kwargs the approve path hands
+    ``_finalize_approve`` — the completion message an operator ends up reading.
+    """
     config = config or _config(tmp_path, timeout_policy=timeout_policy)
     task = _make_task(tmp_path)
     state = _escalated_state(approvable=approvable)
@@ -177,13 +182,13 @@ def _drive_gate(
 
     monkeypatch.setattr(rp, "run_escalation_advisor", _fake_advisor)
     monkeypatch.setattr(rp, "_pending_escalate_gate", lambda *a, **k: gate_decision)
-    monkeypatch.setattr(
-        rp,
-        "_finalize_approve",
-        lambda *a, **k: CoordinatorResult(
-            success=True, phase=Phase.DONE, state=state, message="approved"
-        ),
-    )
+
+    def _fake_finalize(*a, **k):
+        if finalize_calls is not None:
+            finalize_calls.update(k)
+        return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="approved")
+
+    monkeypatch.setattr(rp, "_finalize_approve", _fake_finalize)
     monkeypatch.setattr(rp, "_append_cycle_history", lambda *a, **k: None)
     monkeypatch.setattr(rp, "_escalate_notify", lambda *a, **k: None)
 
@@ -344,6 +349,60 @@ class TestAppliesAdviceOnExpiry:
         assert result.phase == Phase.DONE
         assert state.escalate_decision == "accept"
         assert state.escalate_decision_source == ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
+
+    def test_applied_accept_is_not_reported_as_a_human_approval(self, tmp_path, monkeypatch):
+        # The outcome matches a deliberate accept, but the account of it must
+        # not: telling the operator they approved this would contradict the
+        # advisor_on_timeout provenance the same run records.
+        finalize_calls: dict = {}
+        state, _result = _drive_gate(
+            tmp_path,
+            monkeypatch,
+            gate_decision="timeout",
+            report=_report("accept"),
+            timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
+            finalize_calls=finalize_calls,
+        )
+        message = finalize_calls["message"]
+        assert "Human approved" not in message
+        assert "advisory recommendation" in message
+        assert "expired" in message
+        assert state.escalate_decision_source == ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
+
+    def test_operator_accept_is_still_reported_as_a_human_approval(self, tmp_path, monkeypatch):
+        # The un-opted-in / operator-present wording is unchanged.
+        finalize_calls: dict = {}
+        _drive_gate(
+            tmp_path,
+            monkeypatch,
+            gate_decision="accept",
+            report=_report("defer_or_abandon"),
+            timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
+            finalize_calls=finalize_calls,
+        )
+        assert "Human approved via escalate gate" in finalize_calls["message"]
+
+    def test_applied_named_action_message_names_the_expiry(self, tmp_path, monkeypatch):
+        _state, result = _drive_gate(
+            tmp_path,
+            monkeypatch,
+            gate_decision="timeout",
+            report=_report("land_core_defer_edges"),
+            timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
+        )
+        assert "advisory recommendation was applied" in result.message
+        assert "Worktree preserved" in result.message
+
+    def test_operator_named_action_message_is_unchanged(self, tmp_path, monkeypatch):
+        _state, result = _drive_gate(
+            tmp_path,
+            monkeypatch,
+            gate_decision="land_core_defer_edges",
+            report=_report("accept"),
+            timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
+        )
+        assert "advisory recommendation was applied" not in result.message
+        assert "Worktree preserved" in result.message
 
     def test_defer_or_abandon_recommendation_rejects(self, tmp_path, monkeypatch):
         state, result = _drive_gate(
