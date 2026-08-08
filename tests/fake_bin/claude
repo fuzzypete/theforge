@@ -40,11 +40,17 @@ Controlled via FAKE_CLAUDE_MODE environment variable:
                 session (start_new_session, i.e. setsid), so it leaves the
                 spawned process group entirely. No pgid-based teardown can see
                 it; only the inherited lease token can (#2309).
+  unreadable_escapee_success
+              — the hardest shape: a SIP-protected platform binary (/bin/sleep)
+                given an EMPTY environment and its own session, then a normal
+                successful exit. Not in the group, and carrying no readable
+                token — so only descendant observation can find it (#2309).
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -145,7 +151,45 @@ def _spawn_grandchild(detach_io: bool = False, own_session: bool = False) -> Non
             fh.write(str(grandchild.pid))
 
 
+
+def _spawn_unreadable_escapee() -> None:
+    """Spawn a descendant that no environment token can ever find.
+
+    Two hardenings at once, both of them ordinary rather than adversarial:
+    ``/bin/sleep`` is a SIP-protected platform binary, whose argv/environ macOS
+    refuses to hand out at all, and it is given an empty environment so there is
+    no inherited token to read even where reading is permitted. It then leaves
+    the process group with ``setsid``.
+
+    That leaves exactly one thing still true about it: it had a parent. Only
+    descendant *observation* can find it (#2309, cycle 2).
+    """
+    sleeper = shutil.which("sleep") or "/bin/sleep"
+    grandchild = subprocess.Popen(
+        [sleeper, "30"],
+        env={},
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
+    if pidfile:
+        with open(pidfile, "w") as fh:
+            fh.write(str(grandchild.pid))
+    # Keep working for a moment, the way an agent that kicked off a test run
+    # does. The tracker samples every 50ms; a CLI that spawned and exited in the
+    # same millisecond would be testing a race the OS itself cannot close on
+    # macOS, not the leak this covers.
+    time.sleep(0.4)
+
+
 def main() -> None:
+    if MODE == "unreadable_escapee_success":
+        _read_user_msg()
+        _spawn_unreadable_escapee()
+        _emit(_RESULT_EVENT)
+        sys.exit(0)
+
     if MODE == "escapee_success":
         # Succeed normally, having started work that is no longer in our group.
         _read_user_msg()

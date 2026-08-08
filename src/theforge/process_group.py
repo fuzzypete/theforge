@@ -13,15 +13,22 @@ Two mechanisms cooperate:
    that shelled out to a long-running command and returned first leaves that
    command running, and it is killed at release (`release_group_record`) rather
    than left to outlive the story that authorised it (#2309).
-2. **Process lease** (`open_process_lease` / `close_process_lease`) — a process
-   group is escapable: a descendant that calls ``setsid``/``start_new_session``
-   leaves the pgid behind and becomes invisible to every group-based teardown,
-   which is exactly what a test runner or a daemonising helper does. So each
-   spawn also stamps a unique token into the child's environment. Environment is
-   inherited across ``fork``/``exec`` and survives ``setsid``, so any descendant
-   — however many groups and sessions deep — still carries it, and teardown can
-   find and kill it by that token. The pgid remains the fast path; the lease is
-   what makes containment something a descendant cannot opt out of (#2309).
+2. **Escapee kill** (`kill_escapees`) — a process group is escapable: a
+   descendant that calls ``setsid``/``start_new_session`` leaves the pgid behind
+   and becomes invisible to every group-based teardown, which is exactly what a
+   test runner or a daemonising helper does. Two independent mechanisms find
+   those, because neither covers the other's blind spot (#2309):
+
+   * **Observation while the links exist** (`theforge.process_tree`) — a tracker
+     samples the spawn's descendants during the invocation, reading only
+     ppid/start-time. Those the kernel exposes for *every* same-uid process, so
+     this holds for a SIP-protected platform binary and for a descendant that
+     cleared its own environment. What it saw stays known after the parent that
+     proved the relationship is gone.
+   * **An inherited environment token** (`open_process_lease`) — stamped into
+     the child's env, so it needs no prior observation and covers a descendant
+     born and orphaned between two samples. It cannot read the environment of a
+     SIP-protected binary, so it is a second signal rather than the containment.
 3. **Orphan reaper** (`reap_orphan_agents`) — synchronous group-kill cannot run
    when the parent sprint is ``SIGKILL``-ed, so each spawned group records its
    pgid + owner pid in a sidecar under ``.forge/runs/agents/``. A later
@@ -56,6 +63,9 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from theforge import process_tree
+from theforge.process_tree import DescendantTracker
 
 # Env seams: register/unregister resolve the orchestrator runs dir from
 # FORGE_PROJECT_ROOT (set at run bootstrap); run_id is the detached run id.
@@ -232,36 +242,57 @@ def lease_holders(lease: ProcessLease) -> list[int]:
     return sorted(pid for pid in found if pid > 1 and pid != me)
 
 
-def close_process_lease(lease: ProcessLease | None) -> tuple[tuple[int, ...], bool]:
-    """Kill everything still holding *lease*; returns ``(killed pids, all gone)``.
+def kill_escapees(
+    *,
+    tracker: DescendantTracker | None = None,
+    lease: ProcessLease | None = None,
+) -> tuple[tuple[int, ...], bool]:
+    """Kill descendants that left the process group; ``(killed pids, all gone)``.
 
-    This is the containment a descendant cannot escape. The group kill runs first
-    and normally takes everything with it; what reaches here is what left the
-    group — a helper that called ``setsid``, or a daemonised child that
-    double-forked — and would otherwise have outlived the story with nothing
-    tracking it at all.
+    The group kill runs first and normally takes the whole tree with it. What
+    reaches here is what left the group — a helper that called ``setsid``, a
+    daemonised child that double-forked — and would otherwise outlive the story
+    with nothing pointing back to it.
+
+    Two independent ways of knowing, because neither is sufficient alone:
+
+    * **What was observed** (`tracker`) — descendants seen while their parent
+      links still existed. Reads only ppid/start-time, which the kernel exposes
+      for every same-uid process, so it holds for a SIP-protected platform binary
+      and for a descendant that cleared its own environment.
+    * **What still carries the token** (`lease`) — an inherited environment
+      stamp, which needs no prior observation and so covers a descendant born and
+      orphaned between two samples. It cannot see a process whose environment is
+      unreadable, which is why it is not relied on alone (#2309, cycle 2).
+
+    Every target is identity-checked against the start time recorded for it
+    before being signalled: a pid recycled since it was seen is a different
+    process, and killing it is the mistake #2115 exists to prevent.
     """
-    if lease is None:
+    targets: dict[int, str] = {}
+    if tracker is not None:
+        targets.update(tracker.survivors())
+    for pid in lease_holders(lease) if lease is not None else []:
+        if pid not in targets:
+            info = process_tree.process_info(pid)
+            if info is not None:
+                targets[pid] = info.fingerprint
+    if not targets:
         return (), True
-    from theforge.detach import _is_pid_alive  # noqa: PLC0415
-
-    holders = lease_holders(lease)
-    if not holders:
-        return (), True
+    pids = tuple(sorted(targets))
     _log(
-        f"  ⚠ {len(holders)} process(es) started by this invocation outlived it in their "
-        f"own process group(s) (pids={holders}); killing them by lease token"
+        f"  ⚠ {len(pids)} process(es) started by this invocation outlived it in their "
+        f"own process group(s) (pids={list(pids)}); killing them directly"
     )
-    for pid in holders:
+    for pid in pids:
         _kill_pid(pid)
-    deadline = time.monotonic() + KILL_GRACE_SECONDS
-    alive = [pid for pid in holders if _is_pid_alive(pid)]
-    while alive and time.monotonic() < deadline:
-        time.sleep(0.05)
-        alive = [pid for pid in holders if _is_pid_alive(pid)]
-    if alive:
-        _log(f"  ⚠ pids={alive} survived the lease kill; they are a real leak, not a delay")
-    return tuple(holders), not alive
+    remaining = process_tree.wait_until_gone(targets, timeout=KILL_GRACE_SECONDS)
+    if remaining:
+        _log(
+            f"  ⚠ pids={sorted(remaining)} survived the kill; they are a real leak, "
+            "not a delay"
+        )
+    return pids, not remaining
 
 
 def _log(msg: str) -> None:
@@ -294,9 +325,10 @@ def run_in_process_group(
     outlive the call. ``subprocess.run``'s own timeout kill signals only the
     direct child (``npm exec``), leaving node + the provider leaf alive.
 
-    The child's environment is stamped with a lease token (`open_process_lease`)
-    so that teardown can still reach a descendant that left the process group by
-    calling ``setsid`` — the one thing group isolation alone cannot contain.
+    A descendant tracker runs for the life of the call and the child's
+    environment is stamped with a lease token, so that teardown can still reach a
+    descendant that left the process group by calling ``setsid`` — the one thing
+    group isolation alone cannot contain (see `kill_escapees`).
 
     ``teardown_out`` is an out-parameter rather than part of the return value:
     a forced teardown is a fact about the *call*, and it has to reach the caller
@@ -327,6 +359,8 @@ def run_in_process_group(
         pgid = None
     if pgid is not None:
         register_agent_group(pgid, sandbox_dir=cwd, lease=lease)
+    tracker = DescendantTracker(root_pid=proc.pid, pgid=pgid)
+    tracker.start()
     # Normal completion implies the group went with the child; only a teardown
     # that could not reach the group flips this.
     group_killed = True
@@ -349,7 +383,11 @@ def run_in_process_group(
         raise
     finally:
         teardown = release_group_record(
-            pgid, group_killed=group_killed, sandbox_dir=cwd, lease=lease
+            pgid,
+            group_killed=group_killed,
+            sandbox_dir=cwd,
+            lease=lease,
+            tracker=tracker,
         )
         if teardown is not None and teardown_out is not None:
             teardown_out.append(teardown)
@@ -479,17 +517,19 @@ def release_group_record(
     group_killed: bool,
     sandbox_dir: str | Path | None = None,
     lease: ProcessLease | None = None,
+    tracker: DescendantTracker | None = None,
 ) -> ProcessTeardown | None:
     """End everything the invocation started, then drop the reaper's sidecar.
 
     Two containers, checked in order. The **process group** catches descendants
-    that stayed in it (see `_release_group`). The **lease** catches the ones that
-    did not: a process group is escapable — anything that calls ``setsid``, as a
-    test runner or a daemonising helper does, leaves the pgid and becomes
-    invisible to every group-based teardown. Its inherited lease token is not
-    escapable, so it is found and killed by that instead (`close_process_lease`).
-    ``pgid`` may be ``None`` when the spawn's group could not be resolved; the
-    lease sweep still runs, because that is the case with the least other cover.
+    that stayed in it (see `_release_group`). The **escapee kill** catches the
+    ones that did not: anything that calls ``setsid``, as a test runner or a
+    daemonising helper does, leaves the pgid and becomes invisible to every
+    group-based teardown. Those are found by what the tracker observed while
+    their parent links still existed, and by the inherited lease token — see
+    `kill_escapees` for why it takes both. ``pgid`` may be ``None`` when the
+    spawn's group could not be resolved; the escapee kill still runs, because
+    that is the case with the least other cover.
 
     Returns a `ProcessTeardown` describing whatever had to be killed, and ``None``
     when nothing did — so a caller can record that a kill was needed without
@@ -504,7 +544,11 @@ def release_group_record(
             pgid, group_killed=group_killed, sandbox=sandbox
         )
 
-    escaped, escaped_gone = close_process_lease(lease)
+    if tracker is not None:
+        # Final sample first: a descendant spawned since the last one is still
+        # observable right now, and will not be once we start killing.
+        tracker.stop()
+    escaped, escaped_gone = kill_escapees(tracker=tracker, lease=lease)
     if action == TEARDOWN_RETAINED_FOR_REAPER and pgid is not None and not group_is_alive(pgid):
         # The lease sweep reached by pid what the refused ``killpg`` could not,
         # and the group is empty after all. Retaining a record now would hand a
@@ -1129,7 +1173,9 @@ def reap_orphan_agents(project_root: Path) -> int:
             _unlink(sidecar)
             continue
 
-        escaped, _gone = close_process_lease(_recorded_lease(data))
+        # No tracker exists here — the process that did the observing is the one
+        # that died. The recorded token is all a later sweep has.
+        escaped, _gone = kill_escapees(lease=_recorded_lease(data))
 
         may_signal, reason = _identity_verdict(pgid, data)
         if not may_signal:

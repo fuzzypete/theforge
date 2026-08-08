@@ -234,14 +234,14 @@ class TestLeaseCatchesWhatTheGroupCannot:
         try:
             assert _wait_until(lambda: proc.pid in process_group.lease_holders(lease_a))
             assert proc.pid not in process_group.lease_holders(lease_b)
-            killed, gone = process_group.close_process_lease(lease_b)
+            killed, gone = process_group.kill_escapees(lease=lease_b)
             assert killed == () and gone is True
             assert _pid_alive(proc.pid), "another spawn's lease killed this process"
             # Only the pids are asserted, not "all gone": this process is a direct
             # child of the test, so it lingers as a zombie until waited below,
             # which a signal-0 probe cannot distinguish from running. The runners
             # never see that — they wait their direct child before releasing.
-            killed, _gone = process_group.close_process_lease(lease_a)
+            killed, _gone = process_group.kill_escapees(lease=lease_a)
             assert killed == (proc.pid,)
         finally:
             _reap(proc.pid)
@@ -366,6 +366,43 @@ class TestClaudeCleanExitTeardown(_RunnerTeardownBase):
         assert result.output == "Task complete."
         self._assert_reaped_and_recorded(result, pidfile, escaped=True)
 
+    def test_success_does_not_leave_an_unreadable_escapee_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        """The shape no environment token can find (#2309, cycle 2).
+
+        A SIP-protected platform binary with an empty environment in its own
+        session: macOS refuses to hand out its environ, and there would be no
+        token in it anyway. This passes only because teardown observed it while
+        it still had a visible parent.
+        """
+        self._ensure_exec("claude")
+        pidfile = tmp_path / "gc.pid"
+        self._patch_env(
+            monkeypatch,
+            "runner_claude",
+            "FAKE_CLAUDE_MODE",
+            "unreadable_escapee_success",
+            pidfile,
+        )
+        profile = ModelProfile(
+            name="dev",
+            cli="claude",
+            model="claude-sonnet-4-5",
+            budget_usd=2.0,
+            timeout_seconds=30,
+            allowed_tools=("Bash",),
+            sandbox_mode="none",
+        )
+        result = _run_claude(
+            prompt="do the thing",
+            profile=profile,
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        assert result.output == "Task complete."
+        self._assert_reaped_and_recorded(result, pidfile, escaped=True)
+
 
 class TestCodexCleanExitTeardown(_RunnerTeardownBase):
     def test_success_does_not_leave_a_grandchild_running(
@@ -394,6 +431,30 @@ class TestCodexCleanExitTeardown(_RunnerTeardownBase):
         self._ensure_exec("npx")
         pidfile = tmp_path / "gc.pid"
         self._patch_env(monkeypatch, "runner_codex", "FAKE_CODEX_MODE", "escapee_success", pidfile)
+        profile = ModelProfile(
+            name="dev",
+            cli="codex",
+            model="gpt-5-codex",
+            budget_usd=2.0,
+            timeout_seconds=30,
+            allowed_tools=("Bash",),
+            sandbox_mode="none",
+        )
+        result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
+        self._assert_reaped_and_recorded(result, pidfile, escaped=True)
+
+    def test_success_does_not_leave_an_unreadable_escapee_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._ensure_exec("npx")
+        pidfile = tmp_path / "gc.pid"
+        self._patch_env(
+            monkeypatch,
+            "runner_codex",
+            "FAKE_CODEX_MODE",
+            "unreadable_escapee_success",
+            pidfile,
+        )
         profile = ModelProfile(
             name="dev",
             cli="codex",
@@ -453,6 +514,31 @@ class TestGeminiCleanExitTeardown(_RunnerTeardownBase):
             sandbox_mode="none",
         )
         result = _run_gemini(prompt="do the thing", profile=profile, working_dir=tmp_path)
+        self._assert_reaped_and_recorded(result, pidfile, escaped=True)
+
+    def test_success_does_not_leave_an_unreadable_escapee_running(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        self._ensure_exec("npx")
+        pidfile = tmp_path / "gc.pid"
+        self._patch_env(
+            monkeypatch,
+            "runner_gemini",
+            "FAKE_GEMINI_MODE",
+            "unreadable_escapee_success",
+            pidfile,
+        )
+        profile = ModelProfile(
+            name="dev",
+            cli="gemini",
+            model="gemini-2.5-flash",
+            budget_usd=2.0,
+            timeout_seconds=30,
+            allowed_tools=("Bash",),
+            sandbox_mode="none",
+        )
+        result = _run_gemini(prompt="do the thing", profile=profile, working_dir=tmp_path)
+        assert result.output == "Task complete."
         self._assert_reaped_and_recorded(result, pidfile, escaped=True)
 
 

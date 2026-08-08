@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from theforge import process_group
+from theforge import process_group, process_tree
 from theforge.agent_types import (
     COST_ESTIMATED,
     COST_PROVIDER_REPORTED,
@@ -735,6 +735,10 @@ def _run_claude(
     # can still reach a tool the agent started that left the process group by
     # calling setsid — the escape group isolation alone cannot cover (#2309).
     env, lease = process_group.open_process_lease(env)
+    # Watches the spawn's descendants for as long as it runs. The lease alone
+    # cannot see one whose environment is unreadable (a SIP-protected platform
+    # binary on macOS); this reads ppid/start-time, which always are.
+    tracker: process_tree.DescendantTracker | None = None
 
     label = profile.name or profile.identity_label
     if not quiet:
@@ -813,6 +817,8 @@ def _run_claude(
             pgid = None
         if pgid is not None:
             process_group.register_agent_group(pgid, sandbox_dir=working_dir, lease=lease)
+        tracker = process_tree.DescendantTracker(root_pid=proc.pid, pgid=pgid)
+        tracker.start()
         assert proc.stdin is not None
         # Send the initial prompt as a stream-json user message. stdin is kept
         # open so stuck-detection nudges can be injected as additional user
@@ -925,6 +931,7 @@ def _run_claude(
             group_killed=not group_kill_failed.is_set(),
             sandbox_dir=working_dir,
             lease=lease,
+            tracker=tracker,
         )
 
     if stuck_monitor.should_terminate:
