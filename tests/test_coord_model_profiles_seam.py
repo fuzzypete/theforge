@@ -1205,3 +1205,394 @@ def test_seam_planner_transport_retry_folds_failed_attempt(tmp_path):
     pl = data["models"]["anthropic/opus/cli"]["planner"]
     assert pl["_attempted_count"] == 2
     assert pl["_completed_count"] == 1
+
+
+def test_seam_served_version_reaches_the_profile_beside_the_configured_alias(tmp_path):
+    """Seam (runner result → bridge → aggregator): #2226.
+
+    ``config.dev_profile`` names what was *selected*; the ``AgentResult`` carries
+    what actually served. Both have to cross the bridge, or the profile records a
+    population keyed to an identity that can move underneath it.
+    """
+    from dataclasses import replace
+
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+    from theforge.model_profiles import RESOLVED_MODEL_BREAKDOWN_KEY, apply_run
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state.dev_results = [
+        replace(
+            _make_agent_result(success=True),
+            model_used="claude-opus-4-6",
+            transport_used="cli",
+        )
+    ]
+
+    outcome = build_run_outcome(config, state, success=True)
+    assert outcome.dev_resolved_model == "anthropic/claude-opus-4-6/cli"
+    # The configured identity is untouched — this is additive, not a rename.
+    assert outcome.dev_model == config.dev_profile.name
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    dev_entry = next(entry for entry in data["models"].values() if "dev" in entry)
+    breakdown = dev_entry["dev"][RESOLVED_MODEL_BREAKDOWN_KEY]
+    assert breakdown == {"anthropic/claude-opus-4-6/cli": {"runs": 1, "_successes": 1.0}}
+
+
+def test_seam_a_reviewer_attempt_carries_the_version_that_served_it(tmp_path):
+    """Seam (review_pool capture → bridge → aggregator): #2226."""
+    from dataclasses import replace
+
+    from theforge.coordinator.model_profiles_bridge import _extract_reviewer_attempts
+    from theforge.coordinator.review_pool import _append_reviewer_attempt
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    profile = _planner_profile()
+    result = replace(
+        _make_agent_result(success=True),
+        model_used="claude-opus-5",
+        transport_used="cli",
+    )
+    _append_reviewer_attempt(state, config, profile, result, parseable=True, cycle_num=1)
+
+    assert state.reviewer_attempts[0]["resolved_model"] == "anthropic/claude-opus-5/cli"
+    attempts = _extract_reviewer_attempts(state)
+    assert attempts[0].resolved_model == "anthropic/claude-opus-5/cli"
+
+
+def test_seam_preflight_phase_and_attempt_telemetry_agree_on_the_version_count(tmp_path):
+    """Seam (preflight_flow attempt ledger → bridge → aggregator → signal): #2226.
+
+    A real preflight run produces BOTH phase-level telemetry (cost/runs) and an
+    attempt record for the same invocation. Each carries the served version, and
+    each moves a different counter. If both folded into one version breakdown,
+    the reliability signal would claim two attributed observations of the served
+    model while dividing its rate by one attempt.
+    """
+    from theforge.coordinator.model_profiles_bridge import build_run_outcome
+    from theforge.model_profiles import (
+        RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
+        RESOLVED_MODEL_BREAKDOWN_KEY,
+        apply_run,
+        get_role_reliability_signal,
+    )
+
+    config = _make_config(tmp_path)
+    state = _dev_state_medium()
+    state.preflight_result = replace(
+        _preflight_result_with_attempts(
+            [
+                {
+                    "profile_name": "preflight",
+                    "model": "opus",
+                    "provider": None,
+                    "cli": "claude",
+                    "cost_usd": 0.01,
+                    "completed": True,
+                    "ledger": {
+                        "version": 1,
+                        "role": "preflight",
+                        "resolved_primary_identity": {
+                            "raw": "claude-opus-4-6",
+                            "identity": "anthropic/claude-opus-4-6/cli",
+                            "resolution": "canonical",
+                        },
+                    },
+                }
+            ]
+        ),
+        model_used="claude-opus-4-6",
+        transport_used="cli",
+    )
+
+    outcome = build_run_outcome(config, state, success=True)
+    served = "anthropic/claude-opus-4-6/cli"
+    assert outcome.preflight_resolved_model == served
+    assert [a.resolved_model for a in outcome.preflight_attempts] == [served]
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    # The phase fold keys off config.preflight_profile and the attempt fold off
+    # the attempt's own identity. Both must be present, and neither breakdown may
+    # absorb the other's observation.
+    sections = [entry["preflight"] for entry in data["models"].values() if "preflight" in entry]
+    assert sections, "preflight telemetry reached no profile entry"
+    phase_runs = sum(int(s.get("runs", 0)) for s in sections)
+    attempted = sum(int(s.get("_attempted_count", 0)) for s in sections)
+    assert phase_runs == 1 and attempted == 1
+
+    def _attributed(key: str) -> int:
+        return sum(
+            int(counts.get("runs", 0))
+            for section in sections
+            for counts in (section.get(key) or {}).values()
+        )
+
+    # Two separately-scoped breakdowns, each summing to its own counter — not
+    # one shared breakdown holding 2 for a population of 1.
+    assert _attributed(RESOLVED_MODEL_BREAKDOWN_KEY) == phase_runs
+    assert _attributed(RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY) == attempted
+
+    attempt = outcome.preflight_attempts[0]
+    signal = get_role_reliability_signal(
+        data,
+        attempt.name,
+        "preflight",
+        min_runs=1,
+        actual_model=attempt.actual_model,
+        cli=attempt.cli,
+    )
+    population = signal["resolved_population"]
+    assert population["attributed"] == signal["attempted"] == 1
+    assert population["by_resolved_model"] == {served: 1}
+
+
+def _version_reviewer(name: str, model: str):
+    from theforge.config import ModelProfile
+
+    return ModelProfile(
+        name=name,
+        cli="claude",
+        model=model,
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("Read",),
+    )
+
+
+def _served(result, model_used: str):
+    return replace(result, model_used=model_used, transport_used="cli")
+
+
+def test_seam_a_parse_retry_served_by_another_version_owns_the_cycle(tmp_path, monkeypatch):
+    """Seam (review pool retry → cycle metadata → bridge → aggregator): #2226.
+
+    The reviewer's initial invocation is unparseable and was served by
+    claude-opus-4-6; the parse retry succeeds and was served by claude-opus-5.
+    The retry's output is the one the cycle uses, so BOTH the cycle's findings/
+    cost attribution and the value sample must name claude-opus-5. Attributing
+    either to the superseded initial invocation would credit evidence to a model
+    that did not produce it.
+    """
+    from unittest.mock import patch
+
+    from coord_test_helpers import (
+        APPROVE_REVIEW,
+        PARSE_ERROR_OUTPUT,
+        _make_pool_config,
+        _make_task,
+    )
+
+    from theforge.coordinator.model_profiles_bridge import (
+        _extract_code_reviewer_values,
+        _review_resolved_cycle_counts,
+    )
+    from theforge.coordinator.review_pool import _run_review_pool
+    from theforge.coordinator.state import ReviewCycleMetadata
+    from theforge.model_profiles import RESOLVED_MODEL_BREAKDOWN_KEY, RunOutcome, apply_run
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    rev = _version_reviewer("rev", "opus")
+    config = _make_pool_config(tmp_path, [rev], rev)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+    meta = ReviewCycleMetadata(pool_models=["rev"], successful=[], failed=[], synthesized=False)
+    state.review_cycle_metadata.append(meta)
+
+    initial = _served(
+        _make_agent_result(success=True, output=PARSE_ERROR_OUTPUT, profile_name="rev"),
+        "claude-opus-4-6",
+    )
+    retried = _served(
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="rev"),
+        "claude-opus-5",
+    )
+
+    with (
+        patch("theforge.coordinator.review_pool.log_agent_result"),
+        patch("theforge.coordinator.review_pool.run_agent_pool", return_value=[initial]),
+        patch("theforge.coordinator.review_pool.run_agent", return_value=retried),
+    ):
+        _run_review_pool(
+            state,
+            config,
+            task,
+            "story",
+            workspace,
+            "branch",
+            meta,
+            notify=False,
+            enforce_budgets=False,
+            max_review_parse_retries=2,
+        )
+
+    served_new = "anthropic/claude-opus-5/cli"
+    served_old = "anthropic/claude-opus-4-6/cli"
+
+    # The cycle records the version behind the output it actually used.
+    assert meta.resolved_by_reviewer == {"rev": served_new}
+    assert _review_resolved_cycle_counts(state) == {"rev": {served_new: 1}}
+
+    # ...and so does the value sample, which measures the retry's findings.
+    assert [v["resolved_model"] for v in state.code_reviewer_value] == [served_new]
+    assert [s.resolved_model for s in _extract_code_reviewer_values(state)] == [served_new]
+
+    # Both invocations are still recorded as attempts — the superseded one did
+    # happen, and its failure is real completion evidence about opus-4-6.
+    attempt_versions = {a["resolved_model"] for a in state.reviewer_attempts}
+    assert attempt_versions == {served_old, served_new}
+
+    # End-to-end: the cycle-denominated review population names the retry's model.
+    data: dict = {"models": {}}
+    apply_run(
+        data,
+        RunOutcome(
+            complexity="medium",
+            dev_model="dev",
+            dev_success=True,
+            dev_iterations=1,
+            dev_cost_usd=0.0,
+            reviewers={"rev": (1, 1, 0.5)},
+            reviewer_resolved_cycles=_review_resolved_cycle_counts(state),
+        ),
+    )
+    review = next(e["review"] for e in data["models"].values() if "review" in e)
+    assert review[RESOLVED_MODEL_BREAKDOWN_KEY] == {served_new: {"runs": 1}}
+
+
+def test_seam_two_cycles_served_by_two_versions_split_the_cycle_evidence(tmp_path, monkeypatch):
+    """One reviewer, two cycles, two served versions → a two-way cycle split."""
+    from unittest.mock import patch
+
+    from coord_test_helpers import APPROVE_REVIEW, _make_pool_config, _make_task
+
+    from theforge.coordinator.model_profiles_bridge import (
+        _review_resolved_cycle_counts,
+        build_run_outcome,
+    )
+    from theforge.coordinator.review_pool import _run_review_pool
+    from theforge.coordinator.state import ReviewCycleMetadata
+    from theforge.model_profiles import RESOLVED_MODEL_BREAKDOWN_KEY, apply_run
+
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "k")
+    rev = _version_reviewer("rev", "opus")
+    config = _make_pool_config(tmp_path, [rev], rev)
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    state = CoordinatorState(review_cycle=0, log_dir=tmp_path / "logs")
+    state.preflight_complexity = "medium"
+
+    for served in ("claude-opus-4-6", "claude-opus-5"):
+        meta = ReviewCycleMetadata(
+            pool_models=["rev"], successful=[], failed=[], synthesized=False
+        )
+        state.review_cycle_metadata.append(meta)
+        result = _served(
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="rev"), served
+        )
+        with (
+            patch("theforge.coordinator.review_pool.log_agent_result"),
+            patch("theforge.coordinator.review_pool.run_agent_pool", return_value=[result]),
+        ):
+            _run_review_pool(
+                state,
+                config,
+                task,
+                "story",
+                workspace,
+                "branch",
+                meta,
+                notify=False,
+                enforce_budgets=False,
+            )
+
+    old, new = "anthropic/claude-opus-4-6/cli", "anthropic/claude-opus-5/cli"
+    assert _review_resolved_cycle_counts(state) == {"rev": {old: 1, new: 1}}
+
+    outcome = build_run_outcome(config, state, success=True)
+    # The cycle count and its version breakdown come from one source, so they agree.
+    assert outcome.reviewers["rev"][0] == 2
+    assert sum(outcome.reviewer_resolved_cycles["rev"].values()) == 2
+
+    data: dict = {"models": {}}
+    apply_run(data, outcome)
+    review = next(e["review"] for e in data["models"].values() if "review" in e)
+    assert review["runs"] == 2
+    assert review[RESOLVED_MODEL_BREAKDOWN_KEY][old]["runs"] == 1
+    assert review[RESOLVED_MODEL_BREAKDOWN_KEY][new]["runs"] == 1
+
+
+def test_seam_value_samples_keep_the_version_that_served_their_own_attempt(tmp_path):
+    """Seam (pool value capture → bridge → reviewer_value): #2226.
+
+    Value telemetry rows are stamped with the served version at capture time. A
+    join by reviewer name alone in the bridge would stamp every sample with
+    whichever version was newest for that reviewer, so two attempts served by
+    different versions would report identical — and for one of them, wrong —
+    attribution.
+    """
+    from theforge.coordinator.model_profiles_bridge import (
+        _extract_code_reviewer_values,
+        _extract_plan_reviewer_values,
+    )
+
+    state = _dev_state_medium()
+    old, new = "anthropic/claude-sonnet-4-6/cli", "anthropic/claude-opus-5/cli"
+
+    def _row(index_key: str, index: int, served: str) -> dict:
+        return {
+            index_key: index,
+            "reviewer": "rev",
+            "complexity": "medium",
+            "unique_p1_count": 1,
+            "total_p1_count": 2,
+            "latency_s": 10.0,
+            "actual_model": "opus",
+            "cli": "claude",
+            "resolved_model": served,
+        }
+
+    state.plan_reviewer_value = [_row("attempt", 0, old), _row("attempt", 1, new)]
+    state.code_reviewer_value = [_row("cycle", 1, old), _row("cycle", 2, new)]
+
+    assert [s.resolved_model for s in _extract_plan_reviewer_values(state)] == [old, new]
+    assert [s.resolved_model for s in _extract_code_reviewer_values(state)] == [old, new]
+
+
+def test_seam_value_folds_split_by_the_version_that_produced_each_sample(tmp_path):
+    """The folded value section reports both versions, not just the newest."""
+    from theforge.coordinator.model_profiles_bridge import _extract_code_reviewer_values
+    from theforge.model_profiles import RESOLVED_MODEL_BREAKDOWN_KEY
+    from theforge.reviewer_value import CODE_PHASE, fold_reviewer_value, section_for_phase
+
+    state = _dev_state_medium()
+    old, new = "anthropic/claude-sonnet-4-6/cli", "anthropic/claude-opus-5/cli"
+    state.code_reviewer_value = [
+        {
+            "cycle": cycle,
+            "reviewer": "rev",
+            "complexity": "medium",
+            "unique_p1_count": 1,
+            "total_p1_count": 2,
+            "latency_s": 10.0,
+            "actual_model": "opus",
+            "cli": "claude",
+            "resolved_model": served,
+        }
+        for cycle, served in ((1, old), (2, new))
+    ]
+
+    entry: dict = {}
+    for sample in _extract_code_reviewer_values(state):
+        fold_reviewer_value(entry, sample, phase=CODE_PHASE, tainted=False)
+
+    section = entry[section_for_phase(CODE_PHASE)]
+    assert section["runs"] == 2
+    assert section[RESOLVED_MODEL_BREAKDOWN_KEY][old]["runs"] == 1
+    assert section[RESOLVED_MODEL_BREAKDOWN_KEY][new]["runs"] == 1

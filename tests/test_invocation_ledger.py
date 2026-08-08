@@ -103,15 +103,15 @@ def test_ledger_records_configured_resolved_and_billed_separately() -> None:
     billed = [c["identity"]["raw"] for c in ledger["billed_components"]]
     assert billed == ["claude-opus-5", "claude-haiku-4-5"]
     # The component the operator never configured is still recorded, with its own
-    # cost attached to it rather than folded into the primary's. Its identity now
-    # resolves canonically: being billed as a component while absent from the
-    # catalog was the gap #2252 closed by promoting anthropic/haiku/cli into it.
-    # A spelling the catalog genuinely does not know still reports "unresolved"
+    # cost attached to it rather than folded into the primary's. Its identity
+    # resolves canonically onto the PINNED version entry (#2226) — the served
+    # spelling is a concrete model, not the ``haiku`` family shorthand. A
+    # spelling the catalog genuinely does not know still reports "unresolved"
     # — see test_divergence_falls_back_to_raw_spellings_when_neither_canonicalizes.
     haiku = ledger["billed_components"][1]
     assert haiku["cost_usd"] == 0.010
     assert haiku["identity"]["resolution"] == "canonical"
-    assert haiku["identity"]["identity"] == "anthropic/haiku/cli"
+    assert haiku["identity"]["identity"] == "anthropic/claude-haiku-4-5/cli"
 
 
 def test_ledger_records_run_conditions_and_usage_by_class() -> None:
@@ -169,17 +169,23 @@ def test_unmeasured_cost_is_unknown_not_reported_or_estimated() -> None:
 # ── Configured vs resolved divergence ────────────────────────────────────
 
 
-def test_alias_and_concrete_version_are_both_kept_and_not_reported_as_differing() -> None:
-    """An alias resolving to its own concrete version is one model, spelled twice.
+def test_alias_and_the_version_it_served_are_reported_as_distinct_identities() -> None:
+    """#2226 reverses the old "one model, spelled twice" reading.
 
-    Both spellings stay visible in ``raw``; the canonical projection is what the
-    divergence flag compares, so an alias is not reported as a different model
-    from the version it names.
+    A family alias and the concrete version it resolved to are two identities:
+    the alias means "whatever ships today" and can move, the version cannot.
+    Both spellings stay visible in ``raw``, both canonicalize, and the
+    divergence flag says they differ — which is what makes "the version that
+    served is distinguishable from the family name that selected it" a recorded
+    fact rather than an inference.
     """
     ledger = _ledger()
 
-    assert ledger["configured_differs_from_resolved"] is False
-    assert ledger["configured_identity"]["raw"] != ledger["resolved_primary_identity"]["raw"]
+    assert ledger["configured_identity"]["raw"] == "opus"
+    assert ledger["configured_identity"]["identity"] == "anthropic/opus/cli"
+    assert ledger["resolved_primary_identity"]["raw"] == "claude-opus-5"
+    assert ledger["resolved_primary_identity"]["identity"] == "anthropic/claude-opus-5/cli"
+    assert ledger["configured_differs_from_resolved"] is True
 
 
 def _diverged() -> AgentResult:
@@ -249,7 +255,8 @@ def test_reader_projects_the_full_ledger_from_an_entry() -> None:
     assert projection["version"] == INVOCATION_LEDGER_VERSION
     assert projection["configured"][1] == SOURCE_DIRECT
     assert projection["resolved"][1] == SOURCE_DIRECT
-    assert projection["differs"] is False
+    # Configured alias vs served version — distinct identities (#2226).
+    assert projection["differs"] is True
     assert len(projection["billed"]) == 2
     assert projection["cost_provenance"] == COST_PROVIDER_REPORTED
     assert projection["reasoning_effort"] == "high"

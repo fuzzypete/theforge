@@ -62,6 +62,7 @@ from .agent_failure import (
     record_degraded_pool,
     record_invocation_failure,
 )
+from .agent_identity import resolved_identity_for_result
 from .log_tee import _write_log_artifact
 from .notify import (
     _escalate_notify,
@@ -1342,6 +1343,16 @@ def _run_plan_agent_review(
                     "actual_model": getattr(_prof, "model", None),
                     "provider": getattr(_prof, "provider", None),
                     "cli": getattr(_prof, "cli", None),
+                    # The concrete version that served THIS attempt (#2226).
+                    # Captured here rather than joined by reviewer name later:
+                    # one reviewer can be served by different versions across
+                    # attempts, and a name-only join would stamp every sample
+                    # with whichever version happened to be newest.
+                    "resolved_model": (
+                        resolved_identity_for_result(pr_results[_i])
+                        if _i < len(pr_results)
+                        else None
+                    ),
                 }
             )
 
