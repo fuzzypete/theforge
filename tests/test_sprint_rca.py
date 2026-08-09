@@ -446,7 +446,8 @@ def _nonreview_shortfall() -> dict:
     """The shortfall payload the coordinator records, built by the real function.
 
     Reproduces the figures reported for issue-2226: $33.82 spent of the $29.48 a
-    $48.02 allocation leaves for non-review work, $18.54 reserved for 5 cycles.
+    $48.02 allocation leaves for non-review work, $18.54 reserved for 5 cycles —
+    none of which had run yet, so the whole reservation is still review's (#2340).
     """
     from theforge.coordinator import story_budget as _story_budget
 
@@ -461,8 +462,8 @@ def _nonreview_shortfall() -> dict:
             "max_usd": 38.4,
             "sample_count": 11,
         },
-        observed_usd=40.0,
-        review_observed_usd=6.18,
+        observed_usd=33.82,
+        review_observed_usd=0.0,
         participants=["reviewer-a"],
     )
     assert shortfall is not None

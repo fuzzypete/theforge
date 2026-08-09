@@ -37,6 +37,7 @@ from theforge.review import (
 from theforge.symptom_test_classifier import escalate_symptom_test_findings
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
+from . import story_budget as _story_budget
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
 from .escalate_actions import (
@@ -760,6 +761,44 @@ def _carry_handoff(findings: list[ReviewFinding]) -> str:
         if f.suggestion:
             lines.append(f"**Fix:** {f.suggestion}")
     return "\n".join(lines)
+
+
+def _release_review_reservation(
+    state: CoordinatorState,
+    *,
+    retained_cycles: int,
+    reason: str,
+) -> None:
+    """Release the unspent review reserve once review has terminally approved (#2340).
+
+    The reservation is priced at seating against the *maximum* review cycles the
+    story was granted. When review reaches an approve-equivalent terminal path
+    those cycles cannot all occur, so continuing to withhold their money turns a
+    safety margin into a phantom debit — a story gets refused a funded P2-cleanup
+    dev attempt against dollars that provably will not be spent.
+
+    ``retained_cycles`` is how many review cycles remain reachable: one for a P2
+    cleanup pass (its dev iteration loops back through REVIEW), zero once the
+    approval is being finalized. The release is mirrored into
+    ``adaptive_limits_audit`` so the run audit keeps showing the real dispatch
+    inputs without a new audit schema path.
+    """
+    reservation = state.review_funding_reservation
+    if not isinstance(reservation, dict) or reservation.get("released"):
+        return
+    released = _story_budget.release_review_reservation(
+        reservation,
+        review_observed_usd=state.total_review_cost_measured,
+        retained_cycles=retained_cycles,
+        review_cycle=state.review_cycle,
+        reason=reason,
+    )
+    if released is reservation:
+        # Nothing to release (no reserve seated, or review spend unmeasured).
+        return
+    state.review_funding_reservation = released
+    if isinstance(state.adaptive_limits_audit, dict):
+        state.adaptive_limits_audit["review_funding_reservation"] = released
 
 
 def _clear_p2_cleanup_state(state: CoordinatorState) -> None:
@@ -1947,6 +1986,12 @@ def _run_review_phase(
         # remaining carried P2s, an iteration cap, or p2_cleanup_enabled=
         # false all fall through to the existing approve handler.
         if _maybe_enter_p2_cleanup(state, config, parsed_review):
+            # Review has approved: of the cycles the reserve was priced against,
+            # only the re-review of this cleanup pass is still reachable. Release
+            # the rest BEFORE the dev dispatch this returns to is checked for
+            # funding, so cleanup is funded from money that provably cannot be
+            # spent on review (#2340).
+            _release_review_reservation(state, retained_cycles=1, reason="approve_p2_cleanup")
             _entry = state.p2_cleanup_audit[-1]
             _log(
                 f"  ↻ P2 CLEANUP  entering dev iteration "
@@ -1973,6 +2018,9 @@ def _run_review_phase(
                 )
             return _ReviewOutcome.RETRY_DEV, None, config
         # Cleanup was either skipped or terminated.
+        # No further review cycle is reachable on this path, so nothing of the
+        # reserve is still review's — release all of it before finalization.
+        _release_review_reservation(state, retained_cycles=0, reason="approve_final")
         if interactive:
             return _handle_interactive_review_decision(
                 state,

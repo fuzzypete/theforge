@@ -734,13 +734,101 @@ def phase_funding_shortfall(
 
 
 def _reserved_review_usd(reservation: dict | None) -> float:
-    """The reserved review balance on a reservation record, or 0.0."""
+    """The gross reserved review balance seated on a reservation record, or 0.0."""
     if not isinstance(reservation, dict):
         return 0.0
     try:
         return max(0.0, float(reservation.get("reserved_review_usd") or 0.0))
     except (TypeError, ValueError):
         return 0.0
+
+
+def remaining_reserved_review_usd(
+    reservation: dict | None,
+    review_observed_usd: float | None,
+) -> float | None:
+    """Reserved review money that can still be spent, or ``None`` when unknowable.
+
+    The seated figure prices the *maximum* number of review cycles a story was
+    granted, and holding that gross number for the life of the story withholds
+    money from cycles that have already run — and, once review reaches a terminal
+    verdict, from cycles that can no longer run at all (#2340). What a
+    reservation actually protects is the unspent balance:
+
+    * a reservation released after terminal review protects only the amount the
+      release explicitly retained (``retained_review_usd``) — for a P2-cleanup
+      pass, one further cycle; for a finalized approval, nothing;
+    * otherwise the seated reserve less measured review spend.
+
+    ``None`` is returned when review spend is unmeasured and the balance is
+    therefore a guess — callers must not refuse work on it.
+    """
+    if not isinstance(reservation, dict):
+        return 0.0
+    if reservation.get("released"):
+        try:
+            return _balance(max(0.0, float(reservation.get("retained_review_usd") or 0.0)))
+        except (TypeError, ValueError):
+            return 0.0
+    reserved = _reserved_review_usd(reservation)
+    if reserved <= 0.0:
+        return 0.0
+    if review_observed_usd is None:
+        return None
+    try:
+        return _balance(reserved - float(review_observed_usd))
+    except (TypeError, ValueError):
+        return None
+
+
+def release_review_reservation(
+    reservation: dict | None,
+    *,
+    review_observed_usd: float | None,
+    retained_cycles: int,
+    review_cycle: int | None,
+    reason: str,
+) -> dict | None:
+    """Return ``reservation`` marked released, retaining ``retained_cycles`` cycles.
+
+    Called when review reaches an approve-equivalent terminal path: the cycles
+    the reserve was priced against cannot all happen any more, so the unspent
+    remainder stops being review's and becomes spendable by a P2-cleanup dev
+    attempt. ``retained_cycles`` is how many review cycles are still reachable —
+    one for a P2-cleanup pass (whose dev iteration loops back through REVIEW),
+    zero for a finalized approval. Cycles beyond the retained one, should the
+    cleanup pass regress into REQUEST_CHANGES, draw the general allocation
+    through the pre-existing whole-allocation check.
+
+    Returns the same record when there is nothing to release, so the caller can
+    assign unconditionally.
+    """
+    if not isinstance(reservation, dict):
+        return reservation
+    reserved = _reserved_review_usd(reservation)
+    if reserved <= 0.0:
+        return reservation
+    try:
+        cycle_cost = max(0.0, float(reservation.get("review_cycle_cost_usd") or 0.0))
+    except (TypeError, ValueError):
+        cycle_cost = 0.0
+    remaining = remaining_reserved_review_usd(reservation, review_observed_usd)
+    if remaining is None:
+        # Review spend is unmeasured: the unspent balance is a guess, so hold the
+        # reservation as seated rather than release a number the run does not have.
+        return reservation
+    retained = _balance(min(remaining, max(0, int(retained_cycles)) * cycle_cost))
+    released = dict(reservation)
+    released["released"] = True
+    released["release_reason"] = reason
+    released["release_review_cycle"] = review_cycle
+    released["review_observed_usd"] = (
+        None if review_observed_usd is None else round(float(review_observed_usd), 4)
+    )
+    released["retained_review_cycles"] = max(0, int(retained_cycles))
+    released["retained_review_usd"] = retained
+    released["released_review_usd"] = _balance(remaining - retained)
+    return released
 
 
 def reserved_review_shortfall(
@@ -775,9 +863,9 @@ def reserved_review_shortfall(
             participants=participants,
             planned_usd=planned_usd,
         )
-    if review_observed_usd is None:
+    reserved_remaining = remaining_reserved_review_usd(reservation, review_observed_usd)
+    if reserved_remaining is None:
         return None
-    reserved_remaining = _balance(reserved - float(review_observed_usd))
     if reserved_remaining >= _balance(planned_usd):
         return None
     shortfall = phase_funding_shortfall(
@@ -792,6 +880,7 @@ def reserved_review_shortfall(
     shortfall["reserved_review_usd"] = _balance(reserved)
     shortfall["reserved_review_cycles"] = (reservation or {}).get("reserved_review_cycles")
     shortfall["reserved_review_remaining_usd"] = reserved_remaining
+    shortfall["reserved_review_released"] = bool((reservation or {}).get("released"))
     return shortfall
 
 
@@ -808,9 +897,14 @@ def nonreview_funding_exhausted(
 
     The other half of holding a reservation: money committed to review must not
     be spendable by an earlier phase, so once non-review spend has reached
-    ``allocation - reserved``, no further attempt at ``phase`` is funded. The
-    reserved balance is deliberately excluded — it is still there, and it is
-    still review's.
+    ``allocation - reserved``, no further attempt at ``phase`` is funded.
+
+    What is protected is the reserve that can *still be spent*, not the gross
+    figure seating priced against the maximum permitted cycle count (#2340).
+    Review spend already made comes out of the reserve, and once review reaches a
+    terminal verdict the reservation is released down to the cycles that remain
+    reachable. Withholding money from cycles that have run, or that can no longer
+    run, refuses dev funded work against a phantom debit.
 
     Returns ``None`` — funded — whenever there is no reservation to protect or
     spend is unmeasured. The payload reuses the :func:`phase_funding_shortfall`
@@ -824,8 +918,11 @@ def nonreview_funding_exhausted(
         allocation_usd = float((allocation or {}).get("allocation_usd"))
     except (TypeError, ValueError, AttributeError):
         return None
+    protected = remaining_reserved_review_usd(reservation, review_observed_usd)
+    if protected is None:
+        return None
     nonreview_observed = _balance(max(0.0, float(observed_usd) - float(review_observed_usd)))
-    ceiling = _balance(allocation_usd - reserved)
+    ceiling = _balance(allocation_usd - protected)
     remaining = _balance(ceiling - nonreview_observed)
     # Strictly greater: a non-review pool spent to the cent has nothing left to
     # fund another attempt with, and admitting one would spend the reserved
@@ -843,6 +940,11 @@ def nonreview_funding_exhausted(
         "nonreview_allocation_usd": ceiling,
         "reserved_review_usd": _balance(reserved),
         "reserved_review_cycles": (reservation or {}).get("reserved_review_cycles"),
+        # The figure that actually drove the refusal, alongside the gross seated
+        # reserve it was derived from, so an allocation_exhausted record shows
+        # whether review money was still reachable when dev was refused (#2340).
+        "reserved_review_remaining_usd": protected,
+        "reserved_review_released": bool((reservation or {}).get("released")),
         "total_observed_usd": round(float(observed_usd), 4),
         "basis": (allocation or {}).get("basis"),
         "complexity_score": (allocation or {}).get("complexity_score"),
@@ -1306,16 +1408,22 @@ def format_shortfall(shortfall: dict, *, story: str | None = None) -> str:
     story_label = f"story {story}" if story else "story"
     if shortfall.get("nonreview_exhausted"):
         cycles = shortfall.get("reserved_review_cycles")
+        # The protected figure, not the gross seated one: review spend already
+        # made, and cycles a terminal verdict put out of reach, are no longer
+        # withheld, and the operator line must name the money actually held (#2340).
+        protected = shortfall.get("reserved_review_remaining_usd")
+        if protected is None:
+            protected = shortfall.get("reserved_review_usd")
         return (
             f"Story allocation exhausted: {story_label} has spent "
             f"${float(shortfall['observed_usd']):.2f} of the "
             f"${float(shortfall['nonreview_allocation_usd']):.2f} its "
             f"${float(shortfall['allocation_usd']):.2f} allocation leaves for non-review "
-            f"work, so no further {shortfall['phase']} attempt is funded. The remaining "
-            f"${float(shortfall['reserved_review_usd']):.2f} is reserved for the "
-            f"{cycles} review cycle(s) this story was seated with and is not "
-            "available to spend here. Sprint headroom is reported alongside this "
-            "story in the sprint summary."
+            f"work, so no further {shortfall['phase']} attempt is funded. "
+            f"${float(protected):.2f} is reserved for the review cycles that can yet "
+            f"run — of the ${float(shortfall['reserved_review_usd']):.2f} seated for "
+            f"{cycles} review cycle(s) — and is not available to spend here. Sprint "
+            "headroom is reported alongside this story in the sprint summary."
         )
     expected = "no band history"
     if shortfall.get("median_usd") is not None:
