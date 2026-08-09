@@ -3861,11 +3861,32 @@ def run_sprint(
     # that went unpriced, and the ceiling charged in its place. Nothing here
     # relabels unmeasured spend as measured — ``cost_complete`` stays False for
     # it, and the accepted ceiling is charged to budget verification only.
-    _unmeasured_source_cache: dict[str, UnmeasuredSource] = {}
+    #
+    # The cache is keyed by (occurrence, source), never by source alone. A story
+    # has ONE per-story audit, and running it again overwrites that file — so the
+    # carried occurrence and a new one produced here are two different records
+    # read from the same path at two different times. Keyed by source alone, the
+    # carried read wins and the refusal on the NEW unknown would name the old
+    # run's id and ceiling: an operator would go looking at a call they had
+    # already accepted, and the amount they were being asked about would be the
+    # wrong one (#2310 review).
+    _OCCURRENCE_CARRIED = "carried"
+    _OCCURRENCE_CURRENT = "current"
+    _unmeasured_source_cache: dict[tuple[str, str], UnmeasuredSource] = {}
 
-    def _describe_unmeasured_source(raw: str) -> UnmeasuredSource:
-        """Resolve one raw source id to its origin and derivable ceiling."""
-        key = unmeasured_spend_policy.normalize_source_id(raw)
+    def _describe_unmeasured_source(
+        raw: str, *, occurrence: str | None = None
+    ) -> UnmeasuredSource:
+        """Resolve one raw source id to its origin and derivable ceiling.
+
+        ``occurrence`` defaults to whichever bucket the source is in: one this
+        run produced reads the audit as it stands now, an inherited one reads it
+        as it stood before any story here could rewrite it.
+        """
+        _occurrence = occurrence or (
+            _OCCURRENCE_CURRENT if raw in current_generation_unmeasured else _OCCURRENCE_CARRIED
+        )
+        key = (_occurrence, unmeasured_spend_policy.normalize_source_id(raw))
         cached = _unmeasured_source_cache.get(key)
         if cached is None:
             _slug = unmeasured_spend_policy.source_slug(raw)
@@ -3906,7 +3927,10 @@ def run_sprint(
                     f"(known: {', '.join(sorted(_known_sources)) or 'none'})"
                 )
                 continue
-            _source = _describe_unmeasured_source(_raw_accept)
+            # An operator is always accepting an occurrence that has already been
+            # recorded, so this reads the audit as it stands before dispatch —
+            # never a record some story in this run is about to overwrite.
+            _source = _describe_unmeasured_source(_raw_accept, occurrence=_OCCURRENCE_CARRIED)
             _accepted = unmeasured_spend_policy.accept(
                 _source,
                 accepted_at=_accepted_at,
@@ -4067,7 +4091,9 @@ def run_sprint(
     for _carried_raw in unmeasured_spend:
         if _carried_raw in current_generation_unmeasured:
             continue
-        _carried_origin = _describe_unmeasured_source(_carried_raw).origin
+        _carried_origin = _describe_unmeasured_source(
+            _carried_raw, occurrence=_OCCURRENCE_CARRIED
+        ).origin
         carried_occurrence_ids[_carried_raw] = _carried_origin.get("run_id")
 
     def _recorded_prior_done(slug: str, canonical_ref: str | None = None) -> bool:

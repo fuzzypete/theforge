@@ -350,7 +350,11 @@ def build_source(raw: str, story_audit: Mapping | None) -> UnmeasuredSource:
     """Describe one unmeasured source from the records that named it.
 
     Pure over ``story_audit`` so the derivation is testable without a sprint
-    tree; :func:`resolve_sources` supplies the record.
+    tree; :func:`read_story_audit` supplies the record. Deliberately describes
+    ONE record rather than a whole list: a story has one audit path, and the
+    caller — which knows whether it is reading a carried occurrence or one this
+    run just produced — is the only thing that can say which reading of that path
+    a description belongs to.
     """
     normalized = normalize_source_id(raw)
     origin = origin_from_story_audit(story_audit)
@@ -379,28 +383,6 @@ def build_source(raw: str, story_audit: Mapping | None) -> UnmeasuredSource:
         ceiling_basis=basis,
         ceiling_reason=reason,
     )
-
-
-def resolve_sources(
-    raw_sources: Sequence[str],
-    *,
-    project_root: Path,
-    sprint_name: str,
-) -> list[UnmeasuredSource]:
-    """Describe every raw unmeasured-spend source, deduplicated by identity."""
-    seen: set[str] = set()
-    resolved: list[UnmeasuredSource] = []
-    for raw in raw_sources:
-        normalized = normalize_source_id(raw)
-        if not normalized or normalized in seen:
-            continue
-        seen.add(normalized)
-        slug = source_slug(raw)
-        story_audit = (
-            read_story_audit(project_root, sprint_name, slug) if slug is not None else None
-        )
-        resolved.append(build_source(str(raw), story_audit))
-    return resolved
 
 
 def accept(

@@ -1931,3 +1931,100 @@ class TestOccurrenceIdentitySurvivesAResume:
 
         assert mock_run.call_count == 2
         assert result.stopped_reason is None
+
+
+class TestSecondOccurrenceIsReportedAsItself:
+    """The refusal must describe the unknown it is refusing on.
+
+    A story has one per-story audit path, and running it again overwrites that
+    file. Describing sources by story alone lets the carried reading win, so the
+    refusal on a NEW unmeasured call would name the run id and ceiling of the
+    call the operator had already accepted — sending them to look at settled
+    work, and asking them about the wrong amount.
+    """
+
+    @staticmethod
+    def _second_occurrence_audit() -> dict:
+        """What the coordinator records when the story goes unmeasured again."""
+        audit = _bounded_story_audit(run_id="run-2")
+        audit["cost"]["agents"][0]["cost_usd"] = 1.0
+        audit["cost"]["story_allocation"]["allocation_usd"] = 9.0
+        return audit
+
+    def test_the_refusal_names_the_new_occurrence_not_the_accepted_one(
+        self, tmp_path: Path
+    ) -> None:
+        from unittest.mock import patch
+
+        from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
+
+        from theforge.sprint import run_sprint
+        from theforge.sprint.audit import persist_accumulated_story_state
+        from theforge.sprint.dag import StoryTriage
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=100.0)
+        config = _make_config(tmp_path)
+
+        sprint_dir = tmp_path / ".forge" / "logs" / "Test Sprint"
+        sprint_dir.mkdir(parents=True, exist_ok=True)
+        (sprint_dir / ".sprint_id").write_text("sprint-2310", encoding="utf-8")
+        # The occurrence the operator accepts: run-1, $4.50 still unknown.
+        _write_story_audit(
+            tmp_path, "Test Sprint", "feature-a", _bounded_story_audit(run_id="run-1")
+        )
+        persist_accumulated_story_state(
+            "sprint-2310",
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                }
+            ],
+        )
+
+        def _triage(spec_path, *args, **kwargs):
+            return StoryTriage(
+                story_path=str(spec_path),
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+            )
+
+        def _rewrite_audit(*_args, **_kwargs):
+            """Stand in for the coordinator's audit write after the story ran."""
+            _write_story_audit(
+                tmp_path, "Test Sprint", "feature-a", self._second_occurrence_audit()
+            )
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=_triage):
+            with patch("theforge.sprint.runner._write_story_audit", side_effect=_rewrite_audit):
+                with patch(
+                    "theforge.sprint.runner.run_task",
+                    return_value=TestBudgetEnforcementSeam._unmeasured_dev_result(),
+                ) as mock_run:
+                    result = run_sprint(
+                        config,
+                        manifest_path,
+                        accept_unmeasured_spend=["feature-a"],
+                    )
+
+        assert mock_run.call_count == 1
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        # The unresolved unknown is the second occurrence: run-2, and the $8.00
+        # its own allocation leaves unaccounted.
+        assert "run_id=run-2" in result.stopped_reason
+        assert "at most $8.00 more" in result.stopped_reason
+        # ...not the occurrence that was already accepted and already charged.
+        assert "run_id=run-1" not in result.stopped_reason
+        assert "at most $4.50 more" not in result.stopped_reason
+        # The acceptance itself still describes the occurrence it was made for.
+        [accepted] = result.accepted_unmeasured_spend
+        assert accepted["origin_run_id"] == "run-1"
+        assert accepted["accepted_ceiling_usd"] == 4.5
