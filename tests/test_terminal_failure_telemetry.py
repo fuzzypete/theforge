@@ -108,8 +108,7 @@ def test_terminal_failure_renders_last_known_telemetry(tmp_path: Path) -> None:
         phase=Phase.ESCALATE,
         state=timeout_state,
         message=(
-            "Story deadline exhausted after 60s of working time "
-            "— not a review or quality failure"
+            "Story deadline exhausted after 60s of working time — not a review or quality failure"
         ),
     )
 
