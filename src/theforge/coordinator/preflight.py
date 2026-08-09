@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.config import (
+    DEFAULT_INVESTIGATION_TOOLS,
     AgentSpec,
     ForgeConfig,
     ModelInfo,
@@ -29,6 +30,49 @@ if TYPE_CHECKING:
     from .state import CoordinatorState
 
 _VALID_PREFLIGHT_VERDICTS = frozenset({"PROCEED", "ALREADY_DONE", "BLOCKED"})
+
+#: Source label for a complexity that no preflight agent founded (#2346). A
+#: degraded preflight still yields a conservative score so routing, timeouts,
+#: and allocation have a number to work from — but that number rests on the
+#: coordinator's fallback, not on anything the classifier observed. Every
+#: surface that reports complexity says which of the two it is.
+COMPLEXITY_SOURCE_PREFLIGHT = "preflight"
+COMPLEXITY_SOURCE_DEGRADED = "preflight_degraded_conservative"
+
+
+def complexity_source(state: "CoordinatorState") -> str:
+    """Return the provenance label for this story's complexity figure."""
+    return (
+        COMPLEXITY_SOURCE_DEGRADED
+        if getattr(state, "preflight_degraded", False)
+        else COMPLEXITY_SOURCE_PREFLIGHT
+    )
+
+
+def stamp_complexity_provenance(state: "CoordinatorState") -> None:
+    """Record on the routing audit what founded the complexity it routed on.
+
+    Called at every exit from :func:`_apply_preflight_config`, because the audit
+    dict is assembled by several different branches (config-model adaptation,
+    the assignment router, the allocation writer) and a provenance label that
+    only some of them carry is one an operator cannot rely on.
+    """
+    audit = dict(state.complexity_routing_audit or {})
+    audit["complexity_source"] = complexity_source(state)
+    audit["preflight_degraded"] = degraded_preflight_fields(state)
+    state.complexity_routing_audit = audit
+
+
+def degraded_preflight_fields(state: "CoordinatorState") -> dict[str, object]:
+    """Return the degraded-preflight block shared by every reporting surface."""
+    return {
+        "degraded": bool(getattr(state, "preflight_degraded", False)),
+        "degraded_reason": getattr(state, "preflight_degraded_reason", None),
+        "failure_action": getattr(state, "preflight_failure_action", None),
+        "risk_signals": list(getattr(state, "preflight_risk_signals", None) or []),
+        "complexity_source": complexity_source(state),
+    }
+
 
 _log = logging.getLogger(__name__)
 
@@ -1272,7 +1316,9 @@ def _apply_preflight_config(
             )
 
     if not (config.assignment.enabled and config.agents):
-        return _apply_story_allocation(config, state, log_verbose=_log_verbose)
+        config = _apply_story_allocation(config, state, log_verbose=_log_verbose)
+        stamp_complexity_provenance(state)
+        return config
 
     from theforge.assignment import (  # noqa: I001, PLC0415
         _normalize_complexity as _norm_complexity,
@@ -1343,7 +1389,9 @@ def _apply_preflight_config(
         _explicit_planner = model_ref_to_profile(
             "plan",
             config.plan.ref,
-            allowed_tools=config.preflight_profile.allowed_tools,
+            # See plan_flow: the plan role names the investigation set rather
+            # than borrowing preflight's narrowed one (#2346).
+            allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
             phase="plan",
         )
         _explicit["planner"] = _explicit_planner
@@ -1591,11 +1639,20 @@ def _apply_preflight_config(
     # assign_models from the recency-weighted profile signal and is already
     # reflected in _decision.rationale / routing_decision below; the router is the
     # single authoritative driver, so preflight keeps no separate promotion cache.
-    _log_verbose(f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)")
+    if state.preflight_degraded:
+        _log_verbose(
+            f"[adaptive] Complexity: {_norm_complexity(complexity)} "
+            "(conservative degraded fallback — preflight produced no founded "
+            f"classification: {state.preflight_degraded_reason or 'unknown'})"
+        )
+    else:
+        _log_verbose(f"[adaptive] Complexity: {_norm_complexity(complexity)} (from preflight)")
     for _phase, _rsn in _decision.rationale.items():
         _log_verbose(f"[adaptive] {_phase}: {_rsn}")
 
-    return _apply_story_allocation(config, state, log_verbose=_log_verbose)
+    config = _apply_story_allocation(config, state, log_verbose=_log_verbose)
+    stamp_complexity_provenance(state)
+    return config
 
 
 def persist_routing_decision(

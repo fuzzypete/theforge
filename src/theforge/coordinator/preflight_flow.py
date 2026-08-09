@@ -23,13 +23,19 @@ import subprocess
 import tempfile
 import time
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import yaml
 
 from theforge.agent_types import AgentResult
-from theforge.config import ForgeConfig, ModelProfile
+from theforge.config import (
+    PREFLIGHT_FORBIDDEN_TOOLS,
+    ForgeConfig,
+    ModelProfile,
+    resolve_preflight_tools,
+)
 from theforge.sprint.dag import _is_branch_merged
 from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
 
@@ -60,6 +66,8 @@ from .preflight import (
     _parse_preflight_verdict,
     _parse_preflight_warnings,
     _parse_preflight_work_type,
+    complexity_source,
+    degraded_preflight_fields,
     persist_routing_decision,
     score_to_band,
 )
@@ -239,7 +247,72 @@ def _preflight_phase_end_fields(state: CoordinatorState) -> dict[str, object]:
         "complexity_projection": state.preflight_complexity_projection,
         "complexity_routing": routing,
         "domains": list(state.preflight_domains or []),
+        # A phase that produced no evidence must not report its conservative
+        # fallback in the same words as an agent-founded classification (#2346).
+        **degraded_preflight_fields(state),
     }
+
+
+def _live_degraded_detail(state: CoordinatorState) -> dict[str, object]:
+    """Degraded-preflight keys for the live status ``detail`` block.
+
+    Omitted entirely when preflight is healthy: a live row carrying
+    ``preflight_degraded: false`` on every story teaches nothing, while its
+    presence is the signal (#2346).
+    """
+    if not state.preflight_degraded:
+        return {}
+    fields = degraded_preflight_fields(state)
+    return {
+        "preflight_degraded": True,
+        "preflight_degraded_reason": fields["degraded_reason"],
+        "preflight_failure_action": fields["failure_action"],
+        "preflight_risk_signals": fields["risk_signals"],
+        "complexity_source": fields["complexity_source"],
+    }
+
+
+def _sanitize_preflight_profile(
+    profile: ModelProfile,
+    *,
+    log: "Callable[[str], None]",
+) -> ModelProfile:
+    """Seat the resolved preflight tool surface, whatever config supplied (#2346).
+
+    The load-bearing guarantee against the wait-forever failure is tool surface,
+    not instruction: with Bash the classifier can start a detached process, end
+    its turn waiting for it, and be killed by the runner's post-stream grace
+    period having inspected nothing. The default profile no longer grants it,
+    but a forge.yaml override, an API-transport default set, or a fallback
+    profile can each supply a different one — so the surface is *resolved* here,
+    at the one place every preflight invocation passes through, rather than
+    trusted from whatever built the profile.
+
+    ``resolve_preflight_tools`` owns the rule and the reasoning; this function
+    is the seam that applies it and reports what changed.
+    """
+    allowed = tuple(profile.allowed_tools or ())
+    resolved = resolve_preflight_tools(allowed)
+    if resolved == allowed:
+        return profile
+    # Name the delegation-capable drop separately from the rest. "dropped Bash"
+    # is the story's whole subject and an operator should see it as such, not
+    # buried in a list beside a tool that was merely off-phase.
+    dropped = [t for t in allowed if t not in resolved]
+    forbidden = [t for t in dropped if str(t).lower() in PREFLIGHT_FORBIDDEN_TOOLS]
+    others = [t for t in dropped if t not in forbidden]
+    parts = []
+    if forbidden:
+        parts.append(f"dropped {', '.join(forbidden)} (delegation-capable)")
+    if others:
+        parts.append(f"dropped {', '.join(others)} (not on the preflight allow-list)")
+    if not dropped:
+        parts.append("config named no allowed tool, and an empty allowlist is unrestricted")
+    log(
+        f"  ⓘ PREFLIGHT tool surface resolved to {', '.join(resolved)}: {'; '.join(parts)} "
+        "(read-only classifier cannot delegate work it cannot be resumed for)"
+    )
+    return replace(profile, allowed_tools=resolved)
 
 
 def _run_preflight_phase(
@@ -295,6 +368,7 @@ def _run_preflight_phase(
     )
 
     def _invoke_preflight(profile: ModelProfile, label: str) -> tuple[object, float]:
+        profile = _sanitize_preflight_profile(profile, log=_log)
         baseline_working_dir, cleanup_preflight_dir = _prepare_preflight_working_dir(
             config.project_root, config.workspace.base_branch
         )
@@ -552,6 +626,7 @@ def _run_preflight_phase(
                 "detail": {
                     "preflight_verdict": verdict,
                     "preflight_sufficiency": state.preflight_sufficiency,
+                    **_live_degraded_detail(state),
                 },
             }
         )
@@ -729,7 +804,14 @@ def _run_preflight_phase(
             state.preflight_warnings = list(state.preflight_warnings or []) + [override_reason]
             _log(f"  ↓ {override_reason}")
 
-        _log(f"  Complexity: {complexity} (from preflight)")
+        if state.preflight_degraded:
+            _log(
+                f"  Complexity: {complexity} (conservative degraded fallback — "
+                f"no founded classification: "
+                f"{state.preflight_degraded_reason or 'preflight_degraded'})"
+            )
+        else:
+            _log(f"  Complexity: {complexity} (from preflight)")
         _log(f"  Sufficiency: {sufficiency}")
         _log(f"  Work type: {work_type}")
         _log(f"  Contract change: {contract_change}")
@@ -907,6 +989,14 @@ def _run_preflight_phase(
             state.preflight_work_type = "bug"
         else:
             state.preflight_work_type = "feature"
+        # Say what this number is. The success branch logs "(from preflight)";
+        # printing the same phrasing here is how a run that inspected zero files
+        # came to report a founded-looking classification (#2346).
+        _log(
+            f"  Complexity: {state.preflight_complexity} (conservative degraded "
+            f"fallback — no founded classification: "
+            f"{state.preflight_degraded_reason or 'preflight_failed'})"
+        )
 
     if state_update_fn is not None:
         state_update_fn(
@@ -925,6 +1015,7 @@ def _run_preflight_phase(
                     # that an operator would read as "not run yet" (#1951).
                     "preflight_verdict": state.preflight_verdict or verdict,
                     "preflight_sufficiency": state.preflight_sufficiency,
+                    **_live_degraded_detail(state),
                 },
             }
         )
@@ -1004,6 +1095,10 @@ def _run_preflight_phase(
         "degraded_reason": state.preflight_degraded_reason,
         "risk_signals": list(state.preflight_risk_signals),
         "failure_action": state.preflight_failure_action,
+        # Provenance of the complexity figure above, in the same block that says
+        # the phase was degraded, so a reader of the artifact alone can tell a
+        # founded classification from a conservative fallback (#2346).
+        "complexity_source": complexity_source(state),
         "partial_evidence": state.preflight_partial_evidence,
         # Invocations that produced no model output at all (#1951). Present in
         # the artifact so "no judgment obtained" is inspectable next to the

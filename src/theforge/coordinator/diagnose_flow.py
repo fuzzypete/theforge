@@ -31,7 +31,7 @@ from pathlib import Path
 import yaml
 
 from theforge import detach
-from theforge.config import ForgeConfig, ModelProfile
+from theforge.config import DEFAULT_INVESTIGATION_TOOLS, ForgeConfig, ModelProfile
 from theforge.coordinator.diagnose_evidence import build_starting_evidence
 from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
 from theforge.coordinator.util import _log as _progress_log
@@ -688,10 +688,16 @@ def _build_diagnose_profile(
     """Derive the investigative-agent profile from existing config.
 
     Reuses ``preflight_profile`` as the base — it's already an
-    investigation-shaped profile (read-only tools, sonnet-class capability) —
-    and overlays the diagnose-specific budget and timeout from
-    ``config.diagnose``.  This avoids inventing a parallel profile-loading
-    path while still giving the diagnose flow its own resource envelope.
+    investigation-shaped profile (sonnet-class capability) — and overlays the
+    diagnose-specific budget and timeout from ``config.diagnose``.  This avoids
+    inventing a parallel profile-loading path while still giving the diagnose
+    flow its own resource envelope.
+
+    The tool surface is overlaid rather than inherited: preflight's is
+    deliberately narrowed to deny delegation it cannot be resumed for (#2346),
+    and diagnose is a different job — reproducing a symptom is exactly the
+    investigation that needs to run commands. It keeps the shared read-only
+    investigation set, unchanged by preflight's narrowing.
 
     ``timeout_seconds``, if given, overrides ``config.diagnose.timeout_seconds``
     for this invocation only (e.g. ``forge diagnose --timeout``).
@@ -700,6 +706,7 @@ def _build_diagnose_profile(
     return dataclasses.replace(
         base,
         name="diagnose",
+        allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
         budget_usd=config.diagnose.budget_usd,
         timeout_seconds=(
             timeout_seconds if timeout_seconds is not None else config.diagnose.timeout_seconds

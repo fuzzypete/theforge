@@ -12,6 +12,7 @@ from .auth import check_agent_auth
 from .defaults import (
     API_PROVIDER_DEFAULT_TOOLS,
     DEFAULT_DEV_PROFILE,
+    DEFAULT_INVESTIGATION_TOOLS,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     PROVIDER_SDK_MAP,
@@ -74,7 +75,10 @@ def iter_plan_phase_profiles(config: "ForgeConfig") -> Iterator[tuple[str, Model
             model_ref_to_profile(
                 "plan",
                 plan.ref,
-                allowed_tools=config.preflight_profile.allowed_tools,
+                # Mirrors plan_flow's dispatch-time construction, which names
+                # the investigation set rather than borrowing preflight's
+                # narrowed surface (#2346).
+                allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
             ),
         )
     plan_agent_review = getattr(config, "plan_agent_review", None)

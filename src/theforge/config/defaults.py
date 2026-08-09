@@ -25,6 +25,93 @@ DEFAULT_REVIEW_PROFILE = ModelProfile(
     allowed_tools=("Read", "Bash", "Glob", "Grep"),
 )
 
+# Preflight is a read-only classifier and is deliberately denied Bash (#2346).
+# Bash can start work the agent cannot be resumed for: a detached/background
+# process (``nohup``, ``setsid``, ``&``, a nested agent CLI) leaves the model
+# with nothing to do but wait for an event the harness has no mechanism to
+# deliver. It then ends its turn holding that wait, the runner reads the
+# finished stream as a finished agent, and the process is killed when it does
+# not exit within the post-stream grace period — a phase that inspected zero
+# files and produced no classification.
+#
+# What preflight may hold is governed by PREFLIGHT_ALLOWED_CAPABILITIES below,
+# not by this set. This one names the tool whose denial is *load-bearing*, so
+# the resolver can report dropping it as the specific thing it is and a test can
+# assert it is never granted under any spelling.
+PREFLIGHT_FORBIDDEN_TOOLS: frozenset[str] = frozenset({"bash"})
+
+# The read-only investigation set shared by the *other* inspection roles (plan,
+# plan-review, diagnose, escalation advisor). They run to completion inside a
+# turn and legitimately shell out, so they keep Bash; only preflight is narrowed
+# above. Roles that want an investigation tool surface must name this constant
+# rather than reaching for ``config.preflight_profile.allowed_tools``: that
+# expression once meant "the investigation set" and now means "the one surface
+# that is deliberately narrower than it", so borrowing it silently removes Bash.
+DEFAULT_INVESTIGATION_TOOLS: tuple[str, ...] = ("Read", "Bash", "Glob", "Grep")
+
+#: The tool surface preflight runs with when config supplies nothing usable.
+PREFLIGHT_READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
+
+#: The capabilities preflight may hold, in canonical (internal) tool names.
+#:
+#: An ALLOW-list, not a deny-list, and the distinction is the point. Denying
+#: ``bash`` answers "is today's known-dangerous tool absent?"; allowing exactly
+#: these answers "is every tool preflight holds one someone weighed against the
+#: no-delegation invariant?" Only the second survives a new tool being added to
+#: a default set — including this repo's own ``API_PROVIDER_DEFAULT_TOOLS``,
+#: whose ``submit_review`` entry a deny-list silently admitted to a phase that
+#: reviews nothing. Adding a capability here is a deliberate act; joining
+#: preflight's surface by being new is not possible.
+PREFLIGHT_ALLOWED_CAPABILITIES: frozenset[str] = frozenset({"read_file", "glob", "grep"})
+
+
+def resolve_preflight_tools(allowed: object) -> tuple[str, ...]:
+    """Return the tool surface preflight will actually run with.
+
+    This *resolves* a surface rather than filtering one, and that distinction is
+    the whole point. ``allowed_tools`` has an overloaded empty state: every
+    construction site reads ``()`` as "no tools were requested, apply a
+    default", while ``runner_claude.build_argv`` omits ``--allowedTools``
+    entirely for an empty tuple and hands the CLI its *unrestricted* default —
+    Bash included. A filter expressed as a diff against config therefore passes
+    its single most dangerous input straight through untouched, because ``()``
+    already looks like the answer.
+
+    So every input maps to an explicit, non-empty tuple drawn only from
+    :data:`PREFLIGHT_ALLOWED_CAPABILITIES`:
+
+    - names are canonicalized through the runner's own map before the check, so
+      both vocabularies — forge.yaml's ``"Read"`` and an API profile's
+      ``"read_file"`` — are recognized as the same capability;
+    - anything not on the allow-list is dropped, whether it is the forbidden
+      ``Bash``, a phase-inappropriate extra like ``submit_review``, or a tool
+      nobody has weighed against this invariant yet;
+    - the surviving names keep the *spelling config supplied*, because a CLI
+      profile's ``--allowedTools`` and an API profile's tool schema read
+      different vocabularies;
+    - an empty result — config was empty, or nothing it named is allowed —
+      falls back to :data:`PREFLIGHT_READ_ONLY_TOOLS`.
+
+    The invariant this guarantees is the one the story needs: the preflight
+    invocation always carries an explicit allowlist, and that allowlist never
+    grants a tool it could delegate unresumable work with. It lives here rather
+    than in a config-load-time validation so it holds for every source of a
+    preflight profile — forge.yaml overrides, API-transport tool defaults, and
+    fallback profiles built at dispatch time — not only the ones config load
+    can see.
+    """
+    # Local import: the canonical name map lives with the runner that applies
+    # it, and ``config`` stays free of a module-level dependency on ``runners``
+    # (same reason ``config.auth`` imports the sandbox probe lazily).
+    from theforge.runners.tool_runtime import TOOL_NAME_MAP  # noqa: PLC0415
+
+    names = tuple(str(t) for t in allowed) if isinstance(allowed, (list, tuple)) else ()
+    kept = tuple(
+        name for name in names if TOOL_NAME_MAP.get(name, name) in PREFLIGHT_ALLOWED_CAPABILITIES
+    )
+    return kept or PREFLIGHT_READ_ONLY_TOOLS
+
+
 DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     name="preflight",
     cli="claude",
@@ -32,7 +119,7 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     model="sonnet",
     budget_usd=1.00,
     timeout_seconds=300,
-    allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    allowed_tools=PREFLIGHT_READ_ONLY_TOOLS,
     phase="preflight",
 )
 

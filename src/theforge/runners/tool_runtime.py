@@ -19,6 +19,11 @@ MAX_TOOL_OUTPUT_BYTES = 51200  # 50KB default
 
 # Maps forge.yaml user-facing capitalized names → canonical internal names.
 # CLI profiles keep capitalized names; API profiles are normalized at parse time.
+#
+# This is the single canonical map — ``runners.api._CLI_TO_REGISTRY`` aliases it
+# and ``config.auth`` canonicalizes through it. Two byte-identical copies used to
+# exist, and the drift that allowed is exactly how a profile could be granted a
+# tool by one spelling while a readiness check missed it under another (#2346).
 TOOL_NAME_MAP: dict[str, str] = {
     "Read": "read_file",
     "Bash": "bash",
@@ -27,6 +32,24 @@ TOOL_NAME_MAP: dict[str, str] = {
     "Write": "write_file",
     "Edit": "edit_file",
 }
+
+
+def canonical_tool_names(allowed_tools: object) -> frozenset[str]:
+    """Return ``allowed_tools`` as canonical internal tool names.
+
+    Answers the question the *runner* answers when it builds an API profile's
+    tool schema, so a caller asking "does this profile have bash?" gets the same
+    answer the dispatch does. Names already canonical pass through unchanged, so
+    this is correct for both spellings and for a profile that mixes them.
+    """
+    if not isinstance(allowed_tools, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(TOOL_NAME_MAP.get(str(name), str(name)) for name in allowed_tools)
+
+
+def grants_bash(allowed_tools: object) -> bool:
+    """True when ``allowed_tools`` grants the bash tool under any spelling."""
+    return "bash" in canonical_tool_names(allowed_tools)
 
 
 @dataclass

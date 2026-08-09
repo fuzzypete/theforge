@@ -30,6 +30,22 @@ _LOCAL_PREFIXES = (
 _HOST_WRAPPED_CLIS = frozenset({"claude", "gemini"})
 
 
+def _grants_bash(profile: ModelProfile) -> bool:
+    """True when this profile's tool surface grants bash under any spelling.
+
+    ``allowed_tools`` carries two vocabularies: forge.yaml's capitalized CLI
+    names (``"Bash"``) and the canonical internal names an API profile's tool
+    schema is built from (``"bash"``). The API runner canonicalizes before
+    granting, so a containment check comparing raw strings against ``"bash"``
+    answers a different question than the dispatch does — it reported "no bash
+    surface" for a profile the runner then handed bash to (#2346). Ask the
+    runner's own map instead of guessing at the spelling.
+    """
+    from theforge.runners.tool_runtime import grants_bash  # noqa: PLC0415
+
+    return grants_bash(profile.allowed_tools)
+
+
 def _host_sandbox_available() -> bool:
     """Return True when the host sandbox wrapper (sandbox-exec/bwrap) is usable."""
     from theforge.runners.sandbox import workspace_effect_sandbox_command
@@ -76,7 +92,7 @@ def _sandbox_readiness(profile: ModelProfile) -> tuple[bool, str]:
             )
         # Codex and other CLIs assert a provider-native --sandbox flag.
         return (True, "")
-    if "bash" not in profile.allowed_tools:
+    if not _grants_bash(profile):
         return (True, "")
 
     if _host_sandbox_available():
@@ -112,7 +128,7 @@ def sandbox_containment_mode(profile: ModelProfile) -> str:
         if profile.cli in _HOST_WRAPPED_CLIS:
             return "mechanical" if _host_sandbox_available() else "unavailable"
         return "native"
-    if "bash" not in profile.allowed_tools:
+    if not _grants_bash(profile):
         return "none"
     return "mechanical" if _host_sandbox_available() else "unavailable"
 
