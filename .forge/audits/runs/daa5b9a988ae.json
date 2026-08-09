@@ -1,0 +1,163 @@
+{
+  "schema_version": 25,
+  "run_id": "daa5b9a988ae",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc25",
+  "task": {
+    "name": "A failed phase attempt overwrites the resumption record left by a successful one, so resuming replays the failure and carries its unfounded derived values forward",
+    "slug": "issue-2351",
+    "story_path": null,
+    "story_text": "## Observed\n\nThe record a story keeps for resumption is replaced by the most recent attempt at a phase, even when\nthat attempt failed and the record it replaces came from an attempt that succeeded.\n\nOne story accumulated three records for the same phase across three runs. Two came from attempts that\nexited cleanly, ran for 90 and 122 seconds, were not marked degraded, and recorded criteria they had\nchecked. The third came from an attempt that was killed by signal after 25 seconds, checked nothing,\nand was marked degraded with a reason naming the failure. The resumption record was written at the\nmoment the story blocked and holds the third one.\n\nThe consequence is that resuming is worse than not resuming. A later attempt recovers a phase result\nthat asserts the phase should escalate, so it escalates again, and does so deterministically rather\nthan intermittently \u2014 the underlying flake is intermittent, but once its output is cached the outcome\nis fixed. The successful results are still on disk in the earlier runs' directories, so the\ninformation needed to proceed exists and is simply not the copy that is consulted.\n\nThe replacement also changes derived values rather than merely losing detail. The two clean attempts\nscored the story's complexity at 8. The failed attempt, having inspected no files and checked no\ncriteria, scored it 9, and that higher figure is what the run then used to derive the story's spend\nallocation and its wall-clock ceiling. So a phase that observed nothing did not just fail to\ncontribute \u2014 it revised a previously founded number upward and had the revision believed.\n\n## Expected\n\nThe result retained for resuming a unit of work is the best-founded one available for that phase, not\nsimply the most recent. An attempt that failed does not displace a stored result of the same phase\nthat succeeded, because the stored result exists to let later work proceed and a failed attempt\ncarries strictly less of what later work needs.\n\nWhere a phase records how much it examined, that measure is what decides which result is authoritative\nwhen several exist, so an attempt that examined nothing cannot supersede one that examined something,\nwhatever their order.\n\nWhere a stored result is nevertheless replaced by a less-founded one, the replacement is visible to an\noperator as a change in what the story is resuming from, rather than being inferable only by comparing\nfiles across run directories.\n\nA value that a phase derives while degraded does not silently supersede the same value derived while\nnot degraded, and any figure carried forward from a degraded attempt is marked as unfounded wherever\nlater stages consume it.\n\n## Diagnosis\n\n**Observed symptom.** Resuming a story replays an escalation instead of continuing, because the\nresumption record holds a failed attempt at a phase that had previously succeeded twice.\n\n**Evidence.**\n\n- `.forge/resume_state/<slug>.json` for the affected story: `degraded: true`, `degraded_reason:\n  agent_failed_with_risk_signals`, `failure_action: escalate`, `criteria_checked: []`,\n  `complexity_score: 9`, `cost_usd: 0.2134839`, `duration_s: 25.63`. The cost and duration match the\n  killed attempt in the most recent run exactly.\n- File modification time on that record is the same second the run recorded the story as blocked.\n- Same story, earlier run directory: `preflight.yaml` with `degraded: false`, `complexity_score: 8`,\n  two criteria checked, single attempt `exit_code: 0`, `duration_s: 90.7`.\n- Same story, second earlier run directory: `preflight.yaml` with `degraded: false`,\n  `complexity_score: 8`, one criterion checked, single attempt `exit_code: 0`, `duration_s: 121.8`.\n- Run log for the most recent run: the story recovers a phase record for this phase during resume,\n  then escalates on the recovered result.\n- Same run log: complexity is reported as sourced from the phase, and the derived allocation and\n  worker ceiling are computed from the higher score.\n\n**Ruled out.** Not the phase failure itself, which is separately filed \u2014 this issue is about which\nresult is retained once a failure has occurred. Not loss of the successful results, which remain\nreadable in the earlier run directories. Not a story-content change invalidating the earlier records,\nsince the same content hash is carried on the record that was overwritten. Not a distinct\nidentifier confusion: the differing id on the resumption record is the story-scoped run id rather than\nthe sprint run id, and is expected.\n\n**Confirmed cause.** The resumption record is written from the outcome of the latest attempt at a\nphase with no comparison against a stored result for the same phase, so a degraded outcome replaces a\nfounded one whenever it happens to occur later, and the derived values it carries replace the founded\nones with it.\n\n**Affected code path.** Resumption-state persistence for phase results, the recovery of phase records\non re-entry, and the derivation of complexity and its dependent limits from the recovered result.\n\n**Fix-success criterion.** After a failed attempt at a phase that previously succeeded, resuming the\nstory proceeds from the successful result rather than the failed one, and any value derived from a\ndegraded attempt does not replace the same value derived from an attempt that was not degraded.\n",
+    "github_issue": 2351,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": null,
+  "outcome": {
+    "success": false,
+    "final_phase": "ESCALATE",
+    "message": "Workspace creation failed: WORKSPACE abort: base branch 'release/v0.13' has diverged from origin (local is 1 ahead, 2 behind). Run: git rebase origin/release/v0.13",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "721189d39d9450cb38e178785c1edd467fcca5258444e54942edf00ad5dd70e7",
+    "resolved_sha256": "f9803e096100527ceb3373ba59ed37a82b78c11dbfaa177f344d883df0ccc68e",
+    "source_sha256_at_finish": "9841a0656c3dc7be573449b3ae01c540e4ab54e5d54e8b6a7cb976a3933eb5ce",
+    "changed_during_run": true,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-09T21:43:43.619698+00:00",
+    "finished_at": "2026-08-09T21:43:45.577217+00:00",
+    "duration_seconds": 1.957519
+  },
+  "workspace": {
+    "path": null,
+    "branch": null,
+    "story_provenance": null,
+    "inherited_superseded_work": false,
+    "inherited_work_surfaced_to_dev": false,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "gate_decisions": [],
+    "gate_runs": 0,
+    "dev_loop": [],
+    "gate_debug": [],
+    "gate_process_teardowns": [],
+    "gate_diagnostic": [],
+    "review_loop": [],
+    "usage_summary": {
+      "dev": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false
+      },
+      "review": {
+        "used": 0,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": false,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": null,
+    "budget_consumption_log": []
+  },
+  "cost": {
+    "total_usd": 0.0,
+    "dev_usd": 0,
+    "review_usd": 0,
+    "dev_invocations": 0,
+    "review_invocations": 0,
+    "agents": [],
+    "story_allocation": null,
+    "allocation_exhausted": null,
+    "reviewer_budget_overruns": []
+  },
+  "preflight": null,
+  "context_manifests": [],
+  "dev_handoffs": [],
+  "dev_prompt_injections": [],
+  "reviews": [],
+  "reviewer_attempts": [],
+  "human_review": null,
+  "plan_review": null,
+  "plan_validation": {
+    "skipped": true,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": null,
+  "landing": null,
+  "landing_status": null,
+  "landing_review": null,
+  "landing_event": null,
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": "WORKSPACE abort: base branch 'release/v0.13' has diverged from origin (local is 1 ahead, 2 behind). Run: git rebase origin/release/v0.13",
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": null,
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose. Extract when a responsibility separates from its neighbours \u2014 never to satisfy a line count. Putting a change in an already-large module is correct if that is where it belongs; a module carved at whatever line got the count down is worse than the large module it came from.",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": null,
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": null,
+    "plan": null,
+    "plan_review": null,
+    "dev": null,
+    "validate": null,
+    "review": null
+  },
+  "totals": {
+    "cost_usd": 0.0,
+    "duration_s": 0.0,
+    "dev_attempts_total": 0,
+    "dev_iterations_productive": 0,
+    "review_cycles_total": 0,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 0,
+    "review_cycles": 0
+  },
+  "sprint_id": "b8e88275ee2a",
+  "sprint_name": "issues-2346,2351,2340,2333,2312"
+}
