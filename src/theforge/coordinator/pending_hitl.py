@@ -40,7 +40,14 @@ def _pending_human_review(
     p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
     elapsed = time.monotonic() - task_start
-    timeout_seconds = config.notifications.human_review_timeout_seconds
+    # Bound the wait by the story budget containing it *before* writing the file,
+    # so the timeout_at an operator reads is the window the poller will actually
+    # honour rather than the unbounded configured one (#2333).
+    timeout_seconds = int(
+        _pending.bounded_gate_wait(
+            config.notifications.human_review_timeout_seconds, "HUMAN_REVIEW"
+        )
+    )
 
     reason = (
         f"{parsed_review.verdict} ({p1} P1, {p2} P2) — "
@@ -73,7 +80,7 @@ def _pending_human_review(
 
     _poll_start = time.monotonic()
     decision, _decided_at = _pending.poll_pending(
-        _eff_run_id, timeout_seconds, project_root=project_root
+        _eff_run_id, timeout_seconds, project_root=project_root, phase_label="HUMAN_REVIEW"
     )
     state.human_review_waited_seconds = time.monotonic() - _poll_start
     state.human_review_mode = "pending"
@@ -128,7 +135,9 @@ def _pending_escalate_gate(
 
     from .escalate_actions import available_escalate_actions, omitted_actions_note
 
-    timeout_seconds = config.notifications.human_review_timeout_seconds
+    timeout_seconds = int(
+        _pending.bounded_gate_wait(config.notifications.human_review_timeout_seconds, "ESCALATE")
+    )
     approve_count = sum(1 for v in reviewer_verdicts.values() if v == "APPROVE")
     total_count = len(reviewer_verdicts)
     verdict_line = (
@@ -252,7 +261,7 @@ def _pending_escalate_gate(
 
     _poll_start = time.monotonic()
     decision, _decided_at = _pending.poll_pending(
-        _eff_run_id, timeout_seconds, project_root=project_root
+        _eff_run_id, timeout_seconds, project_root=project_root, phase_label="ESCALATE"
     )
     waited = time.monotonic() - _poll_start
     state.human_review_waited_seconds = (state.human_review_waited_seconds or 0.0) + waited
@@ -360,7 +369,9 @@ def _pending_plan_review(
     from theforge import pending as _pending
     from theforge.notify_backends import send_notifications
 
-    timeout_seconds = config.plan_review.timeout_seconds
+    timeout_seconds = int(
+        _pending.bounded_gate_wait(config.plan_review.timeout_seconds, "PLAN_REVIEW")
+    )
     first_3_lines = "\n".join(plan_text.splitlines()[:3])
     plan_summary = first_3_lines[:200]
     reason = f"{plan_summary}\nWorktree: .forge/worktrees/{task.slug}"
@@ -393,7 +404,7 @@ def _pending_plan_review(
     mode = config.plan_review.mode
 
     decision, _decided_at = _pending.poll_pending(
-        _eff_run_id, timeout_seconds, project_root=project_root
+        _eff_run_id, timeout_seconds, project_root=project_root, phase_label="PLAN_REVIEW"
     )
     state.plan_review_waited_seconds = time.monotonic() - _pr_start
 

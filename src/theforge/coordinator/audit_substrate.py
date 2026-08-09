@@ -86,7 +86,7 @@ SUBSTRATE_SCHEMA_VERSION = 8
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 25
+CURRENT_RECORD_SCHEMA_VERSION = 26
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1538,6 +1538,22 @@ def _migrate_v24_to_v25(record: dict) -> dict:
     return {**record, "iterations": {**iterations, "gate_process_teardowns": migrated}}
 
 
+def _migrate_v25_to_v26(record: dict) -> dict:
+    """Backfill the empty development-timeout clamp ledger (issue #2333).
+
+    v26 records, per development invocation, any allowance that was shortened to
+    fit the enclosing story deadline. A v25 record predates the clamp entirely,
+    so the honest backfill is the empty list: not "unknown", but known to have
+    had no clamps, because the mechanism that produces them did not exist. The
+    stored record is never rewritten (ADR-0002 refusal-to-forget); this is the
+    reader-side lift applied on load.
+    """
+    iterations = record.get("iterations")
+    if not isinstance(iterations, dict) or "dev_timeout_clamps" in iterations:
+        return record
+    return {**record, "iterations": {**iterations, "dev_timeout_clamps": []}}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1571,6 +1587,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     22: _migrate_v22_to_v23,
     23: _migrate_v23_to_v24,
     24: _migrate_v24_to_v25,
+    25: _migrate_v25_to_v26,
 }
 
 

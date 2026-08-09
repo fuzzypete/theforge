@@ -14,6 +14,7 @@ from pathlib import Path
 
 import yaml
 
+from theforge import worker_budget as _worker_budget
 from theforge.config import ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile, sandbox_containment_mode
 from theforge.config.sandbox_capabilities import SandboxCapabilityError, resolve_capabilities
@@ -65,6 +66,8 @@ from .util import (
     _log,
     _log_phase,
     _log_verbose,
+    cap_timeout_to_story_ceiling,
+    clamp_timeout_to_remaining,
     resolve_timeout_with_active,
     sum_costs,
 )
@@ -1123,7 +1126,30 @@ def _run_dev_phase(
         state.preflight_complexity,
         state.preflight_complexity_score,
     )
-    _dev_timeout = state.adaptive_dev_timeout_seconds or _resolved_timeout
+    # ── Fit this invocation inside the story deadline containing it (#2333) ───
+    # Two guards, because the seated value is not always present: when
+    # adaptive_dev_timeout_seconds is unset the fallback is the raw
+    # complexity-derived figure, which knows nothing of the enclosing ceiling, so
+    # it gets the same static cap the seated value received. Then both are
+    # clamped against what the story has actually got left.
+    _enclosing_budget = _worker_budget.current_worker_budget()
+    if state.adaptive_dev_timeout_seconds:
+        _dev_timeout = state.adaptive_dev_timeout_seconds
+    else:
+        _dev_timeout, _fallback_cap_audit = cap_timeout_to_story_ceiling(
+            _resolved_timeout,
+            (_enclosing_budget.worker_timeout_seconds if _enclosing_budget is not None else None),
+            max(1, state.adaptive_dev_max or config.retry.max_dev_iterations),
+        )
+        if _fallback_cap_audit["capped"]:
+            _log(f"  {_fallback_cap_audit['rationale']}")
+    _dev_timeout, _clamp_audit = clamp_timeout_to_remaining(
+        _dev_timeout,
+        _enclosing_budget.remaining() if _enclosing_budget is not None else None,
+    )
+    if _clamp_audit is not None:
+        state.dev_timeout_clamps.append(_clamp_audit)
+        _log(f"  {_clamp_audit['rationale']}")
     if _dev_override_active:
         _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
     else:
