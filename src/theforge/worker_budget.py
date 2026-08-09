@@ -21,7 +21,10 @@ Two things live here:
    decision is not time the worker is unresponsive. :func:`operator_wait` marks
    those intervals; the scheduler credits them back to the story deadline via
    :func:`operator_wait_credit`, so a wait the system itself chose to begin is
-   never charged against the story as a fault.
+   never charged against the story as a fault. Credit is *pooled* across a batch
+   group: members that share one window and one deadline share the offset too, so
+   the scheduler's deadline and every allowance derived inside the story are
+   computed from the same number.
 
 Stdlib-only by design: this is a leaf module imported by the sprint runner, the
 coordinator, and the pending-decision poller alike.
@@ -89,10 +92,30 @@ class WorkerBudget:
         with self._lock:
             return self.wait_started_at is not None
 
+    def pooled_credit(self, now: float | None = None) -> float:
+        """Operator-wait credit for the whole window, not just this member's share.
+
+        Grouped members share one started_at, one ceiling, and one deadline, so a
+        wait entered under any member's slug is elapsed clock that all of them are
+        charged for. The credit that offsets it therefore has to be pooled too —
+        the alternative is the member that did *not* wait paying for the wait.
+        Identical to :meth:`credit` for an ungrouped story, which is its own only
+        peer.
+        """
+        return sum(peer.credit(now) for peer in _group_peers(self))
+
     def remaining(self, now: float | None = None) -> float:
-        """Working seconds left before the enclosing deadline, waits excluded."""
+        """Working seconds left before the enclosing deadline, waits excluded.
+
+        Uses the *pooled* credit so this answer matches the deadline the sprint
+        scheduler is actually enforcing (``_effective_deadline`` credits the same
+        pool). Without that, a batch member reaching a gate after a peer had
+        waited would compute its remaining time against elapsed clock that
+        included the peer's wait but credit none of it back — and be offered no
+        wait at all, on a story whose deadline had not moved (#2333).
+        """
         _now = time.monotonic() if now is None else now
-        elapsed = max(0.0, _now - self.started_at) - self.credit(_now)
+        elapsed = max(0.0, _now - self.started_at) - self.pooled_credit(_now)
         return self.worker_timeout_seconds - elapsed
 
     def begin_wait(self, label: str = "") -> None:
@@ -169,10 +192,19 @@ def clear_worker_budgets() -> None:
 
 
 def _group_peers(budget: WorkerBudget) -> list[WorkerBudget]:
+    """Every budget sharing *budget*'s window, itself included.
+
+    ``budget`` is added explicitly rather than assumed present in the registry:
+    a member unregistered at completion, or one replaced by a re-dispatch, must
+    still account for its own ledger to whoever is holding it.
+    """
     if budget.group is None:
         return [budget]
     with _registry_lock:
-        return [b for b in _registry.values() if b.group == budget.group]
+        peers = [b for b in _registry.values() if b.group == budget.group]
+    if not any(peer is budget for peer in peers):
+        peers.append(budget)
+    return peers
 
 
 def operator_wait_credit(slug: str, now: float | None = None) -> float:
@@ -180,12 +212,14 @@ def operator_wait_credit(slug: str, now: float | None = None) -> float:
 
     Includes a wait still in progress, so a deadline check landing mid-wait sees
     the credit rather than expiring the story eighteen seconds before the gate it
-    is sitting in would have answered.
+    is sitting in would have answered. Pooled across a batch group, matching what
+    :meth:`WorkerBudget.remaining` subtracts, so the scheduler's deadline and the
+    allowances derived inside the story agree on one number.
     """
     budget = get_worker_budget(slug)
     if budget is None:
         return 0.0
-    return sum(peer.credit(now) for peer in _group_peers(budget))
+    return budget.pooled_credit(now)
 
 
 def remaining_seconds(slug: str, now: float | None = None) -> float | None:
@@ -215,14 +249,16 @@ def waiting_on_operator(slug: str) -> tuple[bool, str, float]:
 def operator_wait(label: str = "", budget: WorkerBudget | None = None) -> Iterator[float]:
     """Mark the enclosed block as time spent waiting for an operator decision.
 
-    Yields the seconds already credited before the wait began. A no-op when there
-    is no enclosing budget, which is the standalone-``forge run`` case.
+    Yields the seconds already credited against this window before the wait began
+    — pooled across a batch group, the same figure every other credit consumer
+    reads. A no-op when there is no enclosing budget, which is the
+    standalone-``forge run`` case.
     """
     _budget = budget if budget is not None else current_worker_budget()
     if _budget is None:
         yield 0.0
         return
-    already = _budget.operator_wait_seconds
+    already = _budget.pooled_credit()
     _budget.begin_wait(label)
     try:
         yield already

@@ -242,6 +242,58 @@ def test_group_members_pool_their_operator_wait_credit() -> None:
     assert worker_budget.operator_wait_credit("story-c") == 999.0
 
 
+def test_a_members_remaining_time_credits_the_wait_a_peer_banked() -> None:
+    """The pooled credit has to reach ``remaining``, not only the deadline check.
+
+    A member reaching a gate after a peer already waited computes its remaining
+    time against elapsed clock that *includes* the peer's wait. Crediting only
+    its own ledger would have it pay for a wait it did not take — and be offered
+    nothing — on a story whose deadline had not moved.
+    """
+    leader = worker_budget.register_worker_budget(
+        "story-a", 5400, group="batch:g1", started_at=0.0
+    )
+    member = worker_budget.register_worker_budget(
+        "story-b", 5400, group="batch:g1", started_at=0.0
+    )
+    leader.operator_wait_seconds = 1800.0  # the leader sat at a gate for 30m
+
+    # 2000s of wall clock gone, 1800s of it the leader's gate wait. Both members
+    # are measured against the same window, so both see the same working time.
+    assert member.remaining(now=2000.0) == 5200.0
+    assert leader.remaining(now=2000.0) == 5200.0
+    assert worker_budget.remaining_seconds("story-b", now=2000.0) == 5200.0
+
+
+def test_an_ungrouped_story_pools_only_its_own_credit() -> None:
+    solo = worker_budget.register_worker_budget("story-a", 3600, started_at=0.0)
+    worker_budget.register_worker_budget(
+        "story-b", 3600, started_at=0.0
+    ).operator_wait_seconds = 900.0
+    solo.operator_wait_seconds = 100.0
+
+    assert solo.pooled_credit(now=1000.0) == 100.0
+    assert solo.remaining(now=1000.0) == 2700.0
+
+
+def test_pooled_credit_still_counts_a_member_dropped_from_the_registry() -> None:
+    """A member unregistered at completion keeps accounting for its own ledger."""
+    leader = worker_budget.register_worker_budget(
+        "story-a", 5400, group="batch:g1", started_at=0.0
+    )
+    member = worker_budget.register_worker_budget(
+        "story-b", 5400, group="batch:g1", started_at=0.0
+    )
+    leader.operator_wait_seconds = 300.0
+    member.operator_wait_seconds = 120.0
+
+    worker_budget.unregister_worker_budget("story-b")
+
+    assert leader.pooled_credit(now=1000.0) == 300.0
+    # The dropped member is not in the registry but still knows its own peers.
+    assert member.pooled_credit(now=1000.0) == 420.0
+
+
 def test_waiting_on_operator_reports_the_peer_actually_blocked() -> None:
     worker_budget.register_worker_budget("story-a", 5400, group="batch:g1", started_at=0.0)
     member = worker_budget.register_worker_budget(

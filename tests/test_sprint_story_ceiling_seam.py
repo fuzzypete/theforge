@@ -187,6 +187,36 @@ def test_gate_wait_cannot_exceed_the_story_window_containing_it() -> None:
     assert pending.bounded_gate_wait(3600, "ESCALATE") == 3600
 
 
+def test_a_later_batch_member_is_offered_the_wait_its_peer_did_not_spend() -> None:
+    """Pooled credit must reach the allowances, not only the scheduler's check.
+
+    The leader sits at a gate for most of the shared window. When the next member
+    reaches its own gate, the deadline has not moved — the wait was credited — so
+    the gate it is offered must reflect that. Crediting only the member's own
+    ledger left it computing against elapsed clock that included the leader's
+    wait, and offered nothing.
+    """
+    started = time.monotonic() - 3400
+    leader = worker_budget.register_worker_budget(
+        "bug-a", 7200.0, group="batch:g1", started_at=started
+    )
+    worker_budget.register_worker_budget("bug-b", 7200.0, group="batch:g1", started_at=started)
+    leader.operator_wait_seconds = 3300.0  # the leader waited out nearly all of it
+
+    set_worker_slug("bug-b")
+
+    # ~100s of working time was actually spent, so the member has ~7100s left and
+    # a full gate wait is affordable.
+    assert worker_budget.remaining_seconds("bug-b") > 7000
+    assert pending.bounded_gate_wait(3600, "HUMAN_REVIEW") == 3600
+
+    # The same pooled figure drives the dev clamp, so a member dispatched after a
+    # peer's gate wait is not clamped for time it never spent.
+    grant, clamp_audit = clamp_timeout_to_remaining(1800, worker_budget.remaining_seconds("bug-b"))
+    assert grant == 1800
+    assert clamp_audit is None
+
+
 def test_operator_wait_time_is_credited_back_to_the_story_deadline() -> None:
     """Wait time is excluded from elapsed, so a waiting story keeps its budget."""
     budget = worker_budget.register_worker_budget("story-a", 100.0, started_at=time.monotonic())
