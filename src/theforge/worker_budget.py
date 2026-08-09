@@ -47,6 +47,7 @@ __all__ = [
     "register_worker_budget",
     "remaining_seconds",
     "unregister_worker_budget",
+    "waiting_on_operator",
 ]
 
 
