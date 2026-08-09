@@ -1401,8 +1401,8 @@ class TestReviewFundingReservation:
         reservation = self._reservation(reserved_usd=3.03, cycles=3)
         allocation = self._allocation(usd=6.12)
 
-        # $2.02 of review has run: $1.01 of reserve is still reachable, so the
-        # non-review pool is $6.12 - $1.01 = $5.11, and $3.00 of dev fits.
+        # $2.02 of review has run and $1.01 of reserve is still reachable, so the
+        # non-review pool is $6.12 - $2.02 - $1.01 = $3.09, and $3.00 of dev fits.
         assert (
             sb.nonreview_funding_exhausted(
                 reservation,
@@ -1430,7 +1430,9 @@ class TestReviewFundingReservation:
         assert shortfall["reserved_review_usd"] == 3.03
         assert shortfall["reserved_review_remaining_usd"] == 1.01
         assert shortfall["reserved_review_released"] is False
-        assert shortfall["nonreview_allocation_usd"] == 5.11
+        # $6.12 less the $2.02 review has already spent and the $1.01 it may
+        # still spend — dev's $5.11 is well past it.
+        assert shortfall["nonreview_allocation_usd"] == 3.09
         assert shortfall["observed_usd"] == 5.11
 
     def test_a_released_reservation_frees_the_remainder_for_dev(self) -> None:
@@ -1443,7 +1445,7 @@ class TestReviewFundingReservation:
             sb.nonreview_funding_exhausted(
                 reservation,
                 allocation,
-                observed_usd=3.11,  # $2.10 dev + $1.01 review
+                observed_usd=2.61,  # $1.60 dev + $1.01 review
                 review_observed_usd=1.01,
                 participants=["dev"],
             )
@@ -1468,7 +1470,7 @@ class TestReviewFundingReservation:
             sb.nonreview_funding_exhausted(
                 released,
                 allocation,
-                observed_usd=3.11,
+                observed_usd=2.61,
                 review_observed_usd=1.01,
                 participants=["dev"],
             )
@@ -1497,9 +1499,10 @@ class TestReviewFundingReservation:
         )
 
         assert shortfall is not None
-        assert shortfall["nonreview_allocation_usd"] == 4.12
+        # $4.12 less the $2.50 review spent and the $0.00 it may still spend.
+        assert shortfall["nonreview_allocation_usd"] == 1.62
         assert shortfall["reserved_review_remaining_usd"] == 0.0
-        assert shortfall["remaining_usd"] == 0.0
+        assert shortfall["remaining_usd"] == -2.50
 
     def test_a_retained_cycle_that_runs_stops_being_withheld_from_dev(self) -> None:
         """Release nets from the spend AT release, so the retained cycle frees up."""
@@ -1522,16 +1525,63 @@ class TestReviewFundingReservation:
         # And an overrunning retained cycle still floors at zero.
         assert sb.remaining_reserved_review_usd(released, 3.50) == 0.0
 
-        # The dev attempt after the retained cycle draws the whole allocation.
+        # The dev attempt after the retained cycle draws what is left of the
+        # allocation with nothing withheld: $4.12 - $2.02 spent - $0.00 possible.
         assert (
             sb.nonreview_funding_exhausted(
                 released,
                 self._allocation(),  # $4.12
-                observed_usd=6.02,  # $4.00 dev + $2.02 review
+                observed_usd=3.50,  # $1.48 dev + $2.02 review
                 review_observed_usd=2.02,
                 participants=["dev"],
             )
             is None
+        )
+        # Holding the retained cycle flat would have refused that attempt:
+        # $4.12 - $2.02 - $1.01 = $1.09, against $1.48 of dev spend.
+
+    def test_total_spend_never_passes_the_allocation_once_review_has_run(self) -> None:
+        """Review money already spent stays out of the dev pool.
+
+        Netting only the *protected* balance out of the allocation would credit
+        every dollar review already drew back to dev: a reserve fully consumed by
+        a cycle that ran leaves ``allocation - protected`` equal to the whole
+        allocation again, and dev is admitted having spent it twice. The check
+        binds on total spend plus review spend still possible.
+        """
+        allocation = self._allocation()  # $4.12
+        reservation = self._reservation(reserved_usd=1.01, cycles=1)
+
+        # The reserved cycle ran, so nothing is protected — but $1.01 is gone.
+        for dev_usd in (3.11, 3.50, 4.12, 5.00):
+            shortfall = sb.nonreview_funding_exhausted(
+                reservation,
+                allocation,
+                observed_usd=round(dev_usd + 1.01, 4),
+                review_observed_usd=1.01,
+                participants=["dev"],
+            )
+            funded = shortfall is None
+            # Funded only while total spend is under the allocation.
+            assert funded is (round(dev_usd + 1.01, 4) < 4.12), dev_usd
+
+        # And the same holds for a released reservation with nothing retained.
+        released = sb.release_review_reservation(
+            reservation,
+            review_observed_usd=1.01,
+            retained_cycles=0,
+            review_cycle=1,
+            reason="approve_final",
+        )
+        assert (
+            sb.nonreview_funding_exhausted(
+                released,
+                allocation,
+                observed_usd=4.12,  # $3.11 dev + $1.01 review: exactly spent
+                review_observed_usd=1.01,
+                participants=["dev"],
+            )
+            is not None
         )
 
     def test_re_releasing_only_ever_shrinks_the_retained_balance(self) -> None:
@@ -1581,7 +1631,9 @@ class TestReviewFundingReservation:
             participants=["dev"],
         )
         assert shortfall is not None
-        assert shortfall["nonreview_allocation_usd"] == 4.12
+        # Nothing is withheld any more, but the $1.01 review spent is still gone:
+        # $4.12 - $1.01 - $0.00.
+        assert shortfall["nonreview_allocation_usd"] == 3.11
         assert shortfall["reserved_review_released"] is True
 
     def test_releasing_on_unmeasured_review_spend_holds_the_reservation(self) -> None:
@@ -1598,6 +1650,30 @@ class TestReviewFundingReservation:
             is reservation
         )
         assert sb.remaining_reserved_review_usd(reservation, None) is None
+
+        # A RE-release on unmeasured spend must hold too: writing a zero
+        # baseline over the one the first release recorded would silently
+        # un-net the retained cycle and withhold it all over again.
+        released = sb.release_review_reservation(
+            reservation,
+            review_observed_usd=1.01,
+            retained_cycles=1,
+            review_cycle=1,
+            reason="approve_p2_cleanup",
+        )
+        assert (
+            sb.release_review_reservation(
+                released,
+                review_observed_usd=None,
+                retained_cycles=0,
+                review_cycle=2,
+                reason="approve_final",
+            )
+            is released
+        )
+        assert released["review_observed_at_release_usd"] == 1.01
+        assert sb.remaining_reserved_review_usd(released, 2.02) == 0.0
+
         for empty in (None, {}, {"reserved_review_usd": 0.0}):
             assert (
                 sb.release_review_reservation(

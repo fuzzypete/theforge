@@ -836,14 +836,18 @@ def release_review_reservation(
     reserved = _reserved_review_usd(reservation)
     if reserved <= 0.0:
         return reservation
+    if review_observed_usd is None:
+        # Review spend is unmeasured: the unspent balance is a guess, so hold the
+        # record as it stands rather than release a number the run does not have.
+        # A re-release must bail here too — writing a zero baseline over the one
+        # an earlier release recorded would silently un-net the retained cycle.
+        return reservation
     try:
         cycle_cost = max(0.0, float(reservation.get("review_cycle_cost_usd") or 0.0))
     except (TypeError, ValueError):
         cycle_cost = 0.0
     remaining = remaining_reserved_review_usd(reservation, review_observed_usd)
     if remaining is None:
-        # Review spend is unmeasured: the unspent balance is a guess, so hold the
-        # reservation as seated rather than release a number the run does not have.
         return reservation
     retained = _balance(min(remaining, max(0, int(retained_cycles)) * cycle_cost))
     released = dict(reservation)
@@ -853,7 +857,7 @@ def release_review_reservation(
     # The baseline every later netting of the retained balance is measured from:
     # review spend recorded AT this release. Without it a retained cycle that
     # then runs would go on being withheld from dev after it was paid for.
-    released["review_observed_at_release_usd"] = round(float(review_observed_usd or 0.0), 4)
+    released["review_observed_at_release_usd"] = round(float(review_observed_usd), 4)
     released["retained_review_cycles"] = max(0, int(retained_cycles))
     released["retained_review_usd"] = retained
     # What THIS release let go — a re-release records its own delta, and
@@ -928,15 +932,19 @@ def nonreview_funding_exhausted(
     """Return a shortfall when the non-reserved part of the allocation is gone.
 
     The other half of holding a reservation: money committed to review must not
-    be spendable by an earlier phase, so once non-review spend has reached
-    ``allocation - reserved``, no further attempt at ``phase`` is funded.
+    be spendable by an earlier phase, so once non-review spend has reached what
+    the allocation leaves after review, no further attempt at ``phase`` is
+    funded. Equivalently — and this is the invariant the arithmetic keeps — an
+    attempt is funded only while ``total spend + review spend still possible``
+    is under the allocation.
 
     What is protected is the reserve that can *still be spent*, not the gross
     figure seating priced against the maximum permitted cycle count (#2340).
     Review spend already made comes out of the reserve, and once review reaches a
     terminal verdict the reservation is released down to the cycles that remain
     reachable. Withholding money from cycles that have run, or that can no longer
-    run, refuses dev funded work against a phantom debit.
+    run, refuses dev funded work against a phantom debit — but the money those
+    cycles DID spend is spent, and stays out of the dev pool.
 
     Returns ``None`` — funded — whenever there is no reservation to protect or
     spend is unmeasured. The payload reuses the :func:`phase_funding_shortfall`
@@ -954,7 +962,13 @@ def nonreview_funding_exhausted(
     if protected is None:
         return None
     nonreview_observed = _balance(max(0.0, float(observed_usd) - float(review_observed_usd)))
-    ceiling = _balance(allocation_usd - protected)
+    # What is left for non-review work is the allocation less the review money
+    # ALREADY SPENT and the review money that can still be spent. Netting only
+    # the protected balance would credit every dollar review has already drawn
+    # back into the dev pool, funding attempts past the whole allocation: with a
+    # reserve fully consumed by a cycle that ran, `allocation - protected` is the
+    # entire allocation again, and dev would be admitted having spent it twice.
+    ceiling = _balance(allocation_usd - float(review_observed_usd) - protected)
     remaining = _balance(ceiling - nonreview_observed)
     # Strictly greater: a non-review pool spent to the cent has nothing left to
     # fund another attempt with, and admitting one would spend the reserved

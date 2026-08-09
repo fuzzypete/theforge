@@ -1647,7 +1647,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         allocation the retained cycle no longer needs. Holding the retained
         figure flat refuses this attempt against money already spent.
         """
-        state, result, dev_calls = self._run_loop(tmp_path, dev_costs=[6.95, 4.10])
+        state, result, dev_calls = self._run_loop(tmp_path, dev_costs=[6.95, 2.53])
 
         # Three dev dispatches: the seated one and two cleanup passes.
         assert len(dev_calls) == 3
@@ -1655,10 +1655,12 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         assert state.allocation_exhausted is None
         assert state.review_cycle == 2
         assert state.total_review_cost_measured == 2.02
-        # Non-review spend ($11.05) is past what the first release left free
-        # ($12.00 - $1.01 = $10.99); only netting the spent retained cycle out
-        # of the reserve funds this attempt.
-        assert round(dev_calls[2] - state.total_review_cost_measured, 4) == 11.05
+        # Total spend at this dispatch is $11.50 of a $12.00 allocation, so the
+        # story genuinely has money left — but only once the retained cycle's
+        # $1.01 stops being withheld: holding it flat leaves $12.00 - $11.50 -
+        # $1.01 = -$0.51 and refuses the attempt.
+        assert dev_calls[2] == 11.50
+        assert dev_calls[2] < 12.00
 
         reservation = state.review_funding_reservation
         assert reservation["release_count"] == 2
