@@ -234,6 +234,24 @@ retry:
   adaptive_iterations: true
   max_dev_iterations_cap: 5
   max_review_cycles_cap: 5
+  # Apply the advisory the escalate gate just paid for, instead of discarding it
+  # (#2279). Two things had to be true for this to have been off, and both were:
+  # the capability shipped default-off ("a project that has not opted in sees no
+  # change"), AND the orchestrator this project runs on — rc24, cut 08-08 00:04 —
+  # predates #2279 and has no such field. So setting this is inert until an rc
+  # containing #2279 is cut and the orchestrator moves to it. Verified: rc24's
+  # RetryPolicy has no escalate_timeout_policy attribute, and it accepts the key
+  # silently rather than rejecting it.
+  #
+  # Not an auto-approve: only a valid report whose recommendation this run can
+  # actually perform is applied. `elevate`, an absent recommendation, and an
+  # advisor that produced nothing all still fall back to preserving the
+  # checkpoint. An operator selection before expiry always wins; this decides
+  # only what an expiry means.
+  #
+  # Turned on 2026-08-09 after issue-2309 expired at an escalate gate holding a
+  # sound `land_core_defer_edges` recommendation and lost it.
+  escalate_timeout_policy: apply_advice
 
 plan:
   enabled: true
@@ -268,7 +286,11 @@ notifications:
   # unattended overnight runs, where the "chance to answer" half is worth
   # nothing and the wait is pure dead time before the same preserved outcome.
   #
-  # #2279 has landed: expiry now applies the advisory recommendation instead of
-  # discarding it, so expiring is no longer a failure. This is now a question of
-  # how long to defer a decision, not whether to lose one.
+  # An earlier version of this comment claimed #2279 made expiry apply the
+  # advisory recommendation automatically. That was wrong twice over: #2279
+  # shipped default-off, and the orchestrator running this project predates it
+  # entirely. Every expiry here has discarded the recommendation the gate paid
+  # for. retry.escalate_timeout_policy opts in, but does nothing until an rc
+  # containing #2279 is cut. Until then a longer wait costs an outcome, not just
+  # wall clock — which is the trade this value should be set against today.
   human_review_timeout_seconds: 3600
