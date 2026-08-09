@@ -779,7 +779,9 @@ def _release_review_reservation(
 
     ``retained_cycles`` is how many review cycles remain reachable: one for a P2
     cleanup pass (its dev iteration loops back through REVIEW), zero once the
-    approval is being finalized. The release is mirrored into
+    approval is being finalized. Callers must sit where the branch PROVES that
+    count — an approve alone does not, since an interactive session can still
+    reject or extend back into REVIEW. The release is mirrored into
     ``adaptive_limits_audit`` so the run audit keeps showing the real dispatch
     inputs without a new audit schema path.
 
@@ -1022,6 +1024,11 @@ def _handle_interactive_review_decision(
     if decision == "approve":
         if not history_already_appended:
             _append_cycle_history(state, parsed_review)
+        # The operator ended the run, so the seated review cycles cannot run.
+        # This is the only interactive outcome that proves that: extend and
+        # reject both loop back through REVIEW, and a release before the
+        # decision would strip their cycles of the reservation (#2258/#2340).
+        _release_review_reservation(state, retained_cycles=0, reason="approve_final")
         if exhausted_cycles:
             _approve_msg = (
                 f"Task '{task.name}' completed. "
@@ -2023,9 +2030,11 @@ def _run_review_phase(
                 )
             return _ReviewOutcome.RETRY_DEV, None, config
         # Cleanup was either skipped or terminated.
-        # No further review cycle is reachable on this path, so nothing of the
-        # reserve is still review's — release all of it before finalization.
-        _release_review_reservation(state, retained_cycles=0, reason="approve_final")
+        # The reservation is released where the branch PROVES the cycles it was
+        # priced against cannot run — not merely where review approved. An
+        # interactive session may still send this back through REVIEW on a
+        # reject or an extend, so the release for that path happens inside the
+        # decision handler, on its approve branch only.
         if interactive:
             return _handle_interactive_review_decision(
                 state,
@@ -2044,6 +2053,9 @@ def _run_review_phase(
                 history_already_appended=True,
             )
         else:
+            # The run finalizes here: no review cycle is reachable any more, so
+            # nothing of the reserve is still review's.
+            _release_review_reservation(state, retained_cycles=0, reason="approve_final")
             return (
                 _ReviewOutcome.DONE,
                 _finalize_approve(

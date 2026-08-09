@@ -1485,22 +1485,34 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         """One dev iteration, then REVIEW(APPROVE + P2s) → the next DEV dispatch."""
         return self._run_loop(tmp_path, dev_costs=[dev_cost_usd])
 
-    def _run_loop(self, tmp_path: Path, *, dev_costs: list[float]):
-        """Drive DEV → VALIDATE → REVIEW(APPROVE + P2s) round the cleanup loop.
+    def _run_loop(
+        self,
+        tmp_path: Path,
+        *,
+        dev_costs: list[float],
+        review_output: str | None = None,
+        human_decision: tuple[str, str | None] | None = None,
+    ):
+        """Drive DEV → VALIDATE → REVIEW round the loop the review verdict picks.
 
-        Each dev dispatch spends the next figure in ``dev_costs``; the dispatch
-        after the list is exhausted stops the loop, so the run gets exactly as
-        many review cycles as there are cleanup passes. Returns
-        ``(state, result, dev_calls)`` where ``dev_calls`` records the measured
-        spend at the entry of every dev dispatch — its length is how many dev
-        attempts the funding checks admitted.
+        ``review_output`` defaults to an APPROVE carrying P2s, which routes into
+        the cleanup loop; a clean APPROVE finalizes instead. Passing
+        ``human_decision`` runs the loop interactively and answers the operator
+        prompt with it. Each dev dispatch spends the next figure in
+        ``dev_costs``; the dispatch after the list is exhausted stops the loop.
+        Returns ``(state, result, dev_calls)`` where ``dev_calls`` records the
+        measured spend at the entry of every dev dispatch — its length is how
+        many dev attempts the funding checks admitted.
         """
+        import contextlib
+
         from coord_test_helpers import _make_agent_result, _make_task
         from test_coord_review_p2_cleanup import APPROVE_WITH_P2
 
         from theforge.coordinator.engine import _coordinator_loop
         from theforge.coordinator.validate_phase import _ValidateOutcome
 
+        review_output = APPROVE_WITH_P2 if review_output is None else review_output
         config = self._config(tmp_path)
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path)
@@ -1523,7 +1535,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
             return [
                 _make_agent_result(
                     success=True,
-                    output=APPROVE_WITH_P2,
+                    output=review_output,
                     profile_name="openai-gpt-5.5-cli",
                     cost_usd=1.01,
                 )
@@ -1542,9 +1554,24 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
                 "theforge.coordinator.review_phase._has_commits_ahead_of_base",
                 return_value=True,
             ),
+            (
+                patch(
+                    "theforge.coordinator.review_phase._human_review",
+                    return_value=human_decision,
+                )
+                if human_decision is not None
+                else contextlib.nullcontext()
+            ),
         ):
             try:
-                result = _coordinator_loop(state, config, task, "story", task_start=0.0)
+                result = _coordinator_loop(
+                    state,
+                    config,
+                    task,
+                    "story",
+                    task_start=0.0,
+                    interactive=human_decision is not None,
+                )
             except _StopAtCleanupDev:
                 result = None
         return state, result, dev_calls
@@ -1669,3 +1696,76 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         assert sb.remaining_reserved_review_usd(reservation, 2.02) == 0.0
         # The audit shows the re-release, not the first one.
         assert state.adaptive_limits_audit["review_funding_reservation"]["release_count"] == 2
+
+    def test_a_finalized_approval_releases_the_whole_reserve(self, tmp_path: Path) -> None:
+        """The approve_final path, end to end: nothing is reachable, nothing is held.
+
+        A clean APPROVE skips cleanup and finalizes, so every seated cycle the
+        story did not run is unreachable. The release must land on that branch —
+        the story's landing record and the audit both read the reservation, and a
+        record still claiming five withheld cycles misreports where the money went.
+        """
+        from coord_test_helpers import APPROVE_REVIEW, _make_task
+
+        from theforge.coordinator.audit import generate_audit_log
+        from theforge.coordinator.state import CoordinatorResult
+
+        state, result, dev_calls = self._run_loop(
+            tmp_path, dev_costs=[1.00], review_output=APPROVE_REVIEW
+        )
+
+        assert dev_calls == [0.0]
+        assert result is not None
+        assert result.phase == Phase.DONE
+        assert state.p2_cleanup_active is False
+
+        reservation = state.review_funding_reservation
+        assert reservation["released"] is True
+        assert reservation["release_reason"] == "approve_final"
+        assert reservation["release_count"] == 1
+        assert reservation["retained_review_cycles"] == 0
+        assert reservation["retained_review_usd"] == 0.0
+        # One $1.01 cycle ran of the five seated: the other four are let go.
+        assert reservation["released_review_usd"] == round(
+            float(reservation["reserved_review_usd"]) - 1.01, 4
+        )
+        assert sb.remaining_reserved_review_usd(reservation, 1.01) == 0.0
+
+        audit = generate_audit_log(
+            self._config(tmp_path),
+            _make_task(tmp_path),
+            CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="x"),
+        )
+        block = audit["iterations"]["adaptive_limits"]["review_funding_reservation"]
+        assert block["release_reason"] == "approve_final"
+        assert block["retained_review_usd"] == 0.0
+        assert block["reserved_review_cycles"] == reservation["reserved_review_cycles"]
+
+    def test_an_interactive_reject_keeps_the_reservation_seated(self, tmp_path: Path) -> None:
+        """An approve the operator can undo does not prove the cycles are unreachable.
+
+        Reject and extend both loop back through REVIEW, so releasing on the
+        strength of the reviewer's APPROVE alone would strip those cycles of the
+        #2258 protection. The release belongs on the operator's approve.
+        """
+        from coord_test_helpers import APPROVE_REVIEW
+
+        state, result, dev_calls = self._run_loop(
+            tmp_path,
+            dev_costs=[1.00],
+            review_output=APPROVE_REVIEW,
+            human_decision=("reject", "not yet"),
+        )
+
+        # The reject looped back to DEV, and that attempt was funded.
+        assert len(dev_calls) == 2
+        assert result is None
+        assert state.human_review_decision == "reject"
+
+        reservation = state.review_funding_reservation
+        assert reservation.get("released") is not True
+        assert "retained_review_usd" not in reservation
+        # The reserve still covers the cycles the reject made reachable again.
+        assert sb.remaining_reserved_review_usd(
+            reservation, state.total_review_cost_measured
+        ) == round(float(reservation["reserved_review_usd"]) - 1.01, 4)
