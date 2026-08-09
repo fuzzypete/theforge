@@ -1424,3 +1424,390 @@ class TestTheSeatedReviewReservationIsHeldAcrossPhases:
 
         assert state.review_funding_reservation["reserved_review_usd"] == 0.0
         assert state.allocation_exhausted is None
+
+
+class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
+    """A story is not refused work against cycles that cannot happen (#2340).
+
+    The reservation is priced at seating against the MAXIMUM review cycles the
+    story was granted, and nothing revised it afterwards — run
+    ``d55c953fe273`` / story ``issue-2309`` reserved $32.98 for five cycles,
+    ran one for $14.08, and was then refused a P2-cleanup dev attempt in the
+    same second the APPROVE landed, with $18.90 of its allocation withheld for
+    four cycles that could no longer occur. These tests pin the release at the
+    seam: after an approve-equivalent verdict only the cycles still reachable
+    stay protected, and the run audit shows what was let go.
+    """
+
+    def _config(self, tmp_path: Path):
+        from coord_test_helpers import _make_config, _make_review_profile
+
+        from theforge.config.types import AssignmentConfig, RetryPolicy
+
+        config = _make_config(tmp_path)
+        return dataclasses.replace(
+            config,
+            dev_profile=dataclasses.replace(config.dev_profile, budget_usd=2.38),
+            review_pool=[_make_review_profile("openai-gpt-5.5-cli", budget_usd=1.01)],
+            synthesis_profile=None,
+            retry=RetryPolicy(
+                max_dev_iterations=3,
+                max_review_cycles=5,
+                max_dev_iterations_cap=6,
+                max_review_cycles_cap=5,
+                adaptive_iterations=True,
+            ),
+            assignment=AssignmentConfig(enabled=True, adaptive_enabled=True),
+        )
+
+    def _seated_state(self, tmp_path: Path):
+        """A $12.00 allocation: enough for the dev estimate and five cycles."""
+        _seed_dev_profile_history(
+            tmp_path, avg_cost_usd=1.904, avg_iterations=2.0, complexity_score=3
+        )
+        state = CoordinatorState(log_dir=tmp_path / "logs")
+        state.preflight_complexity = "medium"
+        state.preflight_complexity_score = 3
+        state.workspace_path = tmp_path
+        state.branch_name = "feat/issue-2340"
+        state.story_allocation = {
+            "allocation_usd": 12.00,
+            "basis": sb.BASIS_SUBSTRATE_BAND,
+            "complexity_score": 3,
+            "median_usd": 0.94,
+            "p90_usd": 2.38,
+            "max_usd": 3.30,
+            "sample_count": 20,
+        }
+        return state
+
+    def _run_to_p2_cleanup(self, tmp_path: Path, *, dev_cost_usd: float):
+        """One dev iteration, then REVIEW(APPROVE + P2s) → the next DEV dispatch."""
+        return self._run_loop(tmp_path, dev_costs=[dev_cost_usd])
+
+    def _run_loop(
+        self,
+        tmp_path: Path,
+        *,
+        dev_costs: list[float],
+        review_output: str | None = None,
+        human_decision: tuple[str, str | None] | None = None,
+        zero_findings_stop: int = 0,
+    ):
+        """Drive DEV → VALIDATE → REVIEW round the loop the review verdict picks.
+
+        ``review_output`` defaults to an APPROVE carrying P2s, which routes into
+        the cleanup loop; a clean APPROVE finalizes instead. Passing
+        ``human_decision`` runs the loop interactively and answers the operator
+        prompt with it; ``zero_findings_stop`` arms the convergence
+        early-termination route. Each dev dispatch spends the next figure in
+        ``dev_costs``; the dispatch after the list is exhausted stops the loop.
+        Returns ``(state, result, dev_calls)`` where ``dev_calls`` records the
+        measured spend at the entry of every dev dispatch — its length is how
+        many dev attempts the funding checks admitted.
+        """
+        import contextlib
+
+        from coord_test_helpers import _make_agent_result, _make_task
+        from test_coord_review_p2_cleanup import APPROVE_WITH_P2
+
+        from theforge.coordinator.engine import _coordinator_loop
+        from theforge.coordinator.validate_phase import _ValidateOutcome
+
+        review_output = APPROVE_WITH_P2 if review_output is None else review_output
+        config = self._config(tmp_path)
+        if zero_findings_stop:
+            config = dataclasses.replace(
+                config,
+                retry=dataclasses.replace(
+                    config.retry, review_zero_findings_stop=zero_findings_stop
+                ),
+            )
+        task = _make_task(tmp_path)
+        state = self._seated_state(tmp_path)
+        dev_calls: list[float | None] = []
+
+        class _StopAtCleanupDev(Exception):
+            pass
+
+        def _dev(_state, *_args, **_kwargs):
+            dev_calls.append(_state.total_cost_measured)
+            if len(dev_calls) > len(dev_costs):
+                # The cleanup attempt was funded — that is the whole question.
+                raise _StopAtCleanupDev()
+            _state.dev_results.append(
+                _make_agent_result(cost_usd=dev_costs[len(dev_calls) - 1], profile_name="dev")
+            )
+            return None
+
+        def _pool(**_kwargs):
+            return [
+                _make_agent_result(
+                    success=True,
+                    output=review_output,
+                    profile_name="openai-gpt-5.5-cli",
+                    cost_usd=1.01,
+                )
+            ]
+
+        result: object | None = None
+        with (
+            patch("theforge.coordinator.engine._run_dev_phase", _dev),
+            patch(
+                "theforge.coordinator.engine._run_validate_phase",
+                return_value=(_ValidateOutcome.PASS, None),
+            ),
+            patch("theforge.coordinator.review_pool.run_agent_pool", side_effect=_pool),
+            patch("theforge.coordinator.review_pool.log_agent_result"),
+            patch(
+                "theforge.coordinator.review_phase._has_commits_ahead_of_base",
+                return_value=True,
+            ),
+            (
+                patch(
+                    "theforge.coordinator.review_phase._human_review",
+                    return_value=human_decision,
+                )
+                if human_decision is not None
+                else contextlib.nullcontext()
+            ),
+        ):
+            try:
+                result = _coordinator_loop(
+                    state,
+                    config,
+                    task,
+                    "story",
+                    task_start=0.0,
+                    interactive=human_decision is not None,
+                )
+            except _StopAtCleanupDev:
+                result = None
+        return state, result, dev_calls
+
+    def test_p2_cleanup_is_funded_from_the_cycles_that_cannot_run(self, tmp_path: Path) -> None:
+        """The issue's exact shape: dev refused in the same second as APPROVE."""
+        state, result, dev_calls = self._run_to_p2_cleanup(tmp_path, dev_cost_usd=6.95)
+
+        reservation = state.review_funding_reservation
+        assert reservation["reserved_review_cycles"] >= 2
+        # Dev spent the whole non-review pool, so the gross reserve would refuse
+        # the cleanup attempt outright.
+        assert dev_calls[0] == 0.0
+        assert 6.95 >= float(reservation["nonreview_allocation_usd"])
+        # The cleanup dev attempt ran instead of escalating.
+        assert len(dev_calls) == 2
+        assert result is None
+        assert state.allocation_exhausted is None
+        assert state.p2_cleanup_active is True
+        # Only the re-review this cleanup pass loops back to is still held.
+        assert reservation["released"] is True
+        assert reservation["release_reason"] == "approve_p2_cleanup"
+        assert reservation["retained_review_cycles"] == 1
+        assert reservation["retained_review_usd"] == 1.01
+        assert reservation["review_observed_at_release_usd"] == 1.01
+        assert reservation["released_review_usd"] == round(
+            float(reservation["reserved_review_usd"]) - 1.01 - 1.01, 4
+        )
+        # And the audit carries the released record, not the seated one.
+        assert (
+            state.adaptive_limits_audit["review_funding_reservation"]["released_review_usd"]
+            == reservation["released_review_usd"]
+        )
+
+    def test_the_release_reaches_the_run_audit(self, tmp_path: Path) -> None:
+        """An operator can see which withheld dollars were let go, and why."""
+        from coord_test_helpers import _make_task
+
+        from theforge.coordinator.audit import generate_audit_log
+        from theforge.coordinator.state import CoordinatorResult
+
+        state, _result, _calls = self._run_to_p2_cleanup(tmp_path, dev_cost_usd=6.95)
+
+        audit = generate_audit_log(
+            self._config(tmp_path),
+            _make_task(tmp_path),
+            CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message="x"),
+        )
+        block = audit["iterations"]["adaptive_limits"]["review_funding_reservation"]
+        assert block["released"] is True
+        assert block["release_reason"] == "approve_p2_cleanup"
+        assert block["release_review_cycle"] == state.review_cycle
+        assert block["retained_review_usd"] == 1.01
+        # The seated figures survive alongside the release.
+        assert block["allocation_usd"] == 12.00
+        assert block["review_cycle_cost_usd"] == 1.01
+
+    def test_a_release_does_not_defund_the_re_review_it_loops_back_to(
+        self, tmp_path: Path
+    ) -> None:
+        """One cycle stays protected: cleanup dev is followed by another review."""
+        state, _result, _calls = self._run_to_p2_cleanup(tmp_path, dev_cost_usd=6.95)
+
+        # Even with the general pool spent to the allocation, the retained cycle
+        # funds the re-review.
+        assert (
+            sb.reserved_review_shortfall(
+                state.review_funding_reservation,
+                state.story_allocation,
+                observed_usd=12.00,
+                review_observed_usd=state.total_review_cost_measured,
+                participants=["openai-gpt-5.5-cli"],
+                planned_usd=1.01,
+            )
+            is None
+        )
+
+    def test_a_story_whose_allocation_is_genuinely_gone_is_still_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """Releasing the impossible cycles is not the same as removing the check."""
+        state, result, dev_calls = self._run_to_p2_cleanup(tmp_path, dev_cost_usd=11.00)
+
+        assert len(dev_calls) == 1
+        assert result is not None
+        assert result.phase == Phase.ESCALATE
+        assert state.error_type == "allocation_exhausted"
+        assert state.allocation_exhausted["nonreview_exhausted"] is True
+        # The refusal names the balance that actually drove it.
+        assert state.allocation_exhausted["reserved_review_remaining_usd"] == 1.01
+        assert state.allocation_exhausted["reserved_review_released"] is True
+
+    def test_a_retained_cycle_that_runs_funds_the_next_cleanup_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """The retained cycle is protected until it runs — and not one dollar longer.
+
+        Two cleanup passes: the first release retains one $1.01 cycle, that cycle
+        then actually runs, and the dev attempt after it must be funded from the
+        allocation the retained cycle no longer needs. Holding the retained
+        figure flat refuses this attempt against money already spent.
+        """
+        state, result, dev_calls = self._run_loop(tmp_path, dev_costs=[6.95, 2.53])
+
+        # Three dev dispatches: the seated one and two cleanup passes.
+        assert len(dev_calls) == 3
+        assert result is None
+        assert state.allocation_exhausted is None
+        assert state.review_cycle == 2
+        assert state.total_review_cost_measured == 2.02
+        # Total spend at this dispatch is $11.50 of a $12.00 allocation, so the
+        # story genuinely has money left — but only once the retained cycle's
+        # $1.01 stops being withheld: holding it flat leaves $12.00 - $11.50 -
+        # $1.01 = -$0.51 and refuses the attempt.
+        assert dev_calls[2] == 11.50
+        assert dev_calls[2] < 12.00
+
+        reservation = state.review_funding_reservation
+        assert reservation["release_count"] == 2
+        assert reservation["retained_review_usd"] == 0.0
+        assert reservation["review_observed_at_release_usd"] == 2.02
+        assert sb.remaining_reserved_review_usd(reservation, 2.02) == 0.0
+        # The audit shows the re-release, not the first one.
+        assert state.adaptive_limits_audit["review_funding_reservation"]["release_count"] == 2
+
+    def test_a_finalized_approval_releases_the_whole_reserve(self, tmp_path: Path) -> None:
+        """The approve_final path, end to end: nothing is reachable, nothing is held.
+
+        A clean APPROVE skips cleanup and finalizes, so every seated cycle the
+        story did not run is unreachable. The release must land on that branch —
+        the story's landing record and the audit both read the reservation, and a
+        record still claiming five withheld cycles misreports where the money went.
+        """
+        from coord_test_helpers import APPROVE_REVIEW, _make_task
+
+        from theforge.coordinator.audit import generate_audit_log
+        from theforge.coordinator.state import CoordinatorResult
+
+        state, result, dev_calls = self._run_loop(
+            tmp_path, dev_costs=[1.00], review_output=APPROVE_REVIEW
+        )
+
+        assert dev_calls == [0.0]
+        assert result is not None
+        assert result.phase == Phase.DONE
+        assert state.p2_cleanup_active is False
+
+        reservation = state.review_funding_reservation
+        assert reservation["released"] is True
+        assert reservation["release_reason"] == "approve_final"
+        assert reservation["release_count"] == 1
+        assert reservation["retained_review_cycles"] == 0
+        assert reservation["retained_review_usd"] == 0.0
+        # One $1.01 cycle ran of the five seated: the other four are let go.
+        assert reservation["released_review_usd"] == round(
+            float(reservation["reserved_review_usd"]) - 1.01, 4
+        )
+        assert sb.remaining_reserved_review_usd(reservation, 1.01) == 0.0
+
+        audit = generate_audit_log(
+            self._config(tmp_path),
+            _make_task(tmp_path),
+            CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="x"),
+        )
+        block = audit["iterations"]["adaptive_limits"]["review_funding_reservation"]
+        assert block["release_reason"] == "approve_final"
+        assert block["retained_review_usd"] == 0.0
+        assert block["reserved_review_cycles"] == reservation["reserved_review_cycles"]
+
+    def test_an_interactive_reject_keeps_the_reservation_seated(self, tmp_path: Path) -> None:
+        """An approve the operator can undo does not prove the cycles are unreachable.
+
+        Reject and extend both loop back through REVIEW, so releasing on the
+        strength of the reviewer's APPROVE alone would strip those cycles of the
+        #2258 protection. The release belongs on the operator's approve.
+        """
+        from coord_test_helpers import APPROVE_REVIEW
+
+        state, result, dev_calls = self._run_loop(
+            tmp_path,
+            dev_costs=[1.00],
+            review_output=APPROVE_REVIEW,
+            human_decision=("reject", "not yet"),
+        )
+
+        # The reject looped back to DEV, and that attempt was funded.
+        assert len(dev_calls) == 2
+        assert result is None
+        assert state.human_review_decision == "reject"
+
+        reservation = state.review_funding_reservation
+        assert reservation.get("released") is not True
+        assert "retained_review_usd" not in reservation
+        # The reserve still covers the cycles the reject made reachable again.
+        assert sb.remaining_reserved_review_usd(
+            reservation, state.total_review_cost_measured
+        ) == round(float(reservation["reserved_review_usd"]) - 1.01, 4)
+
+    def test_every_terminal_approve_route_settles_the_reservation(self, tmp_path: Path) -> None:
+        """Early termination lands DONE too, and must not leave the reserve withheld.
+
+        The normal approve is not the only route to DONE: convergence
+        early-termination, the escalate gate and the hygiene replay all finalize
+        an approval. A story landing through one of them with the record still
+        claiming five withheld cycles misreports where the money went.
+        """
+        # Identical APPROVE+P2 cycles: cycles 2 and 3 bring zero new findings,
+        # so the run converges and finalizes through early termination.
+        state, result, dev_calls = self._run_loop(
+            tmp_path, dev_costs=[1.00, 0.50, 0.50], zero_findings_stop=2
+        )
+
+        assert result is not None
+        assert result.phase == Phase.DONE
+        assert state.review_early_terminated is True
+        assert len(dev_calls) == 3
+
+        reservation = state.review_funding_reservation
+        assert reservation["released"] is True
+        assert reservation["release_reason"] == "approve_early_termination"
+        # Two cleanup passes released before it; this one settles the record.
+        assert reservation["release_count"] == 3
+        assert reservation["retained_review_usd"] == 0.0
+        assert (
+            sb.remaining_reserved_review_usd(reservation, state.total_review_cost_measured) == 0.0
+        )
+        assert (
+            state.adaptive_limits_audit["review_funding_reservation"]["release_reason"]
+            == "approve_early_termination"
+        )
