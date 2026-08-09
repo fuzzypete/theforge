@@ -225,6 +225,159 @@ def resolve_timeout_with_active(
     return base, False
 
 
+#: Share of an enclosing story ceiling that development invocations may claim.
+#: The remainder funds validate, review, the landing path, and the gaps between
+#: them — all of which are charged to the same wall clock.
+DEV_INVOCATION_STORY_SHARE = 0.8
+
+#: Never cap a development invocation below this, however tight the enclosing
+#: ceiling. Under this figure the invocation cannot do useful work, and a cap
+#: that guarantees failure is not a budget — the shortfall is logged instead.
+MIN_DEV_INVOCATION_SECONDS = 900
+
+#: Working seconds a dev invocation must leave behind for the review and landing
+#: that follow it, when clamped against the story's *remaining* budget.
+DEV_INVOCATION_TAIL_RESERVE_SECONDS = 300
+
+
+def cap_timeout_to_story_ceiling(
+    raw_timeout_seconds: int,
+    story_ceiling_seconds: float | None,
+    max_invocations: int,
+    *,
+    share: float = DEV_INVOCATION_STORY_SHARE,
+    floor_seconds: int = MIN_DEV_INVOCATION_SECONDS,
+) -> tuple[int, dict]:
+    """Fit a per-invocation allowance inside the story ceiling that bounds it.
+
+    An allowance derived for one part of a story must be derived against the
+    budget containing it. The complexity-derived development timeout is not: it
+    comes from the dev profile's own base, so a story whose worker ceiling was
+    5400s could be handed a 4950s per-invocation timeout and then be killed by
+    signal on its third development cycle, mid-edit, inside a budget sized for
+    barely one (#2333).
+
+    The cap is ``share * ceiling / max_invocations`` — the allowance stays
+    consistent with the ceiling at *every* invocation count the iteration path
+    can reach, not only at one. ``floor_seconds`` bounds it from below: when the
+    ceiling cannot fund the permitted invocations even at the floor, the floor
+    wins and the audit records the shortfall rather than issuing an allowance no
+    invocation could use.
+
+    Returns ``(timeout, audit)``. ``audit`` always carries the raw timeout, the
+    enclosing ceiling, the cap, and the final figure, so the values that drove
+    the decision are inspectable instead of reconstructed (conventions #6).
+    """
+    audit: dict = {
+        "raw_timeout_seconds": int(raw_timeout_seconds),
+        "story_ceiling_seconds": (
+            None if story_ceiling_seconds is None else round(float(story_ceiling_seconds))
+        ),
+        "max_invocations": int(max_invocations),
+        "share": share,
+        "capped": False,
+    }
+    if story_ceiling_seconds is None or story_ceiling_seconds <= 0:
+        audit["final_timeout_seconds"] = int(raw_timeout_seconds)
+        audit["rationale"] = "no enclosing story ceiling; per-invocation timeout left as derived"
+        return int(raw_timeout_seconds), audit
+
+    _invocations = max(1, int(max_invocations))
+    _dev_share_seconds = int(float(story_ceiling_seconds) * share)
+    cap = int(_dev_share_seconds / _invocations)
+    audit["cap_seconds"] = cap
+    floor_applied = cap < floor_seconds
+    audit["floor_seconds"] = int(floor_seconds)
+    audit["floor_applied"] = floor_applied
+    audit["dev_share_seconds"] = _dev_share_seconds
+    # The floor may raise a too-small cap, but never past the share of the
+    # ceiling development is entitled to in total. Letting it through would hand
+    # a small-ceiling story an allowance it can only use by having a single
+    # cycle — the reported shape, reintroduced from the other direction.
+    effective_cap = min(max(cap, int(floor_seconds)), _dev_share_seconds)
+    audit["floor_capped_by_share"] = max(cap, int(floor_seconds)) > _dev_share_seconds
+    final = min(int(raw_timeout_seconds), effective_cap)
+    audit["capped"] = final < int(raw_timeout_seconds)
+    audit["final_timeout_seconds"] = final
+    if audit["capped"]:
+        audit["rationale"] = (
+            f"per-invocation timeout capped {raw_timeout_seconds}s → {final}s to fit "
+            f"{_invocations} invocation(s) inside the {round(float(story_ceiling_seconds))}s "
+            f"story ceiling (share {share})"
+        )
+    else:
+        audit["rationale"] = (
+            f"per-invocation timeout {final}s already fits {_invocations} invocation(s) "
+            f"inside the {round(float(story_ceiling_seconds))}s story ceiling"
+        )
+    if floor_applied:
+        audit["rationale"] += (
+            f"; ceiling funds only {cap}s per invocation, below the {int(floor_seconds)}s floor"
+        )
+    if audit["floor_capped_by_share"]:
+        audit["rationale"] += (
+            f"; the floor itself was cut to the {_dev_share_seconds}s development share of the "
+            "ceiling"
+        )
+    return final, audit
+
+
+def clamp_timeout_to_remaining(
+    timeout_seconds: int,
+    remaining_seconds: float | None,
+    *,
+    tail_reserve_seconds: int = DEV_INVOCATION_TAIL_RESERVE_SECONDS,
+    floor_seconds: int = 60,
+) -> tuple[int, dict | None]:
+    """Shorten an invocation so it ends inside the story deadline containing it.
+
+    The static cap is computed once, before any cycle runs. This is the dynamic
+    half: at dispatch, an invocation is given no more than the story's *own*
+    remaining working time less a tail reserve for the review and landing that
+    must follow. An invocation that ends on its own timeout is a recorded,
+    costed, work-preserving outcome; one killed by the scheduler's deadline is a
+    SIGKILL mid-edit with no measurable cost (#2333).
+
+    ``floor_seconds`` is a minimum *useful* invocation, not a licence to outlive
+    the deadline: a story with 40s of working time left funds a 40s invocation,
+    never a 60s one. A floor that could exceed what remains would reintroduce
+    exactly the shape this function exists to prevent — an allowance whose expiry
+    necessarily falls outside the window enclosing it.
+
+    Returns ``(timeout, audit_or_None)`` — ``None`` when nothing was clamped.
+    """
+    if remaining_seconds is None:
+        return int(timeout_seconds), None
+    _remaining = float(remaining_seconds)
+    _after_reserve = max(float(floor_seconds), _remaining - tail_reserve_seconds)
+    _floor_capped = _after_reserve > _remaining
+    allowed = int(max(0.0, min(_after_reserve, _remaining)))
+    if allowed >= int(timeout_seconds):
+        return int(timeout_seconds), None
+    audit = {
+        "requested_timeout_seconds": int(timeout_seconds),
+        "remaining_story_seconds": round(_remaining),
+        "tail_reserve_seconds": int(tail_reserve_seconds),
+        "floor_seconds": int(floor_seconds),
+        # True when the story had less working time left than the floor, so the
+        # floor itself was cut down to what remains.
+        "floor_capped_by_remaining": _floor_capped,
+        # True when the deadline is already spent. The invocation cannot fit at
+        # all; it is granted nothing rather than a window the story cannot honour.
+        "no_working_time_left": allowed <= 0,
+        "granted_timeout_seconds": allowed,
+        "rationale": (
+            f"invocation clamped {int(timeout_seconds)}s → {allowed}s: the enclosing story "
+            f"deadline has {round(_remaining)}s of working time left"
+        ),
+    }
+    if _floor_capped:
+        audit["rationale"] += (
+            f"; less than the {int(floor_seconds)}s floor, so the floor was cut to what remains"
+        )
+    return allowed, audit
+
+
 def _wait_bounded(proc: subprocess.Popen[str]) -> bool:
     """Wait for *proc*, but never longer than the teardown grace period.
 
