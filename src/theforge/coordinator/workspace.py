@@ -1287,6 +1287,7 @@ def _create_workspace(
                         config.workspace.setup_command,
                         existing_wt,
                         config.workspace.python_interpreter,
+                        **_setup_teardown_kwargs(teardown_out),
                     )
                     if not ok_s:
                         return None, None, f"Workspace setup command failed: {out_s}"

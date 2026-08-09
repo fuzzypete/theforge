@@ -1506,3 +1506,94 @@ def test_a_clean_workspace_setup_command_records_nothing(tmp_path: Path) -> None
     )
     assert ok is True
     assert teardowns == []
+
+
+def test_a_reused_worktree_setup_leak_reaches_the_run_record(tmp_path: Path) -> None:
+    """Workspace creation has more than one setup call, and each must record.
+
+    When ``git worktree add`` fails on a branch collision, creation recovers by
+    reusing the registered worktree — and runs the project's setup command there.
+    That call was the one branch of four not handed the collector, so a leak it
+    caused was killed with nothing in the run saying so (#2309).
+
+    The setup command is stood in for rather than really run, because reaching
+    this branch requires driving ``git`` through mocked shells; what the stand-in
+    does is fill the collector it was given, which is exactly the wiring the
+    defect broke — the caller's list and the callee's must be the same object.
+    """
+    import dataclasses as _dc
+    from unittest.mock import patch
+
+    from theforge.coordinator.state import CoordinatorState
+    from theforge.coordinator.validate_phase import (
+        SHELL_WORKSPACE_SETUP,
+        _record_gate_teardowns,
+    )
+    from theforge.coordinator.workspace import _create_workspace
+    from theforge.task import TaskStory
+
+    config = _audit_config(tmp_path)
+    config = _dc.replace(
+        config,
+        workspace=_dc.replace(
+            config.workspace,
+            setup_command="pip install -e .",
+            path_pattern=str(tmp_path / "{slug}"),
+        ),
+    )
+    task = TaskStory(name="t", slug="test-task", story_path=tmp_path / "spec.md")
+    # Registered against the colliding branch but at a different path, so the
+    # workspace path itself does not exist and creation has to recover through
+    # the collision branch rather than the ordinary reuse one.
+    existing = tmp_path / "registered-elsewhere"
+    existing.mkdir()
+
+    leaked = process_group.ProcessTeardown(
+        pgid=4242,
+        action=process_group.TEARDOWN_KILLED_SURVIVORS,
+        member_count=1,
+        members=(4242,),
+        sandbox_dir=str(existing),
+        completed=True,
+    )
+
+    def _shell(cmd, cwd, **kwargs):  # type: ignore[no-untyped-def]
+        if "worktree add" in cmd or cmd.startswith("mkdir"):
+            return (False, "fatal: a branch named 'forge/test-task' already exists")
+        if "branch --list" in cmd:
+            return (True, "  forge/test-task")
+        if "worktree list --porcelain" in cmd:
+            return (True, f"worktree {existing}\nbranch refs/heads/forge/test-task\n")
+        return (True, "")
+
+    def _setup(_cmd, _path, _interp=None, *, teardown_out=None):  # type: ignore[no-untyped-def]
+        # The real thing appends to whatever collector it was handed; if the
+        # caller never passed one, this is where the record is lost.
+        assert teardown_out is not None, (
+            "the reuse branch ran a setup command without a teardown collector"
+        )
+        teardown_out.append(leaked)
+        return (True, "")
+
+    collected: list[process_group.ProcessTeardown] = []
+    with (
+        patch("theforge.coordinator.workspace._cu._run_shell", side_effect=_shell),
+        patch("theforge.coordinator.workspace._run_setup_split", side_effect=_setup),
+        patch("theforge.coordinator.workspace._sync_run_forge_yaml"),
+        patch("theforge.coordinator.workspace._rebase_reused_worktree", return_value=None),
+        patch("theforge.coordinator.workspace._deindex_forge_artifacts"),
+        patch("theforge.coordinator.workspace._propagate_claude_memory"),
+        patch("theforge.coordinator.workspace.record_worktree_provenance"),
+        patch("theforge.coordinator.workspace._judge_worktree_provenance", return_value=None),
+    ):
+        path, _branch, err = _create_workspace(config, task, no_pull=True, teardown_out=collected)
+
+    assert err is None and path == existing, "the reuse branch was not the one exercised"
+    assert collected == [leaked], "the teardown never reached the caller's collector"
+
+    # And the engine files it exactly as it does for the other setup branches.
+    state = CoordinatorState()
+    _record_gate_teardowns(state, collected, source=SHELL_WORKSPACE_SETUP)
+    assert len(state.gate_process_teardowns) == 1
+    assert state.gate_process_teardowns[0]["source"] == SHELL_WORKSPACE_SETUP
+    assert state.gate_process_teardowns[0]["action"] == process_group.TEARDOWN_KILLED_SURVIVORS

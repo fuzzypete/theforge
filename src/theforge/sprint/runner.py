@@ -1280,6 +1280,12 @@ def _run_baseline_gate(
     before, and only on outcomes that did not halt the sprint (#2160).
     """
 
+    # Declared before the first return so *every* baseline record carries the
+    # same key. The early exits happen before any project command has run, so
+    # theirs is empty — which is the truthful answer, and a uniform shape means a
+    # reader never has to ask whether this record is one of the kinds that says
+    # (#2309).
+    gate_teardowns: list[ProcessTeardown] = []
     base_branch = config.workspace.base_branch
     if not _project_root_is_git_checkout(config.project_root):
         now = datetime.datetime.now(datetime.timezone.utc)
@@ -1292,6 +1298,7 @@ def _run_baseline_gate(
             "finished_at": now,
             "merge_base": None,
             "command": config.validation.gate_command,
+            "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": "Baseline gate skipped: project root is not a git checkout",
         }
 
@@ -1316,6 +1323,7 @@ def _run_baseline_gate(
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": None,
             "command": config.validation.gate_command,
+            "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": (
                 "Broken baseline: unable to determine merge base against "
                 f"{base_branch}: {stderr or 'git merge-base failed'}"
@@ -1334,6 +1342,7 @@ def _run_baseline_gate(
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": None,
             "command": config.validation.gate_command,
+            "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": (
                 "Broken baseline: unable to determine merge base against "
                 f"{base_branch}: empty merge-base result"
@@ -1365,6 +1374,7 @@ def _run_baseline_gate(
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": merge_base_ref,
             "command": config.validation.gate_command,
+            "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": (
                 "Broken baseline: sprint baseline gate requires running from the root checkout; "
                 "current workspace is not the project toplevel"
@@ -1412,16 +1422,16 @@ def _run_baseline_gate(
                 "finished_at": datetime.datetime.now(datetime.timezone.utc),
                 "merge_base": merge_base_ref,
                 "command": config.validation.gate_command,
+                "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "message": (
                     "Broken baseline: unable to create temporary worktree for merge base "
                     f"{merge_base_ref}: {stderr or 'git worktree add failed'}"
                 ),
             }
 
-        # Shared with the gate below: both are project commands run in this
-        # temporary worktree, and a leak from either belongs in the one record
-        # the sprint keeps for this baseline (#2309).
-        gate_teardowns: list[ProcessTeardown] = []
+        # Both the setup command and the gate below are project commands run in
+        # this temporary worktree, and a leak from either belongs in the one
+        # record the sprint keeps for this baseline (#2309).
         if config.workspace.setup_command:
             _log(f"Running baseline workspace setup: {config.workspace.setup_command}")
             setup_ok, setup_out = coordinator_workspace._run_setup_split(
@@ -1461,6 +1471,7 @@ def _run_baseline_gate(
                     "finished_at": datetime.datetime.now(datetime.timezone.utc),
                     "merge_base": merge_base_ref,
                     "command": config.validation.gate_command,
+                    "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                     "worktree": preserved_worktree,
                     "evidence_path": evidence_path,
                     "evidence_unavailable": evidence_unavailable,
@@ -1497,9 +1508,9 @@ def _run_baseline_gate(
                 "finished_at": finished_at,
                 "merge_base": merge_base_ref,
                 "command": resolved_gate_cmd,
+                "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "decision": decision,
                 "output_tail": output_tail,
-                "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "message": (
                     "Baseline gate passed on sprint merge base "
                     f"{merge_base_ref} before dev iterations started"
@@ -1568,9 +1579,9 @@ def _run_baseline_gate(
             "finished_at": finished_at,
             "merge_base": merge_base_ref,
             "command": resolved_gate_cmd,
+            "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "decision": decision,
             "output_tail": output_tail,
-            "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "worktree": preserved_worktree,
             "evidence_path": evidence_path,
             "evidence_unavailable": evidence_unavailable,
