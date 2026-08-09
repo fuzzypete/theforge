@@ -495,14 +495,23 @@ def _run_shell(
     timeout: int = 120,
     env: dict[str, str] | None = None,
     expected_python: str | None = None,
+    *,
+    teardown_out: list[ProcessTeardown] | None = None,
 ) -> tuple[bool, str]:
-    """Run a shell command. Returns (success, combined output)."""
+    """Run a shell command. Returns (success, combined output).
+
+    ``teardown_out`` is threaded through to `_run_shell_detailed` for the callers
+    that run a *project* command here rather than a short git query: the teardown
+    happens either way, but only a caller with somewhere to put it can make the
+    run's record say so (#2309).
+    """
     ok, output, _exit_code, _timed_out = _run_shell_detailed(
         cmd,
         cwd,
         timeout=timeout,
         env=env,
         expected_python=expected_python,
+        teardown_out=teardown_out,
     )
     return ok, output
 

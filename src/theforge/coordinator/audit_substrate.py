@@ -86,7 +86,7 @@ SUBSTRATE_SCHEMA_VERSION = 8
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 24
+CURRENT_RECORD_SCHEMA_VERSION = 25
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1510,6 +1510,34 @@ def _migrate_v23_to_v24(record: dict) -> dict:
     return {**record, "cost": {**cost, "agents": migrated_agents}}
 
 
+def _migrate_v24_to_v25(record: dict) -> dict:
+    """Name which validation shell each recorded teardown came from (issue #2309).
+
+    Four commands run in the validate phase — the gate, the debug command and the
+    diagnostic pass after a timeout, and the pre-validate command after a pass —
+    and any of them can leave workers behind. v24 recorded the teardown without
+    saying which, so a reader could only guess which trace to open.
+
+    ``"gate"`` is the correct backfill rather than a null: v24 only ever
+    collected teardowns from the gate-family shells, and the pre-validate path
+    that made the distinction necessary did not record at all. So an older entry
+    is not "unknown" — it is known to be one of those, and the field names the
+    one the record already implied. The stored record is never rewritten
+    (ADR-0002 refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    iterations = record.get("iterations")
+    if not isinstance(iterations, dict):
+        return record
+    teardowns = iterations.get("gate_process_teardowns")
+    if not isinstance(teardowns, list):
+        return record
+    migrated = [
+        {**entry, "source": "gate"} if isinstance(entry, dict) and "source" not in entry else entry
+        for entry in teardowns
+    ]
+    return {**record, "iterations": {**iterations, "gate_process_teardowns": migrated}}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1542,6 +1570,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     21: _migrate_v21_to_v22,
     22: _migrate_v22_to_v23,
     23: _migrate_v23_to_v24,
+    24: _migrate_v24_to_v25,
 }
 
 

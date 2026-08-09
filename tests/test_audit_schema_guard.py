@@ -184,6 +184,7 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
     state.gate_process_teardowns.append(
         {
             "gate_run": 1,
+            "source": "gate",
             **ProcessTeardown(
                 pgid=7311,
                 action=TEARDOWN_KILLED_SURVIVORS,

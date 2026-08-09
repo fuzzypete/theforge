@@ -172,36 +172,87 @@ def _pid_holds_lease_linux(pid: int, needle: bytes) -> bool:
         return False
 
 
-def _lease_holders_linux(needle: bytes) -> list[int]:
-    try:
-        entries = os.listdir("/proc")
-    except OSError:
-        return []
-    return [
-        int(entry)
-        for entry in entries
-        if entry.isdigit() and _pid_holds_lease_linux(int(entry), needle)
-    ]
+# A descendant cannot predate the spawn that created it, so a process older than
+# the lease is not a candidate however its environment reads. A second of slack
+# absorbs clock granularity rather than a real ordering question.
+_LEASE_AGE_SLACK_SECONDS = 1.0
 
 
-def _lease_holders_darwin(needle: bytes) -> list[int]:
-    """macOS: read each live process's environ via ``KERN_PROCARGS2``.
+def _lease_candidates(since: float) -> list[int]:
+    """Pids that could belong to a spawn opened at *since*, cheaply.
 
-    The candidate list comes from `theforge.process_tree`, whose ``libproc``
-    enumeration retries when the table grows under it. The ``KERN_PROC_ALL``
-    sysctl this used to walk returns ENOMEM in exactly that case and, having no
-    way to say so, reported an empty process table — so under a loaded host the
-    sweep silently found nothing, which is precisely when a leak is most likely
-    (#2309, cycle 2).
+    Reading a process's environment is the expensive part of the sweep — on macOS
+    ``KERN_PROCARGS2`` allocates and copies the whole argv+environ blob per
+    process, which across a full table costs tens of milliseconds. Doing that for
+    every process on the host, on the release of every short shell command, was a
+    real regression (#2309, cycle 3): a `git status` paid the price of searching
+    for a descendant it could not possibly have.
 
-    No start-time filter: it saved a read per process but made a sweep's result
-    depend on clock agreement between two sources, and the reads it saved are not
-    what the pass costs.
+    Start times are read instead, which is one syscall for the entire table on
+    macOS and one ``stat`` per process on Linux, and the environment is read only
+    for what survives the filter. The cost then scales with how long the spawn
+    ran rather than with the size of the host's process table — and it stays
+    cheapest exactly where the sweep matters most, because a command short enough
+    for the tracker to have missed a descendant is also short enough that almost
+    nothing else started during it.
     """
-    holders: list[int] = []
-    for pid in process_tree.live_pids():
-        if pid <= 1:
+    if sys.platform == "darwin":
+        return _darwin_pids_started_since(since - _LEASE_AGE_SLACK_SECONDS)
+    if sys.platform.startswith("linux"):
+        # Deliberately unpruned. Reading ``/proc/<pid>/environ`` is a small file
+        # read rather than macOS's copy of a whole argv+environ blob, so the scan
+        # here costs well under a millisecond and the filter would buy little.
+        # It would also rest on ``/proc/<pid>``'s ctime being the process start
+        # time — true on the kernels this was checked against, but not something
+        # verified on the platform this branch was developed on, and a prune that
+        # is wrong does not run slowly: it silently stops finding leaks.
+        try:
+            return [int(entry) for entry in os.listdir("/proc") if entry.isdigit()]
+        except OSError:
+            return []
+    return []
+
+
+def _darwin_pids_started_since(cutoff: float) -> list[int]:
+    """macOS: one ``KERN_PROC_ALL`` read gives every pid and its start time.
+
+    The whole table in a single syscall, rather than a ``proc_pidinfo`` per
+    process. A short read is treated as no answer and falls back to considering
+    every live pid: under-reporting here would silently narrow the sweep, and a
+    sweep that quietly stops looking is the failure this layer exists to prevent.
+    """
+    record_size = _sysctl_record_size()
+    raw = _sysctl_bytes((_CTL_KERN, _KERN_PROC, _KERN_PROC_ALL, 0))
+    if record_size <= _KINFO_PID_OFFSET or not raw:
+        return [pid for pid in process_tree.live_pids() if pid > 1]
+    candidates: list[int] = []
+    for offset in range(0, len(raw) - record_size + 1, record_size):
+        pid = _kinfo_pid(raw, offset)
+        if pid is None or pid <= 1:
             continue
+        started = _kinfo_start_seconds(raw, offset)
+        if started is None or started >= cutoff:
+            candidates.append(pid)
+    return candidates
+
+
+def _kinfo_start_seconds(raw: bytes, offset: int) -> float | None:
+    """Epoch seconds from the ``p_starttime`` timeval opening a ``kinfo_proc``."""
+    try:
+        seconds, micros = struct.unpack_from("qi", raw, offset)
+    except struct.error:
+        return None
+    return seconds + micros / 1_000_000
+
+
+def _lease_holders_linux(needle: bytes, candidates: list[int]) -> list[int]:
+    return [pid for pid in candidates if _pid_holds_lease_linux(pid, needle)]
+
+
+def _lease_holders_darwin(needle: bytes, candidates: list[int]) -> list[int]:
+    """macOS: read each candidate's environ via ``KERN_PROCARGS2``."""
+    holders: list[int] = []
+    for pid in candidates:
         args = _sysctl_bytes((_CTL_KERN, _KERN_PROCARGS2, pid))
         if args and needle in args:
             holders.append(pid)
@@ -215,11 +266,14 @@ def lease_holders(lease: ProcessLease) -> list[int]:
     is a dead end rather than a fallback, and it is the safe direction: the group
     kill still runs, and nothing is signalled on a guess.
     """
+    candidates = _lease_candidates(lease.started_at)
+    if not candidates:
+        return []
     needle = f"{LEASE_ENV_VAR}={lease.token}".encode()
     if sys.platform.startswith("linux"):
-        found = _lease_holders_linux(needle)
+        found = _lease_holders_linux(needle, candidates)
     elif sys.platform == "darwin":
-        found = _lease_holders_darwin(needle)
+        found = _lease_holders_darwin(needle, candidates)
     else:
         return []
     me = os.getpid()
@@ -734,6 +788,7 @@ _CTL_KERN = 1
 _KERN_PROC = 14
 _KERN_PROC_PID = 1
 _KERN_PROC_PGRP = 2
+_KERN_PROC_ALL = 0
 # ``KERN_PROCARGS2`` returns a process's argv + environ blob, which is how the
 # lease sweep reads another process's environment on a platform with no /proc.
 _KERN_PROCARGS2 = 49

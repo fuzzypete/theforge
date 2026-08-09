@@ -244,13 +244,32 @@ def _record_gate_commit(state: CoordinatorState, workspace_path: Path, decision:
     _persist_trajectory(state, workspace_path, "gate-commit provenance")
 
 
-def _record_gate_teardowns(state: CoordinatorState, teardowns: list[ProcessTeardown]) -> None:
-    """Record processes a gate shell left running, against the gate that ran.
+# Which validation-phase command a recorded teardown came from. Four different
+# shells run in this phase and any of them can leave workers behind; a record
+# that cannot say which one sends an operator to read the wrong trace (#2309).
+VALIDATE_SHELL_GATE = "gate"
+VALIDATE_SHELL_GATE_DEBUG = "gate_debug"
+VALIDATE_SHELL_GATE_DIAGNOSTIC = "gate_diagnostic"
+VALIDATE_SHELL_PRE_VALIDATE = "pre_validate"
 
-    Drains the collector so the list can be reused by the debug and diagnostic
-    shells that may follow a timeout: each of them is a separate command that can
-    leave its own workers behind, and none of them should re-record the ones an
-    earlier shell already accounted for.
+
+def _record_gate_teardowns(
+    state: CoordinatorState,
+    teardowns: list[ProcessTeardown],
+    *,
+    source: str = VALIDATE_SHELL_GATE,
+) -> None:
+    """Record processes a validation shell left running, against the gate that ran.
+
+    Drains the collector so the list can be reused by the shells that follow: the
+    debug and diagnostic commands after a timeout, and the pre-validate command
+    after a pass, are each a separate command that can leave its own workers
+    behind, and none of them should re-record what an earlier shell accounted
+    for.
+
+    ``source`` names which of those commands leaked. Four different commands run
+    through this phase, and a record that cannot tell them apart sends an
+    operator to read the wrong trace.
 
     ``state.gate_runs`` must already be incremented — the ordinal here is the
     same one every other run-gated telemetry uses, and an off-by-one would put
@@ -258,7 +277,11 @@ def _record_gate_teardowns(state: CoordinatorState, teardowns: list[ProcessTeard
     """
     while teardowns:
         state.gate_process_teardowns.append(
-            {"gate_run": state.gate_runs, **teardowns.pop(0).to_audit_dict()}
+            {
+                "gate_run": state.gate_runs,
+                "source": source,
+                **teardowns.pop(0).to_audit_dict(),
+            }
         )
 
 
@@ -805,7 +828,7 @@ def _run_validate_phase(
                 iter_num=state.dev_trace_count,
                 process_teardowns=_gate_teardowns,
             )
-            _record_gate_teardowns(state, _gate_teardowns)
+            _record_gate_teardowns(state, _gate_teardowns, source=VALIDATE_SHELL_GATE_DEBUG)
             if debug_telemetry is not None:
                 state.gate_debug_telemetry.append(debug_telemetry)
                 gate_err = (
@@ -856,7 +879,7 @@ def _run_validate_phase(
                 iter_num=state.dev_trace_count,
                 process_teardowns=_gate_teardowns,
             )
-            _record_gate_teardowns(state, _gate_teardowns)
+            _record_gate_teardowns(state, _gate_teardowns, source=VALIDATE_SHELL_GATE_DIAGNOSTIC)
             if diagnostic is not None:
                 state.gate_diagnostic_telemetry.append(diagnostic)
                 if logger:
@@ -934,7 +957,13 @@ def _run_validate_phase(
         pre_validate_cmd = config.validation.pre_validate_command
         if pre_validate_cmd:
             _log(f"  Running pre-validate command: {pre_validate_cmd}")
-            pv_ok, pv_out = _cu._run_shell(pre_validate_cmd, workspace_path)
+            pv_ok, pv_out = _cu._run_shell(
+                pre_validate_cmd, workspace_path, teardown_out=_gate_teardowns
+            )
+            # Recorded against the gate that has just passed, and named so it is
+            # not read as that gate's own leak: this is a project command
+            # configured to run after the gate, and it spawns whatever it likes.
+            _record_gate_teardowns(state, _gate_teardowns, source=VALIDATE_SHELL_PRE_VALIDATE)
             if not pv_ok:
                 _log(f"  ⚠ Pre-validate command failed (non-fatal): {pv_out[:200]}")
             else:

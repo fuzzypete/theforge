@@ -962,6 +962,36 @@ def test_a_recycled_observed_pid_is_never_signalled(
         bystander.wait(timeout=5)
 
 
+def _validate_repo(tmp_path: Path) -> Path:
+    """A repo with a commit ahead of base, which VALIDATE requires to proceed."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for cmd in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(cmd, cwd=repo, check=True)  # noqa: S603
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)  # noqa: S603
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)  # noqa: S603
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=repo, check=True)  # noqa: S603
+    (repo / "g.txt").write_text("y\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)  # noqa: S603
+    subprocess.run(["git", "commit", "-q", "-m", "work"], cwd=repo, check=True)  # noqa: S603
+    return repo
+
+
+def _leaky_command(pidfile: Path) -> str:
+    """A command that starts a long-lived background process and returns."""
+    return (
+        f'{sys.executable} -c "import subprocess,sys,pathlib;'
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid))\""
+    )
+
+
 def test_a_gate_leak_is_tagged_with_the_gate_that_ran(tmp_path: Path) -> None:
     """The first gate's leak is gate_run 1, matching every other gate telemetry.
 
@@ -1164,3 +1194,136 @@ def test_a_verification_command_that_leaves_nothing_records_nothing(tmp_path: Pa
     broker.poll_once()
 
     assert "process_teardown" not in broker.records()[0]
+
+
+def test_a_leaking_pre_validate_command_is_recorded_and_named(tmp_path: Path) -> None:
+    """A pre-validate leak reaches the record, and says it was not the gate.
+
+    ``pre_validate_command`` is a project command configured to run after the
+    gate passes, so it spawns whatever it likes — the same leak shape as the gate
+    itself. It runs through ``_run_shell``, which used to drop the collector, so
+    the kill happened and the run said nothing (#2309). Four commands run in this
+    phase; the record names which one, or an operator opens the wrong trace.
+    """
+    from theforge.coordinator.state import CoordinatorState
+    from theforge.coordinator.validate_phase import (
+        VALIDATE_SHELL_PRE_VALIDATE,
+        _run_validate_phase,
+    )
+    from theforge.task import TaskStory
+
+    repo = _validate_repo(tmp_path)
+    pidfile = tmp_path / "pv.pid"
+    config = _audit_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        validation=dataclasses.replace(
+            config.validation,
+            gate_command=f'{sys.executable} -c "print(1)"',
+            pre_validate_command=_leaky_command(pidfile),
+        ),
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    state = CoordinatorState()
+    task = TaskStory(name="t", slug="t", story_path=tmp_path / "spec.md")
+
+    _run_validate_phase(state, config, task, repo, notify=False, logger=None)
+
+    leaked = int(pidfile.read_text().strip())
+    try:
+        assert _wait_until(lambda: not _pid_alive(leaked)), (
+            "the pre-validate command's descendant outlived the run (#2309)"
+        )
+    finally:
+        _reap(leaked)
+
+    recorded = [
+        entry
+        for entry in state.gate_process_teardowns
+        if entry["source"] == VALIDATE_SHELL_PRE_VALIDATE
+    ]
+    assert len(recorded) == 1, (
+        f"the pre-validate teardown never reached the run's record: {state.gate_process_teardowns}"
+    )
+    assert recorded[0]["action"] == process_group.TEARDOWN_KILLED_SURVIVORS
+    assert recorded[0]["completed"] is True
+    # The gate itself ran and left nothing, so it contributes no entry — the
+    # record must not attribute this leak to it.
+    assert recorded[0]["gate_run"] == state.gate_runs == 1
+
+
+def test_a_clean_pre_validate_command_records_nothing(tmp_path: Path) -> None:
+    """Absence keeps meaning something on this path too."""
+    from theforge.coordinator.state import CoordinatorState
+    from theforge.coordinator.validate_phase import _run_validate_phase
+    from theforge.task import TaskStory
+
+    repo = _validate_repo(tmp_path)
+    config = _audit_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        validation=dataclasses.replace(
+            config.validation,
+            gate_command=f'{sys.executable} -c "print(1)"',
+            pre_validate_command=f'{sys.executable} -c "print(2)"',
+        ),
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    state = CoordinatorState()
+    task = TaskStory(name="t", slug="t", story_path=tmp_path / "spec.md")
+
+    _run_validate_phase(state, config, task, repo, notify=False, logger=None)
+
+    assert state.gate_process_teardowns == []
+
+
+class TestTheLeaseSweepCostsWhatItShould:
+    """The sweep must stay cheap without becoming blind (#2309, cycle 3)."""
+
+    def test_a_short_command_does_not_scan_the_whole_host(self) -> None:
+        """Cost scales with how long the spawn ran, not with the process table.
+
+        Reading every process's environment on the release of every short shell
+        command made a `git status` pay to search for a descendant it could not
+        possibly have. The prune is sound rather than a heuristic: a descendant
+        cannot predate the spawn that created it.
+        """
+        _env, lease = process_group.open_process_lease(None)
+        candidates = process_group._lease_candidates(lease.started_at)
+        live = [pid for pid in process_tree.live_pids() if pid > 1]
+        assert len(live) > 10, "sanity: this host should have a real process table"
+        if sys.platform == "darwin":
+            assert len(candidates) < len(live) / 2, (
+                f"the sweep still considers {len(candidates)} of {len(live)} processes"
+            )
+
+    def test_the_prune_never_drops_a_real_descendant(self) -> None:
+        """Cheap must not mean blind: what the sweep exists to find is still found."""
+        env, lease = process_group.open_process_lease(dict(os.environ))
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            env=env,
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert _wait_until(lambda: proc.pid in process_group.lease_holders(lease)), (
+                "the prune dropped a descendant the sweep was built to catch"
+            )
+        finally:
+            _reap(proc.pid)
+            proc.wait(timeout=5)
+
+    def test_a_reaper_record_with_no_spawn_time_considers_everything(self) -> None:
+        """A sweep that cannot date the spawn must not prune on age.
+
+        ``reap_orphan_agents`` reads a token from a sidecar written by a process
+        that is gone, so it has no start moment to compare against. It gets the
+        unpruned scan rather than a filter applied to a time it does not know.
+        """
+        candidates = process_group._lease_candidates(0.0)
+        live = [pid for pid in process_tree.live_pids() if pid > 1]
+        assert len(candidates) >= len(live) - 5, (
+            "an undated sweep must consider the whole table, not a slice of it"
+        )
