@@ -377,6 +377,99 @@ class TestAdjacentInvestigationFlows:
         for profile in plan_profiles:
             assert "Bash" in profile.allowed_tools
 
+
+class TestApiTransportToolCanonicalization:
+    """What the runner GRANTS and what containment REPORTS must be one answer.
+
+    ``allowed_tools`` carries two vocabularies — forge.yaml's capitalized CLI
+    names and the canonical internal names an API tool schema is built from. The
+    API runner canonicalizes before granting; the containment checks used to
+    compare raw strings. Handing an API-transport investigation role the
+    capitalized set therefore granted it bash while classifying it as having no
+    bash surface (#2346).
+    """
+
+    def _api_profile(self, allowed_tools, phase="plan"):
+        return ModelProfile(
+            name=phase,
+            cli=None,
+            provider="openai",
+            model="gpt-5",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=allowed_tools,
+            phase=phase,
+        )
+
+    def test_canonical_map_has_exactly_one_definition(self):
+        from theforge.runners.api import _CLI_TO_REGISTRY
+        from theforge.runners.tool_runtime import TOOL_NAME_MAP
+
+        assert _CLI_TO_REGISTRY is TOOL_NAME_MAP, (
+            "two copies of this map is how the granted/reported spellings drifted"
+        )
+
+    @pytest.mark.parametrize(
+        "allowed_tools,expected",
+        [
+            (("Read", "Bash", "Glob", "Grep"), True),
+            (("read_file", "bash", "glob", "grep"), True),
+            (("Read", "bash"), True),
+            (("Read", "Glob", "Grep"), False),
+            (("read_file", "glob", "grep"), False),
+            ((), False),
+        ],
+    )
+    def test_grants_bash_is_spelling_independent(self, allowed_tools, expected):
+        from theforge.runners.tool_runtime import grants_bash
+
+        assert grants_bash(allowed_tools) is expected
+
+    @pytest.mark.parametrize("phase", ["plan", "diagnose", "advisor"])
+    def test_containment_agrees_with_what_the_api_runner_grants(self, phase):
+        """The two answers are derived independently and must still match.
+
+        Asserted against the runner's real schema builder rather than a restated
+        expectation, so the test fails if either side changes alone.
+        """
+        from theforge.config.auth import sandbox_containment_mode
+        from theforge.runners.api import _build_registry_tools
+
+        profile = self._api_profile(DEFAULT_INVESTIGATION_TOOLS, phase=phase)
+        assert profile.mode == "api"
+
+        granted = {tool.name for tool in _build_registry_tools(profile)}
+        assert "bash" in granted, "precondition: the investigation set grants bash"
+
+        # A profile the runner hands bash to is never classified as having no
+        # tool surface to contain. (Which containment applies depends on host
+        # sandbox availability, which the test must not assume.)
+        assert sandbox_containment_mode(profile) != "none"
+
+    def test_profile_without_bash_is_still_reported_as_uncontained(self):
+        """The negative case still works — canonicalization is not a blanket yes."""
+        from theforge.config.auth import sandbox_available_for_profile, sandbox_containment_mode
+        from theforge.runners.api import _build_registry_tools
+
+        profile = self._api_profile(PREFLIGHT_READ_ONLY_TOOLS)
+        granted = {tool.name for tool in _build_registry_tools(profile)}
+        assert "bash" not in granted
+
+        assert sandbox_containment_mode(profile) == "none"
+        assert sandbox_available_for_profile(profile) is True
+
+    def test_api_transport_preflight_is_still_denied_bash(self):
+        """The resolver and the canonicalization agree on the API vocabulary too."""
+        from theforge.runners.api import _build_registry_tools
+        from theforge.runners.tool_runtime import grants_bash
+
+        # API-transport preflight profiles carry the canonical spelling.
+        resolved = resolve_preflight_tools(("read_file", "bash", "glob", "grep"))
+        assert not grants_bash(resolved)
+
+        profile = self._api_profile(resolved, phase="preflight")
+        assert "bash" not in {tool.name for tool in _build_registry_tools(profile)}
+
     def test_diagnose_profile_keeps_bash(self, tmp_path):
         from theforge.coordinator.diagnose_flow import _build_diagnose_profile
 
@@ -622,6 +715,101 @@ def _write_summary(tmp_path: Path, sprint_name: str, run_id: str, stories: list[
         encoding="utf-8",
     )
     return summary_path
+
+
+class TestLiveRowDisclosure:
+    """The degradation must outlive the phase that discovered it.
+
+    Each phase replaces the live ``detail`` dict with what it knows, which is
+    right for phase-scoped facts. "This story was routed on values no
+    observation supports" is not phase-scoped, and letting DEV's write erase it
+    made a degraded story read as healthy the moment it left PREFLIGHT (#2346).
+    """
+
+    def _degraded_state(self):
+        from theforge.coordinator.state import CoordinatorState
+
+        state = CoordinatorState()
+        state.preflight_degraded = True
+        state.preflight_degraded_reason = "timeout_no_verdict"
+        state.preflight_failure_action = "proceed"
+        state.preflight_risk_signals = []
+        return state
+
+    def test_coordinator_emits_only_run_scoped_keys(self):
+        """Binds the emitter to the sticky set, so neither drifts alone."""
+        from theforge.coordinator.preflight_flow import _live_degraded_detail
+        from theforge.sprint.story_state import RUN_SCOPED_DETAIL_KEYS
+
+        emitted = set(_live_degraded_detail(self._degraded_state()))
+        assert emitted, "precondition: a degraded state emits detail keys"
+        assert emitted <= RUN_SCOPED_DETAIL_KEYS, (
+            f"emitted keys not marked run-scoped and will be erased: "
+            f"{sorted(emitted - RUN_SCOPED_DETAIL_KEYS)}"
+        )
+
+    def test_healthy_state_emits_nothing(self):
+        from theforge.coordinator.preflight_flow import _live_degraded_detail
+        from theforge.coordinator.state import CoordinatorState
+
+        assert _live_degraded_detail(CoordinatorState()) == {}
+
+    def test_later_phase_detail_does_not_erase_the_degradation(self):
+        from theforge.coordinator.preflight_flow import _live_degraded_detail
+        from theforge.sprint.story_state import SprintStoryState
+
+        store = SprintStoryState()
+        store.register("issue-2346", "Issue #2346")
+
+        preflight_detail = {
+            "preflight_verdict": "PROCEED",
+            "preflight_sufficiency": "needs_planning",
+            **_live_degraded_detail(self._degraded_state()),
+        }
+        store.transition(
+            "issue-2346", outcome="running", phase="PREFLIGHT", detail=preflight_detail
+        )
+
+        # DEV writes what DEV knows — a wholesale replacement.
+        store.transition(
+            "issue-2346",
+            outcome="running",
+            phase="DEV",
+            detail={"dev_iteration": 1, "dev_max_iterations": 2},
+        )
+
+        entry = store.get("issue-2346")
+        assert entry.detail["dev_iteration"] == 1
+        assert "preflight_verdict" not in entry.detail, "phase-scoped detail must not be sticky"
+        assert entry.detail["preflight_degraded"] is True
+        assert entry.detail["preflight_degraded_reason"] == "timeout_no_verdict"
+        assert entry.detail["complexity_source"] == "preflight_degraded_conservative"
+
+    def test_a_later_phase_can_still_overwrite_deliberately(self):
+        from theforge.sprint.story_state import SprintStoryState
+
+        store = SprintStoryState()
+        store.register("issue-2346", "Issue #2346")
+        store.transition("issue-2346", outcome="running", detail={"preflight_degraded": True})
+        store.transition("issue-2346", outcome="running", detail={"preflight_degraded": False})
+
+        assert store.get("issue-2346").detail["preflight_degraded"] is False
+
+    def test_live_row_renders_the_note_after_preflight_ends(self):
+        """The seam that matters: a DEV row still shows the condition."""
+        from theforge.coordinator.preflight_flow import _live_degraded_detail
+        from theforge.sprint.status_reader import _stage_and_detail_from_live_story
+
+        detail = {
+            "dev_iteration": 1,
+            "dev_max_iterations": 2,
+            **_live_degraded_detail(self._degraded_state()),
+        }
+        _stage, rendered, _complexity = _stage_and_detail_from_live_story(
+            {"slug": "issue-2346", "status": "running", "phase": "DEV", "detail": detail}
+        )
+        assert "preflight degraded: timeout_no_verdict" in rendered
+        assert "action=proceed" in rendered
 
 
 class TestStatusRowDisclosure:
