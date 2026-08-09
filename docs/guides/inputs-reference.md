@@ -81,6 +81,25 @@ stories:
 | `max_parallel` | No | unset | Parallel story workers for this sprint. Integer >= 1; unset falls back to `sprint.max_parallel` in forge.yaml (default 1). |
 | `worker_timeout_seconds` | No | unset | Per-worker timeout. Integer >= 1; unset falls back to `sprint.worker_timeout_seconds` in forge.yaml (default 3600). |
 
+**What the worker timeout bounds — and what it excludes.** The resolved
+per-story worker timeout is the *enclosing ceiling* for everything the story
+does, and allowances inside it are derived against it rather than independently:
+
+- The per-invocation development timeout is capped to fit the ceiling across the
+  development cycles the story may run, and is further clamped at dispatch to the
+  working time the story actually has left. A development invocation therefore
+  ends on its own recorded, costed timeout instead of being killed by the
+  scheduler mid-edit with no cost measured.
+- Operator gate waits (human review, plan review, escalate) are bounded by the
+  story's remaining window, so a gate never asks for a decision the story could
+  not act on — and the time spent waiting is **excluded** from the worker
+  timeout. Waiting for a human is not the worker being unresponsive, so the
+  deadline is extended by exactly the length of the wait.
+- A story whose deadline does elapse is recorded as an abnormal *timeout*
+  (`abnormal_termination.kind: worker_timeout`), which is deliberately distinct
+  from a review or quality failure: it says the story ran out of wall clock, not
+  that its work was judged unacceptable.
+
 ### Cost governance vs. per-story estimates (converged model)
 
 TheForge has one converged budget view with two distinct roles for dollar

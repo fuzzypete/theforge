@@ -402,10 +402,11 @@ def _coordinator_loop(
     # Derive per-story adaptive iteration limits from preflight complexity and
     # historical usage.  RetryPolicy.adaptive_iterations=False returns the
     # policy floor values verbatim; floor and cap always bound the outcome.
+    from theforge import worker_budget as _worker_budget  # noqa: PLC0415
     from theforge.model_profiles import load_profiles  # noqa: PLC0415
 
     from .adaptive_iterations import derive_limits  # noqa: PLC0415
-    from .util import resolve_timeout_with_active  # noqa: PLC0415
+    from .util import cap_timeout_to_story_ceiling, resolve_timeout_with_active  # noqa: PLC0415
 
     if (
         state.adaptive_dev_max == 0
@@ -547,10 +548,29 @@ def _coordinator_loop(
                 f"{_audit.get('rationale', '')} "
                 f"{_story_budget.format_reconciliation(_reconciliation)}"
             ).strip()
+        # ── Fit the invocation allowance inside the story ceiling (#2333) ─────
+        # The per-invocation development timeout is derived from the dev
+        # profile's own base and knew nothing of the sprint worker ceiling that
+        # bounds the whole story, so a story could be granted ~92% of its own
+        # ceiling for a single invocation and then be SIGKILLed mid-edit on the
+        # third development cycle. Cap it against the enclosing ceiling here,
+        # dividing by the invocations one review cycle may run; the *whole-story*
+        # consistency across every reachable cycle count is held by the dynamic
+        # clamp at dispatch (``clamp_timeout_to_remaining`` in dev_phase), which
+        # never grants more than the story's remaining working time.
+        _enclosing = _worker_budget.current_worker_budget()
+        _capped_dev_timeout, _cap_audit = cap_timeout_to_story_ceiling(
+            _limits.dev_timeout_seconds,
+            _enclosing.worker_timeout_seconds if _enclosing is not None else None,
+            _limits.dev_max,
+        )
+        _audit["story_ceiling_cap"] = _cap_audit
+        if _cap_audit["capped"]:
+            _log(f"  {_cap_audit['rationale']}")
         _limits = type(_limits)(
             dev_max=_limits.dev_max,
             review_max=_reconciliation["reconciled_review_max"],
-            dev_timeout_seconds=_limits.dev_timeout_seconds,
+            dev_timeout_seconds=_capped_dev_timeout,
             dev_cost_estimate_usd=_limits.dev_cost_estimate_usd,
             audit=_audit,
         )
@@ -838,8 +858,10 @@ def _coordinator_loop(
                                 # and continue with timeout resume on current model.
                                 state.timeout_escalation_used = True
                             else:
-                                from .util import resolve_timeout_with_active  # noqa: PLC0415
-
+                                # ``resolve_timeout_with_active``,
+                                # ``cap_timeout_to_story_ceiling`` and
+                                # ``_worker_budget`` are already bound at the top
+                                # of this function.
                                 _old_timeout_model, _new_timeout_model, config = _esc
                                 _orig_timeout = state.adaptive_dev_timeout_seconds
                                 _new_timeout, _ = resolve_timeout_with_active(
@@ -849,6 +871,20 @@ def _coordinator_loop(
                                     state.preflight_complexity,
                                     state.preflight_complexity_score,
                                 )
+                                # The escalation re-derives from the profile base,
+                                # so without this it would restore exactly the
+                                # uncapped figure the story ceiling refused —
+                                # on the stories most likely to need it (#2333).
+                                _esc_budget = _worker_budget.current_worker_budget()
+                                _new_timeout, _esc_cap_audit = cap_timeout_to_story_ceiling(
+                                    _new_timeout,
+                                    (
+                                        _esc_budget.worker_timeout_seconds
+                                        if _esc_budget is not None
+                                        else None
+                                    ),
+                                    max(1, state.adaptive_dev_max),
+                                )
                                 state.adaptive_dev_timeout_seconds = _new_timeout
                                 state.timeout_escalation_used = True
                                 state.timeout_escalation_audit = {
@@ -857,6 +893,7 @@ def _coordinator_loop(
                                     "original_timeout_seconds": _orig_timeout,
                                     "new_timeout_seconds": _new_timeout,
                                     "reason": "timeout",
+                                    "story_ceiling_cap": _esc_cap_audit,
                                 }
                                 # Durable copy: a timeout escalation is exactly
                                 # the kind of event whose run is least likely to

@@ -20,6 +20,7 @@ from pathlib import Path
 
 import yaml
 
+from .. import worker_budget
 from ..advisory_conventions import AdvisoryArtifactError
 from ..config import ForgeConfig, ModelProfile
 from ..config.auth import check_agent_auth
@@ -5593,6 +5594,19 @@ def run_sprint(
     active: dict[str, Future[object]] = {}
     story_deadlines: dict[str, float] = {}
     story_wait_started: set[str] = set()
+
+    def _effective_deadline(slug: str) -> float:
+        """The story's deadline with operator-wait time credited back (#2333).
+
+        Time the system spends blocked at a gate it opened is not time the worker
+        is unresponsive. Crediting it here — rather than at dispatch, where the
+        length of the wait is not yet known — means a deadline that would elapse
+        *during* a wait is extended by exactly the wait, and a story sitting at a
+        gate with 41 minutes still on its clock is no longer killed eighteen
+        seconds later for being "unresponsive".
+        """
+        return story_deadlines[slug] + worker_budget.operator_wait_credit(slug)
+
     cost_lock = threading.Lock()
     story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = {}
     live_telemetry_snapshots: dict[str, dict] = {}
@@ -6214,6 +6228,25 @@ def run_sprint(
                                 ),
                             )
                             stop_events[_member_slug] = _batch_stop_evt
+                        # One worker runs the group, so the whole group shares one
+                        # deadline: the sum of what its members would each have
+                        # been allowed on their own. Registered BEFORE submit —
+                        # the worker can reach for its enclosing ceiling on its
+                        # first instruction, and a budget published afterwards is
+                        # a race the story loses silently (#2333).
+                        _batch_started = time.monotonic()
+                        _batch_window = float(sum(story_worker_timeouts[m] for m in _dispatchable))
+                        _batch_deadline = _batch_started + _batch_window
+                        for _member_slug in _dispatchable:
+                            # A gate entered under any member's slug must credit
+                            # the deadline every member is measured against, so
+                            # the whole group shares one budget group.
+                            worker_budget.register_worker_budget(
+                                _member_slug,
+                                _batch_window,
+                                group=f"batch:{_batch_gid}",
+                                started_at=_batch_started,
+                            )
                         _batch_fut = pool.submit(
                             _run_batch_group,
                             config,
@@ -6230,12 +6263,6 @@ def run_sprint(
                             _batch_stop_evt,
                             base_lands_locally=_sprint_lands_locally,
                             lands_in_project_root=_story_lands_in_root,
-                        )
-                        # One worker runs the group, so the whole group shares one
-                        # deadline: the sum of what its members would each have
-                        # been allowed on their own.
-                        _batch_deadline = time.monotonic() + float(
-                            sum(story_worker_timeouts[m] for m in _dispatchable)
                         )
                         _dispatched_batch_leader[_batch_gid] = _dispatchable[0]
                         _batch_group_of_leader[_dispatchable[0]] = _batch_gid
@@ -6296,6 +6323,16 @@ def run_sprint(
                     )
                 else:
                     _dispatch_fn = _run_single_story
+                # Publish the enclosing ceiling the story runs inside BEFORE the
+                # worker starts, so phase and gate allowances derived deep in the
+                # coordinator are derived against the budget that contains them
+                # rather than racing its registration (#2333).
+                _story_started = time.monotonic()
+                worker_budget.register_worker_budget(
+                    task.slug,
+                    float(story_worker_timeouts[task.slug]),
+                    started_at=_story_started,
+                )
                 fut = pool.submit(
                     _dispatch_fn,
                     worker_config,
@@ -6317,7 +6354,7 @@ def run_sprint(
                     **_dispatch_kwargs,
                 )
                 active[task.slug] = fut
-                story_deadlines[task.slug] = time.monotonic() + float(
+                story_deadlines[task.slug] = _story_started + float(
                     story_worker_timeouts[task.slug]
                 )
 
@@ -6395,7 +6432,7 @@ def run_sprint(
                         (
                             float(story_worker_timeouts[slug])
                             if slug not in story_wait_started
-                            else story_deadlines[slug] - _now
+                            else _effective_deadline(slug) - _now
                         )
                         for slug in active
                     ),
@@ -6416,7 +6453,7 @@ def run_sprint(
                 expired_slugs = [
                     slug
                     for slug, fut in active.items()
-                    if fut not in done_futs and _now >= story_deadlines[slug]
+                    if fut not in done_futs and _now >= _effective_deadline(slug)
                 ]
 
             _log(f"[debug] wait() returned: {len(done_futs)} done")
@@ -6442,10 +6479,30 @@ def run_sprint(
                     if _stop_evt is not None:
                         _stop_evt.set()
                     fut.cancel()
+                    # An elapsed deadline is exhausted time, not a verdict on the
+                    # work and not evidence the worker stopped responding — a
+                    # story killed here may have been converging, mid-edit, or in
+                    # a wait this system itself opened. Say which (#2333).
+                    _wait_credit = worker_budget.operator_wait_credit(slug)
+                    _was_waiting, _wait_phase, _wait_len = worker_budget.waiting_on_operator(slug)
+                    _wait_note = ""
+                    if _wait_credit > 0:
+                        _wait_note = (
+                            f"; {_fmt_duration(_wait_credit)} of operator-decision wait"
+                            " was excluded from the deadline"
+                        )
+                    if _was_waiting:
+                        _wait_note += (
+                            f"; still waiting on an operator decision"
+                            f"{f' at {_wait_phase}' if _wait_phase else ''}"
+                            f" after {_fmt_duration(_wait_len)}"
+                        )
                     _log(
-                        f"TIMEOUT {slug} (worker unresponsive after "
-                        f"{story_worker_timeouts[slug]}s — marking as failed)"
+                        f"TIMEOUT {slug} (story deadline exhausted after "
+                        f"{story_worker_timeouts[slug]}s of working time{_wait_note}"
+                        " — marking as failed on wall clock, not on quality)"
                     )
+                    worker_budget.unregister_worker_budget(slug)
                     spec_str = slug_to_spec[slug]
                     timed_out_at = datetime.datetime.now(datetime.timezone.utc)
                     snapshot = _snapshot_last_known(slug, _state_writer)
@@ -6457,8 +6514,13 @@ def run_sprint(
                     else:
                         story_started_at = timed_out_at
                     _phase_label = f" during phase {last_phase}" if last_phase else ""
+                    # Deadline exhaustion, stated as such. The operator action for
+                    # a story that ran out of wall clock is not the action for one
+                    # that produced an unacceptable result, and only the second is
+                    # evidence about the work (#2333).
                     _timeout_error = (
-                        f"Worker timeout (>{story_worker_timeouts[slug]}s){_phase_label}"
+                        f"Story deadline exhausted (>{story_worker_timeouts[slug]}s of "
+                        f"working time){_phase_label}{_wait_note}"
                     )
                     _timeout_result = _abnormal_story_result(
                         slug,
@@ -6467,7 +6529,10 @@ def run_sprint(
                         started_at=story_started_at,
                         error=_timeout_error,
                         error_type="TimeoutError",
-                        message=f"Worker thread timed out after {story_worker_timeouts[slug]}s",
+                        message=(
+                            f"Story deadline exhausted after {story_worker_timeouts[slug]}s "
+                            "of working time — not a review or quality failure"
+                        ),
                     )
                     _timeout_cause = build_abnormal_cause(
                         kind=ABNORMAL_WORKER_TIMEOUT,
@@ -6539,6 +6604,7 @@ def run_sprint(
                     _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
                     del active[slug]
                     story_deadlines.pop(slug, None)
+                    worker_budget.unregister_worker_budget(slug)
                     story_wait_started.discard(slug)
                     stop_events.pop(slug, None)
                     _end_collision_claim(slug, "worker raised")
@@ -6612,6 +6678,7 @@ def run_sprint(
                     continue
                 del active[slug]
                 story_deadlines.pop(slug, None)
+                worker_budget.unregister_worker_budget(slug)
                 story_wait_started.discard(slug)
                 stop_events.pop(slug, None)
                 story_times[slug] = (t0, t1)
@@ -6912,6 +6979,10 @@ def run_sprint(
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
+    # No story of this sprint can still be running, so no enclosing budget of it
+    # is still live; leaving one registered would let a later sprint's worker
+    # inherit a stale ceiling through the shared slug registry.
+    worker_budget.clear_worker_budgets()
     duration = (finished_at - started_at).total_seconds()
 
     # ── Terminalize live state ────────────────────────────────────────

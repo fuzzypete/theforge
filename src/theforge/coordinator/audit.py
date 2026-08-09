@@ -780,6 +780,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "review_loop": _serialize_review_iteration_metrics(state),
             "usage_summary": _build_iteration_usage_summary(state, config),
             "adaptive_limits": state.adaptive_limits_audit or None,
+            # Development invocations shortened to fit the enclosing story
+            # deadline (#2333). Empty on a story with room to spare; entries are
+            # the difference between a timeout the run chose and one the sprint
+            # scheduler imposed with a signal, so the values that produced the
+            # shorter invocation are on the record rather than reconstructed.
+            "dev_timeout_clamps": list(state.dev_timeout_clamps),
             "budget_consumption_log": [
                 {
                     "cycle": entry.cycle,
