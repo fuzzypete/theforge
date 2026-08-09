@@ -1,10 +1,10 @@
-"""Resolve the git ref whose tree supplies convention ceilings.
+"""Resolve the git ref whose tree supplies the convention baseline.
 
-Ceilings for the module-size ratchet (ADR-0008) are read off the baseline tree,
-so *which* commit is treated as the branch point decides what this story is
-answerable for. A base ref that lags the commit the workspace was actually
-created from moves the branch point backwards, and every module another story
-grew in between is then charged to this one.
+Hard conventions block on what a story *added*, so *which* commit is treated as
+the branch point decides what this story is answerable for. A base ref that lags
+the commit the workspace was actually created from moves the branch point
+backwards, and every violation another story introduced in between is then
+charged to this one.
 
 The resolution therefore prefers the remote-tracking ref when the local base
 branch is strictly behind it — the common shape when work lands on the remote
