@@ -789,6 +789,72 @@ def test_pre_v24_records_read_back_as_did_not_say() -> None:
     assert [entry["process_teardown"] for entry in migrated["cost"]["agents"]] == [None, None]
 
 
+def test_a_v24_teardown_is_read_back_as_the_gate_that_produced_it() -> None:
+    """v24 recorded a teardown without saying which shell leaked it.
+
+    ``"gate"`` is the correct backfill rather than a null, and this asserts the
+    output rather than trusting the docstring: v24 only ever collected from the
+    gate-family shells, because the pre-validate path that made the distinction
+    necessary did not record at all. So an older entry is not "unknown" — the
+    field names what the record already implied.
+    """
+    from theforge.coordinator.audit_substrate import _migrate_record
+
+    migrated = _migrate_record(
+        {
+            "iterations": {
+                "gate_process_teardowns": [
+                    {"gate_run": 1, "action": "killed_survivors"},
+                    {"gate_run": 2, "action": "retained_for_reaper"},
+                ]
+            }
+        },
+        from_version=24,
+    )
+    entries = migrated["iterations"]["gate_process_teardowns"]
+    assert [entry["source"] for entry in entries] == ["gate", "gate"]
+    # The rest of each entry is carried through untouched.
+    assert [entry["gate_run"] for entry in entries] == [1, 2]
+    assert [entry["action"] for entry in entries] == [
+        "killed_survivors",
+        "retained_for_reaper",
+    ]
+
+
+def test_a_teardown_that_already_names_its_source_is_left_alone() -> None:
+    """The migration fills a gap; it never overwrites what a writer stated."""
+    from theforge.coordinator.audit_substrate import _migrate_record
+
+    migrated = _migrate_record(
+        {
+            "iterations": {
+                "gate_process_teardowns": [
+                    {"gate_run": 1, "source": "pre_validate"},
+                    {"gate_run": 1, "source": "gate_diagnostic"},
+                ]
+            }
+        },
+        from_version=24,
+    )
+    assert [e["source"] for e in migrated["iterations"]["gate_process_teardowns"]] == [
+        "pre_validate",
+        "gate_diagnostic",
+    ]
+
+
+def test_a_record_with_no_teardowns_survives_the_migration() -> None:
+    """The shapes a real record can take, none of which the migration may break."""
+    from theforge.coordinator.audit_substrate import _migrate_record
+
+    for record in (
+        {"iterations": {"gate_process_teardowns": []}},
+        {"iterations": {}},
+        {"iterations": "not-a-dict"},
+        {},
+    ):
+        assert _migrate_record(dict(record), from_version=24) is not None
+
+
 def test_a_group_the_kill_cannot_reach_is_left_for_the_reaper(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1277,25 +1343,77 @@ def test_a_clean_pre_validate_command_records_nothing(tmp_path: Path) -> None:
     assert state.gate_process_teardowns == []
 
 
+def _environ_is_readable(pid: int) -> bool:
+    """True when this process may read *pid*'s environment at all."""
+    if sys.platform == "darwin":
+        return bool(
+            process_group._sysctl_bytes(
+                (process_group._CTL_KERN, process_group._KERN_PROCARGS2, pid)
+            )
+        )
+    try:
+        Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        return False
+    return True
+
+
 class TestTheLeaseSweepCostsWhatItShould:
     """The sweep must stay cheap without becoming blind (#2309, cycle 3)."""
+
+    def test_every_pruned_process_was_one_the_sweep_could_never_match(self) -> None:
+        """The prune's correctness condition, checked rather than assumed.
+
+        A process may be dropped from the candidate set for exactly two reasons:
+        it started before the spawn did (so it cannot be that spawn's
+        descendant), or the platform will not describe it to us at all (so its
+        environment is not ours to read and no match was ever possible). Anything
+        else dropped would be a leak the sweep stopped looking for.
+        """
+        _env, lease = process_group.open_process_lease(None)
+        # The table is snapshotted *before* the candidate scan, so every pid
+        # checked below already existed when the scan ran. Reading it afterwards
+        # would sweep up processes born in between and blame the prune for not
+        # having seen the future.
+        live = [pid for pid in process_tree.live_pids() if pid > 1]
+        candidates = set(process_group._lease_candidates(lease.started_at))
+        assert len(live) > 10, "sanity: this host should have a real process table"
+
+        for pid in live:
+            if pid in candidates:
+                continue
+            info = process_tree.process_info(pid)
+            if info is None:
+                # Exited between the snapshot and the scan, or never describable.
+                # The latter is the case the prune relies on, so it is confirmed
+                # rather than assumed: skipping is only safe because the refusal
+                # to describe and the refusal to read coincide.
+                assert not _environ_is_readable(pid), (
+                    f"pid {pid} was skipped but its environment can be read — "
+                    "the sweep dropped a process it could have matched"
+                )
+                continue
+            assert info.started_at is not None and info.started_at < lease.started_at, (
+                f"pid {pid} was skipped without being older than the spawn"
+            )
 
     def test_a_short_command_does_not_scan_the_whole_host(self) -> None:
         """Cost scales with how long the spawn ran, not with the process table.
 
         Reading every process's environment on the release of every short shell
         command made a `git status` pay to search for a descendant it could not
-        possibly have. The prune is sound rather than a heuristic: a descendant
-        cannot predate the spawn that created it.
+        possibly have had. The bound asserted here is deliberately loose: the
+        exact count is a property of the host, but "most of the table" is a
+        property of the bug.
         """
         _env, lease = process_group.open_process_lease(None)
         candidates = process_group._lease_candidates(lease.started_at)
         live = [pid for pid in process_tree.live_pids() if pid > 1]
         assert len(live) > 10, "sanity: this host should have a real process table"
-        if sys.platform == "darwin":
-            assert len(candidates) < len(live) / 2, (
-                f"the sweep still considers {len(candidates)} of {len(live)} processes"
-            )
+        assert len(candidates) < len(live) / 2, (
+            f"the sweep still considers {len(candidates)} of {len(live)} processes; "
+            "the start-time prune is not taking effect on this host"
+        )
 
     def test_the_prune_never_drops_a_real_descendant(self) -> None:
         """Cheap must not mean blind: what the sweep exists to find is still found."""
@@ -1315,15 +1433,23 @@ class TestTheLeaseSweepCostsWhatItShould:
             _reap(proc.pid)
             proc.wait(timeout=5)
 
-    def test_a_reaper_record_with_no_spawn_time_considers_everything(self) -> None:
+    def test_a_reaper_record_with_no_spawn_time_prunes_nothing_on_age(self) -> None:
         """A sweep that cannot date the spawn must not prune on age.
 
         ``reap_orphan_agents`` reads a token from a sidecar written by a process
-        that is gone, so it has no start moment to compare against. It gets the
-        unpruned scan rather than a filter applied to a time it does not know.
+        that is gone, so it has no start moment to compare against and passes
+        0.0. Every process it could read is then a candidate — the age filter
+        contributes nothing, which is the only safe reading of "I do not know
+        when this spawn was".
         """
-        candidates = process_group._lease_candidates(0.0)
-        live = [pid for pid in process_tree.live_pids() if pid > 1]
-        assert len(candidates) >= len(live) - 5, (
-            "an undated sweep must consider the whole table, not a slice of it"
+        readable = {
+            pid
+            for pid in process_tree.live_pids()
+            if pid > 1 and process_tree.process_info(pid) is not None
+        }
+        candidates = set(process_group._lease_candidates(0.0))
+        # A process that exited between the two reads is legitimately absent.
+        missed = {pid for pid in readable - candidates if process_tree.process_info(pid)}
+        assert not missed, (
+            f"an undated sweep dropped a live process it could have read: {sorted(missed)[:5]}"
         )

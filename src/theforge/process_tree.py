@@ -84,26 +84,78 @@ class ProcessInfo:
     pgid: int
     fingerprint: str
     """Start time — the only identity a recyclable pid has."""
+    started_at: float | None = None
+    """The same start time as epoch seconds, for ordering against a wall clock.
+
+    ``fingerprint`` answers "is this still the process I saw?" and is compared
+    only against itself. This answers "could this process descend from something
+    that began at time T?", which needs a number a caller can order. None where
+    the platform cannot say.
+    """
 
 
 # ── Linux: /proc ─────────────────────────────────────────────────────
 
 
 def _parse_stat(raw: str) -> tuple[int, int, str] | None:
-    """``/proc/<pid>/stat`` → ``(ppid, pgrp, fingerprint)``.
+    """``/proc/<pid>/stat`` → ``(ppid, pgrp, fingerprint)``, or None for a zombie.
 
     comm (field 2) is parenthesised and may itself contain spaces, so the split
     starts after the final ``)``: ``rest`` begins at field 3 (state), making ppid
     (field 4) index 1, pgrp (field 5) index 2, starttime (field 22) index 19.
+
+    A zombie is reported as gone, because it is: it has exited and holds nothing
+    but a pid slot its parent has not yet collected. macOS reaches the same
+    answer on its own — ``proc_pidinfo`` short-reads for an exited process — and
+    the two platforms must agree, or the same teardown is a clean kill on one and
+    a surviving leak on the other. That is not hypothetical: forge running as pid
+    1 in a container inherits its own orphans and never reaps them, so every
+    killed escapee would have been recorded as a leak that survived (#2309).
     """
     _, _, rest = raw.rpartition(")")
     fields = rest.split()
-    if len(fields) < 20:
+    if len(fields) < 20 or fields[0] == "Z":
         return None
     try:
         return int(fields[1]), int(fields[2]), f"proc:{fields[19]}"
     except ValueError:
         return None
+
+
+def _boot_time_epoch() -> float | None:
+    """Epoch seconds at which this kernel booted, from ``/proc/stat``'s ``btime``.
+
+    Cached: a running kernel does not boot twice. None when the field is absent,
+    which leaves Linux start times unorderable rather than wrong.
+    """
+    if "btime" in _state:
+        cached = _state["btime"]
+        return cached if isinstance(cached, float) else None
+    value: float | None = None
+    try:
+        for line in Path("/proc/stat").read_text(encoding="utf-8").splitlines():
+            if line.startswith("btime "):
+                value = float(line.split()[1])
+                break
+    except (OSError, ValueError, IndexError):
+        value = None
+    _state["btime"] = value
+    return value
+
+
+def _linux_started_at_epoch(ticks: float) -> float | None:
+    """``starttime`` (clock ticks since boot, proc(5)) as epoch seconds."""
+    boot = _boot_time_epoch()
+    if boot is None:
+        return None
+    hz = _state.get("hz")
+    if not isinstance(hz, float):
+        try:
+            hz = float(os.sysconf("SC_CLK_TCK"))
+        except (ValueError, OSError, AttributeError):
+            hz = 0.0
+        _state["hz"] = hz
+    return None if hz <= 0 else boot + ticks / hz
 
 
 def _linux_info(pid: int) -> ProcessInfo | None:
@@ -112,7 +164,16 @@ def _linux_info(pid: int) -> ProcessInfo | None:
     except OSError:
         return None
     parsed = _parse_stat(raw)
-    return None if parsed is None else ProcessInfo(pid, parsed[0], parsed[1], parsed[2])
+    if parsed is None:
+        return None
+    ticks = parsed[2].split(":", 1)[1]
+    return ProcessInfo(
+        pid,
+        parsed[0],
+        parsed[1],
+        parsed[2],
+        started_at=_linux_started_at_epoch(float(ticks)) if ticks.isdigit() else None,
+    )
 
 
 def _linux_children(pid: int) -> list[int]:
@@ -209,6 +270,7 @@ def _darwin_info(pid: int) -> ProcessInfo | None:
             ppid=struct.unpack_from("I", raw, _OFF_PPID)[0],
             pgid=struct.unpack_from("I", raw, _OFF_PGID)[0],
             fingerprint=f"bsdinfo:{seconds}.{micros:06d}",
+            started_at=seconds + micros / 1_000_000,
         )
     except struct.error:
         return None

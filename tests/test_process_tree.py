@@ -377,3 +377,89 @@ class TestWaitUntilGone:
         finally:
             _reap(proc.pid)
             proc.wait(timeout=5)
+
+
+class TestStartTimeAsAnEpoch:
+    """``started_at`` orders a process against a wall clock, so the sweep can prune.
+
+    ``fingerprint`` only ever compares against itself, so it may be any stable
+    token. ``started_at`` is compared against a lease's own ``time.time()``, so
+    it has to be a real epoch — and the Linux derivation (boot time plus clock
+    ticks) is arithmetic worth pinning on any host, since the platform that runs
+    it is not the platform this was written on.
+    """
+
+    def test_our_own_start_time_is_a_plausible_epoch(self) -> None:
+        info = process_tree.process_info(os.getpid())
+        assert info is not None and info.started_at is not None
+        age = time.time() - info.started_at
+        assert 0 <= age < 3600, f"our own process reads as {age:.0f}s old"
+
+    def test_a_child_started_after_us(self) -> None:
+        """The ordering the prune depends on: a descendant postdates its ancestor."""
+        ours = process_tree.process_info(os.getpid())
+        proc = _sleeper()
+        try:
+            child = process_tree.process_info(proc.pid)
+            assert ours is not None and ours.started_at is not None
+            assert child is not None and child.started_at is not None
+            assert child.started_at >= ours.started_at
+        finally:
+            _reap(proc.pid)
+            proc.wait(timeout=5)
+
+    def test_linux_ticks_are_converted_with_boot_time_and_clock_rate(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """proc(5): ``starttime`` is clock ticks since boot, so add boot and divide."""
+        monkeypatch.setitem(process_tree._state, "btime", 1_000_000.0)
+        monkeypatch.setitem(process_tree._state, "hz", 100.0)
+        assert process_tree._linux_started_at_epoch(250) == 1_000_002.5
+
+    def test_an_unknown_boot_time_leaves_the_start_time_unstated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Unorderable is the safe answer — the sweep keeps what it cannot date."""
+        monkeypatch.setitem(process_tree._state, "btime", None)
+        assert process_tree._linux_started_at_epoch(250) is None
+
+    def test_an_unusable_clock_rate_leaves_the_start_time_unstated(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setitem(process_tree._state, "btime", 1_000_000.0)
+        monkeypatch.setitem(process_tree._state, "hz", 0.0)
+        assert process_tree._linux_started_at_epoch(250) is None
+
+
+class TestAZombieIsGone:
+    """An exited process is not a survivor, on either platform.
+
+    macOS refuses to describe one at all; Linux keeps its ``/proc`` entry until
+    the parent reaps it. Both must read as gone, or a killed escapee is a clean
+    teardown on one platform and a surviving leak on the other — which is exactly
+    what forge running as pid 1 in a container would hit, since it inherits its
+    own orphans and never reaps them.
+    """
+
+    def test_a_linux_zombie_is_not_described(self) -> None:
+        fields = ["7", "(python3)", "Z", "3", "5"] + [str(n) for n in range(6, 25)]
+        assert process_tree._parse_stat(" ".join(fields)) is None
+
+    def test_a_running_process_still_is(self) -> None:
+        fields = ["7", "(python3)", "R", "3", "5"] + [str(n) for n in range(6, 25)]
+        assert process_tree._parse_stat(" ".join(fields)) == (3, 5, "proc:22")
+
+    def test_an_unreaped_child_reads_as_gone(self) -> None:
+        """The real thing: a killed child we have not waited for."""
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(0.05)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            assert _wait_until(lambda: process_tree.process_info(proc.pid) is None), (
+                "an exited child still reads as a live process, so a completed "
+                "teardown would be recorded as a leak that survived"
+            )
+        finally:
+            proc.wait(timeout=5)
