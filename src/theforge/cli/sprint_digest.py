@@ -27,6 +27,11 @@ Layout for a completed sprint with one or more non-DONE stories::
       ✓ #NNNN  —  —  <title>
            landed before this run — skipped as already merged
 
+    PREFLIGHT DEGRADATIONS (n)
+      ⚠ #NNNN  $cost  elapsed  <title>
+           reason: timeout_no_verdict   action: proceed
+           complexity and routing came from the conservative fallback, not the agent
+
     OUTSTANDING (n)
       ✗ #NNNN  REVIEW cycle 2 not run
            re-entry: forge review runs REVIEW cycle 2; forge sprint --resume
@@ -134,6 +139,12 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
     # batch of issues at the gate. Render before the all-DONE early return so
     # those skips (and any stuck-issue patterns) are never hidden.
     _print_shape_gate_skips(summary)
+
+    # Before the all-DONE early return, for the same reason as the shape-gate
+    # skips above: a sprint can land every story and still have routed one of
+    # them on a preflight that inspected nothing. That is precisely the case
+    # that stayed invisible for four months (#2346).
+    _print_preflight_degradations(stories)
 
     # All-DONE sprint: tighter LANDED-only digest, no recovery sections.
     if not non_done:
@@ -263,6 +274,33 @@ def _shipped_a_change(story: dict) -> bool:
         return True
     landing = story.get("landing")
     return bool(isinstance(landing, dict) and landing.get("merged"))
+
+
+def _print_preflight_degradations(stories: list[dict]) -> None:
+    """Render stories whose preflight produced no founded classification.
+
+    Both halves of the degraded path appear here. The escalating half
+    (``failure_action: escalate``) stopped the story and is already loud; the
+    proceeding half (``failure_action: proceed``) routed a whole sprint on
+    values no observation supports and reported nothing — it is the expensive
+    half, and the reason this section exists. A story can be DONE and still
+    belong here: the outcome says the work landed, not that the sizing that
+    governed it was founded (#2346).
+    """
+    degraded = [s for s in stories if s.get("preflight_degraded")]
+    if not degraded:
+        return
+    print()
+    print(f"PREFLIGHT DEGRADATIONS ({len(degraded)})")
+    for story in degraded:
+        print(f"  ⚠ {_story_row(story)}")
+        reason = str(story.get("preflight_degraded_reason") or "unknown")
+        action = str(story.get("preflight_failure_action") or "proceed")
+        print(f"       reason: {reason}   action: {action}")
+        signals = [str(s) for s in (story.get("preflight_risk_signals") or [])]
+        if signals:
+            print(f"       risk signals: {', '.join(signals)}")
+        print("       complexity and routing came from the conservative fallback, not the agent")
 
 
 def _print_shape_gate_skips(summary: dict) -> None:

@@ -759,6 +759,23 @@ def _pending_decision_display(entry: dict) -> str:
 
 
 def _stage_and_detail_from_live_story(story: dict) -> tuple[str, str, str | None]:
+    """Live stage/detail, with the degraded-preflight condition appended.
+
+    The condition is carried on every phase's row, not only PREFLIGHT's: a
+    story that failed preflight and then ran on conservative values is exactly
+    the case that has to stay visible after the phase it happened in (#2346).
+    """
+    stage, detail, complexity = _live_stage_and_detail(story)
+    detail_data = story.get("detail")
+    note = _preflight_degraded_detail(
+        preflight_degraded_state(detail_data if isinstance(detail_data, dict) else {}, None)
+    )
+    if note:
+        detail = f"{detail} — {note}" if detail and detail != "—" else note
+    return stage, detail, complexity
+
+
+def _live_stage_and_detail(story: dict) -> tuple[str, str, str | None]:
     phase_val = story.get("phase")
     status_val = story.get("status", "waiting")
     blocked_by_val = list(story.get("blocked_by") or [])
@@ -1068,7 +1085,62 @@ def _stage_and_detail_from_completed_story(
     if allocation_note:
         detail = f"{detail} — {allocation_note}" if detail else allocation_note
 
+    # A run that proceeded on a preflight that produced no evidence says so on
+    # its own row, whatever the story's outcome was. Appended last precisely
+    # because a DONE row is where it used to vanish (#2346).
+    degraded_note = _preflight_degraded_detail(preflight_degraded_state(story, audit_data))
+    if degraded_note:
+        detail = f"{detail} — {degraded_note}" if detail else degraded_note
+
     return stage, detail, complexity
+
+
+def preflight_degraded_state(story: dict, audit_data: dict | None) -> dict | None:
+    """Normalize the degraded-preflight condition from either recorded shape.
+
+    The summary row carries flat ``preflight_*`` keys (written since #2346); the
+    per-story audit carries a nested ``preflight`` block with the same facts
+    under shorter names. Summaries written before #2346 have only the latter, so
+    both are read and folded into one shape. Returns ``None`` when preflight was
+    not degraded — the caller renders nothing for a healthy run.
+    """
+    if not isinstance(story, dict):
+        story = {}
+    degraded = bool(story.get("preflight_degraded", False))
+    reason = _nonempty_str(story.get("preflight_degraded_reason"))
+    action = _nonempty_str(story.get("preflight_failure_action"))
+    signals = [str(s) for s in (story.get("preflight_risk_signals") or [])]
+
+    if not degraded:
+        block = (audit_data or {}).get("preflight")
+        if isinstance(block, dict) and block.get("degraded"):
+            degraded = True
+            reason = reason or _nonempty_str(block.get("degraded_reason"))
+            action = action or _nonempty_str(block.get("failure_action"))
+            if not signals:
+                signals = [str(s) for s in (block.get("risk_signals") or [])]
+
+    if not degraded:
+        return None
+    return {
+        "degraded_reason": reason,
+        "failure_action": action,
+        "risk_signals": signals,
+    }
+
+
+def _preflight_degraded_detail(state: dict | None) -> str:
+    """Render the degraded-preflight condition as a status-row note."""
+    if not state:
+        return ""
+    parts = [f"preflight degraded: {state.get('degraded_reason') or 'unknown'}"]
+    action = state.get("failure_action")
+    if action:
+        parts.append(f"action={action}")
+    signals = state.get("risk_signals") or []
+    if signals:
+        parts.append(f"risk signals: {', '.join(signals)}")
+    return "; ".join(parts)
 
 
 def _allocation_detail(allocation: object) -> str:

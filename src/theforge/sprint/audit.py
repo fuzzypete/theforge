@@ -32,6 +32,67 @@ def _optional_cost(value: object) -> float | None:
     return None
 
 
+#: Story-row keys carrying the degraded-preflight condition (#2346). Flat on the
+#: row rather than nested, matching the surrounding ``preflight*`` fields, so a
+#: reader of sprint-summary.yaml can count degraded runs without opening a single
+#: per-story audit.yaml. Absent-degradation rows carry ``False`` explicitly:
+#: "this run's preflight was founded" is the claim being recorded, and a missing
+#: key cannot make it.
+PREFLIGHT_DEGRADED_ROW_KEYS = (
+    "preflight_degraded",
+    "preflight_degraded_reason",
+    "preflight_failure_action",
+    "preflight_risk_signals",
+)
+
+
+def _yaml_safe_str(value: object) -> str | None:
+    """Return ``value`` as a str, or None when it is not a plain string.
+
+    Story rows are serialized to YAML, so a field that reaches them must be a
+    representable scalar. Duck-typed states (and test doubles) can hand back an
+    arbitrary object for an attribute that was never set; recording that would
+    fail the whole summary write rather than the one field.
+    """
+    return value if isinstance(value, str) and value else None
+
+
+def _yaml_safe_list(value: object) -> list:
+    """Return ``value`` as a list of strings, or empty for anything else."""
+    if isinstance(value, (list, tuple)):
+        return [str(item) for item in value]
+    return []
+
+
+def preflight_degraded_row_fields(state: object) -> dict:
+    """Degraded-preflight story-row fields read from a coordinator state."""
+    return {
+        "preflight_degraded": getattr(state, "preflight_degraded", False) is True,
+        "preflight_degraded_reason": _yaml_safe_str(
+            getattr(state, "preflight_degraded_reason", None)
+        ),
+        "preflight_failure_action": _yaml_safe_str(
+            getattr(state, "preflight_failure_action", None)
+        ),
+        "preflight_risk_signals": _yaml_safe_list(getattr(state, "preflight_risk_signals", None)),
+    }
+
+
+def preflight_degraded_row_fields_from_audit(preflight_block: object) -> dict:
+    """Same fields, read from a persisted per-story audit ``preflight`` block.
+
+    The audit block nests them (``degraded``, ``degraded_reason``, …); the row
+    flattens them. This is the one place the two spellings are reconciled.
+    """
+    block = preflight_block if isinstance(preflight_block, dict) else {}
+    return {
+        "preflight_degraded": bool(block.get("degraded", False)),
+        "preflight_degraded_reason": _yaml_safe_str(block.get("degraded_reason")),
+        "preflight_failure_action": _yaml_safe_str(block.get("failure_action")),
+        "preflight_risk_signals": _yaml_safe_list(block.get("risk_signals")),
+    }
+
+
 def _state_reported_cost(state: object) -> float | None:
     """Per-story cost from a coordinator state, preserving cost-unknown.
 
@@ -505,6 +566,7 @@ def _load_story_summary_entry_from_audit(
         "preflight_source_run_id": (
             preflight_block.get("source_run_id") if isinstance(preflight_block, dict) else None
         ),
+        **preflight_degraded_row_fields_from_audit(preflight_block),
         "error": audit_data.get("error"),
         "error_type": audit_data.get("error_type") or outcome_block.get("error_type"),
         "outcome_code": (
@@ -703,6 +765,7 @@ def _write_sprint_audit(
                 "preflight_source_run_id": getattr(
                     res.state, "preflight_cached_from_run_id", None
                 ),
+                **preflight_degraded_row_fields(res.state),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),
@@ -1070,6 +1133,7 @@ def _write_sprint_summary(
                 "preflight_source_run_id": getattr(
                     res.state, "preflight_cached_from_run_id", None
                 ),
+                **preflight_degraded_row_fields(res.state),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),

@@ -996,12 +996,12 @@ class PlanAgentReviewConfig:
         ref = self.ref
         if ref is None or (not ref.cli and not ref.provider):
             return []
-        from .defaults import API_PROVIDER_DEFAULT_TOOLS, DEFAULT_PREFLIGHT_PROFILE
+        from .defaults import API_PROVIDER_DEFAULT_TOOLS, DEFAULT_INVESTIGATION_TOOLS
 
         allowed_tools = (
             API_PROVIDER_DEFAULT_TOOLS
             if ref.provider and ref.provider in SUPPORTED_PROVIDERS
-            else DEFAULT_PREFLIGHT_PROFILE.allowed_tools
+            else DEFAULT_INVESTIGATION_TOOLS
         )
         return [
             ModelProfile(

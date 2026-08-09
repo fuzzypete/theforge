@@ -25,6 +25,22 @@ DEFAULT_REVIEW_PROFILE = ModelProfile(
     allowed_tools=("Read", "Bash", "Glob", "Grep"),
 )
 
+# Preflight is a read-only classifier and is deliberately denied Bash (#2346).
+# Bash is the only tool in this set that can start work the agent cannot be
+# resumed for: a detached/background process (``nohup``, ``setsid``, ``&``, a
+# nested agent CLI) leaves the model with nothing to do but wait for an event
+# the harness has no mechanism to deliver. It then ends its turn holding that
+# wait, the runner reads the finished stream as a finished agent, and the
+# process is killed when it does not exit within the post-stream grace period —
+# a phase that inspected zero files and produced no classification. Read/Glob/
+# Grep cover every investigation the prompt actually asks for.
+PREFLIGHT_FORBIDDEN_TOOLS: frozenset[str] = frozenset({"bash"})
+
+# The read-only investigation set shared by the *other* inspection roles (plan,
+# plan-review). They run to completion inside a turn and legitimately shell out,
+# so they keep Bash; only preflight is narrowed above.
+DEFAULT_INVESTIGATION_TOOLS: tuple[str, ...] = ("Read", "Bash", "Glob", "Grep")
+
 DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     name="preflight",
     cli="claude",
@@ -32,7 +48,7 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     model="sonnet",
     budget_usd=1.00,
     timeout_seconds=300,
-    allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    allowed_tools=("Read", "Glob", "Grep"),
     phase="preflight",
 )
 

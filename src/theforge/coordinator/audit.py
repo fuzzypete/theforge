@@ -20,6 +20,7 @@ from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .audit_substrate import MIGRATION_HELPERS
 from .iteration_usage import dev_usage
 from .landing_record import build_landing_record
+from .preflight import complexity_source
 from .state import CoordinatorResult, CoordinatorState
 from .trust_status import derive_trust_status
 from .util import _round_cost as _util_round_cost
@@ -855,6 +856,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "degraded_reason": state.preflight_degraded_reason,
                 "risk_signals": list(state.preflight_risk_signals),
                 "failure_action": state.preflight_failure_action,
+                # Provenance of the complexity fields above. A degraded phase
+                # still emits a conservative score, and without this label the
+                # persistent record cannot distinguish it from an agent-founded
+                # one (#2346).
+                "complexity_source": complexity_source(state),
                 # Exploration salvaged from a failed preflight run (#706): files
                 # inspected, tool calls, partial conclusion. None on success.
                 "partial_evidence": state.preflight_partial_evidence,
