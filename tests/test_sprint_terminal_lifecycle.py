@@ -24,6 +24,7 @@ from unittest.mock import patch
 
 import yaml
 
+from theforge import process_group
 from theforge.coordinator import util as coord_util
 from theforge.coordinator.live_state import (
     register_live_state,
@@ -191,9 +192,9 @@ def test_gate_subprocess_registers_its_process_group(tmp_path: Path, monkeypatch
 
     real_register = coord_util.register_agent_group
 
-    def _record(pgid: int, *, sandbox_dir=None) -> None:
-        real_register(pgid, sandbox_dir=sandbox_dir)
-        payload = {"pgid": pgid, "sandbox_dir": sandbox_dir}
+    def _record(pgid: int, *, sandbox_dir=None, lease=None) -> None:
+        real_register(pgid, sandbox_dir=sandbox_dir, lease=lease)
+        payload = {"pgid": pgid, "sandbox_dir": sandbox_dir, "lease": lease}
         payload["sidecar_written"] = any(agents_dir.glob("*.json"))
         seen.append(payload)
 
@@ -206,6 +207,9 @@ def test_gate_subprocess_registers_its_process_group(tmp_path: Path, monkeypatch
     assert seen[0]["pgid"] > 1
     assert seen[0]["sandbox_dir"] == str(tmp_path)
     assert seen[0]["sidecar_written"] is True
+    # The lease is what reaches a descendant that left the group (#2309), so it
+    # has to be *on the record* the reaper reads, not only in the live teardown.
+    assert seen[0]["lease"] is not None
     # A cleanly finished command leaves no orphan record behind.
     assert list(agents_dir.glob("*.json")) == []
 
@@ -559,6 +563,10 @@ def test_reaper_kills_an_orphaned_gate_tree_after_the_owner_dies(
     # A refused group kill: teardown reaches nothing, exactly the state that
     # leaves a live tree behind for the reaper to find.
     monkeypatch.setattr(coord_util, "_kill_process_group", lambda proc: False)
+    # The same sandbox denies signalling by pid, which is what leaves a live tree
+    # for the reaper at all. Without this the lease sweep ends it at release
+    # (#2309) and there is nothing left to orphan.
+    monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: False)
 
     cmd = (
         f'{sys.executable} -u -c "import subprocess, sys, time; '
@@ -616,6 +624,10 @@ def test_gate_teardown_records_survivors_so_a_leaderless_tree_can_be_reaped(
     """
     monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
     monkeypatch.setattr(coord_util, "_kill_process_group", lambda proc: False)
+    # The same sandbox denies signalling by pid, which is what leaves a live tree
+    # for the reaper at all. Without this the lease sweep ends it at release
+    # (#2309) and there is nothing left to orphan.
+    monkeypatch.setattr(process_group, "_kill_pid", lambda _pid: False)
 
     cmd = (
         f'{sys.executable} -u -c "import subprocess, sys, time; '

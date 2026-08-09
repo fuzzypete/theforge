@@ -459,3 +459,132 @@ def test_baseline_pass_proceeds_to_normal_sprint_flow(
 
     assert result.specs_succeeded == 1
     assert mock_run_task.called
+
+
+def test_baseline_gate_records_processes_it_left_running(tmp_path: Path) -> None:
+    """A baseline gate that leaks workers says so in the record it returns (#2309).
+
+    The baseline gate runs the project's own gate command — the shape that leaves
+    test workers behind — before any story exists to own the record. The kill
+    happens at release either way; what this pins is that the sprint's baseline
+    record carries the fact, instead of it living only in a log line nobody
+    correlates with the sprint afterwards.
+    """
+    import sys
+    import time
+
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    pidfile = tmp_path / "leaked.pid"
+    leaky_gate = (
+        f'{sys.executable} -c "import subprocess,sys,pathlib;'
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid))\""
+    )
+    config = replace(config, validation=replace(config.validation, gate_command=leaky_gate))
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    leaked_pid = int(pidfile.read_text().strip())
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(leaked_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("the baseline gate's descendant outlived the gate run")
+    finally:
+        try:
+            os.kill(leaked_pid, 9)
+        except OSError:
+            pass
+
+    assert baseline["passed"] is True, "the gate itself passed; only its leftovers died"
+    teardowns = baseline["process_teardowns"]
+    assert isinstance(teardowns, list) and len(teardowns) == 1
+    assert teardowns[0]["action"] == "killed_survivors"
+    assert teardowns[0]["completed"] is True
+
+
+def test_a_clean_baseline_gate_records_no_teardown(tmp_path: Path) -> None:
+    """Absence has to mean something: a gate that left nothing records nothing."""
+    config, resolved, _base_commit = _init_repo(tmp_path)
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["process_teardowns"] == []
+
+
+def test_a_failing_baseline_setup_still_records_what_it_left_running(tmp_path: Path) -> None:
+    """A setup command that leaks *and then fails* still reports the teardown.
+
+    The failure path returns early, before the gate ever runs, so it was
+    returning a record with no ``process_teardowns`` at all even though the
+    collector had been filled moments earlier. A leak is not less real because
+    the command that caused it went on to fail — if anything it is more likely,
+    since a command that died partway is the one most apt to leave work behind
+    (#2309).
+    """
+    import sys
+    import time
+
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    pidfile = tmp_path / "setup.pid"
+    leaky_then_fail = (
+        f'{sys.executable} -c "import subprocess,sys,pathlib;'
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid));"
+        'sys.exit(3)"'
+    )
+    config = replace(config, workspace=replace(config.workspace, setup_command=leaky_then_fail))
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    leaked = int(pidfile.read_text().strip())
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(leaked, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("the setup command's descendant outlived the baseline")
+    finally:
+        try:
+            os.kill(leaked, 9)
+        except OSError:
+            pass
+
+    assert baseline["passed"] is False
+    assert baseline["status"] == "error"
+    teardowns = baseline["process_teardowns"]
+    assert isinstance(teardowns, list) and len(teardowns) == 1, (
+        f"the setup command's teardown never reached the baseline record: {baseline}"
+    )
+    assert teardowns[0]["action"] == "killed_survivors"
+
+
+def test_every_baseline_record_answers_whether_it_left_processes(tmp_path: Path) -> None:
+    """One shape for every outcome, so a reader never has to ask which kind it got.
+
+    The early exits happen before any project command runs, so their answer is an
+    empty list rather than a missing key.
+    """
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    passing = _run_baseline_gate(config, resolved)
+    assert passing["process_teardowns"] == []
+
+    # An outcome that returns before the worktree is even created, let alone
+    # before any project command runs.
+    not_a_checkout = tmp_path / "not-a-repo"
+    not_a_checkout.mkdir()
+    early = _run_baseline_gate(replace(config, project_root=not_a_checkout), resolved)
+    assert early["passed"] is False
+    assert early["process_teardowns"] == []
