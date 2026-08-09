@@ -1013,6 +1013,12 @@ class CoordinatorState:
     # further attempts once the rest of the allocation is spent, so the seating
     # decision binds when it is exceeded rather than only when it is computed.
     # None/empty on runs where the reconciliation reserved nothing.
+    # The record can be terminally RELEASED (#2340): once review reaches an
+    # approve-equivalent path the seated cycles can no longer all occur, so the
+    # release adds released=True plus retained_review_cycles/retained_review_usd,
+    # released_review_usd, review_observed_usd, release_review_cycle and
+    # release_reason. From then on only the retained amount is protected — a
+    # released reserve stops being withheld from dev.
     review_funding_reservation: dict | None = None
     adaptive_limits_audit: dict = field(default_factory=dict)
     # One entry per development invocation whose timeout was shortened to fit

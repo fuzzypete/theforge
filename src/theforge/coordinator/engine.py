@@ -327,6 +327,9 @@ def _refuse_dev_without_nonreview_funds(
     by dev. Once everything the allocation left for non-review work is gone,
     another dev attempt would draw down the reserved review cycles and leave the
     work unreviewed — precisely the failure the reservation exists to prevent.
+    What is protected is review spend that is still POSSIBLE (#2340): cycles
+    already run, and cycles a terminal approve put out of reach, are not withheld
+    from dev, so a refusal here means the allocation is genuinely gone.
     Returns ``None`` when the attempt is funded, when no reservation was seated,
     or when spend is unmeasured; otherwise records the refusal on ``state`` and
     returns the escalation result the caller must return.
@@ -356,6 +359,11 @@ def _refuse_dev_without_nonreview_funds(
                     "nonreview_allocation_usd",
                     "reserved_review_usd",
                     "reserved_review_cycles",
+                    # The gross seated reserve above is not what the refusal was
+                    # computed against once review has spent or terminally
+                    # approved; emit the effective protected balance too (#2340).
+                    "reserved_review_remaining_usd",
+                    "reserved_review_released",
                     "observed_usd",
                 )
             },
