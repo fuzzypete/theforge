@@ -80,7 +80,13 @@ def _pending_human_review(
 
     _poll_start = time.monotonic()
     decision, _decided_at = _pending.poll_pending(
-        _eff_run_id, timeout_seconds, project_root=project_root, phase_label="HUMAN_REVIEW"
+        _eff_run_id,
+        timeout_seconds,
+        project_root=project_root,
+        phase_label="HUMAN_REVIEW",
+        # Bounded above, before write_pending: the window in the file and
+        # the window the poller honours are the same number.
+        already_bounded=True,
     )
     state.human_review_waited_seconds = time.monotonic() - _poll_start
     state.human_review_mode = "pending"
@@ -261,7 +267,13 @@ def _pending_escalate_gate(
 
     _poll_start = time.monotonic()
     decision, _decided_at = _pending.poll_pending(
-        _eff_run_id, timeout_seconds, project_root=project_root, phase_label="ESCALATE"
+        _eff_run_id,
+        timeout_seconds,
+        project_root=project_root,
+        phase_label="ESCALATE",
+        # Bounded above, before write_pending: the window in the file and
+        # the window the poller honours are the same number.
+        already_bounded=True,
     )
     waited = time.monotonic() - _poll_start
     state.human_review_waited_seconds = (state.human_review_waited_seconds or 0.0) + waited
@@ -404,7 +416,13 @@ def _pending_plan_review(
     mode = config.plan_review.mode
 
     decision, _decided_at = _pending.poll_pending(
-        _eff_run_id, timeout_seconds, project_root=project_root, phase_label="PLAN_REVIEW"
+        _eff_run_id,
+        timeout_seconds,
+        project_root=project_root,
+        phase_label="PLAN_REVIEW",
+        # Bounded above, before write_pending: the window in the file and
+        # the window the poller honours are the same number.
+        already_bounded=True,
     )
     state.plan_review_waited_seconds = time.monotonic() - _pr_start
 

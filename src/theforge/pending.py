@@ -171,6 +171,7 @@ def poll_pending(
     poll_interval: float = 2.0,
     project_root: Path | None = None,
     phase_label: str = "",
+    already_bounded: bool = False,
 ) -> tuple[str, str | None]:
     """Poll the pending file until a decision field appears or timeout expires.
 
@@ -180,11 +181,24 @@ def poll_pending(
     the story deadline rather than charging the story for a wait the system chose
     to begin (#2333).
 
+    ``already_bounded`` says the caller has already put *timeout_seconds* through
+    :func:`bounded_gate_wait` and written that same figure into the pending file.
+    Re-bounding it here would quietly shorten the window a second time — the story
+    has spent a little working time writing the file and sending notifications
+    since — so the file's ``timeout_at`` would advertise a deadline the poller no
+    longer honours, and the checkpoint would be swept while an operator still
+    believed it was live. One number, chosen once, is written and honoured.
+
+    A caller that has *not* pre-bounded (the default) is bounded here instead, so
+    no gate can reach this poller with an unbounded window.
+
     Returns (decision, decided_at) or ("timeout", None) on expiry.
     """
     from . import worker_budget as _wb
 
-    effective_timeout = bounded_gate_wait(timeout_seconds, phase_label)
+    effective_timeout = (
+        timeout_seconds if already_bounded else bounded_gate_wait(timeout_seconds, phase_label)
+    )
     deadline = time.monotonic() + effective_timeout
     last_log = time.monotonic()
 

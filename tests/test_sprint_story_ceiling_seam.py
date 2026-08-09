@@ -17,6 +17,7 @@ from __future__ import annotations
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -166,6 +167,86 @@ def test_gate_wait_floor_never_outlives_the_deadline_either() -> None:
     allowed = pending.bounded_gate_wait(3600, "ESCALATE")
     assert allowed <= 10.0  # ~10s of working time left, floor notwithstanding
     assert allowed >= 0.0
+
+
+def test_the_window_written_into_the_pending_file_is_the_window_polled() -> None:
+    """A gate is bounded once, and the file advertises what the poller honours.
+
+    Bounding at the caller (before ``write_pending``) and again inside
+    ``poll_pending`` would shorten the window twice: the story spends a little
+    working time writing the file and notifying between the two, so the second
+    bound comes out smaller and the checkpoint's ``timeout_at`` advertises a
+    deadline the poller has already stopped honouring.
+    """
+    from theforge.coordinator.pending_hitl import _pending_human_review
+
+    worker_budget.register_worker_budget("story-a", 3600.0, started_at=time.monotonic() - 1200)
+    set_worker_slug("story-a")
+
+    config = SimpleNamespace(
+        notifications=SimpleNamespace(human_review_timeout_seconds=3600),
+        project_root=None,
+    )
+    review = SimpleNamespace(verdict="REQUEST_CHANGES", findings=[], summary="s")
+    written: dict = {}
+    polled: dict = {}
+
+    def _capture_write(**kwargs):
+        written.update(kwargs)
+        return Path("/tmp/unused.yaml")
+
+    def _capture_poll(run_id, timeout_seconds, **kwargs):
+        polled["timeout_seconds"] = timeout_seconds
+        polled.update(kwargs)
+        return "approve", None
+
+    with (
+        patch("theforge.pending.write_pending", side_effect=_capture_write),
+        patch("theforge.pending.poll_pending", side_effect=_capture_poll),
+        patch("theforge.pending.cleanup_pending"),
+        patch("theforge.notify_backends.send_notifications"),
+    ):
+        decision, _ = _pending_human_review(
+            CoordinatorState(),
+            review,
+            Path("/tmp"),
+            "forge/story-a",
+            SimpleNamespace(slug="story-a"),
+            config,
+            task_start=time.monotonic(),
+        )
+
+    assert decision == "approve"
+    # Bounded — the story has ~2400s left, not the configured 3600s.
+    assert written["timeout_seconds"] < 3600
+    # ...and bounded exactly once: one number, written and honoured.
+    assert polled["timeout_seconds"] == written["timeout_seconds"]
+    assert polled["already_bounded"] is True
+
+
+def test_an_already_bounded_window_is_not_bounded_a_second_time(capsys) -> None:
+    """``already_bounded`` is what makes the single-bounding contract hold."""
+    worker_budget.register_worker_budget("story-a", 3600.0, started_at=time.monotonic() - 3599.8)
+    set_worker_slug("story-a")
+
+    # ~0.2s of working time left, so an unbounded call would cut this window.
+    started = time.monotonic()
+    decision, _ = pending.poll_pending(
+        "no-such-run",
+        0.6,
+        poll_interval=0.05,
+        project_root=Path("/nonexistent"),
+        phase_label="HUMAN_REVIEW",
+        already_bounded=True,
+    )
+    elapsed = time.monotonic() - started
+
+    assert decision == "timeout"
+    assert elapsed >= 0.5, "the advertised window must be honoured in full"
+    assert "Gate wait bounded" not in capsys.readouterr().err
+
+    # The default still bounds, so no gate can reach the poller unbounded.
+    assert pending.bounded_gate_wait(0.6, "HUMAN_REVIEW") < 0.6
 
 
 # ── 2. Operator waits are not worker unresponsiveness ────────────────────────
