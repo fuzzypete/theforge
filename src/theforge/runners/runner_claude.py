@@ -817,7 +817,7 @@ def _run_claude(
             pgid = None
         if pgid is not None:
             process_group.register_agent_group(pgid, sandbox_dir=working_dir, lease=lease)
-        tracker = process_tree.DescendantTracker(root_pid=proc.pid, pgid=pgid)
+        tracker = process_group.descendant_tracker(root_pid=proc.pid, pgid=pgid)
         tracker.start()
         assert proc.stdin is not None
         # Send the initial prompt as a stream-json user message. stdin is kept

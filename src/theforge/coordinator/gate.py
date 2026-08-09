@@ -219,8 +219,14 @@ def _run_gate_debug_command(
     workspace_path: Path,
     *,
     iter_num: int,
+    process_teardowns: list[ProcessTeardown] | None = None,
 ) -> GateDebugTelemetry | None:
-    """Run the configured gate debug command after a gate timeout."""
+    """Run the configured gate debug command after a gate timeout.
+
+    ``process_teardowns`` collects any forced teardown, exactly as on the main
+    gate path: this command runs after a gate *timeout*, so it is if anything
+    more likely than the gate itself to be racing something that is still alive.
+    """
     debug_cmd = config.validation.gate_debug_command
     if not debug_cmd:
         return None
@@ -233,6 +239,7 @@ def _run_gate_debug_command(
         workspace_path,
         timeout=debug_timeout,
         expected_python=config.workspace.python_interpreter,
+        teardown_out=process_teardowns,
     )
     if output.startswith("TIMEOUT") and exit_code is None:
         _cu._log(f"  Gate debug command timed out after {debug_timeout}s")

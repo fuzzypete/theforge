@@ -15,6 +15,7 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -25,7 +26,7 @@ from typing import ClassVar
 
 import pytest
 
-from theforge import process_group
+from theforge import process_group, process_tree
 from theforge.config import ModelProfile
 from theforge.runners.runner_claude import _run_claude
 from theforge.runners.runner_codex import _run_codex
@@ -861,3 +862,228 @@ def test_the_reaper_kills_an_escapee_a_sigkilled_sprint_left_behind(
     finally:
         _reap(escapee.pid)
         escapee.wait(timeout=5)
+
+
+def test_the_reaper_kills_an_unreadable_escapee_a_stopped_sprint_left_behind(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The sweep's hardest case: no group, no readable token, no live observer.
+
+    A SIP-protected platform binary with an empty environment, in its own
+    session, whose owner sprint has since died. The pgid cannot name it (it left
+    the group), the lease cannot find it (its environment is unreadable and
+    carries no token anyway), and the tracker that watched it is gone with the
+    sprint. What remains is what that tracker wrote down while it was alive
+    (#2309) — without which the sweep reports zero reaped and walks away from a
+    running process.
+    """
+    monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+    sleeper = shutil.which("sleep") or "/bin/sleep"
+    escapee = subprocess.Popen(  # noqa: S603
+        [sleeper, "30"],
+        env={},
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        assert (
+            process_group.lease_holders(process_group.open_process_lease(dict(os.environ))[1])
+            == []
+        ), "sanity: this process carries no token any sweep could read"
+
+        # The record a live run leaves behind: registered at spawn, then updated
+        # as the tracker observes. Both halves are the production writers.
+        pgid = 999_998  # a group that no longer exists — all the sweep has is the note
+        process_group.register_agent_group(pgid, sandbox_dir=str(tmp_path))
+        process_group.record_observed_descendants(
+            pgid, {escapee.pid: process_tree.process_info(escapee.pid).fingerprint}
+        )
+
+        sidecars = list((tmp_path / ".forge" / "runs" / "agents").glob("*.json"))
+        assert len(sidecars) == 1
+        record = json.loads(sidecars[0].read_text(encoding="utf-8"))
+        assert record["observed"] == {
+            str(escapee.pid): process_tree.process_info(escapee.pid).fingerprint
+        }, "the observation must be durable, or the sweep inherits nothing"
+
+        # The owner sprint is gone — the state `forge stop` leaves behind.
+        record["owner_pid"] = 999_999
+        sidecars[0].write_text(json.dumps(record), encoding="utf-8")
+
+        reaped = process_group.reap_orphan_agents(tmp_path)
+
+        # Waited rather than probed: this escapee is a direct child of the test,
+        # so after SIGKILL it lingers as a zombie that a signal-0 probe cannot
+        # tell from a running process. The real runners never see that — they
+        # wait their direct child before releasing.
+        try:
+            returncode = escapee.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the sweep left an unreadable escapee running (#2309)")
+        assert returncode == -signal.SIGKILL
+        assert reaped == 1, "a sweep that killed something must not report zero"
+    finally:
+        _reap(escapee.pid)
+        escapee.wait(timeout=5)
+
+
+def test_a_recycled_observed_pid_is_never_signalled(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A written-down pid is only a target while it is still the process seen.
+
+    The observation outlives the process that made it, so by the time a sweep
+    reads it the id may belong to something else entirely — which is exactly the
+    mistake #2115 exists to prevent.
+    """
+    monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+    bystander = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    try:
+        pgid = 999_998
+        process_group.register_agent_group(pgid, sandbox_dir=str(tmp_path))
+        # Same pid, a start time that is not this process's — what a recycled id
+        # looks like to a sweep reading a note from an earlier run.
+        process_group.record_observed_descendants(pgid, {bystander.pid: "bsdinfo:1.000000"})
+        sidecars = list((tmp_path / ".forge" / "runs" / "agents").glob("*.json"))
+        record = json.loads(sidecars[0].read_text(encoding="utf-8"))
+        record["owner_pid"] = 999_999
+        sidecars[0].write_text(json.dumps(record), encoding="utf-8")
+
+        assert process_group.reap_orphan_agents(tmp_path) == 0
+        assert bystander.poll() is None, "an unrelated process was killed on a stale note"
+    finally:
+        _reap(bystander.pid)
+        bystander.wait(timeout=5)
+
+
+def test_a_gate_leak_is_tagged_with_the_gate_that_ran(tmp_path: Path) -> None:
+    """The first gate's leak is gate_run 1, matching every other gate telemetry.
+
+    Driven through the real validate phase rather than by calling the recorder
+    directly, because the defect this pins was purely an ordering one: the
+    teardown was appended before the run counter incremented, so the first leak
+    of a run was filed under a gate number that had not run yet (#2309).
+    """
+    from theforge.coordinator.state import CoordinatorState
+    from theforge.coordinator.validate_phase import _run_validate_phase
+    from theforge.task import TaskStory
+
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for cmd in (
+        ["git", "init", "-q", "-b", "main"],
+        ["git", "config", "user.email", "t@example.com"],
+        ["git", "config", "user.name", "t"],
+    ):
+        subprocess.run(cmd, cwd=repo, check=True)  # noqa: S603
+    (repo / "f.txt").write_text("x\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)  # noqa: S603
+    subprocess.run(["git", "commit", "-q", "-m", "base"], cwd=repo, check=True)  # noqa: S603
+    subprocess.run(["git", "checkout", "-q", "-b", "feat/x"], cwd=repo, check=True)  # noqa: S603
+    (repo / "g.txt").write_text("y\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=repo, check=True)  # noqa: S603
+    subprocess.run(["git", "commit", "-q", "-m", "work"], cwd=repo, check=True)  # noqa: S603
+
+    pidfile = tmp_path / "gc.pid"
+    leaky_gate = (
+        f'{sys.executable} -c "import subprocess,sys,pathlib;'
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid))\""
+    )
+    config = _audit_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        validation=dataclasses.replace(config.validation, gate_command=leaky_gate),
+        workspace=dataclasses.replace(config.workspace, base_branch="main"),
+    )
+    state = CoordinatorState()
+    task = TaskStory(name="t", slug="t", story_path=tmp_path / "spec.md")
+
+    _run_validate_phase(state, config, task, repo, notify=False, logger=None)
+
+    gc_pid = int(pidfile.read_text().strip())
+    try:
+        assert _wait_until(lambda: not _pid_alive(gc_pid)), (
+            "the gate's descendant outlived the gate run (#2309)"
+        )
+    finally:
+        _reap(gc_pid)
+
+    assert state.gate_runs == 1
+    assert len(state.gate_process_teardowns) == 1
+    recorded = state.gate_process_teardowns[0]
+    assert recorded["gate_run"] == state.gate_runs, (
+        "a leak filed under gate_run 0 points at a gate that never ran"
+    )
+    assert recorded["action"] == process_group.TEARDOWN_KILLED_SURVIVORS
+
+
+class TestEnumerationFailureIsNotAnEmptyGroup:
+    """An unreadable membership must not be mistaken for a settled one."""
+
+    def test_a_failed_read_reports_that_it_failed(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            members, enumerated = process_group.group_members_checked(proc.pid)
+            assert proc.pid in members and enumerated is True
+
+            # The read fails the way a loaded host makes it fail: sysctl returns
+            # nothing, /proc cannot be listed.
+            if sys.platform == "darwin":
+                monkeypatch.setattr(process_group, "_sysctl_bytes", lambda _mib: None)
+            else:
+                monkeypatch.setattr(process_group.os, "listdir", _raise_oserror, raising=False)
+            members, enumerated = process_group.group_members_checked(proc.pid)
+            assert members == {}
+            assert enumerated is False, (
+                "a read that failed learned nothing; saying so is what keeps an "
+                "empty answer from reading as an empty group"
+            )
+        finally:
+            _reap(proc.pid)
+            proc.wait(timeout=5)
+
+    def test_release_does_not_drop_a_live_group_on_a_failed_read(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The sidecar is the only handle on survivors; a bad read must not lose it."""
+        monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            pgid = os.getpgid(proc.pid)
+            process_group.register_agent_group(pgid, sandbox_dir=str(tmp_path))
+            # Alive to the probe, unreadable to the enumeration.
+            monkeypatch.setattr(process_group, "group_members_checked", lambda _pgid: ({}, False))
+            monkeypatch.setattr(process_group, "kill_agent_group", lambda _pgid: False)
+
+            teardown = process_group.release_group_record(pgid, group_killed=True)
+
+            assert teardown is not None, "a live group that could not be read is not 'no teardown'"
+            assert teardown.action == process_group.TEARDOWN_RETAINED_FOR_REAPER
+            assert list((tmp_path / ".forge" / "runs" / "agents").glob("*.json")), (
+                "the record was dropped without a kill on an answer that was never obtained"
+            )
+        finally:
+            _reap(proc.pid)
+            proc.wait(timeout=5)
+
+
+def _raise_oserror(*_args: object, **_kwargs: object) -> list[str]:
+    raise OSError("simulated /proc read failure")

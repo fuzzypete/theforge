@@ -21,12 +21,12 @@ from theforge.log_util import _log_line
 from theforge.process_group import (
     KILL_GRACE_SECONDS,
     ProcessTeardown,
+    descendant_tracker,
     is_killable_pgid,
     open_process_lease,
     register_agent_group,
     release_group_record,
 )
-from theforge.process_tree import DescendantTracker
 from theforge.workspace_env import build_workspace_env
 
 # Stable reference captured at import time so test patches that replace the
@@ -435,7 +435,7 @@ def _run_shell_detailed(
     # Watches what the gate command starts. `make gate` runs the project's test
     # runner, which is exactly the shape that spawns long-lived workers, and a
     # worker that leaves the group is invisible to the pgid alone (#2309).
-    tracker = DescendantTracker(root_pid=proc.pid, pgid=pgid)
+    tracker = descendant_tracker(root_pid=proc.pid, pgid=pgid)
     tracker.start()
     # False only while a drain thread still owns the streams, in which case that
     # thread closes them and this one must not touch them (see _drain_partial_output).

@@ -53,6 +53,7 @@ import struct
 import sys
 import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -342,9 +343,21 @@ class DescendantTracker:
     Nothing here signals anything; the caller decides what to do with the set.
     """
 
-    def __init__(self, *, root_pid: int | None = None, pgid: int | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        root_pid: int | None = None,
+        pgid: int | None = None,
+        on_observed: Callable[[dict[int, str]], None] | None = None,
+    ) -> None:
         self._roots = {pid for pid in (root_pid,) if is_real_pid(pid)}
         self._pgid = pgid if is_real_pid(pgid) else None
+        # Called with the full recorded set whenever it grows, so an observation
+        # can be persisted somewhere that outlives this process. Without that, a
+        # sprint killed outright takes every observation with it and a later
+        # sweep has only the pgid and the lease token — neither of which can name
+        # a descendant that left the group and cannot be read (#2309).
+        self._on_observed = on_observed
         self._seen: dict[int, str] = {}
         self._frontier: set[int] = set(self._roots)
         self._lock = threading.Lock()
@@ -387,6 +400,7 @@ class DescendantTracker:
                 and pid not in self._seen
                 and pid not in self._roots
             ]
+        grew = False
         for pid in fresh:
             info = process_info(pid)
             if info is None:
@@ -395,8 +409,14 @@ class DescendantTracker:
                 # Union, never replace: the point is to remember a descendant
                 # that has since been orphaned and would appear in no later
                 # snapshot as anything's child.
+                if pid not in self._seen:
+                    grew = True
                 self._seen.setdefault(pid, info.fingerprint)
                 self._frontier.add(pid)
+        if grew and self._on_observed is not None:
+            # Only on growth: the sidecar write is cheap but not free, and a
+            # sample that saw nothing new has nothing to persist.
+            self._on_observed(self.recorded)
 
     def start(self) -> None:
         if self._thread is not None or not self._active:

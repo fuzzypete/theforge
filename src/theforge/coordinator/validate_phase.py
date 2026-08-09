@@ -244,6 +244,24 @@ def _record_gate_commit(state: CoordinatorState, workspace_path: Path, decision:
     _persist_trajectory(state, workspace_path, "gate-commit provenance")
 
 
+def _record_gate_teardowns(state: CoordinatorState, teardowns: list[ProcessTeardown]) -> None:
+    """Record processes a gate shell left running, against the gate that ran.
+
+    Drains the collector so the list can be reused by the debug and diagnostic
+    shells that may follow a timeout: each of them is a separate command that can
+    leave its own workers behind, and none of them should re-record the ones an
+    earlier shell already accounted for.
+
+    ``state.gate_runs`` must already be incremented — the ordinal here is the
+    same one every other run-gated telemetry uses, and an off-by-one would put
+    the first gate's leak under a gate number that never ran (#2309).
+    """
+    while teardowns:
+        state.gate_process_teardowns.append(
+            {"gate_run": state.gate_runs, **teardowns.pop(0).to_audit_dict()}
+        )
+
+
 def _record_gate_run(
     state: CoordinatorState, workspace_path: Path, decision: str | None = None
 ) -> None:
@@ -733,14 +751,13 @@ def _run_validate_phase(
                 process_teardowns=_gate_teardowns,
             )
         )
-        for _teardown in _gate_teardowns:
-            state.gate_process_teardowns.append(
-                {"gate_run": state.gate_runs, **_teardown.to_audit_dict()}
-            )
         # The gate command ran. Count it here — before decision/error routing —
         # so timeouts and errors, which return without ever appending to
         # gate_decisions, are still counted as the executions they were (#1984).
         _record_gate_run(state, workspace_path, decision=gate_decision or "ERROR")
+        # After the counter, so a leak from the first gate is tagged gate_run 1
+        # like every other run-gated telemetry rather than 0 (#2309).
+        _record_gate_teardowns(state, _gate_teardowns)
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)
@@ -786,7 +803,9 @@ def _run_validate_phase(
                 config,
                 workspace_path,
                 iter_num=state.dev_trace_count,
+                process_teardowns=_gate_teardowns,
             )
+            _record_gate_teardowns(state, _gate_teardowns)
             if debug_telemetry is not None:
                 state.gate_debug_telemetry.append(debug_telemetry)
                 gate_err = (
@@ -835,7 +854,9 @@ def _run_validate_phase(
                 workspace_path,
                 task=task,
                 iter_num=state.dev_trace_count,
+                process_teardowns=_gate_teardowns,
             )
+            _record_gate_teardowns(state, _gate_teardowns)
             if diagnostic is not None:
                 state.gate_diagnostic_telemetry.append(diagnostic)
                 if logger:
