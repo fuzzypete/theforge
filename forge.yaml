@@ -98,10 +98,15 @@ models:
     # the failure that caused it, and neither had been re-tested since. Re-bench only if the SAME
     # failure class recurs, and record the run id on the line. This takes the reviewer pool from
     # 3 of 4 provider families to 4 of 4, which is what cross-provider reviewer preference assumes.
-    - deepseek/deepseek-reasoner/api  # benched 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
+    # - deepseek/deepseek-reasoner/api  # benched 2026-05-09: flaky + slow; cycle-3 hang on #1424 + cycle-1 crash on same story.
     #                                  Fixes landed AFTER the bench: #1574 provider-health signal (2026-05-12),
     #                                  #1434 reviewer crash retries instead of escalating (2026-07-09).
     #                                  Re-test failure class: hang / crash mid-review.
+    #                                  RE-BENCHED 2026-08-09, run 040bc2e87ab4: failure class RECURRED one day
+    #                                  after the #2207 unbench. Plan review (#2333): 75 iterations of recon,
+    #                                  submit never called, finalization empty, excluded from merge. Code review
+    #                                  cycle 3 (#2333): 22+ bash-recon iterations while both other reviewers
+    #                                  finished in ~2 min. Same class as 2026-05-09 (non-delivery mid-review).
     - google/gemini-3.1-pro-preview/api  # benched 2026-07-09: reviewer completed without calling submit_review
     #                                      (empty output, exit=1) and killed story #1576 on quorum 1/2 — see #1598.
     #                                      #1598 closed 2026-07-12 — three days AFTER this bench — and fixes
