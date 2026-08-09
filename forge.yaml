@@ -49,16 +49,25 @@ models:
     # nano model tier used in earlier GPT-5 families" — not a sol-priced strong model. Introduced
     # the same way haiku was: dev_capable false and phase_eligibility restricted until it has run
     # history of its own, because tier/capability gate eligibility and never self-correct.
-    - provider: openai
-      model: gpt-5.6-luna
-      transport: {kind: api}
-      routing:
-        tier: cheap
-        capability: 6
-        cost_rank: 1
-        dev_capable: false
-        phase_eligibility: [preflight, review]
-      cost: {input_per_mtok: 0.20, output_per_mtok: 1.20, pricing_provenance: gpt-5.6-luna}
+    # BENCHED 2026-08-08, same day it was enabled. Its transport returned 400 on the tool-call
+    # request and the run fell back to single-shot text, which cannot carry a structured result.
+    # Both phases it is eligible for need tools — review calls submit_review — so it is unusable in
+    # both. It was also handed the escalation-advisor role, which phase_eligibility cannot restrict
+    # (#2332), and produced no advisory report, leaving that gate with six options and no
+    # recommendation. Separately it is absent from the accounting table, so its runs record
+    # cost-unknown (#2335). Nothing here disputes the price or the tier; the model cannot call tools
+    # on this adapter. Re-enable when #2332 and #2335 have landed and a live probe returns a
+    # tool-call response, and record the run id here.
+    # - provider: openai
+    #   model: gpt-5.6-luna
+    #   transport: {kind: api}
+    #   routing:
+    #     tier: cheap
+    #     capability: 6
+    #     cost_rank: 1
+    #     dev_capable: false
+    #     phase_eligibility: [preflight, review]
+    #   cost: {input_per_mtok: 0.20, output_per_mtok: 1.20, pricing_provenance: gpt-5.6-luna}
     # Haiku — cheap tier for the Anthropic adapter (#2207, migrated #2219). This was an inline
     # declaration of anthropic/haiku/cli, which the shipped catalog also defines; the two diverged
     # on routing-effective price and every config load warned about it. Resolved by enabling the
@@ -198,6 +207,22 @@ assignment:
 # (repeat_threshold: 4, error_threshold: 4) — those are defensible signals.
 # The no-file-modifications arm conflates legitimate codebase exploration with
 # stuckness and has false-terminated multiple stories during dogfood.
+# Worker timeout raised from the 3600 default (2026-08-08, #2333). Three of six
+# stories in run d3f34adf1ec2 failed on this ceiling and none failed on quality:
+# two large-complexity stories took the derived 5400s and were killed mid-edit
+# while converging, and one was killed 18 seconds after the log recorded that its
+# operator gate still had 41m54s left, because the ceiling counts time spent
+# waiting on a human as worker unresponsiveness. That cost $72.63 of a $104
+# sprint.
+#
+# 9000 is sized on what those stories actually needed, not on a principle. It is
+# a holding measure: #2333 is the real fix, and once a phase allowance is derived
+# against the ceiling that bounds it — the dev timeout was 4948s against a 5400s
+# ceiling, 92% of the whole story's budget for one of three cycles — this should
+# come back down rather than ratchet up again.
+sprint:
+  worker_timeout_seconds: 9000
+
 stuck_detection:
   no_progress_iterations: 100
   post_nudge_iterations: 100
