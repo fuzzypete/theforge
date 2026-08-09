@@ -1475,6 +1475,91 @@ class TestReviewFundingReservation:
             is None
         )
 
+    def test_a_review_overrun_protects_nothing_rather_than_a_negative_balance(
+        self,
+    ) -> None:
+        """A reserve spent past its face value has nothing left to withhold.
+
+        Netting a larger review spend out of a smaller reserve reads as a
+        negative balance, and subtracting that from the allocation hands dev a
+        ceiling ABOVE the whole allocation — funding attempts on money the story
+        does not have.
+        """
+        reservation = self._reservation(reserved_usd=1.01, cycles=1)
+        assert sb.remaining_reserved_review_usd(reservation, 2.50) == 0.0
+
+        shortfall = sb.nonreview_funding_exhausted(
+            reservation,
+            self._allocation(),  # $4.12
+            observed_usd=6.62,  # $4.12 dev + $2.50 review
+            review_observed_usd=2.50,
+            participants=["dev"],
+        )
+
+        assert shortfall is not None
+        assert shortfall["nonreview_allocation_usd"] == 4.12
+        assert shortfall["reserved_review_remaining_usd"] == 0.0
+        assert shortfall["remaining_usd"] == 0.0
+
+    def test_a_retained_cycle_that_runs_stops_being_withheld_from_dev(self) -> None:
+        """Release nets from the spend AT release, so the retained cycle frees up."""
+        released = sb.release_review_reservation(
+            self._reservation(reserved_usd=3.03, cycles=3),
+            review_observed_usd=1.01,
+            retained_cycles=1,
+            review_cycle=1,
+            reason="approve_p2_cleanup",
+        )
+
+        assert released["review_observed_at_release_usd"] == 1.01
+        assert released["release_count"] == 1
+        # Before the retained cycle runs, its cost is protected.
+        assert sb.remaining_reserved_review_usd(released, 1.01) == 1.01
+        # Half-spent, half-protected.
+        assert sb.remaining_reserved_review_usd(released, 1.51) == 0.51
+        # Once it has run, nothing of it is withheld any more.
+        assert sb.remaining_reserved_review_usd(released, 2.02) == 0.0
+        # And an overrunning retained cycle still floors at zero.
+        assert sb.remaining_reserved_review_usd(released, 3.50) == 0.0
+
+        # The dev attempt after the retained cycle draws the whole allocation.
+        assert (
+            sb.nonreview_funding_exhausted(
+                released,
+                self._allocation(),  # $4.12
+                observed_usd=6.02,  # $4.00 dev + $2.02 review
+                review_observed_usd=2.02,
+                participants=["dev"],
+            )
+            is None
+        )
+
+    def test_re_releasing_only_ever_shrinks_the_retained_balance(self) -> None:
+        """A second terminal approve must not hand review back dev's money."""
+        first = sb.release_review_reservation(
+            self._reservation(reserved_usd=3.03, cycles=3),
+            review_observed_usd=1.01,
+            retained_cycles=1,
+            review_cycle=1,
+            reason="approve_p2_cleanup",
+        )
+        # The retained cycle ran; the next approve releases again.
+        second = sb.release_review_reservation(
+            first,
+            review_observed_usd=2.02,
+            retained_cycles=1,
+            review_cycle=2,
+            reason="approve_p2_cleanup",
+        )
+
+        assert second["release_count"] == 2
+        assert second["retained_review_usd"] == 0.0
+        assert second["review_observed_at_release_usd"] == 2.02
+        assert sb.remaining_reserved_review_usd(second, 2.02) == 0.0
+        # The gross seated figures are still on the record for the audit.
+        assert second["reserved_review_usd"] == 3.03
+        assert second["reserved_review_cycles"] == 3
+
     def test_a_fully_released_reservation_retains_nothing(self) -> None:
         released = sb.release_review_reservation(
             self._reservation(reserved_usd=3.03, cycles=3),

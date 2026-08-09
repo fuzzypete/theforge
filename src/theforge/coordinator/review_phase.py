@@ -782,9 +782,14 @@ def _release_review_reservation(
     approval is being finalized. The release is mirrored into
     ``adaptive_limits_audit`` so the run audit keeps showing the real dispatch
     inputs without a new audit schema path.
+
+    A reservation released by an earlier cleanup pass is released again when a
+    later cycle approves: the retained cycle it held may by then have run, and
+    the recomputation starts from what is still protected, so a re-release only
+    ever shrinks the retained balance.
     """
     reservation = state.review_funding_reservation
-    if not isinstance(reservation, dict) or reservation.get("released"):
+    if not isinstance(reservation, dict):
         return
     released = _story_budget.release_review_reservation(
         reservation,

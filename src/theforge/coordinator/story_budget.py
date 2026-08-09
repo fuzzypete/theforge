@@ -733,6 +733,16 @@ def phase_funding_shortfall(
 # number the run does not have would be a guess.
 
 
+def _nonneg_float(value: object, *, default: float | None = 0.0) -> float | None:
+    """``value`` as a non-negative float, or ``default`` when it is not one."""
+    if value is None:
+        return default
+    try:
+        return max(0.0, float(value))
+    except (TypeError, ValueError):
+        return default
+
+
 def _reserved_review_usd(reservation: dict | None) -> float:
     """The gross reserved review balance seated on a reservation record, or 0.0."""
     if not isinstance(reservation, dict):
@@ -755,10 +765,16 @@ def remaining_reserved_review_usd(
     verdict, from cycles that can no longer run at all (#2340). What a
     reservation actually protects is the unspent balance:
 
-    * a reservation released after terminal review protects only the amount the
+    * a reservation released after terminal review protects the amount the
       release explicitly retained (``retained_review_usd``) — for a P2-cleanup
-      pass, one further cycle; for a finalized approval, nothing;
+      pass, one further cycle; for a finalized approval, nothing — less whatever
+      review has spent SINCE the release, so once the retained cycle has
+      actually run its cost stops being withheld too;
     * otherwise the seated reserve less measured review spend.
+
+    Either way the balance floors at zero: a review phase that overran its
+    reserve has nothing left to protect, and letting the figure go negative
+    would hand dev a ceiling ABOVE the story's whole allocation.
 
     ``None`` is returned when review spend is unmeasured and the balance is
     therefore a guess — callers must not refuse work on it.
@@ -766,17 +782,24 @@ def remaining_reserved_review_usd(
     if not isinstance(reservation, dict):
         return 0.0
     if reservation.get("released"):
+        retained = _nonneg_float(reservation.get("retained_review_usd")) or 0.0
+        baseline = _nonneg_float(reservation.get("review_observed_at_release_usd"), default=None)
+        if retained <= 0.0 or review_observed_usd is None or baseline is None:
+            # Nothing retained, or nothing to net it against: the retained
+            # amount stands as recorded at release.
+            return _balance(retained)
         try:
-            return _balance(max(0.0, float(reservation.get("retained_review_usd") or 0.0)))
+            spent_since_release = max(0.0, float(review_observed_usd) - baseline)
         except (TypeError, ValueError):
-            return 0.0
+            return _balance(retained)
+        return _balance(max(0.0, retained - spent_since_release))
     reserved = _reserved_review_usd(reservation)
     if reserved <= 0.0:
         return 0.0
     if review_observed_usd is None:
         return None
     try:
-        return _balance(reserved - float(review_observed_usd))
+        return _balance(max(0.0, reserved - float(review_observed_usd)))
     except (TypeError, ValueError):
         return None
 
@@ -800,6 +823,11 @@ def release_review_reservation(
     cleanup pass regress into REQUEST_CHANGES, draw the general allocation
     through the pre-existing whole-allocation check.
 
+    An already-released reservation may be released AGAIN when a later cycle
+    approves: the recomputation starts from what is still protected now, so a
+    re-release can only ever shrink the retained balance — it never hands review
+    back money a previous release already gave to dev.
+
     Returns the same record when there is nothing to release, so the caller can
     assign unconditionally.
     """
@@ -822,12 +850,16 @@ def release_review_reservation(
     released["released"] = True
     released["release_reason"] = reason
     released["release_review_cycle"] = review_cycle
-    released["review_observed_usd"] = (
-        None if review_observed_usd is None else round(float(review_observed_usd), 4)
-    )
+    # The baseline every later netting of the retained balance is measured from:
+    # review spend recorded AT this release. Without it a retained cycle that
+    # then runs would go on being withheld from dev after it was paid for.
+    released["review_observed_at_release_usd"] = round(float(review_observed_usd or 0.0), 4)
     released["retained_review_cycles"] = max(0, int(retained_cycles))
     released["retained_review_usd"] = retained
+    # What THIS release let go — a re-release records its own delta, and
+    # release_count says how many there have been.
     released["released_review_usd"] = _balance(remaining - retained)
+    released["release_count"] = int(reservation.get("release_count") or 0) + 1
     return released
 
 

@@ -1482,11 +1482,18 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         return state
 
     def _run_to_p2_cleanup(self, tmp_path: Path, *, dev_cost_usd: float):
-        """Drive DEV → VALIDATE → REVIEW(APPROVE + P2s) → the next DEV dispatch.
+        """One dev iteration, then REVIEW(APPROVE + P2s) → the next DEV dispatch."""
+        return self._run_loop(tmp_path, dev_costs=[dev_cost_usd])
 
-        Returns ``(state, result, dev_calls)`` where ``dev_calls`` records the
-        measured spend at the entry of every dev dispatch — its length is how
-        many dev attempts the funding checks admitted.
+    def _run_loop(self, tmp_path: Path, *, dev_costs: list[float]):
+        """Drive DEV → VALIDATE → REVIEW(APPROVE + P2s) round the cleanup loop.
+
+        Each dev dispatch spends the next figure in ``dev_costs``; the dispatch
+        after the list is exhausted stops the loop, so the run gets exactly as
+        many review cycles as there are cleanup passes. Returns
+        ``(state, result, dev_calls)`` where ``dev_calls`` records the measured
+        spend at the entry of every dev dispatch — its length is how many dev
+        attempts the funding checks admitted.
         """
         from coord_test_helpers import _make_agent_result, _make_task
         from test_coord_review_p2_cleanup import APPROVE_WITH_P2
@@ -1504,11 +1511,11 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
 
         def _dev(_state, *_args, **_kwargs):
             dev_calls.append(_state.total_cost_measured)
-            if len(dev_calls) > 1:
+            if len(dev_calls) > len(dev_costs):
                 # The cleanup attempt was funded — that is the whole question.
                 raise _StopAtCleanupDev()
             _state.dev_results.append(
-                _make_agent_result(cost_usd=dev_cost_usd, profile_name="dev")
+                _make_agent_result(cost_usd=dev_costs[len(dev_calls) - 1], profile_name="dev")
             )
             return None
 
@@ -1562,7 +1569,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         assert reservation["release_reason"] == "approve_p2_cleanup"
         assert reservation["retained_review_cycles"] == 1
         assert reservation["retained_review_usd"] == 1.01
-        assert reservation["review_observed_usd"] == 1.01
+        assert reservation["review_observed_at_release_usd"] == 1.01
         assert reservation["released_review_usd"] == round(
             float(reservation["reserved_review_usd"]) - 1.01 - 1.01, 4
         )
@@ -1629,3 +1636,34 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         # The refusal names the balance that actually drove it.
         assert state.allocation_exhausted["reserved_review_remaining_usd"] == 1.01
         assert state.allocation_exhausted["reserved_review_released"] is True
+
+    def test_a_retained_cycle_that_runs_funds_the_next_cleanup_attempt(
+        self, tmp_path: Path
+    ) -> None:
+        """The retained cycle is protected until it runs — and not one dollar longer.
+
+        Two cleanup passes: the first release retains one $1.01 cycle, that cycle
+        then actually runs, and the dev attempt after it must be funded from the
+        allocation the retained cycle no longer needs. Holding the retained
+        figure flat refuses this attempt against money already spent.
+        """
+        state, result, dev_calls = self._run_loop(tmp_path, dev_costs=[6.95, 4.10])
+
+        # Three dev dispatches: the seated one and two cleanup passes.
+        assert len(dev_calls) == 3
+        assert result is None
+        assert state.allocation_exhausted is None
+        assert state.review_cycle == 2
+        assert state.total_review_cost_measured == 2.02
+        # Non-review spend ($11.05) is past what the first release left free
+        # ($12.00 - $1.01 = $10.99); only netting the spent retained cycle out
+        # of the reserve funds this attempt.
+        assert round(dev_calls[2] - state.total_review_cost_measured, 4) == 11.05
+
+        reservation = state.review_funding_reservation
+        assert reservation["release_count"] == 2
+        assert reservation["retained_review_usd"] == 0.0
+        assert reservation["review_observed_at_release_usd"] == 2.02
+        assert sb.remaining_reserved_review_usd(reservation, 2.02) == 0.0
+        # The audit shows the re-release, not the first one.
+        assert state.adaptive_limits_audit["review_funding_reservation"]["release_count"] == 2
