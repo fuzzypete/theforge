@@ -356,24 +356,28 @@ proportionality, and churn depends on that data being present.
 
 Source: `project_full_audit_trail.md`
 
-### Module size is ratcheted, not merely reported
+### Module size is reported, never refused
 
-`max_module_lines` is enforced as a ratchet (ADR-0008). A module already over
-the limit at the story's branch point is frozen at the size it had there: it may
-shrink freely, but a change that grows it is refused, naming the module, the
-size it may not exceed, and by how much the change exceeds it. A module within
-the limit stays governed by the limit itself, and a module absent from the
-baseline is governed from its first commit. The ceilings are derived from the
-tree on every check, never recorded in a list. The branch point they are read
-from resolves against the remote-tracking base ref when the local one is behind
-it, so a `main` nobody fast-forwarded cannot charge this story with the growth
-of every story that landed since.
+`max_module_lines` is 600 and is advisory. Every module over it is reported with
+its distance from the limit, and no story is ever refused for module size —
+not for growing an already-large module, not for crossing the limit, not for
+adding a large new module.
 
-The advisory report is unchanged and still states distance from the configured
-limit, so a module compliant with a frozen ceiling and still many times the
-convention is visible as both. When the ratchet refuses a change, the intended
-response is to put the new code elsewhere — not to grow the module and not to
-carry an unscoped extraction as a side effect of unrelated work.
+**Do not relocate code to satisfy a line count.** If the module a change belongs
+in is already large, put the change there anyway. Extract when a responsibility
+genuinely separates from its neighbours, not when a file gets long: a module
+carved at whatever line got the count under a threshold is worse than the large
+module it came from, because the seam is arbitrary and the coupling survives as
+import statements between the pieces.
+
+Bringing the large modules down is real work, sequenced and funded as its own
+stories, and it starts by naming the abstraction the module is missing — not by
+splitting files. A story that arrives at a large module is not the mechanism for
+that and should not try to be.
+
+ADR-0008 briefly enforced this as a blocking ratchet and it was withdrawn the
+same day; the ADR records why, and the reasoning generalises past module size to
+any codebase-scoped property enforced at story scope.
 
 Source: `docs/adr/0008-module-size-ratchet.md`
 
