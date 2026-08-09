@@ -67,6 +67,17 @@ class SprintResult:
     # passes). Recorded so an operator can trace WHICH work is unpriced rather
     # than only that the total is incomplete.
     unmeasured_spend_sources: tuple[str, ...] = ()
+    # The subset of ``unmeasured_spend_sources`` no operator has resolved. These
+    # are what keeps the budget check closed; the rest are accounted for by an
+    # accepted ceiling below (#2310).
+    unresolved_unmeasured_spend_sources: tuple[str, ...] = ()
+    # Serialized ``AcceptedUnmeasuredSpend`` records in force for this run: the
+    # source, its origin, and the ceiling charged in place of the unknown.
+    # Acceptance never relabels cost as measured — ``cost_complete`` stays False.
+    accepted_unmeasured_spend: tuple[dict, ...] = ()
+    # Measured spend plus every accepted ceiling: the figure the cap was
+    # verified against. Not a total — part of it stands in for unmeasured spend.
+    budget_verification_spend_usd: float = 0.0
     results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
     stopped_reason: str | None = None  # why sprint stopped early, if it did
 
