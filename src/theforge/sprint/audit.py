@@ -112,6 +112,35 @@ def persist_accumulated_story_state(
         _save_accumulated_stories(sprint_id, sprint_name, project_root, stories)
 
 
+def persist_accepted_unmeasured_spend(
+    sprint_id: str | None,
+    sprint_name: str,
+    project_root: Path | None,
+    records: list[dict],
+) -> bool:
+    """Persist operator acceptances of unmeasured spend, keeping stories intact.
+
+    Written on its own rather than through the story-state path so a resolution
+    an operator made once survives every later run of the sprint without the
+    flag being repeated (#2310) — and so the story writer, which knows nothing
+    about acceptances, cannot erase one by omission.
+
+    Returns whether the resolution actually reached disk. An acceptance that
+    exists only in memory is a decision the operator will have to make again
+    without being told, so the caller must report a failure rather than log the
+    acceptance as recorded.
+    """
+    if not sprint_id or not project_root:
+        return False
+    return _save_accumulated_stories(
+        sprint_id,
+        sprint_name,
+        project_root,
+        _load_accumulated_stories(sprint_id, project_root),
+        accepted_unmeasured_spend=list(records),
+    )
+
+
 if TYPE_CHECKING:
     from ..config import ForgeConfig
     from ..coordinator.state import CoordinatorResult, CoordinatorState
@@ -307,18 +336,46 @@ def _load_accumulated_stories(sprint_id: str, project_root: Path) -> list[dict]:
         return []
 
 
+def _load_accepted_unmeasured_spend(sprint_id: str, project_root: Path) -> list[dict]:
+    """Load operator acceptances of unmeasured spend for a sprint.
+
+    Persisted alongside the accumulated stories because that is where the
+    carried unmeasured sources come from: one read gives both what is unpriced
+    and what has already been resolved about it (#2310).
+    """
+    state_path = project_root / ".forge" / "sprints" / sprint_id / "state.yaml"
+    if not state_path.exists():
+        return []
+    try:
+        with open(state_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        records = data.get("accepted_unmeasured_spend") or []
+        return [r for r in records if isinstance(r, dict)]
+    except Exception:
+        return []
+
+
 def _save_accumulated_stories(
     sprint_id: str,
     sprint_name: str,
     project_root: Path,
     stories: list[dict],
-) -> None:
+    accepted_unmeasured_spend: list[dict] | None = None,
+) -> bool:
     """Save story entries to .forge/sprints/<sprint_id>/state.yaml.
 
     Each entry should have a ``canonical_ref`` field for cross-run matching.
-    Writes atomically via a temp file.
+    Writes atomically via a temp file. Returns whether the write landed —
+    failure stays non-fatal for the story path, which can rebuild its state, but
+    a caller persisting something that only exists here has to be able to tell.
+
+    ``accepted_unmeasured_spend`` of ``None`` carries the persisted acceptances
+    forward unchanged: a caller that has nothing to say about them must not
+    silently erase a resolution the operator made.
     """
     state_dir = project_root / ".forge" / "sprints" / sprint_id
+    if accepted_unmeasured_spend is None:
+        accepted_unmeasured_spend = _load_accepted_unmeasured_spend(sprint_id, project_root)
     try:
         state_dir.mkdir(parents=True, exist_ok=True)
         state_path = state_dir / "state.yaml"
@@ -327,12 +384,14 @@ def _save_accumulated_stories(
             "sprint_id": sprint_id,
             "sprint_name": sprint_name,
             "stories": stories,
+            "accepted_unmeasured_spend": list(accepted_unmeasured_spend),
         }
         with open(tmp_path, "w", encoding="utf-8") as f:
             yaml.dump(data, f, default_flow_style=False, sort_keys=False)
         tmp_path.replace(state_path)
+        return True
     except Exception:
-        pass
+        return False
 
 
 def _load_story_summary_entry_from_audit(
@@ -792,6 +851,20 @@ def _write_sprint_audit(
             "unmeasured_spend_sources": list(
                 getattr(result, "unmeasured_spend_sources", ()) or []
             ),
+            # Of those, the ones no operator has resolved — the list the budget
+            # guard actually refuses on — beside the acceptances standing in for
+            # the rest and the figure the cap was verified against (#2310).
+            # Kept distinct from ``unmeasured_spend_sources`` so an acceptance is
+            # never mistaken for a measurement.
+            "unresolved_unmeasured_spend_sources": list(
+                getattr(result, "unresolved_unmeasured_spend_sources", ()) or []
+            ),
+            "accepted_unmeasured_spend": [
+                dict(r) for r in (getattr(result, "accepted_unmeasured_spend", ()) or [])
+            ],
+            "budget_verification_spend_usd": round(
+                float(getattr(result, "budget_verification_spend_usd", 0.0) or 0.0), 4
+            ),
             "budget_note": "Costs reflect Claude invocations only; Codex/Gemini report $0.00",
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1246,6 +1319,18 @@ def _write_sprint_summary(
             "total_cost_measured_usd": effective_cost_usd,
             "cost_complete": effective_cost_complete,
             "unmeasured_spend_sources": _unmeasured_sources,
+            # See the audit writer: which unmeasured sources are still
+            # unresolved, which were accepted with a recorded ceiling and
+            # origin, and the figure the cap was verified against (#2310).
+            "unresolved_unmeasured_spend_sources": list(
+                getattr(result, "unresolved_unmeasured_spend_sources", ()) or []
+            ),
+            "accepted_unmeasured_spend": [
+                dict(r) for r in (getattr(result, "accepted_unmeasured_spend", ()) or [])
+            ],
+            "budget_verification_spend_usd": round(
+                float(getattr(result, "budget_verification_spend_usd", 0.0) or 0.0), 4
+            ),
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration_seconds": round(duration, 1),

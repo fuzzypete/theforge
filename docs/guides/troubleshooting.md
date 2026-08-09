@@ -519,9 +519,57 @@ total it knows is understated (#1992). One unmeasured story is enough, which
 is why the failure hides: single-story runs don't aggregate against a sprint
 cap, so they pass (#2215).
 
-**Fix:** The halt message names the unmeasured source(s). Check their
-per-story audit records under `.forge/audits/runs/` to see why cost went
-unrecorded, then diagnose that story's run.
+**Fix:** The halt message names the unmeasured source(s) and, for each, the
+measured lower bound, the most it could still have cost, and the call it came
+from (`run_id`, phase, role, profile, failure code). Check the per-story audit
+under `.forge/audits/runs/` to see why cost went unrecorded, then diagnose that
+story's run.
+
+**When the condition is stuck:** an unmeasured source is carried into every
+later run of the same sprint, so a story whose reviewer died on (say) a provider
+quota error stays unrunnable — the refusal happens after its reuse gate has
+already passed. When the unknown is bounded, resolve it deliberately:
+
+```bash
+forge sprint sprint.yaml --resume --accept-unmeasured-spend issue-2206 \
+  --accept-unmeasured-reason "reviewer hit a provider quota"
+```
+
+The source id is the one printed in the refusal; `issue-2206` and
+`carried:issue-2206` name the same work. Acceptance charges the source's
+recorded ceiling (the story's allocation, less what was measured) to the budget
+comparison in place of the unknown — so it never buys headroom, and a sprint
+that is genuinely near its cap still stops. It also never relabels the cost as
+measured: `cost_complete` stays `false` and the sprint total stays a lower
+bound.
+
+Inspect the result in `.forge/audits/sprint-audit.yaml` under `sprint:`:
+
+- `unresolved_unmeasured_spend_sources` — what the guard is still refusing on
+- `accepted_unmeasured_spend` — each acceptance with its ceiling, origin
+  (`origin_run_id`, `origin_phase`, `origin_role`, `origin_profile`,
+  `origin_failure_code`), timestamp and reason
+- `budget_verification_spend_usd` — measured spend plus every accepted ceiling;
+  the figure the cap was actually verified against
+
+The resolution is persisted per sprint, so a later `--resume` reads it rather
+than needing the flag again. A source with no recorded allocation has no
+derivable ceiling: it is refused with the reason logged and the guard stays
+closed, because accepting an unbounded unknown would defeat the measurement it
+stands in for.
+
+An acceptance covers the **occurrence** it was made for — one recorded call, at
+one recorded ceiling, in one recorded run — not the story. If the same story
+runs again and *again* finishes with cost unmeasured, that is a second unknown
+nobody has bounded, and the guard closes on it exactly as it did the first time,
+on that run and on every later resume. A story that keeps needing acceptance is
+telling you its transport or provider is not reporting cost; fix that rather
+than re-accepting.
+
+You never accept `carried:prior-generation`. That entry is derived — it says
+only that *some* source the previous generation named went unmeasured — so it
+has no origin and no ceiling of its own. Accept the named sources beside it and
+it goes away.
 
 ---
 

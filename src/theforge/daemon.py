@@ -315,6 +315,11 @@ class DaemonServer:
                 state_update_fn=state_update_fn,
                 no_pull=args.get("no_pull", False),
                 force=args.get("force", False),
+                # Enumerated explicitly like every other kwarg here, so an
+                # operator acceptance submitted with --detach is not silently
+                # dropped on the way to the runner (#2310).
+                accept_unmeasured_spend=args.get("accept_unmeasured_spend") or [],
+                accept_unmeasured_reason=args.get("accept_unmeasured_reason"),
             )
         finally:
             release_story_locks(locked_fds)
