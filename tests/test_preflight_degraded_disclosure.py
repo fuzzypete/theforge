@@ -19,11 +19,13 @@ import io
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
 import yaml
 from coord_test_helpers import (
     APPROVE_REVIEW,
     _make_agent_result,
     _make_config,
+    _make_plan_config,
     _make_task,
     _shell_with_gate,
     patch_gate_shell,
@@ -31,8 +33,12 @@ from coord_test_helpers import (
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
+    DEFAULT_INVESTIGATION_TOOLS,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
+    PREFLIGHT_FORBIDDEN_TOOLS,
+    PREFLIGHT_READ_ONLY_TOOLS,
+    resolve_preflight_tools,
 )
 from theforge.config.types import ModelProfile
 from theforge.coordinator.engine import run_task
@@ -169,28 +175,39 @@ class TestPreflightToolSurface:
             assert "bash" not in tools
             assert tools == ["read", "glob", "grep"]
 
-    def test_bash_only_override_yields_an_explicit_read_only_allowlist(self, tmp_path):
-        """Filtering every tool away must not produce an *empty* allowlist.
+    @pytest.mark.parametrize(
+        "configured",
+        [
+            pytest.param(("Bash",), id="bash-only"),
+            pytest.param((), id="empty-tuple"),
+            pytest.param(("bash", "BASH"), id="all-forbidden-mixed-case"),
+            pytest.param(("Read", "Bash", "Glob", "Grep"), id="mixed"),
+        ],
+    )
+    def test_every_override_shape_reaches_argv_with_an_explicit_safe_allowlist(
+        self, tmp_path, configured
+    ):
+        """The invariant, asserted end-to-end through the real argv builder.
 
-        ``runner_claude.build_argv`` omits ``--allowedTools`` when the tuple is
-        empty, which hands the CLI its unrestricted default — Bash included.
-        A profile whose only tool is forbidden is therefore restored to the
-        read-only preflight set, and the assertion runs through the real argv
-        builder so the guarantee is checked where it is actually enforced.
+        Each of these shapes is a way an operator (or an API-transport default)
+        can express a preflight tool surface. Whatever the shape, the process
+        that actually launches must carry an explicit ``--allowedTools`` that
+        does not grant Bash. The empty tuple is the case two review cycles kept
+        finding, because it is the one input a filter-shaped guard leaves alone.
         """
         from theforge.runners.runner_claude import build_argv
 
         config = _make_config(tmp_path)
-        bash_only = ModelProfile(
+        override = ModelProfile(
             name="preflight",
             cli="claude",
             model="sonnet",
             budget_usd=1.0,
             timeout_seconds=300,
-            allowed_tools=("Bash",),
+            allowed_tools=configured,
             phase="preflight",
         )
-        config = config.__class__(**{**config.__dict__, "preflight_profile": bash_only})
+        config = config.__class__(**{**config.__dict__, "preflight_profile": override})
         task = _make_task(tmp_path)
         workspace = tmp_path / "test-task"
         workspace.mkdir()
@@ -215,16 +232,20 @@ class TestPreflightToolSurface:
             run_task(config, task)
 
         invoked = mock_preflight.call_args_list[0].kwargs["profile"]
-        assert invoked.allowed_tools == ("Read", "Glob", "Grep")
+        assert invoked.allowed_tools
 
         argv = build_argv(profile=invoked)
-        assert "--allowedTools" in argv
+        assert "--allowedTools" in argv, "empty allowlist means UNRESTRICTED at the CLI"
         granted = argv[argv.index("--allowedTools") + 1]
         assert "bash" not in granted.lower()
-        assert granted == "Read Glob Grep"
 
     def test_empty_allowlist_would_be_unrestricted_in_argv(self):
-        """Pins the runner semantics the guard above exists to defeat."""
+        """Pins the runner semantics the resolver exists to defeat.
+
+        If this ever stops holding, ``resolve_preflight_tools``' empty-input
+        fallback is no longer load-bearing and the reasoning in its docstring
+        needs revisiting — hence asserting it rather than assuming it.
+        """
         from theforge.runners.runner_claude import build_argv
 
         empty = ModelProfile(
@@ -239,14 +260,122 @@ class TestPreflightToolSurface:
         assert "--allowedTools" not in build_argv(profile=empty)
 
 
-class TestAdjacentInvestigationFlows:
-    """Preflight's narrowing must not narrow the flows that reuse its profile.
+class TestResolvePreflightTools:
+    """The rule itself, exhaustively — the seam tests above prove it is applied."""
 
-    ``diagnose`` and the escalation advisor both build on
-    ``config.preflight_profile``. They are separate jobs with their own
-    invocation shape, and neither should silently lose a tool because preflight
-    was locked down (#2346).
+    @pytest.mark.parametrize(
+        "allowed,expected",
+        [
+            ((), PREFLIGHT_READ_ONLY_TOOLS),
+            (None, PREFLIGHT_READ_ONLY_TOOLS),
+            (("Bash",), PREFLIGHT_READ_ONLY_TOOLS),
+            (("bash", "BASH"), PREFLIGHT_READ_ONLY_TOOLS),
+            (("Read", "Bash", "Glob", "Grep"), ("Read", "Glob", "Grep")),
+            (("Read", "bash"), ("Read",)),
+            (("Read", "Glob", "Grep"), ("Read", "Glob", "Grep")),
+            (["Read", "Bash"], ("Read",)),
+        ],
+    )
+    def test_resolution(self, allowed, expected):
+        assert resolve_preflight_tools(allowed) == expected
+
+    def test_result_is_always_non_empty_and_bash_free(self):
+        for allowed in [(), None, ("Bash",), ("bash",), ("Read",), "not-a-sequence", 0]:
+            resolved = resolve_preflight_tools(allowed)
+            assert resolved, f"{allowed!r} resolved to an empty (= unrestricted) allowlist"
+            assert not any(t.lower() in PREFLIGHT_FORBIDDEN_TOOLS for t in resolved)
+
+    def test_default_profile_is_already_resolved(self):
+        # The default must be a fixed point: resolving it changes nothing.
+        tools = DEFAULT_PREFLIGHT_PROFILE.allowed_tools
+        assert resolve_preflight_tools(tools) == tools
+
+
+class TestAdjacentInvestigationFlows:
+    """Preflight's narrowing must not narrow the roles that reused its profile.
+
+    ``plan``, ``diagnose`` and the escalation advisor all sourced their tool
+    surface from ``config.preflight_profile`` — an expression that used to mean
+    "the investigation set" and now means "the one surface deliberately narrower
+    than it". Each is a separate job, and none should silently lose a tool
+    because preflight was locked down (#2346).
     """
+
+    def test_no_role_borrows_preflights_tool_surface(self):
+        """The borrow that caused this whole family is gone from src/.
+
+        Guards the pattern rather than the four sites it appeared at, because
+        the next role added would reintroduce it the same way.
+        """
+        src = Path(__file__).resolve().parents[1] / "src" / "theforge"
+        offenders = [
+            f"{path.relative_to(src)}:{i}"
+            for path in src.rglob("*.py")
+            for i, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1)
+            if "preflight_profile.allowed_tools" in line and not line.lstrip().startswith("#")
+        ]
+        assert offenders == [], (
+            "roles must name DEFAULT_INVESTIGATION_TOOLS rather than borrowing "
+            f"preflight's narrowed surface: {offenders}"
+        )
+
+    def test_plan_profile_keeps_bash_on_the_non_adaptive_path(self, tmp_path):
+        """The plan profile plan_flow actually builds when routing is static."""
+        from theforge.coordinator import plan_flow
+
+        config = _make_config(tmp_path)
+        profile = plan_flow.model_ref_to_profile(
+            "plan",
+            config.plan.ref,
+            allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
+        )
+        assert "Bash" in profile.allowed_tools
+
+    def test_plan_agent_is_dispatched_with_bash(self, tmp_path):
+        """End-to-end: the profile the PLAN phase hands to run_agent holds Bash.
+
+        Drives a real run_task through PLAN (needs_planning preflight output)
+        rather than re-deriving the profile in the test, so the assertion covers
+        the construction path that actually dispatches.
+        """
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch_gate_shell() as mock_shell,
+            patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+            patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+        ):
+            mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+            mock_preflight.return_value = _make_agent_result(
+                success=True, output=PREFLIGHT_PROCEED, cost_usd=0.11
+            )
+            mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+            mock_plan_agent.return_value = _make_agent_result(
+                success=True, output="Plan.", profile_name="plan"
+            )
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+
+            run_task(config, task)
+
+        assert mock_plan_agent.call_count >= 1, "PLAN never dispatched; test proves nothing"
+        for call in mock_plan_agent.call_args_list:
+            assert "Bash" in call.kwargs["profile"].allowed_tools
+
+    def test_plan_auth_projection_keeps_bash(self, tmp_path):
+        """iter_plan_phase_profiles mirrors dispatch, so it must mirror the tools."""
+        from theforge.config.profiles import iter_plan_phase_profiles
+
+        config = _make_config(tmp_path)
+        plan_profiles = [p for label, p in iter_plan_phase_profiles(config) if label == "plan"]
+        for profile in plan_profiles:
+            assert "Bash" in profile.allowed_tools
 
     def test_diagnose_profile_keeps_bash(self, tmp_path):
         from theforge.coordinator.diagnose_flow import _build_diagnose_profile

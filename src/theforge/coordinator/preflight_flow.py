@@ -31,10 +31,10 @@ import yaml
 
 from theforge.agent_types import AgentResult
 from theforge.config import (
-    DEFAULT_PREFLIGHT_PROFILE,
     PREFLIGHT_FORBIDDEN_TOOLS,
     ForgeConfig,
     ModelProfile,
+    resolve_preflight_tools,
 )
 from theforge.sprint.dag import _is_branch_merged
 from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
@@ -277,42 +277,35 @@ def _sanitize_preflight_profile(
     *,
     log: "Callable[[str], None]",
 ) -> ModelProfile:
-    """Strip tools preflight must not hold, whatever config supplied (#2346).
+    """Seat the resolved preflight tool surface, whatever config supplied (#2346).
 
-    The load-bearing guarantee against the wait-forever failure is tool
-    surface, not instruction: with Bash the classifier can start a detached
-    process, end its turn waiting for it, and be killed by the runner's
-    post-stream grace period having inspected nothing. The default profile no
-    longer grants it, but a forge.yaml ``preflight.allowed_tools`` override, an
-    API-transport default set, or a fallback profile can each reintroduce it —
-    so the removal is enforced here, at the one place every preflight
-    invocation passes through.
+    The load-bearing guarantee against the wait-forever failure is tool surface,
+    not instruction: with Bash the classifier can start a detached process, end
+    its turn waiting for it, and be killed by the runner's post-stream grace
+    period having inspected nothing. The default profile no longer grants it,
+    but a forge.yaml override, an API-transport default set, or a fallback
+    profile can each supply a different one — so the surface is *resolved* here,
+    at the one place every preflight invocation passes through, rather than
+    trusted from whatever built the profile.
 
-    An empty ``allowed_tools`` is *not* a narrower surface than a populated one:
-    ``runner_claude`` omits ``--allowedTools`` entirely when the tuple is empty,
-    which hands the CLI its unrestricted default — the opposite of what
-    filtering was for. So a profile whose every tool is forbidden
-    (``allowed_tools=("Bash",)``) is restored to the read-only preflight set
-    rather than left empty. The invocation always carries an explicit
-    allowlist, and that allowlist never contains Bash.
+    ``resolve_preflight_tools`` owns the rule and the reasoning; this function
+    is the seam that applies it and reports what changed.
     """
     allowed = tuple(profile.allowed_tools or ())
-    kept = tuple(t for t in allowed if str(t).lower() not in PREFLIGHT_FORBIDDEN_TOOLS)
-    if kept == allowed:
+    resolved = resolve_preflight_tools(allowed)
+    if resolved == allowed:
         return profile
     dropped = [t for t in allowed if str(t).lower() in PREFLIGHT_FORBIDDEN_TOOLS]
-    detail = ""
-    if not kept:
-        kept = DEFAULT_PREFLIGHT_PROFILE.allowed_tools
-        detail = (
-            f"; restored the read-only default set ({', '.join(kept)}) rather than "
-            "leaving an empty allowlist, which the CLI reads as unrestricted"
-        )
-    log(
-        f"  ⓘ PREFLIGHT tool surface narrowed: dropped {', '.join(dropped)} "
-        f"(read-only classifier cannot delegate work it cannot be resumed for){detail}"
+    reason = (
+        f"dropped {', '.join(dropped)}"
+        if dropped
+        else "config named no usable tool, and an empty allowlist is unrestricted"
     )
-    return replace(profile, allowed_tools=kept)
+    log(
+        f"  ⓘ PREFLIGHT tool surface resolved to {', '.join(resolved)}: {reason} "
+        "(read-only classifier cannot delegate work it cannot be resumed for)"
+    )
+    return replace(profile, allowed_tools=resolved)
 
 
 def _run_preflight_phase(

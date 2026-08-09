@@ -16,10 +16,12 @@ from .defaults import (
     DEFAULT_VALIDATION,
     DEFAULT_WORKSPACE,
     PREFLIGHT_FORBIDDEN_TOOLS,
+    PREFLIGHT_READ_ONLY_TOOLS,
     PROVIDER_API_KEY_MAP,
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
     generate_default_config,
+    resolve_preflight_tools,
 )
 from .gate_scrub import SCRUBBED_CLI_LAUNCHERS, SCRUBBED_ENV_VARS, SCRUBBED_HOME_PATHS
 from .load import _validate_plan_provider, load_config
@@ -150,10 +152,12 @@ __all__ = [
     "DEFAULT_VALIDATION",
     "DEFAULT_WORKSPACE",
     "PREFLIGHT_FORBIDDEN_TOOLS",
+    "PREFLIGHT_READ_ONLY_TOOLS",
     "PROVIDER_API_KEY_MAP",
     "PROVIDER_SDK_MAP",
     "SUPPORTED_CLIS",
     "generate_default_config",
+    "resolve_preflight_tools",
     "SCRUBBED_CLI_LAUNCHERS",
     "SCRUBBED_ENV_VARS",
     "SCRUBBED_HOME_PATHS",

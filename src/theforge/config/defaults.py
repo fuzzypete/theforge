@@ -37,9 +37,48 @@ DEFAULT_REVIEW_PROFILE = ModelProfile(
 PREFLIGHT_FORBIDDEN_TOOLS: frozenset[str] = frozenset({"bash"})
 
 # The read-only investigation set shared by the *other* inspection roles (plan,
-# plan-review). They run to completion inside a turn and legitimately shell out,
-# so they keep Bash; only preflight is narrowed above.
+# plan-review, diagnose, escalation advisor). They run to completion inside a
+# turn and legitimately shell out, so they keep Bash; only preflight is narrowed
+# above. Roles that want an investigation tool surface must name this constant
+# rather than reaching for ``config.preflight_profile.allowed_tools``: that
+# expression once meant "the investigation set" and now means "the one surface
+# that is deliberately narrower than it", so borrowing it silently removes Bash.
 DEFAULT_INVESTIGATION_TOOLS: tuple[str, ...] = ("Read", "Bash", "Glob", "Grep")
+
+#: The tool surface preflight runs with when config supplies nothing usable.
+PREFLIGHT_READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
+
+
+def resolve_preflight_tools(allowed: object) -> tuple[str, ...]:
+    """Return the tool surface preflight will actually run with.
+
+    This *resolves* a surface rather than filtering one, and that distinction is
+    the whole point. ``allowed_tools`` has an overloaded empty state: every
+    construction site reads ``()`` as "no tools were requested, apply a
+    default", while ``runner_claude.build_argv`` omits ``--allowedTools``
+    entirely for an empty tuple and hands the CLI its *unrestricted* default —
+    Bash included. A filter expressed as a diff against config therefore passes
+    its single most dangerous input straight through untouched, because ``()``
+    already looks like the answer.
+
+    So every input maps to an explicit, non-empty, forbidden-free tuple:
+
+    - forbidden tools are dropped, whatever their casing;
+    - an empty result — whether config was empty to begin with, or every tool it
+      named was forbidden — falls back to :data:`PREFLIGHT_READ_ONLY_TOOLS`.
+
+    The invariant this guarantees is the one the story needs: the preflight
+    invocation always carries an explicit allowlist, and that allowlist never
+    grants a tool it could delegate unresumable work with. It lives here, beside
+    the constant that defines the forbidden set, so it holds for every source of
+    a preflight profile — forge.yaml overrides, API-transport tool defaults, and
+    fallback profiles built at dispatch time — instead of only the ones a
+    config-load-time validation could see.
+    """
+    names = tuple(str(t) for t in allowed) if isinstance(allowed, (list, tuple)) else ()
+    kept = tuple(t for t in names if t.lower() not in PREFLIGHT_FORBIDDEN_TOOLS)
+    return kept or PREFLIGHT_READ_ONLY_TOOLS
+
 
 DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     name="preflight",
@@ -48,7 +87,7 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     model="sonnet",
     budget_usd=1.00,
     timeout_seconds=300,
-    allowed_tools=("Read", "Glob", "Grep"),
+    allowed_tools=PREFLIGHT_READ_ONLY_TOOLS,
     phase="preflight",
 )
 

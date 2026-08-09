@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.config import (
+    DEFAULT_INVESTIGATION_TOOLS,
     AgentSpec,
     ForgeConfig,
     ModelInfo,
@@ -1388,7 +1389,9 @@ def _apply_preflight_config(
         _explicit_planner = model_ref_to_profile(
             "plan",
             config.plan.ref,
-            allowed_tools=config.preflight_profile.allowed_tools,
+            # See plan_flow: the plan role names the investigation set rather
+            # than borrowing preflight's narrowed one (#2346).
+            allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
             phase="plan",
         )
         _explicit["planner"] = _explicit_planner
