@@ -1,6 +1,6 @@
 # ADR-0008: Module Size — Ratchet Rather Than Enforce or Accept
 
-- **Status:** Accepted — **freeze at current size** (option C); decided 2026-08-08
+- **Status:** Accepted 2026-08-08 — **ratchet withdrawn the same day**, see Amendment 3. The measurement half stands; the blocking half is removed and its implementation deleted.
 - **Date:** 2026-08-08
 - **Deciders:** Peter Wickersham (project lead)
 - **Affected milestones:** v0.13 (the ratchet itself), a later tech-debt milestone (bringing the frozen modules down)
@@ -218,11 +218,98 @@ files passes every gate. That is the upstream cause of the larger factor and it 
 ratchet addresses, so it wants naming as separate work rather than being assumed to fall out of
 module reduction.
 
+## Amendment 3 (2026-08-08): the ratchet is withdrawn
+
+It was enforced for one day. The first story to meet it, #2309, paid $33.05 and an
+entire extra dev cycle, and produced worse structure than if it had never run.
+
+#2309 is a process-teardown story, so `process_group.py` legitimately had to grow — by
+413 lines. Cycle 1 wrote correct code and passed the gate. It was bounced anyway on 8
+blocking convention violations, 7 of them this ratchet, of which four were overages of
+6, 12, 12 and 30 lines on modules already 1,200–3,200 lines long. Cycle 2 bought nothing
+functional: it relocated 413 lines into `process_tree.py` plus lease/sidecar/teardown
+units, each of which then needed a test mirror, and passed the same gate it had already
+passed. Two thirds of the story's dev spend went to redistributing code.
+
+| cycle | cost | duration | gate | outcome |
+|---|---|---|---|---|
+| 1 | $16.85 | 15m 10s | PASS | bounced — 8 blocking convention violations |
+| 2 | $33.05 | 26m 56s | PASS | clean → review |
+
+The Consequences section above predicted this precisely — "if stories start carrying
+incidental extractions to get under their ceiling, the ratchet has stopped being a
+holding action and become an unplanned refactor distributed across whoever happened to
+be blocked" — and predicted the target, that it would bite first and hardest on work
+that changes how sprints execute. What the section treated as a risk to watch for was
+the first observed behaviour, not a tail case.
+
+### Why it could not have worked
+
+The failure is structural, not a threshold that wanted tuning. Any blocking line-count
+check at implementation time is satisfiable by cutting anywhere, and cutting anywhere is
+always cheaper than cutting at the right seam. So the agent's minimum-effort response is
+not misbehaviour to be corrected — it is the constraint's definition of success. A cap
+on new modules fails identically, one step earlier: a story needing a 700-line module
+ships 480 + 220 instead.
+
+This generalises. Module cohesion is a **codebase-scoped, temporal** property: it
+degrades across a hundred stories each individually correct against its own spec. Every
+forge gate is **story-scoped**. A story-scoped gate cannot enforce a codebase-scoped
+property; it can only enforce a proxy, and the proxy is what gets optimised. The forge is
+a closed loop over stories and an open loop over architecture, and the ratchet was an
+attempt to close the second loop with the first loop's machinery.
+
+That is also the boundary of the project's mechanical-over-prompts tenet, which is worth
+stating because this looks like a counterexample and is not. Mechanical guards bind when
+the property is binary and checkable — spend ceilings, scope, destructive operations.
+Cohesion is neither, so a mechanical proxy for it does not enforce cohesion. It enforces
+the proxy.
+
+### What replaces it
+
+Nothing, at the gate. `check_line_counts` is unchanged and still reports all 48 modules
+over 600 with their distance from the limit.
+
+That is deliberately the pre-ADR state this document was written to condemn, and the
+Context section's judgement of it stands: three months of accurate reporting during which
+the numbers got 2.6x worse, because measurement without consequence changes nothing. The
+conclusion to draw is narrower than it first appears. The error was not "reporting is
+insufficient, therefore block." It was assuming the only available consequence is a
+refusal. A refusal is the consequence that must be paid immediately, by whoever is
+present — which is exactly why it produced arbitrary seams charged to arbitrary stories.
+
+The consequence this wants instead is **funded work entering intake**: a periodic
+structural observer that reads the audit substrate — cost per module, collision
+centrality, co-change clusters, bounce and escalation concentration, structural signals
+like captured state and parameter growth — and emits candidate discovery spikes, which
+are then groomed like any other intake. Size is one input to that ranking and a weak one;
+a 3,200-line module nothing touches is low-priority, while a 1,200-line module in every
+sprint's collision path is not.
+
+Two constraints on that observer, both learned here. Participation is not causation — a
+$40 story touching ten files does not attribute $40 to each, so ranking needs excess
+spend against comparable stories, not raw totals. And its emission rate must be capped at
+one open candidate at a time; a ranking function generates architecture candidates faster
+than a solo operator funds them, and an unfunded backlog is the 48-issues problem
+arriving through a side door.
+
+Until that exists, module size is measured and inert. That is a worse steady state than a
+working consequence and a better one than this ratchet, and naming it as a gap rather
+than a resolution is the point of recording it here.
+
+### Withdrawn in code
+
+`module_growth_violations`, `module_line_ceiling` and `fail_closed_module_violations` are
+deleted rather than left dead. `coordinator/convention_baseline.py` remains: it still
+resolves the branch point for the rules that do block. Verified against the tree at
+withdrawal: 48 advisory findings, 0 blocking.
+
 ## References
 
 - `CONVENTIONS.md` — `max_module_lines`
 - Sprint summaries, `advisory_convention_violations`, first seen 2026-05-04
 - #2314 — implementation
+- #2309 — the story that paid for the ratchet; evidence for Amendment 3
 - #2325 — first reduction unit (naming `run_sprint`'s execution context)
 - #1617 — cold-start starvation, closed v0.12.0; ruled out as a cause of the model-mix shift
 - Amendment figures: `.forge/audits/index.sqlite` (`audit_records`, `invocation_identities`,

@@ -19,8 +19,6 @@ from theforge.convention_types import ConventionViolation
 from theforge.line_count_conventions import (
     MODULE_LINES_RULE,
     check_line_counts,
-    module_growth_violations,
-    module_line_counts,
 )
 from theforge.root_file_conventions import (
     DEFAULT_ALLOWED_ROOT_FILES,
@@ -101,24 +99,25 @@ def new_hard_convention_violations_since_ref(
 
     ``current`` is the plain scan: every module over ``max_module_lines`` with
     its distance from the configured limit, which is what the advisory report
-    reads. ``net_new`` is what blocks, and for ``max_module_lines`` it is a
-    ratchet rather than an identity diff (ADR-0008): a module already over the
-    limit at ``git_ref`` is frozen at its size there and may not grow, while a
-    module within the limit stays governed by the limit itself. A module may
-    therefore appear in ``current`` (still many times the convention) and not in
-    ``net_new`` (compliant with its frozen ceiling) at the same time.
+    reads. ``net_new`` is what blocks, and ``max_module_lines`` is deliberately
+    absent from it: module size is reported, never refused.
+
+    The ADR-0008 ratchet used to block here. It was withdrawn because a
+    story-scoped gate cannot enforce a codebase-scoped property — the only way
+    an agent could satisfy it mid-story was to relocate lines to whichever file
+    was cheapest, which bought fragmentation rather than decomposition. Module
+    size stays visible in ``current`` so it can feed grooming; deciding that a
+    module needs splitting is now funded work, not a mid-story toll.
     """
     current = check_hard_conventions(config, project_root)
     with _git_ref_tree(project_root, git_ref) as baseline_root:
         baseline = check_hard_conventions(config, baseline_root)
-        baseline_module_lines = module_line_counts(config, baseline_root)
     baseline_keys = {_violation_key(v) for v in baseline}
     net_new = [
         v
         for v in current
         if v.rule != MODULE_LINES_RULE and _violation_key(v) not in baseline_keys
     ]
-    net_new.extend(module_growth_violations(config, project_root, baseline_module_lines))
     return current, net_new
 
 

@@ -255,16 +255,17 @@ def _in_process_check_conventions(
     return _COMMANDS[command](payload)
 
 
-class TestModuleSizeRatchetSeam:
+class TestConventionChannelSeam:
     """The two convention channels VALIDATE consumes carry different views.
 
-    ``net_new`` is the ratchet (ADR-0008) and blocks; ``all_violations`` is the
-    plain scan and feeds the advisory artifact, which must keep stating distance
-    from the *configured* limit even for a module governed by a higher frozen
-    ceiling.
+    ``net_new`` is what blocks; ``all_violations`` is the plain scan and feeds
+    the advisory artifact. Module size only ever appears in the second one — the
+    ADR-0008 ratchet that once put it in ``net_new`` is withdrawn — so an
+    oversized module is reported to grooming while a genuinely blocking rule
+    still refuses the change.
     """
 
-    def test_ratchet_violation_blocks_while_advisory_keeps_the_configured_limit(self, tmp_path):
+    def test_blocking_rule_refuses_while_module_size_stays_advisory(self, tmp_path):
         base_config = _make_config(tmp_path)
         config = dataclasses.replace(
             base_config,
@@ -286,13 +287,11 @@ class TestModuleSizeRatchetSeam:
                 blocking=False,
             )
         ]
-        ratchet = [
+        blocking = [
             _violation(
-                "max_module_lines",
+                "test_mirrors_source",
                 module,
-                f"{module} has 7153 lines and may not exceed 6953 (exceeds it by 200) — "
-                "it was already over the 600-line limit at the branch point, so it is "
-                "frozen at that size and may not grow (it may shrink freely)",
+                f"{module} has no test mirror",
                 blocking=True,
             )
         ]
@@ -318,7 +317,7 @@ class TestModuleSizeRatchetSeam:
             patch("theforge.coordinator.validate_phase.subprocess.run"),
             patch(
                 "theforge.coordinator.validate_phase._check_conventions_parallel",
-                return_value=(advisory_scan, ratchet),
+                return_value=(advisory_scan, blocking),
             ),
             patch(
                 "theforge.coordinator.validate_phase.update_advisory_violations",
@@ -329,13 +328,14 @@ class TestModuleSizeRatchetSeam:
                 state, config, task, tmp_path, notify=False, logger=None
             )
 
-        # Gate PASSed; the ratchet violation is what refuses the change.
+        # Gate PASSed; the blocking convention violation is what refuses the change.
         assert outcome is not _ValidateOutcome.PASS
         assert result is None or result.success is False
         assert state.retry_reason == RetryReason.CONVENTION_VIOLATIONS
         assert module in (state.human_feedback or "")
-        assert "may not exceed 6953" in (state.human_feedback or "")
-        assert "exceeds it by 200" in (state.human_feedback or "")
+        assert "no test mirror" in (state.human_feedback or "")
+        # Module size is not what refused it — that channel is advisory only.
+        assert "7153" not in (state.human_feedback or "")
 
         # The advisory channel receives the plain scan, still measured against 600.
         advisory_arg = mock_advisory.call_args.args[1]
@@ -348,8 +348,8 @@ class TestModuleSizeRatchetSeam:
             }
         ]
 
-    def test_missing_baseline_fails_closed_on_oversized_modules(self, tmp_path):
-        """With no baseline tree there is no derived ceiling, so the limit is it."""
+    def test_missing_baseline_keeps_oversized_modules_advisory(self, tmp_path):
+        """No baseline tree changes nothing: module size never blocks either way."""
         config = dataclasses.replace(
             _make_config(tmp_path),
             conventions_hard=HardConventionsConfig(max_module_lines=600),
@@ -369,9 +369,9 @@ class TestModuleSizeRatchetSeam:
         ):
             all_v, net_v = _check_conventions_parallel(config, tmp_path)
 
-        # Advisory view is untouched — still the non-blocking configured-limit scan.
+        # Advisory view is the non-blocking configured-limit scan.
         assert [v.blocking for v in all_v] == [False, False]
+        # And nothing is promoted to blocking for want of a baseline.
         blocking = {v.file: v.blocking for v in net_v}
-        assert blocking["src/theforge/big.py"] is True
-        # Test-file size is not part of the module ratchet; it stays advisory.
+        assert blocking["src/theforge/big.py"] is False
         assert blocking["tests/test_big.py"] is False

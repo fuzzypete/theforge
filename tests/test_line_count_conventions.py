@@ -5,11 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 
 from theforge.config.types import HardConventionsConfig
-from theforge.convention_types import ConventionViolation
 from theforge.line_count_conventions import (
     check_line_counts,
-    fail_closed_module_violations,
-    module_line_ceiling,
     module_line_counts,
 )
 
@@ -96,45 +93,11 @@ class TestLineCountScan:
         assert len(matches) == 1
 
 
-class TestModuleCeilings:
-    def test_ceiling_is_the_baseline_size_for_an_over_limit_module(self):
-        """An over-limit module is frozen where it stands (ADR-0008)."""
-        assert module_line_ceiling(6953, 600) == 6953
-
-    def test_ceiling_is_the_configured_limit_for_a_module_within_it(self):
-        """Nothing licenses growth up to the limit in a smaller module."""
-        assert module_line_ceiling(420, 600) == 600
-        assert module_line_ceiling(600, 600) == 600
-
-    def test_ceiling_is_the_configured_limit_for_a_module_absent_from_baseline(self):
-        """A module added by this change is governed from its first commit."""
-        assert module_line_ceiling(None, 600) == 600
-
+class TestModuleLineCounts:
     def test_module_line_counts_covers_every_module_not_only_violations(self, tmp_path):
-        """Ceilings are derived from the tree, so compliant modules are measured too."""
+        """The scan measures the whole tree, so compliant modules are counted too."""
         _write(tmp_path / "src" / "theforge" / "small.py", "\n" * 10)
         _write(tmp_path / "src" / "theforge" / "big.py", "\n" * 501)
         counts = module_line_counts(_make_config(), tmp_path)
         assert counts["src/theforge/small.py"] == 10
         assert counts["src/theforge/big.py"] == 501
-
-
-class TestFailClosedWithoutBaseline:
-    def test_module_findings_are_promoted_to_blocking(self):
-        """No baseline tree means no derived ceiling, so the limit is the ceiling."""
-        scan = [
-            ConventionViolation("max_module_lines", "src/a.py", "a has 900 lines", blocking=False),
-            ConventionViolation(
-                "max_test_file_lines", "tests/test_a.py", "big test", blocking=False
-            ),
-        ]
-        promoted = fail_closed_module_violations(scan)
-        assert [v.blocking for v in promoted] == [True, False]
-
-    def test_the_scanned_violations_are_left_untouched(self):
-        """The advisory view of the same scan must keep its configured-limit reading."""
-        scan = [
-            ConventionViolation("max_module_lines", "src/a.py", "a has 900 lines", blocking=False)
-        ]
-        fail_closed_module_violations(scan)
-        assert scan[0].blocking is False
