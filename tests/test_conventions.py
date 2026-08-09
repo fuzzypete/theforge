@@ -456,13 +456,18 @@ class TestConventionBaseline:
         assert any("legacy.py" in v.file for v in current)
         assert any("new_hotness.py" in v.file for v in current)
         assert not any("legacy.py" in v.file for v in net_new)
-        assert any("new_hotness.py" in v.file for v in net_new)
+        # Module size never reaches net_new, not even for a module this change
+        # added: it is reported, never refused.
+        assert not any("new_hotness.py" in v.file for v in net_new)
 
 
-class TestModuleSizeRatchet:
-    """ADR-0008: an over-limit module is frozen at its baseline size.
+class TestModuleSizeIsAdvisoryOnly:
+    """Module size is reported and never blocks (the ADR-0008 ratchet is withdrawn).
 
-    It may shrink freely; a module within the limit stays governed by the limit.
+    Every module over the configured limit stays visible in ``current`` so it can
+    feed grooming, and none of it ever reaches ``net_new``, whatever the module
+    did relative to the baseline — grew, shrank, crossed the limit, or was added
+    oversized by this very change.
     """
 
     @staticmethod
@@ -475,24 +480,26 @@ class TestModuleSizeRatchet:
         _git(tmp_path, "commit", "-m", "baseline")
         return _git(tmp_path, "rev-parse", "HEAD")
 
-    def test_growth_of_an_over_limit_module_is_blocking(self, tmp_path):
-        """Over-limit and growing is refused, naming ceiling and excess."""
+    def test_growth_of_an_over_limit_module_is_not_blocking(self, tmp_path):
+        """A story that legitimately grows an already-large module is not refused.
+
+        This is the case the ratchet blocked, and blocking it is what forced
+        agents to relocate lines into whichever module was cheapest.
+        """
         baseline_ref = self._baseline_with_legacy(tmp_path, 501)
         _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 520)
 
         cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
-        _current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
 
-        blocked = [v for v in net_new if "legacy.py" in v.file]
-        assert len(blocked) == 1
-        assert blocked[0].rule == "max_module_lines"
-        assert blocked[0].blocking is True
-        # The refusal states the module, the size it may not exceed, and by how
-        # much the change exceeds it.
-        assert "legacy.py" in blocked[0].detail
-        assert "520" in blocked[0].detail
-        assert "may not exceed 501" in blocked[0].detail
-        assert "exceeds it by 19" in blocked[0].detail
+        assert not any("legacy.py" in v.file for v in net_new)
+        # Still reported, with its distance from the configured limit.
+        reported = [v for v in current if "legacy.py" in v.file]
+        assert len(reported) == 1
+        assert reported[0].rule == "max_module_lines"
+        assert reported[0].blocking is False
+        assert "520" in reported[0].detail
+        assert "limit 500" in reported[0].detail
 
     def test_shrinking_over_limit_module_is_not_blocking(self, tmp_path):
         """Reducing an over-limit module is never blocked by it being over the limit."""
@@ -517,18 +524,16 @@ class TestModuleSizeRatchet:
         assert not any("legacy.py" in v.file for v in net_new)
         assert any("legacy.py" in v.file for v in current)
 
-    def test_module_within_limit_is_governed_by_the_limit(self, tmp_path):
-        """A small module's ceiling is the configured limit, not its current size."""
+    def test_module_crossing_the_limit_is_not_blocking(self, tmp_path):
+        """Crossing the configured limit is reported, not refused."""
         baseline_ref = self._baseline_with_legacy(tmp_path, 420)
         _write(tmp_path / "src" / "theforge" / "legacy.py", "\n" * 510)
 
         cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
-        _current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
 
-        blocked = [v for v in net_new if "legacy.py" in v.file]
-        assert len(blocked) == 1
-        assert "may not exceed 500" in blocked[0].detail
-        assert "exceeds it by 10" in blocked[0].detail
+        assert not any("legacy.py" in v.file for v in net_new)
+        assert any("legacy.py" in v.file for v in current)
 
     def test_growth_within_the_limit_is_not_blocking(self, tmp_path):
         """Nothing licenses a refusal below the configured limit."""
@@ -541,18 +546,21 @@ class TestModuleSizeRatchet:
         assert not any("legacy.py" in v.file for v in net_new)
         assert not any("legacy.py" in v.file for v in current)
 
-    def test_new_oversized_module_is_blocked_from_its_first_commit(self, tmp_path):
-        """A module absent from the baseline is governed by the configured limit."""
+    def test_new_oversized_module_is_not_blocked_from_its_first_commit(self, tmp_path):
+        """A large new module is reported, not refused.
+
+        Blocking here produced the same pathology at creation time that the
+        ratchet produced at growth time: a module split at whatever line got it
+        under the limit, rather than at a responsibility boundary.
+        """
         baseline_ref = self._baseline_with_legacy(tmp_path, None)
         _write(tmp_path / "src" / "theforge" / "brand_new.py", "\n" * 900)
 
         cfg = _make_config(no_circular_imports=False, test_mirrors_source=False)
-        _current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
+        current, net_new = new_hard_convention_violations_since_ref(cfg, tmp_path, baseline_ref)
 
-        blocked = [v for v in net_new if "brand_new.py" in v.file]
-        assert len(blocked) == 1
-        assert blocked[0].blocking is True
-        assert "may not exceed 500" in blocked[0].detail
+        assert not any("brand_new.py" in v.file for v in net_new)
+        assert any("brand_new.py" in v.file for v in current)
 
     def test_current_scan_still_reports_distance_from_the_configured_limit(self, tmp_path):
         """A module compliant with its frozen ceiling stays visible as over the limit."""

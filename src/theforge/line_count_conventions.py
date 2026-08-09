@@ -1,23 +1,19 @@
-"""Module and test-file size checks, including the module-size ratchet.
+"""Module and test-file size checks. Reporting only — nothing here blocks.
 
-Two different questions are answered here and they must not be conflated:
+:func:`check_line_counts` is the plain scan: every module over the configured
+``max_module_lines`` with its distance from that limit, always
+``blocking=False``. It is what the advisory report reads.
 
-* :func:`check_line_counts` is the plain scan — every module over the
-  configured ``max_module_lines`` with its distance from that limit. It is
-  advisory (``blocking=False``) and it is what the advisory report reads.
-* :func:`module_growth_violations` is the ratchet (ADR-0008) — a module already
-  over the limit in the baseline tree is frozen at the size it had there and may
-  not grow, while a module within the limit stays governed by the limit itself.
-  It blocks.
-
-A module can be in both at once: 7,153 lines with a 7,153-line ceiling is
-compliant with the ratchet and still eleven times the convention, and both facts
-have to stay visible.
+The ADR-0008 ratchet used to live here and did block. It was withdrawn: module
+size is a codebase-scoped, temporal property, and a story-scoped gate could only
+be satisfied by relocating lines to whichever module was cheapest — which bought
+fragmentation rather than decomposition, and charged it to whichever story
+happened to be blocked. Size is now measured and reported so it can feed
+grooming; deciding a module needs splitting is funded work, not a mid-story toll.
 """
 
 from __future__ import annotations
 
-import dataclasses
 from pathlib import Path
 
 from theforge.config.types import HardConventionsConfig
@@ -52,75 +48,6 @@ def module_line_counts(config: HardConventionsConfig, project_root: Path) -> dic
             rel = str(py_file.relative_to(project_root))
             counts[rel] = len(py_file.read_text(encoding="utf-8", errors="replace").splitlines())
     return counts
-
-
-def module_line_ceiling(baseline_line_count: int | None, limit: int) -> int:
-    """Return the size *this* module may not exceed (ADR-0008).
-
-    A module already over ``limit`` in the baseline tree is frozen at the size it
-    had there; anything else — within the limit, or absent from the baseline
-    entirely — is governed by the configured limit. Derived from the tree on
-    every check rather than recorded, so a ceiling cannot drift from actual size
-    by omission and a newly added oversized module is governed from its first
-    commit.
-    """
-    if baseline_line_count is not None and baseline_line_count > limit:
-        return baseline_line_count
-    return limit
-
-
-def module_growth_violations(
-    config: HardConventionsConfig,
-    project_root: Path,
-    baseline_module_lines: dict[str, int],
-) -> list[ConventionViolation]:
-    """Return blocking violations for modules that exceed their frozen ceiling.
-
-    A module at or below its ceiling produces nothing, so an over-limit module
-    that shrank or stayed the same size is never refused for being over the
-    limit.
-    """
-    limit = config.max_module_lines
-    violations: list[ConventionViolation] = []
-    for rel, line_count in sorted(module_line_counts(config, project_root).items()):
-        ceiling = module_line_ceiling(baseline_module_lines.get(rel), limit)
-        if line_count <= ceiling:
-            continue
-        if ceiling > limit:
-            reason = (
-                f"it was already over the {limit}-line limit at the branch point, so it is "
-                "frozen at that size and may not grow (it may shrink freely)"
-            )
-        else:
-            reason = f"it must stay within the {limit}-line limit"
-        violations.append(
-            ConventionViolation(
-                rule=MODULE_LINES_RULE,
-                file=rel,
-                detail=(
-                    f"{rel} has {line_count} lines and may not exceed {ceiling} "
-                    f"(exceeds it by {line_count - ceiling}) — {reason}"
-                ),
-                blocking=True,
-            )
-        )
-    return violations
-
-
-def fail_closed_module_violations(
-    violations: list[ConventionViolation],
-) -> list[ConventionViolation]:
-    """Return *violations* with module-size findings promoted to blocking.
-
-    Used when no baseline tree is available, so no ceiling can be derived: the
-    configured limit is then the only ceiling there is, and an oversized module
-    is refused rather than passed unblocked. Copies rather than mutates, so the
-    advisory view of the same scan keeps reporting distance from the limit.
-    """
-    return [
-        dataclasses.replace(v, blocking=True) if v.rule == MODULE_LINES_RULE else v
-        for v in violations
-    ]
 
 
 def check_line_counts(
