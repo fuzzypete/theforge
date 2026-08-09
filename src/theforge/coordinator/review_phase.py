@@ -37,6 +37,7 @@ from theforge.review import (
 from theforge.symptom_test_classifier import escalate_symptom_test_findings
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
+from . import story_budget as _story_budget
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
 from .escalate_actions import (
@@ -436,6 +437,9 @@ def _run_escalate_gate_inner(
                 state.escalate_reason = escalate_reason
                 state.escalate_decision_source = ESCALATE_SOURCE_POLICY_AUTO_APPROVE
                 _append_cycle_history(state, state.review_results[-1])
+                _release_review_reservation(
+                    state, retained_cycles=0, reason="approve_escalate_gate"
+                )
                 return _finalize_approve(
                     state,
                     config,
@@ -573,6 +577,7 @@ def _run_escalate_gate_inner(
             )
         state.escalate_decision = norm if norm in ACTION_TAXONOMY else "approve"
         _append_cycle_history(state, approvable)
+        _release_review_reservation(state, retained_cycles=0, reason="approve_escalate_gate")
         return _finalize_approve(
             state,
             config,
@@ -760,6 +765,55 @@ def _carry_handoff(findings: list[ReviewFinding]) -> str:
         if f.suggestion:
             lines.append(f"**Fix:** {f.suggestion}")
     return "\n".join(lines)
+
+
+def _release_review_reservation(
+    state: CoordinatorState,
+    *,
+    retained_cycles: int,
+    reason: str,
+) -> None:
+    """Release the unspent review reserve once review has terminally approved (#2340).
+
+    The reservation is priced at seating against the *maximum* review cycles the
+    story was granted. When review reaches an approve-equivalent terminal path
+    those cycles cannot all occur, so continuing to withhold their money turns a
+    safety margin into a phantom debit — a story gets refused a funded P2-cleanup
+    dev attempt against dollars that provably will not be spent.
+
+    ``retained_cycles`` is how many review cycles remain reachable: one for a P2
+    cleanup pass (its dev iteration loops back through REVIEW), zero once the
+    approval is being finalized. Callers must sit where the branch PROVES that
+    count — an approve alone does not, since an interactive session can still
+    reject or extend back into REVIEW. Every route that finalizes an approval
+    settles here (normal, interactive, escalate-gate, hygiene replay, early
+    termination), each naming itself in ``reason``, so no DONE story lands with
+    an audit record still claiming the gross seated reserve is withheld. The
+    release is mirrored into
+    ``adaptive_limits_audit`` so the run audit keeps showing the real dispatch
+    inputs without a new audit schema path.
+
+    A reservation released by an earlier cleanup pass is released again when a
+    later cycle approves: the retained cycle it held may by then have run, and
+    the recomputation starts from what is still protected, so a re-release only
+    ever shrinks the retained balance.
+    """
+    reservation = state.review_funding_reservation
+    if not isinstance(reservation, dict):
+        return
+    released = _story_budget.release_review_reservation(
+        reservation,
+        review_observed_usd=state.total_review_cost_measured,
+        retained_cycles=retained_cycles,
+        review_cycle=state.review_cycle,
+        reason=reason,
+    )
+    if released is reservation:
+        # Nothing to release (no reserve seated, or review spend unmeasured).
+        return
+    state.review_funding_reservation = released
+    if isinstance(state.adaptive_limits_audit, dict):
+        state.adaptive_limits_audit["review_funding_reservation"] = released
 
 
 def _clear_p2_cleanup_state(state: CoordinatorState) -> None:
@@ -978,6 +1032,11 @@ def _handle_interactive_review_decision(
     if decision == "approve":
         if not history_already_appended:
             _append_cycle_history(state, parsed_review)
+        # The operator ended the run, so the seated review cycles cannot run.
+        # This is the only interactive outcome that proves that: extend and
+        # reject both loop back through REVIEW, and a release before the
+        # decision would strip their cycles of the reservation (#2258/#2340).
+        _release_review_reservation(state, retained_cycles=0, reason="approve_final")
         if exhausted_cycles:
             _approve_msg = (
                 f"Task '{task.name}' completed. "
@@ -1225,6 +1284,7 @@ def _maybe_replay_hygiene_consensus(
     state.escalate_kind = None
     state.hygiene_escalation_prior_review = None
     _append_cycle_history(state, prior_review)
+    _release_review_reservation(state, retained_cycles=0, reason="approve_hygiene_replay")
     return (
         _ReviewOutcome.DONE,
         _finalize_approve(
@@ -1842,6 +1902,9 @@ def _run_review_phase(
             if not _blocking_p1:
                 # No blocking P1 — treat as APPROVE path.
                 _append_cycle_history(state, parsed_review)
+                _release_review_reservation(
+                    state, retained_cycles=0, reason="approve_early_termination"
+                )
                 return (
                     _ReviewOutcome.DONE,
                     _finalize_approve(
@@ -1947,6 +2010,12 @@ def _run_review_phase(
         # remaining carried P2s, an iteration cap, or p2_cleanup_enabled=
         # false all fall through to the existing approve handler.
         if _maybe_enter_p2_cleanup(state, config, parsed_review):
+            # Review has approved: of the cycles the reserve was priced against,
+            # only the re-review of this cleanup pass is still reachable. Release
+            # the rest BEFORE the dev dispatch this returns to is checked for
+            # funding, so cleanup is funded from money that provably cannot be
+            # spent on review (#2340).
+            _release_review_reservation(state, retained_cycles=1, reason="approve_p2_cleanup")
             _entry = state.p2_cleanup_audit[-1]
             _log(
                 f"  ↻ P2 CLEANUP  entering dev iteration "
@@ -1973,6 +2042,11 @@ def _run_review_phase(
                 )
             return _ReviewOutcome.RETRY_DEV, None, config
         # Cleanup was either skipped or terminated.
+        # The reservation is released where the branch PROVES the cycles it was
+        # priced against cannot run — not merely where review approved. An
+        # interactive session may still send this back through REVIEW on a
+        # reject or an extend, so the release for that path happens inside the
+        # decision handler, on its approve branch only.
         if interactive:
             return _handle_interactive_review_decision(
                 state,
@@ -1991,6 +2065,9 @@ def _run_review_phase(
                 history_already_appended=True,
             )
         else:
+            # The run finalizes here: no review cycle is reachable any more, so
+            # nothing of the reserve is still review's.
+            _release_review_reservation(state, retained_cycles=0, reason="approve_final")
             return (
                 _ReviewOutcome.DONE,
                 _finalize_approve(
