@@ -20,10 +20,12 @@ from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
 from theforge.process_group import (
     KILL_GRACE_SECONDS,
+    ProcessTeardown,
+    descendant_tracker,
     is_killable_pgid,
+    open_process_lease,
     register_agent_group,
-    retain_group_record,
-    unregister_agent_group,
+    release_group_record,
 )
 from theforge.workspace_env import build_workspace_env
 
@@ -366,6 +368,7 @@ def _run_shell_detailed(
     expected_python: str | None = None,
     *,
     on_process_start: Callable[[subprocess.Popen[str]], None] | None = None,
+    teardown_out: list[ProcessTeardown] | None = None,
 ) -> tuple[bool, str, int | None, bool]:
     """Run a shell command. Returns (success, combined output, exit_code, timed_out).
 
@@ -386,7 +389,20 @@ def _run_shell_detailed(
     it never affects the command, and an exception from it is deliberately not
     swallowed, since a caller that cannot record the handle it asked for would
     otherwise silently lose its ability to cancel.
+
+    ``teardown_out`` collects a `ProcessTeardown` when the command left processes
+    running that had to be killed. An out-parameter because the return tuple is
+    the command's *result* and this is a fact about its aftermath — and because a
+    caller that does not care should not have to unpack it. Threaded on so the
+    gate's own leaks reach the run record rather than only the log (#2309).
     """
+    # The lease is stamped into the environment every descendant of this command
+    # inherits, so teardown can reach a test worker or daemon that left the
+    # process group by calling setsid — what a pgid by construction cannot
+    # describe (#2309).
+    leased_env, lease = open_process_lease(
+        env if env is not None else build_workspace_env(cwd, expected_python=expected_python)
+    )
     try:
         proc = subprocess.Popen(
             cmd,
@@ -395,11 +411,7 @@ def _run_shell_detailed(
             stderr=subprocess.PIPE,
             text=True,
             cwd=str(cwd),
-            env=(
-                env
-                if env is not None
-                else build_workspace_env(cwd, expected_python=expected_python)
-            ),
+            env=leased_env,
             start_new_session=True,
         )
     except Exception as e:
@@ -419,7 +431,12 @@ def _run_shell_detailed(
     # cannot denote a real group out of the registry (#1793).
     pgid: int | None = proc.pid if is_killable_pgid(proc.pid) else None
     if pgid is not None:
-        register_agent_group(pgid, sandbox_dir=str(cwd))
+        register_agent_group(pgid, sandbox_dir=str(cwd), lease=lease)
+    # Watches what the gate command starts. `make gate` runs the project's test
+    # runner, which is exactly the shape that spawns long-lived workers, and a
+    # worker that leaves the group is invisible to the pgid alone (#2309).
+    tracker = descendant_tracker(root_pid=proc.pid, pgid=pgid)
+    tracker.start()
     # False only while a drain thread still owns the streams, in which case that
     # thread closes them and this one must not touch them (see _drain_partial_output).
     owns_streams = True
@@ -449,17 +466,19 @@ def _run_shell_detailed(
         # Drop the record only once the whole group is known to be gone. A
         # teardown that reached at most the direct child leaves grandchildren
         # running, and the sidecar is the only handle a later reaper has on
-        # them — erasing it would strand them permanently (#2013).
-        if pgid is not None:
-            if group_gone:
-                unregister_agent_group(pgid)
-            else:
-                # Survivors: snapshot who is still in the group while we still
-                # know the group is ours. Once the shell (the group leader) is
-                # gone, that snapshot is the only thing that distinguishes these
-                # descendants from an unrelated group holding a recycled pgid,
-                # and a reaper with no such evidence declines to signal (#2115).
-                retain_group_record(pgid)
+        # them — erasing it would strand them permanently (#2013). And a shell
+        # that exited cleanly is not evidence its group did: `make gate` can
+        # return while a pytest-xdist worker it started is still on the CPU, so
+        # release checks and kills rather than assuming (#2309).
+        teardown = release_group_record(
+            pgid,
+            group_killed=group_gone,
+            sandbox_dir=str(cwd),
+            lease=lease,
+            tracker=tracker,
+        )
+        if teardown is not None and teardown_out is not None:
+            teardown_out.append(teardown)
         if owns_streams:
             for stream_name in ("stdout", "stderr"):
                 stream = getattr(proc, stream_name, None)
@@ -476,14 +495,23 @@ def _run_shell(
     timeout: int = 120,
     env: dict[str, str] | None = None,
     expected_python: str | None = None,
+    *,
+    teardown_out: list[ProcessTeardown] | None = None,
 ) -> tuple[bool, str]:
-    """Run a shell command. Returns (success, combined output)."""
+    """Run a shell command. Returns (success, combined output).
+
+    ``teardown_out`` is threaded through to `_run_shell_detailed` for the callers
+    that run a *project* command here rather than a short git query: the teardown
+    happens either way, but only a caller with somewhere to put it can make the
+    run's record say so (#2309).
+    """
     ok, output, _exit_code, _timed_out = _run_shell_detailed(
         cmd,
         cwd,
         timeout=timeout,
         env=env,
         expected_python=expected_python,
+        teardown_out=teardown_out,
     )
     return ok, output
 

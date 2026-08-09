@@ -807,6 +807,12 @@ class CoordinatorState:
     dev_handoff_snapshots: list[dict[str, Any] | None] = field(default_factory=list)
     dev_iteration_telemetry: list[DevIterationTelemetry] = field(default_factory=list)
     gate_debug_telemetry: list[GateDebugTelemetry] = field(default_factory=list)
+    # One entry per gate command that left processes running and had to have them
+    # killed (#2309). Audit-shaped dicts rather than ProcessTeardown objects,
+    # because this is the only consumer and the record is what it exists for: a
+    # leaked gate worker produces no artifact and no cost, so without this the
+    # run cannot say the kill happened.
+    gate_process_teardowns: list[dict[str, Any]] = field(default_factory=list)
     gate_diagnostic_telemetry: list[GateDiagnosticTelemetry] = field(default_factory=list)
     review_iteration_telemetry: list[ReviewIterationTelemetry] = field(default_factory=list)
     # Every reviewer invocation this run, including failures (#1388). Each entry is

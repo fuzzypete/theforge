@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
+from theforge.process_group import ProcessTeardown
+
 # ── Cost provenance (#2205) ───────────────────────────────────────────────
 # An observed cost is not self-describing: a number the provider billed and a
 # number forge derived from a token count and a pricing table are different
@@ -105,3 +107,10 @@ class AgentResult:
     # Whether ``cost_usd`` was reported by the provider or estimated by forge.
     # Always ``COST_UNKNOWN`` when ``cost_usd`` is None.
     cost_provenance: str = COST_UNKNOWN
+    # Set when this invocation's process group did not end on its own and had to
+    # be torn down — an agent that shelled out to a long-running command and
+    # returned before it did (#2309). None is the ordinary case: the group was
+    # empty when the invocation released it. A leaked process leaves no artifact
+    # and no cost of its own, so unless the forced kill is carried out of the
+    # runner here, the run that spawned the work has no way to say it happened.
+    process_teardown: ProcessTeardown | None = None

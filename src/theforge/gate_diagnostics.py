@@ -19,6 +19,7 @@ from pathlib import Path
 from theforge.config import ForgeConfig
 from theforge.coordinator import util as _cu
 from theforge.coordinator.state import GateDiagnosticTelemetry
+from theforge.process_group import ProcessTeardown
 from theforge.task import TaskStory
 from theforge.traces import write_trace
 from theforge.workspace_env import build_workspace_env
@@ -72,8 +73,13 @@ def run_gate_diagnostic_pass(
     *,
     task: TaskStory | None,
     iter_num: int,
+    process_teardowns: list[ProcessTeardown] | None = None,
 ) -> GateDiagnosticTelemetry | None:
     """Run a serialized diagnostic pass after a gate timeout (issue #1217).
+
+    ``process_teardowns`` collects any forced teardown. This command runs the
+    project's test runner directly, which is the exact shape that leaves workers
+    behind (#2309), so it is recorded like the gate's own.
 
     Runs the resolved diagnostic command with a hard wall-clock budget so it
     cannot itself become a wall-clock failure. The original gate process group is
@@ -108,6 +114,7 @@ def run_gate_diagnostic_pass(
         workspace_path,
         timeout=budget,
         env=env,
+        teardown_out=process_teardowns,
     )
 
     if timed_out:

@@ -42,6 +42,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from theforge.config.types import DevVerificationCommand
+from theforge.process_group import ProcessTeardown
 from theforge.traces import write_trace
 
 from . import util as _cu
@@ -99,6 +100,12 @@ class VerificationRequestRecord:
     # cancelled command proves nothing about the code, and a reader that cannot
     # tell the two apart would read a kill as a real verification failure.
     cancelled: bool = False
+    # Set when the command left processes running that teardown had to kill
+    # (#2309). A declared verification command is usually a build or a test run,
+    # which is the shape that leaves workers behind — and a killed worker
+    # produces no artifact, no exit code and no failure of its own, so this
+    # record is the only place the run can say it happened.
+    process_teardown: ProcessTeardown | None = None
 
     def audit_payload(self) -> dict:
         """Return the JSON-safe dict recorded in dev-iteration telemetry.
@@ -120,6 +127,14 @@ class VerificationRequestRecord:
             "output_truncated": self.output_truncated,
             "trace_path": self.trace_path,
             "cancelled": self.cancelled,
+            # Written only when it happened, like the agent entries': a command
+            # that left nothing behind should say nothing rather than carry a
+            # null on every record.
+            **(
+                {"process_teardown": self.process_teardown.to_audit_dict()}
+                if self.process_teardown is not None
+                else {}
+            ),
         }
 
 
@@ -464,6 +479,7 @@ class DevVerificationBroker:
         # in flight and falling back to the fixed grace.
         with self._active_lock:
             self._active = _ActiveCommand(request_id, declared, None, started)
+        teardowns: list[ProcessTeardown] = []
         try:
             ok, output, exit_code, timed_out = _cu._run_shell_detailed(
                 declared.command,
@@ -471,6 +487,7 @@ class DevVerificationBroker:
                 timeout=declared.timeout,
                 expected_python=self.expected_python,
                 on_process_start=_publish,
+                teardown_out=teardowns,
             )
         finally:
             with self._active_lock:
@@ -500,6 +517,7 @@ class DevVerificationBroker:
             output_truncated=len(output) > len(tail),
             trace_path=trace_path,
             cancelled=cancelled,
+            process_teardown=teardowns[0] if teardowns else None,
         )
         self._record(
             record,

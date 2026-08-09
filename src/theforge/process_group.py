@@ -9,8 +9,27 @@ Two mechanisms cooperate:
    launched with ``start_new_session=True`` so it leads its own process group.
    On timeout or any teardown the whole group is ``killpg``-ed, so grandchildren
    (node, the provider leaf binary) die too — a bare ``proc.kill()`` reaches only
-   the direct child.
-2. **Orphan reaper** (`reap_orphan_agents`) — synchronous group-kill cannot run
+   the direct child. A *clean* exit is checked too rather than assumed: an agent
+   that shelled out to a long-running command and returned first leaves that
+   command running, and it is killed at release (`release_group_record`) rather
+   than left to outlive the story that authorised it (#2309).
+2. **Escapee kill** (`kill_escapees`) — a process group is escapable: a
+   descendant that calls ``setsid``/``start_new_session`` leaves the pgid behind
+   and becomes invisible to every group-based teardown, which is exactly what a
+   test runner or a daemonising helper does. Two independent mechanisms find
+   those, because neither covers the other's blind spot (#2309):
+
+   * **Observation while the links exist** (`theforge.process_tree`) — a tracker
+     samples the spawn's descendants during the invocation, reading only
+     ppid/start-time. Those the kernel exposes for *every* same-uid process, so
+     this holds for a SIP-protected platform binary and for a descendant that
+     cleared its own environment. What it saw stays known after the parent that
+     proved the relationship is gone.
+   * **An inherited environment token** (`open_process_lease`) — stamped into
+     the child's env, so it needs no prior observation and covers a descendant
+     born and orphaned between two samples. It cannot read the environment of a
+     SIP-protected binary, so it is a second signal rather than the containment.
+3. **Orphan reaper** (`reap_orphan_agents`) — synchronous group-kill cannot run
    when the parent sprint is ``SIGKILL``-ed, so each spawned group records its
    pgid + owner pid in a sidecar under ``.forge/runs/agents/``. A later
    *mutating* ``forge`` invocation (stop / sprint-startup) sweeps those sidecars
@@ -24,7 +43,9 @@ naming one describes a past moment; acting on it later takes evidence the moment
 still holds. A sidecar therefore carries the leader's start time at registration,
 and — when a teardown leaves survivors — a snapshot of the group's members taken
 while the group was still known to be ours (`retain_group_record`). A sweep that
-can match neither declines to signal and drops the record.
+can match neither declines to signal and drops the record. A lease token needs no
+such care: it is freshly generated per spawn and never reused, so a process
+holding one *is* a descendant of that spawn, whenever the question is asked.
 
 Stdlib-only by design (convention 4) so it can be imported by both the runners
 and the CLI without pulling in heavier dependencies.
@@ -38,8 +59,13 @@ import signal
 import struct
 import subprocess
 import sys
+import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+
+from theforge import process_tree
+from theforge.process_tree import DescendantTracker
 
 # Env seams: register/unregister resolve the orchestrator runs dir from
 # FORGE_PROJECT_ROOT (set at run bootstrap); run_id is the detached run id.
@@ -54,6 +80,262 @@ _RUN_ID_ENV = "FORGE_DETACHED_RUN_ID"
 # bound the whole teardown at 2x this, which keeps it inside the <5s budget the
 # gate's timeout path is asserted against even when every kill is refused.
 KILL_GRACE_SECONDS = 2.0
+
+# Teardown actions recorded on a `ProcessTeardown`.
+TEARDOWN_KILLED_SURVIVORS = "killed_survivors"
+"""The invocation finished but left live descendants; they were killed here."""
+
+TEARDOWN_RETAINED_FOR_REAPER = "retained_for_reaper"
+"""Descendants survived the kill; the sidecar was kept so a later sweep can act."""
+
+
+@dataclass(frozen=True)
+class ProcessTeardown:
+    """What it took to end the processes one invocation left running.
+
+    Produced only when something did *not* end on its own — i.e. the invocation
+    returned (cleanly or not) while processes it had started were still alive. A
+    quiet, self-terminating tree produces no record at all, so the presence of
+    one is itself the signal: this invocation left work behind, and something had
+    to end it.
+
+    ``members`` are survivors still in the spawned process group; ``escaped_pids``
+    are survivors that had left it (``setsid``) and were found by lease token
+    instead. The two are recorded separately because they are different failures:
+    the first is work that outran its invocation, the second is work that also
+    stepped outside the container the invocation put it in.
+
+    Stdlib-only and pure data (convention 4) so both the runners and the audit
+    writer can carry it without importing process machinery.
+    """
+
+    pgid: int | None
+    action: str
+    member_count: int
+    members: tuple[int, ...]
+    sandbox_dir: str | None
+    completed: bool
+    """True when every survivor was gone by the time teardown returned."""
+    escaped_pids: tuple[int, ...] = ()
+
+    def to_audit_dict(self) -> dict[str, Any]:
+        """Audit-record projection: the facts an operator needs, JSON-shaped."""
+        return {
+            "pgid": self.pgid,
+            "action": self.action,
+            "member_count": self.member_count,
+            "members": list(self.members),
+            "escaped_pids": list(self.escaped_pids),
+            "sandbox_dir": self.sandbox_dir,
+            "completed": self.completed,
+        }
+
+
+# ── Process lease ────────────────────────────────────────────────────
+
+LEASE_ENV_VAR = "FORGE_PROCESS_LEASE"
+"""Environment variable carrying a spawn's lease token to all its descendants."""
+
+
+@dataclass(frozen=True)
+class ProcessLease:
+    """A per-spawn token that every descendant inherits and cannot shed.
+
+    ``started_at`` records when the spawn happened. Kept for the record rather
+    than for filtering: a sweep that skipped processes on age would depend on two
+    clocks agreeing, and the reads it saves are not what a pass costs.
+    """
+
+    token: str
+    started_at: float
+
+
+def open_process_lease(env: dict[str, str] | None) -> tuple[dict[str, str], ProcessLease]:
+    """Return ``(env with the lease stamped in, lease)`` for a child about to spawn.
+
+    ``None`` means "inherit the parent's environment", so it is materialised into
+    a copy here — the stamp has to be *in* the child's env for its descendants to
+    inherit it. The token is fresh per spawn and never reused, which is what makes
+    a later match proof of descent rather than a guess.
+    """
+    lease = ProcessLease(token=os.urandom(12).hex(), started_at=time.time())
+    stamped = dict(os.environ if env is None else env)
+    stamped[LEASE_ENV_VAR] = lease.token
+    return stamped, lease
+
+
+def _pid_holds_lease_linux(pid: int, needle: bytes) -> bool:
+    try:
+        return needle in Path(f"/proc/{pid}/environ").read_bytes()
+    except OSError:
+        # Gone, or another user's — either way not something we may act on.
+        return False
+
+
+# A descendant cannot predate the spawn that created it, so a process older than
+# the lease is not a candidate however its environment reads. A second of slack
+# absorbs clock granularity rather than a real ordering question.
+_LEASE_AGE_SLACK_SECONDS = 1.0
+
+
+def _lease_candidates(since: float) -> list[int]:
+    """Pids that could belong to a spawn opened at *since*.
+
+    Reading a process's environment is the expensive part of the sweep — on macOS
+    ``KERN_PROCARGS2`` copies a whole argv+environ blob per process, which across
+    a full table costs tens of milliseconds. Doing that for every process on the
+    host, on the release of every short shell command, was a real regression
+    (#2309, cycle 3): a `git status` paid to search for a descendant it could not
+    possibly have had.
+
+    Start times are read instead — one small, fixed-size query per process
+    through `theforge.process_tree`, the same reader the tracker and the identity
+    checks already use — and the environment is read only for what survives. The
+    prune is sound rather than a heuristic: a descendant cannot predate the spawn
+    that created it.
+
+    Two kinds of "we do not know" are handled differently, and the difference is
+    what keeps the prune both cheap and safe:
+
+    * **Described, but not datable** — keep it. Dropping a process we can see
+      would silently narrow the sweep, and a sweep that quietly stops looking is
+      the failure this layer exists to prevent. Keeping it costs one read.
+    * **Not described at all** — skip it. The kernel refuses to describe another
+      user's process, and it refuses that process's environment for the same
+      reason, so such a process cannot be a lease match and reading it is a call
+      guaranteed to fail. (Measured on the development host: of 161 processes
+      whose ``proc_pidinfo`` was refused, exactly none had a readable
+      environment, while 80 of 80 readable ones did.) A lease can only ever be
+      held by *our own* descendant, which is precisely the set the platform will
+      describe to us.
+
+    There is deliberately no "consider everything" fallback. An earlier version
+    reached for one whenever a bulk ``sysctl`` read failed, and on a host where
+    that read is unavailable the prune silently degraded back into the full scan
+    it was added to remove (#2309, cycle 4). Reading start times one process at a
+    time through the same interface the tracker already relies on has no such
+    cliff: it either describes a process or tells us it will not.
+    """
+    cutoff = since - _LEASE_AGE_SLACK_SECONDS
+    candidates: list[int] = []
+    for pid in process_tree.live_pids():
+        if pid <= 1:
+            continue
+        info = process_tree.process_info(pid)
+        if info is None:
+            continue
+        if info.started_at is None or info.started_at >= cutoff:
+            candidates.append(pid)
+    return candidates
+
+
+def _lease_holders_linux(needle: bytes, candidates: list[int]) -> list[int]:
+    return [pid for pid in candidates if _pid_holds_lease_linux(pid, needle)]
+
+
+def _lease_holders_darwin(needle: bytes, candidates: list[int]) -> list[int]:
+    """macOS: read each candidate's environ via ``KERN_PROCARGS2``."""
+    holders: list[int] = []
+    for pid in candidates:
+        args = _sysctl_bytes((_CTL_KERN, _KERN_PROCARGS2, pid))
+        if args and needle in args:
+            holders.append(pid)
+    return holders
+
+
+def lease_holders(lease: ProcessLease) -> list[int]:
+    """Live pids still carrying *lease*, excluding this process.
+
+    Empty on a platform with no way to read another process's environment. That
+    is a dead end rather than a fallback, and it is the safe direction: the group
+    kill still runs, and nothing is signalled on a guess.
+    """
+    candidates = _lease_candidates(lease.started_at)
+    if not candidates:
+        return []
+    needle = f"{LEASE_ENV_VAR}={lease.token}".encode()
+    if sys.platform.startswith("linux"):
+        found = _lease_holders_linux(needle, candidates)
+    elif sys.platform == "darwin":
+        found = _lease_holders_darwin(needle, candidates)
+    else:
+        return []
+    me = os.getpid()
+    return sorted(pid for pid in found if pid > 1 and pid != me)
+
+
+def kill_escapees(
+    *,
+    tracker: DescendantTracker | None = None,
+    lease: ProcessLease | None = None,
+    recorded: dict[int, str] | None = None,
+) -> tuple[tuple[int, ...], bool]:
+    """Kill descendants that left the process group; ``(killed pids, all gone)``.
+
+    The group kill runs first and normally takes the whole tree with it. What
+    reaches here is what left the group — a helper that called ``setsid``, a
+    daemonised child that double-forked — and would otherwise outlive the story
+    with nothing pointing back to it.
+
+    Three independent ways of knowing, because none is sufficient alone:
+
+    * **What was observed** (`tracker`) — descendants seen while their parent
+      links still existed. Reads only ppid/start-time, which the kernel exposes
+      for every same-uid process, so it holds for a SIP-protected platform binary
+      and for a descendant that cleared its own environment.
+    * **What still carries the token** (`lease`) — an inherited environment
+      stamp, which needs no prior observation and so covers a descendant born and
+      orphaned between two samples. It cannot see a process whose environment is
+      unreadable, which is why it is not relied on alone (#2309, cycle 2).
+    * **What a previous process observed** (`recorded`) — the same observation
+      as the first, read back from a sidecar after the process that made it died.
+      This is the only one available to `reap_orphan_agents`, and without it a
+      stopped sprint leaves an unreadable escapee running (#2309, cycle 3).
+
+    What counts as identity differs by signal, and saying so precisely matters
+    because the cost of killing the wrong process is unbounded (#2115):
+
+    * A **pid** is not identity — it is recycled. So both observation signals
+      re-check each pid against the start time it was seen with, and drop it if
+      the number now belongs to something else. ``tracker.survivors()`` does
+      this for what it watched; the loop below does it for what a previous
+      process wrote down.
+    * A **lease token** *is* identity. It is minted once per spawn and never
+      reused, so a process carrying it is that spawn's descendant whatever its
+      pid, and there is nothing older to check it against. The start time read
+      for such a pid here is not evidence — it is only what `wait_until_gone`
+      needs in order to tell "it exited" from "the id was reused while we
+      waited".
+    """
+    targets: dict[int, str] = {}
+    if tracker is not None:
+        targets.update(tracker.survivors())
+    for pid, fingerprint in (recorded or {}).items():
+        # Verified against the start time it was recorded with, exactly as the
+        # tracker verifies its own: a recycled pid is a different process.
+        info = process_tree.process_info(pid) if is_killable_pgid(pid) else None
+        if info is not None and info.fingerprint == fingerprint:
+            targets[pid] = fingerprint
+    for pid in lease_holders(lease) if lease is not None else []:
+        if pid not in targets:
+            # The token match is the identity (see above); this read only gives
+            # the post-kill wait something to compare against.
+            info = process_tree.process_info(pid)
+            if info is not None:
+                targets[pid] = info.fingerprint
+    if not targets:
+        return (), True
+    pids = tuple(sorted(targets))
+    _log(
+        f"  ⚠ {len(pids)} process(es) started by this invocation outlived it in their "
+        f"own process group(s) (pids={list(pids)}); killing them directly"
+    )
+    for pid in pids:
+        _kill_pid(pid)
+    remaining = process_tree.wait_until_gone(targets, timeout=KILL_GRACE_SECONDS)
+    if remaining:
+        _log(f"  ⚠ pids={sorted(remaining)} survived the kill; they are a real leak, not a delay")
+    return pids, not remaining
 
 
 def _log(msg: str) -> None:
@@ -75,6 +357,7 @@ def run_in_process_group(
     text: bool = False,
     env: dict[str, str] | None = None,
     cwd: str | None = None,
+    teardown_out: list[ProcessTeardown] | None = None,
 ) -> subprocess.CompletedProcess[Any]:
     """``subprocess.run`` that isolates the child into its own process group.
 
@@ -84,18 +367,29 @@ def run_in_process_group(
     before the exception is re-raised, so npm→node→leaf grandchildren cannot
     outlive the call. ``subprocess.run``'s own timeout kill signals only the
     direct child (``npm exec``), leaving node + the provider leaf alive.
+
+    A descendant tracker runs for the life of the call and the child's
+    environment is stamped with a lease token, so that teardown can still reach a
+    descendant that left the process group by calling ``setsid`` — the one thing
+    group isolation alone cannot contain (see `kill_escapees`).
+
+    ``teardown_out`` is an out-parameter rather than part of the return value:
+    a forced teardown is a fact about the *call*, and it has to reach the caller
+    on the exception paths too, where there is no return value to carry it. Any
+    `ProcessTeardown` produced at release is appended to it.
     """
     stdout = subprocess.PIPE if capture_output else None
     stderr = subprocess.PIPE if capture_output else None
     stdin = subprocess.PIPE if input is not None else None
 
+    leased_env, lease = open_process_lease(env)
     proc = subprocess.Popen(  # noqa: S603
         cmd,
         stdin=stdin,
         stdout=stdout,
         stderr=stderr,
         text=text,
-        env=env,
+        env=leased_env,
         cwd=cwd,
         start_new_session=True,
     )
@@ -107,7 +401,9 @@ def run_in_process_group(
     except OSError:
         pgid = None
     if pgid is not None:
-        register_agent_group(pgid, sandbox_dir=cwd)
+        register_agent_group(pgid, sandbox_dir=cwd, lease=lease)
+    tracker = descendant_tracker(root_pid=proc.pid, pgid=pgid)
+    tracker.start()
     # Normal completion implies the group went with the child; only a teardown
     # that could not reach the group flips this.
     group_killed = True
@@ -129,8 +425,15 @@ def run_in_process_group(
         group_killed = terminate_process_group(proc)
         raise
     finally:
-        if pgid is not None:
-            release_group_record(pgid, group_killed=group_killed)
+        teardown = release_group_record(
+            pgid,
+            group_killed=group_killed,
+            sandbox_dir=cwd,
+            lease=lease,
+            tracker=tracker,
+        )
+        if teardown is not None and teardown_out is not None:
+            teardown_out.append(teardown)
     return subprocess.CompletedProcess(proc.args, proc.returncode, out, err)
 
 
@@ -163,15 +466,74 @@ def _attach_partial_output(
         exc.stderr = err
 
 
-def release_group_record(pgid: int, *, group_killed: bool) -> None:
-    """Drop the reaper's sidecar, but only once the group is really gone.
+def _group_is_empty(pgid: int) -> bool:
+    """True when nothing in *pgid* is still running.
 
-    When teardown could reach only the direct child, that child exits while its
-    grandchildren keep running — and unregistering here would erase the one
-    record that lets `reap_orphan_agents` ever kill them. The sidecar is how a
-    surviving group stays reachable, so it outlives a partial teardown.
+    A completed enumeration outranks the signal-0 probe here. ``killpg(pgid, 0)``
+    succeeds while the group still holds a process that has exited and not been
+    reaped, so a kill that worked would otherwise be waited out to its full grace
+    and then recorded as survivors that outlived it — which is what forge running
+    as pid 1 sees for every child it kills, since it inherits its own orphans and
+    never reaps them. Where enumeration is unavailable the probe is all there is.
     """
-    if not group_killed and group_is_alive(pgid):
+    members, enumerated = group_members_checked(pgid)
+    return not members if enumerated else not group_is_alive(pgid)
+
+
+def _await_empty_group(pgid: int, *, grace_seconds: float = KILL_GRACE_SECONDS) -> bool:
+    """Poll until *pgid* holds no running process, bounded by *grace_seconds*."""
+    deadline = time.monotonic() + grace_seconds
+    while True:
+        if _group_is_empty(pgid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
+
+
+def _release_group(
+    pgid: int, *, group_killed: bool, sandbox: str | None
+) -> tuple[str | None, dict[int, str], bool]:
+    """Settle the process group; returns ``(action or None, members, completed)``.
+
+    Three outcomes, and they are not the same fact:
+
+    * **The group is already empty** — nothing to do but drop the sidecar. No
+      action, and the invocation reports no teardown at all.
+    * **Teardown reached only the direct child** (``group_killed=False``) — the
+      kill was refused, so re-issuing it buys nothing. Unregistering would erase
+      the one record that lets `reap_orphan_agents` ever reach the survivors, so
+      the sidecar is kept instead.
+    * **The invocation ended on its own terms while descendants kept running**
+      (``group_killed=True``, group still alive) — a dev agent that shelled out
+      to ``pytest -n auto`` and returned before those workers did. Nothing killed
+      that tree, because nothing had decided it needed killing: the leader exited
+      cleanly, so teardown treated the group as gone. It was not, and the workers
+      then outlived the sprint, the worktree and the budget that authorised them,
+      competing for the host with every run measured afterwards (#2309). Work a
+      story starts ends with the story, so the survivors are killed here.
+
+    Killing on membership alone is safe despite pgid recycling: a pgid is only
+    reusable once its group is empty, and a group with live members has not
+    emptied. The members enumerated here are therefore this group's, not a
+    successor's — the check `_identity_verdict` makes for a record read minutes
+    later is not needed for one read microseconds after our own wait returned.
+    """
+    if not group_is_alive(pgid):
+        unregister_agent_group(pgid)
+        return None, {}, True
+
+    members, enumerated = group_members_checked(pgid)
+    if group_killed and not members and enumerated:
+        # The signal-0 probe errs toward "alive"; a *completed* enumeration is the
+        # sharper instrument and says there is nothing left to kill. A read that
+        # failed says nothing at all, and must not be mistaken for that — an
+        # empty answer from a busy sysctl would otherwise drop a live group's
+        # record without ever killing it.
+        unregister_agent_group(pgid)
+        return None, {}, True
+
+    if not group_killed:
         _log(
             f"  ⚠ keeping agent sidecar for pgid={pgid}: teardown reached only the "
             "direct child and the group is still alive"
@@ -179,8 +541,90 @@ def release_group_record(pgid: int, *, group_killed: bool) -> None:
         # Capture the survivors now, while we still know this group is ours — it
         # is the only identity a later sweep can check once the leader is gone.
         retain_group_record(pgid)
-        return
-    unregister_agent_group(pgid)
+        return TEARDOWN_RETAINED_FOR_REAPER, members, False
+
+    _log(
+        f"  ⚠ agent invocation finished but left {len(members) or 'live'} process(es) "
+        f"running in pgid={pgid} (sandbox={sandbox}); killing them now so they cannot "
+        "outlive the story that started them"
+    )
+    if kill_agent_group(pgid) and _await_empty_group(pgid):
+        unregister_agent_group(pgid)
+        return TEARDOWN_KILLED_SURVIVORS, members, True
+
+    _log(
+        f"  ⚠ pgid={pgid} still holds processes after the kill; keeping its sidecar "
+        "so a later sweep can finish the job"
+    )
+    retain_group_record(pgid)
+    return TEARDOWN_RETAINED_FOR_REAPER, members, False
+
+
+def release_group_record(
+    pgid: int | None,
+    *,
+    group_killed: bool,
+    sandbox_dir: str | Path | None = None,
+    lease: ProcessLease | None = None,
+    tracker: DescendantTracker | None = None,
+) -> ProcessTeardown | None:
+    """End everything the invocation started, then drop the reaper's sidecar.
+
+    Two containers, checked in order. The **process group** catches descendants
+    that stayed in it (see `_release_group`). The **escapee kill** catches the
+    ones that did not: anything that calls ``setsid``, as a test runner or a
+    daemonising helper does, leaves the pgid and becomes invisible to every
+    group-based teardown. Those are found by what the tracker observed while
+    their parent links still existed, and by the inherited lease token — see
+    `kill_escapees` for why it takes both. ``pgid`` may be ``None`` when the
+    spawn's group could not be resolved; the escapee kill still runs, because
+    that is the case with the least other cover.
+
+    Returns a `ProcessTeardown` describing whatever had to be killed, and ``None``
+    when nothing did — so a caller can record that a kill was needed without
+    having to infer it from a log line.
+    """
+    sandbox = str(sandbox_dir) if sandbox_dir is not None else None
+    action: str | None = None
+    members: dict[int, str] = {}
+    completed = True
+    if pgid is not None:
+        action, members, completed = _release_group(
+            pgid, group_killed=group_killed, sandbox=sandbox
+        )
+
+    if tracker is not None:
+        # Final sample first: a descendant spawned since the last one is still
+        # observable right now, and will not be once we start killing.
+        tracker.stop()
+    escaped, escaped_gone = kill_escapees(tracker=tracker, lease=lease)
+    if action == TEARDOWN_RETAINED_FOR_REAPER and pgid is not None and not group_is_alive(pgid):
+        # The lease sweep reached by pid what the refused ``killpg`` could not,
+        # and the group is empty after all. Retaining a record now would hand a
+        # later sweep an empty group to chase, and reporting the teardown as
+        # incomplete would be simply untrue.
+        unregister_agent_group(pgid)
+        action = TEARDOWN_KILLED_SURVIVORS
+        completed = True
+    if not escaped_gone:
+        completed = False
+    if action is None:
+        if not escaped:
+            return None
+        # The group was clean and the survivors had left it entirely — the escape
+        # the lease exists for. Nothing is retained: a pgid-keyed sidecar cannot
+        # describe a process that is no longer in that group.
+        action = TEARDOWN_KILLED_SURVIVORS
+
+    return ProcessTeardown(
+        pgid=pgid,
+        action=action,
+        member_count=len(members),
+        members=tuple(sorted(members)),
+        escaped_pids=escaped,
+        sandbox_dir=sandbox,
+        completed=completed,
+    )
 
 
 def _killpg_for(pid: int) -> bool:
@@ -307,8 +751,24 @@ def _running_under_pytest() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST")) or "pytest" in sys.modules
 
 
-def _parse_proc_stat(raw: str) -> tuple[int, str] | None:
-    """Linux ``/proc/<pid>/stat`` → (process-group id, start-time fingerprint)."""
+def _parse_proc_stat(raw: str) -> tuple[int, str, str] | None:
+    """Linux ``/proc/<pid>/stat`` → (process-group id, start-time fingerprint).
+
+    Returns the process state alongside, rather than deciding what to do about
+    it, because its two callers need opposite things and both are right:
+
+    * `group_members` asks "is anything still *running* here?" — a process that
+      has exited but not been reaped is not, so it drops one whose state is
+      ``Z``.
+    * `_leader_fingerprint` asks "does this pgid still belong to the group I
+      recorded?" — a corpse continues to occupy its pid, so its start time is
+      still proof the id has not been recycled. That proof is load-bearing: it
+      is what lets a sweep verify and then kill a group whose direct child died
+      unreaped while its descendants ran on. Excluding zombies here outright
+      took it away, and because a corpse answers a signal-0 probe the sweep then
+      declined the record and left those descendants running — measured on
+      Linux-as-pid-1 (#2309).
+    """
     # comm (field 2) is parenthesised and may itself contain spaces, so split
     # after the final ')' rather than tokenising the whole line.
     _, _, rest = raw.rpartition(")")
@@ -321,10 +781,10 @@ def _parse_proc_stat(raw: str) -> tuple[int, str] | None:
         pgrp = int(fields[2])
     except ValueError:
         return None
-    return pgrp, f"proc:{fields[19]}"
+    return pgrp, f"proc:{fields[19]}", fields[0]
 
 
-def _read_proc_stat(pid: int) -> tuple[int, str] | None:
+def _read_proc_stat(pid: int) -> tuple[int, str, str] | None:
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -342,7 +802,23 @@ _CTL_KERN = 1
 _KERN_PROC = 14
 _KERN_PROC_PID = 1
 _KERN_PROC_PGRP = 2
+# ``KERN_PROCARGS2`` returns a process's argv + environ blob, which is how the
+# lease sweep reads another process's environment on a platform with no /proc.
+_KERN_PROCARGS2 = 49
 _KINFO_PID_OFFSET = 40
+# ``p_stat`` follows p_flag in ``struct extern_proc``; ``SZOMB`` marks a process
+# that has exited and not yet been reaped. Verified against a live member (SRUN)
+# and the same member after a kill (SZOMB) on the development host.
+_KINFO_P_STAT_OFFSET = 36
+_SZOMB = 5
+
+
+def _kinfo_is_zombie(raw: bytes, offset: int) -> bool:
+    """True when this ``kinfo_proc`` record describes an unreaped corpse."""
+    try:
+        return struct.unpack_from("b", raw, offset + _KINFO_P_STAT_OFFSET)[0] == _SZOMB
+    except struct.error:
+        return False
 
 
 def _sysctl_bytes(mib_values: tuple[int, ...]) -> bytes | None:
@@ -404,6 +880,16 @@ def _leader_fingerprint(pgid: int) -> str | None:
     pid, so the leader's start time is a property a recycled pgid cannot
     reproduce — the evidence the reaper needs before signalling anything (#2115).
 
+    Deliberately still answers for a leader that has exited but not been reaped,
+    unlike `group_members`, which reports such a process as gone. The two are
+    asking different questions and the answers are both right: membership asks
+    "is anything still running here?", while this asks "does the pgid still
+    belong to the group I recorded?" — and a corpse continues to occupy its pid,
+    so its start time remains proof that the id has *not* been recycled. That
+    proof is load-bearing: it is what lets a sweep verify and then kill a group
+    whose direct child died unreaped while its descendants ran on, which is the
+    case the reaper exists for (#2309).
+
     Read from the kernel directly — ``/proc`` on Linux, ``sysctl`` on macOS — so
     that taking a fingerprint costs no process spawn: this sits in the path of
     every agent and gate launch, and ``ps`` is an exec that a sandbox profile can
@@ -436,43 +922,92 @@ def group_members(pgid: int) -> dict[int, str]:
     start time does prove it.
 
     Empty when the platform offers no way to enumerate a group without spawning
-    ``ps``. That is a deliberate dead end rather than a fallback: it makes the
-    reaper decline to signal leaderless groups on such a platform, which is the
-    safe direction.
+    ``ps``. Callers that need to tell "the group is empty" from "the answer could
+    not be obtained" must use `group_members_checked` — the two are the same
+    value here and only one of them is safe to act on.
+    """
+    return group_members_checked(pgid)[0]
+
+
+def group_members_checked(pgid: int) -> tuple[dict[int, str], bool]:
+    """``(members still running, enumeration completed)`` for *pgid*.
+
+    An empty result means two very different things, and the flag is what keeps
+    them apart. When the enumeration completed, the group is genuinely empty.
+    When the read failed — a ``sysctl`` that returned nothing under load, a
+    ``/proc`` that could not be listed, a platform with no interface at all —
+    nothing was learned, and a caller must not mistake that for a settled group:
+    doing so drops a live group's reaper sidecar without ever signalling it.
+
+    Membership and liveness come out of the *same* read, deliberately. An earlier
+    version established membership from the platform enumeration and then refined
+    it with a second, independently fallible per-process reader while keeping the
+    first read's confidence flag — so when that second reader failed for every
+    member, a live group reported itself empty *and* fully enumerated, which is
+    exactly the mistake the flag exists to prevent (#2309). One read yields both
+    facts, so the flag always describes the data it is attached to.
     """
     if not is_killable_pgid(pgid):
-        return {}
+        return {}, True
     if sys.platform.startswith("linux"):
-        members: dict[int, str] = {}
-        try:
-            entries = os.listdir("/proc")
-        except OSError:
-            return {}
-        for entry in entries:
-            if not entry.isdigit():
-                continue
-            parsed = _read_proc_stat(int(entry))
-            if parsed is not None and parsed[0] == pgid:
-                members[int(entry)] = parsed[1]
-        return members
+        return _enumerate_group_linux(pgid)
     if sys.platform == "darwin":
-        record_size = _sysctl_record_size()
-        if record_size <= _KINFO_PID_OFFSET:
-            return {}
-        raw = _sysctl_bytes((_CTL_KERN, _KERN_PROC, _KERN_PROC_PGRP, pgid))
-        if not raw:
-            return {}
-        found: dict[int, str] = {}
-        for offset in range(0, len(raw) - record_size + 1, record_size):
-            pid = _kinfo_pid(raw, offset)
-            fingerprint = _kinfo_start_time(raw, offset)
-            if pid is not None and fingerprint is not None:
-                found[pid] = fingerprint
-        return found
-    return {}
+        return _enumerate_group_darwin(pgid)
+    return {}, False
 
 
-def register_agent_group(pgid: int, *, sandbox_dir: str | Path | None = None) -> None:
+def _enumerate_group_linux(pgid: int) -> tuple[dict[int, str], bool]:
+    """Linux: one ``/proc/<pid>/stat`` read per process gives group and state."""
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return {}, False
+    members: dict[int, str] = {}
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        parsed = _read_proc_stat(int(entry))
+        # A process that vanishes mid-scan is not an incomplete read: it is
+        # simply no longer a member, which is the answer we wanted anyway.
+        if parsed is not None and parsed[0] == pgid and parsed[2] != "Z":
+            members[int(entry)] = parsed[1]
+    return members, True
+
+
+def _enumerate_group_darwin(pgid: int) -> tuple[dict[int, str], bool]:
+    """macOS: one ``KERN_PROC_PGRP`` read gives every member and its state.
+
+    ``p_stat`` sits inside the same ``kinfo_proc`` record as the pid and start
+    time, so "who is in the group" and "which of them are still running" are
+    answered by a single call that either succeeds or says it did not.
+    """
+    record_size = _sysctl_record_size()
+    if record_size <= _KINFO_P_STAT_OFFSET:
+        return {}, False
+    raw = _sysctl_bytes((_CTL_KERN, _KERN_PROC, _KERN_PROC_PGRP, pgid))
+    if raw is None:
+        return {}, False
+    members: dict[int, str] = {}
+    for offset in range(0, len(raw) - record_size + 1, record_size):
+        pid = _kinfo_pid(raw, offset)
+        fingerprint = _kinfo_start_time(raw, offset)
+        if pid is None or fingerprint is None:
+            # A record the layout cannot explain means this answer is not the
+            # whole truth. Reporting it as complete would let a partially
+            # unreadable group read as an empty one.
+            return members, False
+        if _kinfo_is_zombie(raw, offset):
+            continue
+        members[pid] = fingerprint
+    return members, True
+
+
+def register_agent_group(
+    pgid: int,
+    *,
+    sandbox_dir: str | Path | None = None,
+    lease: ProcessLease | None = None,
+) -> None:
     """Record a spawned agent group's pgid so a later reaper can kill orphans.
 
     Writes ``.forge/runs/agents/{owner_pid}-{pgid}.json`` under the orchestrator
@@ -480,10 +1015,12 @@ def register_agent_group(pgid: int, *, sandbox_dir: str | Path | None = None) ->
     files avoid write contention from parallel review pools. No-op when the runs
     dir is unresolvable (e.g. ``FORGE_PROJECT_ROOT`` unset in tests).
 
-    Two fields exist purely so a later sweep can decide whether the record is
-    still safe to act on: ``leader_fingerprint`` — the group leader's start time,
-    the evidence that the group holding this pgid at reap time is the group
-    registered here — and ``origin``, which marks records left by a test run.
+    Three fields exist purely so a later sweep can decide what it may act on:
+    ``leader_fingerprint`` — the group leader's start time, the evidence that the
+    group holding this pgid at reap time is the group registered here; ``origin``,
+    which marks records left by a test run; and ``lease``, the spawn's token,
+    which reaches descendants that left the group and which no recycled id can
+    counterfeit.
     """
     agents_dir = _agents_dir_from_env()
     if agents_dir is None:
@@ -496,6 +1033,7 @@ def register_agent_group(pgid: int, *, sandbox_dir: str | Path | None = None) ->
         "sandbox_dir": str(sandbox_dir) if sandbox_dir is not None else None,
         "leader_fingerprint": _leader_fingerprint(pgid),
         "origin": "test" if _running_under_pytest() else "agent",
+        "lease": lease.token if lease is not None else None,
     }
     try:
         agents_dir.mkdir(parents=True, exist_ok=True)
@@ -504,6 +1042,70 @@ def register_agent_group(pgid: int, *, sandbox_dir: str | Path | None = None) ->
         )
     except OSError:
         pass
+
+
+def _update_sidecar(pgid: int, field: str, value: dict[str, str]) -> None:
+    """Merge ``{field: value}`` into this process's sidecar for *pgid*.
+
+    Read-modify-write of a file only this process writes (the path is keyed on
+    our own pid), so no locking is needed. Silent on every failure: a record that
+    cannot be updated is a weaker later sweep, never a reason to disturb the run
+    that is producing the observation.
+    """
+    agents_dir = _agents_dir_from_env()
+    if agents_dir is None:
+        return
+    path = _sidecar_path(agents_dir, os.getpid(), pgid)
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return
+    if not isinstance(data, dict) or data.get(field) == value:
+        return
+    data[field] = value
+    try:
+        path.write_text(json.dumps(data), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def record_observed_descendants(pgid: int, observed: dict[int, str]) -> None:
+    """Persist descendants observed during the run into the group's sidecar.
+
+    The live teardown path can kill an escaped descendant because the tracker
+    watched it being born (`theforge.process_tree`). A sprint that is killed
+    outright runs no teardown at all, and the observation dies with the process
+    that made it — leaving a later sweep with only the pgid, which cannot name a
+    process that left the group, and the lease token, which cannot be read out of
+    a SIP-protected binary or one that cleared its environment. Writing the
+    observation down as it is made is what gives the reaper the same
+    non-environment signal the live path has (#2309).
+
+    Each entry keeps the start time it was seen with, so the sweep can tell the
+    process it recorded from whatever later holds that pid (#2115).
+    """
+    if not is_killable_pgid(pgid) or not observed:
+        return
+    # JSON object keys are strings; the reaper converts back on read.
+    _update_sidecar(
+        pgid, "observed", {str(pid): fingerprint for pid, fingerprint in observed.items()}
+    )
+
+
+def descendant_tracker(*, root_pid: int, pgid: int | None) -> DescendantTracker:
+    """A tracker whose observations are mirrored into the group's sidecar.
+
+    Every spawn site takes its tracker from here so none of them can register a
+    group and then watch it without leaving the durable record a stopped sprint
+    depends on.
+    """
+    mirror = None
+    if pgid is not None:
+
+        def mirror(observed: dict[int, str], _pgid: int = pgid) -> None:  # noqa: F811
+            record_observed_descendants(_pgid, observed)
+
+    return DescendantTracker(root_pid=root_pid, pgid=pgid, on_observed=mirror)
 
 
 def retain_group_record(pgid: int) -> None:
@@ -517,25 +1119,12 @@ def retain_group_record(pgid: int) -> None:
     "an unrelated group that happens to hold a recycled pgid and whose own
     leader has also exited" (#2115). Without it the sweep can only decline.
     """
-    agents_dir = _agents_dir_from_env()
-    if agents_dir is None:
-        return
     members = group_members(pgid)
     if not members:
         return
-    path = _sidecar_path(agents_dir, os.getpid(), pgid)
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
-        return
-    if not isinstance(data, dict):
-        return
-    # JSON object keys are strings; the reaper converts back on read.
-    data["members"] = {str(pid): fingerprint for pid, fingerprint in members.items()}
-    try:
-        path.write_text(json.dumps(data), encoding="utf-8")
-    except OSError:
-        pass
+    _update_sidecar(
+        pgid, "members", {str(pid): fingerprint for pid, fingerprint in members.items()}
+    )
 
 
 def unregister_agent_group(pgid: int) -> None:
@@ -599,20 +1188,29 @@ def kill_agent_group(pgid: int) -> bool:
 # ── Orphan reaper ────────────────────────────────────────────────────
 
 
-def _recorded_members(data: dict[str, Any]) -> dict[int, str]:
-    """The ``members`` snapshot from a sidecar, as ``{pid: fingerprint}``."""
-    raw = data.get("members")
+def _pid_fingerprint_map(raw: object) -> dict[int, str]:
+    """A sidecar ``{pid: start time}`` map, with unusable entries dropped.
+
+    JSON object keys are strings, so every read converts back — and an entry
+    that cannot be converted is discarded rather than guessed at, because the
+    value's only use is deciding whether to signal a process.
+    """
     if not isinstance(raw, dict):
         return {}
-    members: dict[int, str] = {}
+    parsed: dict[int, str] = {}
     for pid, fingerprint in raw.items():
         try:
             key = int(pid)
         except (TypeError, ValueError):
             continue
         if isinstance(fingerprint, str) and fingerprint:
-            members[key] = fingerprint
-    return members
+            parsed[key] = fingerprint
+    return parsed
+
+
+def _recorded_members(data: dict[str, Any]) -> dict[int, str]:
+    """The ``members`` snapshot from a sidecar, as ``{pid: fingerprint}``."""
+    return _pid_fingerprint_map(data.get("members"))
 
 
 def _identity_verdict(pgid: object, data: dict[str, Any]) -> tuple[bool, str]:
@@ -724,6 +1322,16 @@ def reap_orphan_agents(project_root: Path) -> int:
     abrupt-``SIGKILL`` case, where the synchronous group kill in
     `run_in_process_group` never got to run.
 
+    A record's ``lease`` and its ``observed`` descendants are swept whatever the
+    pgid verdict says, and neither needs a verdict of its own. The token was
+    generated once for one spawn and never reused, so a live process carrying it
+    is that spawn's descendant and nothing else; an observed pid is checked
+    against the start time it was seen with, so a recycled id names a different
+    process and is left alone. Between them they are the only handle on a
+    descendant that left the group by calling ``setsid``, which the pgid by
+    construction cannot describe — the token where the environment can be read,
+    the observation where it cannot.
+
     Mutating by design, so only mutating commands (``forge stop``, sprint
     startup) may call it; ``forge status`` uses `list_orphan_agents` instead.
     """
@@ -760,6 +1368,14 @@ def reap_orphan_agents(project_root: Path) -> int:
             _unlink(sidecar)
             continue
 
+        # No tracker exists here — the process that did the observing is the one
+        # that died. What it wrote down before dying is the sweep's substitute
+        # for watching: the pgid cannot name a descendant that left the group,
+        # and the token cannot be read out of every process (#2309).
+        escaped, _gone = kill_escapees(
+            lease=_recorded_lease(data), recorded=_recorded_observed(data)
+        )
+
         may_signal, reason = _identity_verdict(pgid, data)
         if not may_signal:
             _log(
@@ -767,6 +1383,9 @@ def reap_orphan_agents(project_root: Path) -> int:
                 f"(owner sprint pid={owner_pid} is dead, sandbox={sandbox})"
             )
             _unlink(sidecar)
+            # An unverifiable pgid says nothing about the lease: if the token
+            # found escapees, this record did reap something and must say so.
+            reaped += 1 if escaped else 0
             continue
 
         _log(
@@ -779,6 +1398,29 @@ def reap_orphan_agents(project_root: Path) -> int:
         reaped += 1
 
     return reaped
+
+
+def _recorded_observed(data: dict[str, Any]) -> dict[int, str]:
+    """The ``observed`` descendant snapshot from a sidecar, as ``{pid: start time}``.
+
+    Written during the run by `record_observed_descendants`, so it survives the
+    process that made it — which is the whole point: a sprint that is killed
+    outright never runs a teardown, and this is what it leaves behind.
+    """
+    return _pid_fingerprint_map(data.get("observed"))
+
+
+def _recorded_lease(data: dict[str, Any]) -> ProcessLease | None:
+    """The ``lease`` token from a sidecar, or None for a record without one.
+
+    ``started_at`` is 0.0 rather than the spawn's real moment: the sweep must not
+    skip a descendant on age when it no longer knows when the spawn was, and a
+    reap is rare enough to afford the full scan.
+    """
+    token = data.get("lease")
+    if not isinstance(token, str) or not token:
+        return None
+    return ProcessLease(token=token, started_at=0.0)
 
 
 def _unlink(path: Path) -> None:

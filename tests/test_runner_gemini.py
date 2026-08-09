@@ -47,7 +47,8 @@ class TestGeminiSandboxWrapper:
             return_value=wrapped_cmd,
         ) as mock_sandbox:
             with patch(
-                "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+                "theforge.runners.runner_gemini.process_group.run_in_process_group",
+                return_value=mock_proc,
             ) as mock_run:
                 _run_gemini(
                     prompt="implement the thing",
@@ -68,7 +69,10 @@ class TestGeminiSandboxWrapper:
             "theforge.runners.runner_gemini.workspace_effect_sandbox_command",
             return_value=wrapped_cmd,
         ) as mock_sandbox:
-            with patch("theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc):
+            with patch(
+                "theforge.runners.runner_gemini.process_group.run_in_process_group",
+                return_value=mock_proc,
+            ):
                 _run_gemini(
                     prompt="review only",
                     profile=profile,
@@ -84,7 +88,8 @@ class TestGeminiSandboxWrapper:
             "theforge.runners.runner_gemini.workspace_effect_sandbox_command"
         ) as mock_sandbox:
             with patch(
-                "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+                "theforge.runners.runner_gemini.process_group.run_in_process_group",
+                return_value=mock_proc,
             ) as mock_run:
                 _run_gemini(
                     prompt="debug run",
@@ -104,13 +109,15 @@ class TestGeminiSandboxWrapper:
             "theforge.runners.runner_gemini.workspace_effect_sandbox_command",
             side_effect=lambda cmd, wd, **kwargs: list(cmd),
         ):
-            with patch("theforge.runners.runner_gemini.subprocess.run") as mock_run:
+            with patch(
+                "theforge.runners.runner_gemini.process_group.run_in_process_group"
+            ) as mock_run:
                 result = _run_gemini(
                     prompt="test",
                     profile=profile,
                     working_dir=tmp_path,
                 )
-        # subprocess.run must NOT have been called — we fail before invoking the agent
+        # The spawn must NOT have been called — we fail before invoking the agent
         mock_run.assert_not_called()
         assert result.success is False
         assert result.startup_failure is True
@@ -125,7 +132,8 @@ class TestGeminiSandboxWrapper:
             "theforge.runners.runner_gemini.workspace_effect_sandbox_command"
         ) as mock_sandbox:
             with patch(
-                "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+                "theforge.runners.runner_gemini.process_group.run_in_process_group",
+                return_value=mock_proc,
             ) as mock_run:
                 result = _run_gemini(
                     prompt="debug run",
@@ -144,7 +152,8 @@ class TestGeminiSandboxWrapper:
         mock_proc = _make_subprocess_mock()
 
         with patch(
-            "theforge.runners.runner_gemini.subprocess.run", return_value=mock_proc
+            "theforge.runners.runner_gemini.process_group.run_in_process_group",
+            return_value=mock_proc,
         ) as mock_run:
             _run_gemini(
                 prompt="debug run",
@@ -168,7 +177,7 @@ class TestGeminiLifecycle:
     """Real-subprocess lifecycle tests for the Gemini CLI runner.
 
     Uses tests/fake_bin/npx (routing @google/gemini-cli) rather than mocking
-    subprocess.run, so the tests exercise real process invocation and JSON-
+    the spawn, so the tests exercise real process invocation and JSON-
     output parsing that mocks cannot detect.
     """
 
