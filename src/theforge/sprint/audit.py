@@ -32,6 +32,70 @@ def _optional_cost(value: object) -> float | None:
     return None
 
 
+#: Story-row key → key of the same fact in the per-story audit ``preflight``
+#: block (#2346). The row spells the fields flat, matching the surrounding
+#: ``preflight*`` fields, so a reader of sprint-summary.yaml can count degraded
+#: runs without opening a single per-story audit.yaml; the audit block nests
+#: them under shorter names. Both writers and every reader build from this map,
+#: so the two spellings cannot drift apart. The coordinator state happens to use
+#: the row spelling, which is why the state reader keys off it directly.
+#:
+#: Rows with no degradation carry ``False`` explicitly: "this run's preflight was
+#: founded" is the claim being recorded, and a missing key cannot make it.
+PREFLIGHT_DEGRADED_ROW_KEYS: dict[str, str] = {
+    "preflight_degraded": "degraded",
+    "preflight_degraded_reason": "degraded_reason",
+    "preflight_failure_action": "failure_action",
+    "preflight_risk_signals": "risk_signals",
+}
+
+
+def _coerce_degraded_field(row_key: str, value: object) -> object:
+    """Coerce one degraded-preflight field to a YAML-representable value.
+
+    Story rows are serialized to YAML, so every field that reaches them must be
+    a representable scalar. Duck-typed states (and test doubles) hand back an
+    arbitrary object for an attribute that was never set; recording that would
+    fail the whole summary write rather than the one field.
+    """
+    if row_key == "preflight_degraded":
+        return value is True
+    if row_key == "preflight_risk_signals":
+        return [str(item) for item in value] if isinstance(value, (list, tuple)) else []
+    return value if isinstance(value, str) and value else None
+
+
+def preflight_degraded_row_fields(state: object) -> dict:
+    """Degraded-preflight story-row fields read from a coordinator state."""
+    return {
+        row_key: _coerce_degraded_field(row_key, getattr(state, row_key, None))
+        for row_key in PREFLIGHT_DEGRADED_ROW_KEYS
+    }
+
+
+def preflight_degraded_row_fields_from_row(story_row: object) -> dict:
+    """Same fields, re-read from an already-written summary story row.
+
+    Readers go through this rather than indexing the row directly, so a row
+    written by an older forge (missing the keys entirely) normalizes to the same
+    shape as a current one.
+    """
+    row = story_row if isinstance(story_row, dict) else {}
+    return {
+        row_key: _coerce_degraded_field(row_key, row.get(row_key))
+        for row_key in PREFLIGHT_DEGRADED_ROW_KEYS
+    }
+
+
+def preflight_degraded_row_fields_from_audit(preflight_block: object) -> dict:
+    """Same fields, read from a persisted per-story audit ``preflight`` block."""
+    block = preflight_block if isinstance(preflight_block, dict) else {}
+    return {
+        row_key: _coerce_degraded_field(row_key, block.get(audit_key))
+        for row_key, audit_key in PREFLIGHT_DEGRADED_ROW_KEYS.items()
+    }
+
+
 def _state_reported_cost(state: object) -> float | None:
     """Per-story cost from a coordinator state, preserving cost-unknown.
 
@@ -505,6 +569,7 @@ def _load_story_summary_entry_from_audit(
         "preflight_source_run_id": (
             preflight_block.get("source_run_id") if isinstance(preflight_block, dict) else None
         ),
+        **preflight_degraded_row_fields_from_audit(preflight_block),
         "error": audit_data.get("error"),
         "error_type": audit_data.get("error_type") or outcome_block.get("error_type"),
         "outcome_code": (
@@ -703,6 +768,7 @@ def _write_sprint_audit(
                 "preflight_source_run_id": getattr(
                     res.state, "preflight_cached_from_run_id", None
                 ),
+                **preflight_degraded_row_fields(res.state),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),
@@ -1070,6 +1136,7 @@ def _write_sprint_summary(
                 "preflight_source_run_id": getattr(
                     res.state, "preflight_cached_from_run_id", None
                 ),
+                **preflight_degraded_row_fields(res.state),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),

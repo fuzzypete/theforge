@@ -79,6 +79,7 @@ from .audit import (
     load_prior_generation_story_audit,
     persist_accepted_unmeasured_spend,
     persist_accumulated_story_state,
+    preflight_degraded_row_fields,
     write_live_story_audit,
 )
 from .auth_gate import enforce_sprint_auth_readiness
@@ -4392,6 +4393,14 @@ def run_sprint(
                 result.state, "preflight_cached_original_verdict", None
             ),
             "preflight_source_run_id": getattr(result.state, "preflight_cached_from_run_id", None),
+            # A story dispatched on a preflight that produced no evidence is
+            # still a story this run proceeded on unfounded values. Recording it
+            # on the run's own row is what makes the condition countable from
+            # the sprint record instead of from a log line at the moment of
+            # failure — the property that let it repeat unnoticed for months
+            # (#2346). Escalated stories carry it too: failure_action='escalate'
+            # is the half that stopped, and it belongs on the same row.
+            **preflight_degraded_row_fields(result.state),
             "error": result.state.error,
             "error_type": result.state.error_type,
             "outcome_code": result.state.error_type or outcome.lower(),
@@ -5325,6 +5334,13 @@ def run_sprint(
                 "preflight": prior_entry.get("preflight"),
                 "preflight_original_verdict": prior_entry.get("preflight_original_verdict"),
                 "preflight_source_run_id": prior_entry.get("preflight_source_run_id"),
+                # A degradation the prior generation recorded is a fact about
+                # the run, not about the generation that observed it — carry it
+                # forward or a re-exec erases the only durable record (#2346).
+                "preflight_degraded": bool(prior_entry.get("preflight_degraded", False)),
+                "preflight_degraded_reason": prior_entry.get("preflight_degraded_reason"),
+                "preflight_failure_action": prior_entry.get("preflight_failure_action"),
+                "preflight_risk_signals": list(prior_entry.get("preflight_risk_signals") or []),
                 "error": prior_entry.get("error"),
                 "error_type": prior_entry.get("error_type"),
                 "merge": bool(prior_entry.get("merge", False)),

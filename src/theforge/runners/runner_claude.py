@@ -65,7 +65,22 @@ def build_argv(
     profile: ModelProfile,
     session_id: str | None = None,
 ) -> list[str]:
-    """Construct argv for `claude` invocation (initial run or resume)."""
+    """Construct argv for `claude` invocation (initial run or resume).
+
+    .. warning::
+       An empty ``profile.allowed_tools`` omits ``--allowedTools`` entirely,
+       which grants the CLI's **unrestricted** default tool set — the opposite
+       of what an empty allowlist reads like. Every caller treats ``()`` as
+       "nothing was requested, apply a default", so a role that reaches dispatch
+       with an empty tuple fails *open*.
+
+       Only preflight is defended against this today, by resolving its surface
+       to a guaranteed non-empty set before dispatch (see
+       ``config.resolve_preflight_tools``). Generalizing that to every role — or
+       rejecting an empty ``allowed_tools`` at config load — is the real fix and
+       is tracked separately; until then, do not read an empty allowlist here as
+       a narrow one.
+    """
     cmd: list[str] = [
         "claude",
         "-p",

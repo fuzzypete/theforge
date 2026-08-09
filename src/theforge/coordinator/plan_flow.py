@@ -26,7 +26,13 @@ from theforge.assignment import (
     MECHANISM_PLAN_MODEL_ESCALATION,
     MECHANISM_RUN_SCOPED_RESET,
 )
-from theforge.config import MODEL_REGISTRY, ForgeConfig, ModelProfile, apply_model_info
+from theforge.config import (
+    DEFAULT_INVESTIGATION_TOOLS,
+    MODEL_REGISTRY,
+    ForgeConfig,
+    ModelProfile,
+    apply_model_info,
+)
 from theforge.config.bridge import model_ref_to_profile
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.log_level import _LOG_LEVEL, LogLevel
@@ -875,7 +881,10 @@ def _run_plan_phase(
         plan_profile = model_ref_to_profile(
             "plan",
             config.plan.ref,
-            allowed_tools=config.preflight_profile.allowed_tools,
+            # Named, not borrowed from preflight: preflight's surface is
+            # deliberately narrower (no Bash, #2346) and the plan agent has no
+            # reason to inherit that narrowing.
+            allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
             timeout_seconds=_plan_timeout,
         )
         plan_profile = _apply_transport_fallback(plan_profile, config.transport_fallbacks)

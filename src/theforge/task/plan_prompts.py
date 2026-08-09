@@ -109,6 +109,17 @@ def build_preflight_prompt(
         acceptance criterion, record what you found, note the uncertainty in the
         `evidence` field, and produce your output.
 
+        ## No Delegation
+
+        Do the investigation yourself, in this turn. Do NOT hand work to a
+        sub-agent, background process, scheduled wakeup, or any other
+        out-of-band task, and do NOT end your turn waiting for something to
+        complete or notify you. Nothing can resume you: this execution context
+        has no mechanism to wake you when a delegated task finishes, so a turn
+        that ends while waiting is a turn that produced nothing and is killed.
+        Whatever you have inspected by the time you stop, emit the YAML verdict
+        from that evidence.
+
         ## Uncertainty
 
         Uncertainty does NOT cause BLOCKED and does NOT justify more investigation.
