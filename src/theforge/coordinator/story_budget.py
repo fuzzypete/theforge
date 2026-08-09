@@ -968,7 +968,12 @@ def nonreview_funding_exhausted(
     # back into the dev pool, funding attempts past the whole allocation: with a
     # reserve fully consumed by a cycle that ran, `allocation - protected` is the
     # entire allocation again, and dev would be admitted having spent it twice.
-    ceiling = _balance(allocation_usd - float(review_observed_usd) - protected)
+    # Floored at zero: review spend can exceed the whole allocation, and a pool
+    # reported as holding less than nothing is not a number an operator can act
+    # on. Clamping keeps the reported figures consistent — remaining_usd stays
+    # `ceiling - observed`, so the two still agree — and cannot change the
+    # decision, since a ceiling below zero refuses either way.
+    ceiling = _balance(max(0.0, allocation_usd - float(review_observed_usd) - protected))
     remaining = _balance(ceiling - nonreview_observed)
     # Strictly greater: a non-review pool spent to the cent has nothing left to
     # fund another attempt with, and admitting one would spend the reserved

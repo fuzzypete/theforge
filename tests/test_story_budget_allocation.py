@@ -1584,6 +1584,22 @@ class TestReviewFundingReservation:
             is not None
         )
 
+    def test_a_pool_the_review_overrun_swallowed_reports_zero_not_less(self) -> None:
+        """A non-review pool cannot hold less than nothing, and does not say it does."""
+        shortfall = sb.nonreview_funding_exhausted(
+            self._reservation(reserved_usd=1.01, cycles=1),
+            self._allocation(),  # $4.12
+            observed_usd=5.62,  # $1.00 dev + $4.62 review: review ate it all
+            review_observed_usd=4.62,
+            participants=["dev"],
+        )
+
+        assert shortfall is not None
+        assert shortfall["nonreview_allocation_usd"] == 0.0
+        # The reported figures still agree: remaining is ceiling less spend.
+        assert shortfall["observed_usd"] == 1.00
+        assert shortfall["remaining_usd"] == -1.00
+
     def test_re_releasing_only_ever_shrinks_the_retained_balance(self) -> None:
         """A second terminal approve must not hand review back dev's money."""
         first = sb.release_review_reservation(

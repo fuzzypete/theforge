@@ -437,6 +437,9 @@ def _run_escalate_gate_inner(
                 state.escalate_reason = escalate_reason
                 state.escalate_decision_source = ESCALATE_SOURCE_POLICY_AUTO_APPROVE
                 _append_cycle_history(state, state.review_results[-1])
+                _release_review_reservation(
+                    state, retained_cycles=0, reason="approve_escalate_gate"
+                )
                 return _finalize_approve(
                     state,
                     config,
@@ -574,6 +577,7 @@ def _run_escalate_gate_inner(
             )
         state.escalate_decision = norm if norm in ACTION_TAXONOMY else "approve"
         _append_cycle_history(state, approvable)
+        _release_review_reservation(state, retained_cycles=0, reason="approve_escalate_gate")
         return _finalize_approve(
             state,
             config,
@@ -781,7 +785,11 @@ def _release_review_reservation(
     cleanup pass (its dev iteration loops back through REVIEW), zero once the
     approval is being finalized. Callers must sit where the branch PROVES that
     count — an approve alone does not, since an interactive session can still
-    reject or extend back into REVIEW. The release is mirrored into
+    reject or extend back into REVIEW. Every route that finalizes an approval
+    settles here (normal, interactive, escalate-gate, hygiene replay, early
+    termination), each naming itself in ``reason``, so no DONE story lands with
+    an audit record still claiming the gross seated reserve is withheld. The
+    release is mirrored into
     ``adaptive_limits_audit`` so the run audit keeps showing the real dispatch
     inputs without a new audit schema path.
 
@@ -1276,6 +1284,7 @@ def _maybe_replay_hygiene_consensus(
     state.escalate_kind = None
     state.hygiene_escalation_prior_review = None
     _append_cycle_history(state, prior_review)
+    _release_review_reservation(state, retained_cycles=0, reason="approve_hygiene_replay")
     return (
         _ReviewOutcome.DONE,
         _finalize_approve(
@@ -1893,6 +1902,9 @@ def _run_review_phase(
             if not _blocking_p1:
                 # No blocking P1 — treat as APPROVE path.
                 _append_cycle_history(state, parsed_review)
+                _release_review_reservation(
+                    state, retained_cycles=0, reason="approve_early_termination"
+                )
                 return (
                     _ReviewOutcome.DONE,
                     _finalize_approve(

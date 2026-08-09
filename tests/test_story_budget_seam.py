@@ -1492,13 +1492,15 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         dev_costs: list[float],
         review_output: str | None = None,
         human_decision: tuple[str, str | None] | None = None,
+        zero_findings_stop: int = 0,
     ):
         """Drive DEV → VALIDATE → REVIEW round the loop the review verdict picks.
 
         ``review_output`` defaults to an APPROVE carrying P2s, which routes into
         the cleanup loop; a clean APPROVE finalizes instead. Passing
         ``human_decision`` runs the loop interactively and answers the operator
-        prompt with it. Each dev dispatch spends the next figure in
+        prompt with it; ``zero_findings_stop`` arms the convergence
+        early-termination route. Each dev dispatch spends the next figure in
         ``dev_costs``; the dispatch after the list is exhausted stops the loop.
         Returns ``(state, result, dev_calls)`` where ``dev_calls`` records the
         measured spend at the entry of every dev dispatch — its length is how
@@ -1514,6 +1516,13 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
 
         review_output = APPROVE_WITH_P2 if review_output is None else review_output
         config = self._config(tmp_path)
+        if zero_findings_stop:
+            config = dataclasses.replace(
+                config,
+                retry=dataclasses.replace(
+                    config.retry, review_zero_findings_stop=zero_findings_stop
+                ),
+            )
         task = _make_task(tmp_path)
         state = self._seated_state(tmp_path)
         dev_calls: list[float | None] = []
@@ -1769,3 +1778,36 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         assert sb.remaining_reserved_review_usd(
             reservation, state.total_review_cost_measured
         ) == round(float(reservation["reserved_review_usd"]) - 1.01, 4)
+
+    def test_every_terminal_approve_route_settles_the_reservation(self, tmp_path: Path) -> None:
+        """Early termination lands DONE too, and must not leave the reserve withheld.
+
+        The normal approve is not the only route to DONE: convergence
+        early-termination, the escalate gate and the hygiene replay all finalize
+        an approval. A story landing through one of them with the record still
+        claiming five withheld cycles misreports where the money went.
+        """
+        # Identical APPROVE+P2 cycles: cycles 2 and 3 bring zero new findings,
+        # so the run converges and finalizes through early termination.
+        state, result, dev_calls = self._run_loop(
+            tmp_path, dev_costs=[1.00, 0.50, 0.50], zero_findings_stop=2
+        )
+
+        assert result is not None
+        assert result.phase == Phase.DONE
+        assert state.review_early_terminated is True
+        assert len(dev_calls) == 3
+
+        reservation = state.review_funding_reservation
+        assert reservation["released"] is True
+        assert reservation["release_reason"] == "approve_early_termination"
+        # Two cleanup passes released before it; this one settles the record.
+        assert reservation["release_count"] == 3
+        assert reservation["retained_review_usd"] == 0.0
+        assert (
+            sb.remaining_reserved_review_usd(reservation, state.total_review_cost_measured) == 0.0
+        )
+        assert (
+            state.adaptive_limits_audit["review_funding_reservation"]["release_reason"]
+            == "approve_early_termination"
+        )
