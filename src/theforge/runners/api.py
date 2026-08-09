@@ -61,7 +61,7 @@ from theforge.runners.schema_utils import (
     uses_openai_responses_api,
 )
 from theforge.runners.stuck_detection import StuckTracker, build_observation
-from theforge.runners.tool_runtime import TOOL_REGISTRY, ToolDef
+from theforge.runners.tool_runtime import TOOL_NAME_MAP, TOOL_REGISTRY, ToolDef
 
 if TYPE_CHECKING:
     from theforge.config import ModelProfile
@@ -693,15 +693,12 @@ PROVIDER_RUNNERS: dict[str, Callable[..., AgentResult]] = {
 
 # ── Tool schema builder ───────────────────────────────────────────────
 
-_CLI_TO_REGISTRY: dict[str, str] = {
-    # Claude CLI tool names → API registry keys
-    "Read": "read_file",
-    "Edit": "edit_file",
-    "Write": "write_file",
-    "Bash": "bash",
-    "Glob": "glob",
-    "Grep": "grep",
-}
+# Claude CLI tool names → API registry keys. Aliased to the single canonical map
+# rather than restated: this module and ``tool_runtime`` held byte-identical
+# copies, and a readiness check written against one spelling while the runner
+# resolved the other is what let an API profile be *granted* bash while being
+# *classified* as having no bash surface (#2346).
+_CLI_TO_REGISTRY: dict[str, str] = TOOL_NAME_MAP
 
 
 def _build_registry_tools(profile: "ModelProfile") -> list[ToolDef]:

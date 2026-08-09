@@ -24,6 +24,26 @@ from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
 
+#: Detail keys that describe the RUN, not the phase currently writing detail.
+#:
+#: A phase replaces the ``detail`` dict wholesale with what it knows, which is
+#: correct for phase-scoped facts — DEV's iteration counters have no business
+#: outliving DEV. But "this story's preflight produced no evidence, and every
+#: value it was routed on is a conservative fallback" stays true for the rest of
+#: the run. Letting DEV's write erase it is how a degraded story looked healthy
+#: on the live row the moment it left PREFLIGHT (#2346). Keys listed here survive
+#: a replacement; a later phase can still overwrite one deliberately by
+#: including it in its own detail.
+RUN_SCOPED_DETAIL_KEYS: frozenset[str] = frozenset(
+    {
+        "preflight_degraded",
+        "preflight_degraded_reason",
+        "preflight_failure_action",
+        "preflight_risk_signals",
+        "complexity_source",
+    }
+)
+
 
 class StoryOutcome(str, Enum):
     """Sprint story lifecycle outcome.
@@ -462,7 +482,15 @@ class SprintStoryState:
                     elif v is None:
                         entry.complexity_score = None
                 elif k == "detail" and isinstance(v, dict):
-                    entry.detail = dict(v)
+                    # Wholesale replace, except for the run-scoped keys: a phase
+                    # writing what IT knows must not silently retract a fact
+                    # about the run that outlives it (see RUN_SCOPED_DETAIL_KEYS).
+                    carried = {
+                        key: value
+                        for key, value in entry.detail.items()
+                        if key in RUN_SCOPED_DETAIL_KEYS and key not in v
+                    }
+                    entry.detail = {**carried, **v}
                 elif k == "detail_updates" and isinstance(v, dict):
                     # Merge, don't replace: a terminal exit path knows one or two
                     # detail keys (gate_status, say) and must not erase whatever

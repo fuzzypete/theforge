@@ -14,8 +14,10 @@ operator to select an action and never auto-acts on the advisor's recommendation
 
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from theforge.config import DEFAULT_INVESTIGATION_TOOLS
 from theforge.escalation_advisor import (
     CycleEvidence,
     EvidencePacket,
@@ -236,7 +238,11 @@ def run_escalation_advisor(
     state.advisory_packet = packet.to_dict()
 
     prompt = build_advisor_prompt(packet)
-    profile = config.preflight_profile
+    # Preflight's profile is the base — same capability tier, same clean-baseline
+    # working dir — but not its tool surface. Preflight's is narrowed to deny
+    # delegation it cannot be resumed for (#2346); the advisor is a separate job
+    # that keeps the shared read-only investigation set it held before.
+    profile = replace(config.preflight_profile, allowed_tools=DEFAULT_INVESTIGATION_TOOLS)
 
     _log("─── Escalation Advisor (fresh context) ───")
     _log(f"  Profile: {profile.model}")

@@ -12,7 +12,12 @@ from __future__ import annotations
 from typing import Any
 
 from ..routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
-from .defaults import DEFAULT_DEV_PROFILE, DEFAULT_PREFLIGHT_PROFILE, DEFAULT_REVIEW_PROFILE
+from .defaults import (
+    DEFAULT_DEV_PROFILE,
+    DEFAULT_INVESTIGATION_TOOLS,
+    DEFAULT_PREFLIGHT_PROFILE,
+    DEFAULT_REVIEW_PROFILE,
+)
 from .models import AgentSpec, ModelInfo, _resolve_model_info
 from .pricing import price_tiebreak_signal_for
 from .schema import (
@@ -384,9 +389,7 @@ def derive_roles(
         plan_ref = _apply_ref_overrides(plan_ref, plan_role_overrides)
     plan_role = PlanRoleConfig(
         ref=plan_ref,
-        allowed_tools=plan_role_overrides.get(
-            "allowed_tools", DEFAULT_PREFLIGHT_PROFILE.allowed_tools
-        ),
+        allowed_tools=plan_role_overrides.get("allowed_tools", DEFAULT_INVESTIGATION_TOOLS),
         validate_spec=plan_role_overrides.get("validate_spec", True),
     )
 
