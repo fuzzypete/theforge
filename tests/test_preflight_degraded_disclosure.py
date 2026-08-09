@@ -36,6 +36,7 @@ from theforge.config import (
     DEFAULT_INVESTIGATION_TOOLS,
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
+    PREFLIGHT_ALLOWED_CAPABILITIES,
     PREFLIGHT_FORBIDDEN_TOOLS,
     PREFLIGHT_READ_ONLY_TOOLS,
     resolve_preflight_tools,
@@ -274,19 +275,73 @@ class TestResolvePreflightTools:
             (("Read", "bash"), ("Read",)),
             (("Read", "Glob", "Grep"), ("Read", "Glob", "Grep")),
             (["Read", "Bash"], ("Read",)),
+            # Both vocabularies are recognized as the same capabilities, and
+            # each keeps the spelling config supplied — a CLI profile's
+            # --allowedTools and an API profile's tool schema read different
+            # ones.
+            (("read_file", "bash", "glob", "grep"), ("read_file", "glob", "grep")),
+            # Allow-list, not deny-list: a tool that is merely off-phase is
+            # dropped even though it could never delegate anything.
+            (("Read", "submit_review"), ("Read",)),
+            (("Read", "Write", "Edit"), ("Read",)),
+            # A tool nobody has weighed against this invariant cannot join the
+            # surface by being unrecognized.
+            (("Read", "WebFetch", "SomeFutureTool"), ("Read",)),
         ],
     )
     def test_resolution(self, allowed, expected):
         assert resolve_preflight_tools(allowed) == expected
 
-    def test_result_is_always_non_empty_and_bash_free(self):
-        for allowed in [(), None, ("Bash",), ("bash",), ("Read",), "not-a-sequence", 0]:
+    def test_api_provider_default_set_is_narrowed_to_the_allowed_capabilities(self):
+        """An API-transport preflight profile keeps only read/glob/grep.
+
+        API_PROVIDER_DEFAULT_TOOLS carries submit_review, which a deny-list
+        admitted to a phase that reviews nothing.
+        """
+        from theforge.config import API_PROVIDER_DEFAULT_TOOLS
+
+        assert "submit_review" in API_PROVIDER_DEFAULT_TOOLS
+        assert resolve_preflight_tools(API_PROVIDER_DEFAULT_TOOLS) == (
+            "read_file",
+            "glob",
+            "grep",
+        )
+
+    def test_result_is_always_non_empty_and_within_the_allow_list(self):
+        from theforge.runners.tool_runtime import TOOL_NAME_MAP
+
+        candidates = [
+            (),
+            None,
+            ("Bash",),
+            ("bash",),
+            ("Read",),
+            "not-a-sequence",
+            0,
+            ("submit_review",),
+            ("Write", "Edit", "Bash"),
+            ("anything-at-all",),
+        ]
+        for allowed in candidates:
             resolved = resolve_preflight_tools(allowed)
             assert resolved, f"{allowed!r} resolved to an empty (= unrestricted) allowlist"
             assert not any(t.lower() in PREFLIGHT_FORBIDDEN_TOOLS for t in resolved)
+            canonical = {TOOL_NAME_MAP.get(t, t) for t in resolved}
+            assert canonical <= PREFLIGHT_ALLOWED_CAPABILITIES, (
+                f"{allowed!r} admitted an unreviewed capability: "
+                f"{sorted(canonical - PREFLIGHT_ALLOWED_CAPABILITIES)}"
+            )
 
-    def test_default_profile_is_already_resolved(self):
-        # The default must be a fixed point: resolving it changes nothing.
+    def test_the_forbidden_tool_is_not_on_the_allow_list(self):
+        """The two constants must not contradict each other."""
+        from theforge.runners.tool_runtime import TOOL_NAME_MAP
+
+        forbidden_canonical = {TOOL_NAME_MAP.get(t, t) for t in PREFLIGHT_FORBIDDEN_TOOLS}
+        assert not (forbidden_canonical & PREFLIGHT_ALLOWED_CAPABILITIES)
+
+    def test_defaults_are_already_resolved(self):
+        # Both defaults must be fixed points: resolving them changes nothing.
+        assert resolve_preflight_tools(PREFLIGHT_READ_ONLY_TOOLS) == PREFLIGHT_READ_ONLY_TOOLS
         tools = DEFAULT_PREFLIGHT_PROFILE.allowed_tools
         assert resolve_preflight_tools(tools) == tools
 

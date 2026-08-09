@@ -295,14 +295,21 @@ def _sanitize_preflight_profile(
     resolved = resolve_preflight_tools(allowed)
     if resolved == allowed:
         return profile
-    dropped = [t for t in allowed if str(t).lower() in PREFLIGHT_FORBIDDEN_TOOLS]
-    reason = (
-        f"dropped {', '.join(dropped)}"
-        if dropped
-        else "config named no usable tool, and an empty allowlist is unrestricted"
-    )
+    # Name the delegation-capable drop separately from the rest. "dropped Bash"
+    # is the story's whole subject and an operator should see it as such, not
+    # buried in a list beside a tool that was merely off-phase.
+    dropped = [t for t in allowed if t not in resolved]
+    forbidden = [t for t in dropped if str(t).lower() in PREFLIGHT_FORBIDDEN_TOOLS]
+    others = [t for t in dropped if t not in forbidden]
+    parts = []
+    if forbidden:
+        parts.append(f"dropped {', '.join(forbidden)} (delegation-capable)")
+    if others:
+        parts.append(f"dropped {', '.join(others)} (not on the preflight allow-list)")
+    if not dropped:
+        parts.append("config named no allowed tool, and an empty allowlist is unrestricted")
     log(
-        f"  ⓘ PREFLIGHT tool surface resolved to {', '.join(resolved)}: {reason} "
+        f"  ⓘ PREFLIGHT tool surface resolved to {', '.join(resolved)}: {'; '.join(parts)} "
         "(read-only classifier cannot delegate work it cannot be resumed for)"
     )
     return replace(profile, allowed_tools=resolved)
