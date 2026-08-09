@@ -254,9 +254,20 @@ def kill_escapees(
       This is the only one available to `reap_orphan_agents`, and without it a
       stopped sprint leaves an unreadable escapee running (#2309, cycle 3).
 
-    Every target is identity-checked against the start time recorded for it
-    before being signalled: a pid recycled since it was seen is a different
-    process, and killing it is the mistake #2115 exists to prevent.
+    What counts as identity differs by signal, and saying so precisely matters
+    because the cost of killing the wrong process is unbounded (#2115):
+
+    * A **pid** is not identity — it is recycled. So both observation signals
+      re-check each pid against the start time it was seen with, and drop it if
+      the number now belongs to something else. ``tracker.survivors()`` does
+      this for what it watched; the loop below does it for what a previous
+      process wrote down.
+    * A **lease token** *is* identity. It is minted once per spawn and never
+      reused, so a process carrying it is that spawn's descendant whatever its
+      pid, and there is nothing older to check it against. The start time read
+      for such a pid here is not evidence — it is only what `wait_until_gone`
+      needs in order to tell "it exited" from "the id was reused while we
+      waited".
     """
     targets: dict[int, str] = {}
     if tracker is not None:
@@ -269,6 +280,8 @@ def kill_escapees(
             targets[pid] = fingerprint
     for pid in lease_holders(lease) if lease is not None else []:
         if pid not in targets:
+            # The token match is the identity (see above); this read only gives
+            # the post-kill wait something to compare against.
             info = process_tree.process_info(pid)
             if info is not None:
                 targets[pid] = info.fingerprint

@@ -57,6 +57,7 @@ from ..intake import (
     run_intake_remediation,
 )
 from ..log_util import _log_line
+from ..process_group import ProcessTeardown
 from ..task import BatchMember, TaskStory
 from . import unmeasured as unmeasured_spend_policy
 from .abnormal import (
@@ -1465,10 +1466,16 @@ def _run_baseline_gate(
         # ``run_gate_full``'s own trace (written into that worktree) cannot be the
         # durable record. The full output is taken out by value instead.
         gate_full_output: list[str] = []
+        # The baseline gate runs the project's own gate command — the shape that
+        # leaves test workers behind — and it does so before any story exists to
+        # own the record. Collected here so a leak it caused is visible in the
+        # sprint's baseline record rather than only in the log (#2309).
+        gate_teardowns: list[ProcessTeardown] = []
         decision, error, output_tail, resolved_gate_cmd, gate_exit_code = run_gate_full(
             config,
             baseline_worktree,
             full_output=gate_full_output,
+            process_teardowns=gate_teardowns,
             label=GateLabel(
                 purpose=BASELINE_GATE_PURPOSE,
                 target="merge base",
@@ -1492,6 +1499,7 @@ def _run_baseline_gate(
                 "command": resolved_gate_cmd,
                 "decision": decision,
                 "output_tail": output_tail,
+                "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "message": (
                     "Baseline gate passed on sprint merge base "
                     f"{merge_base_ref} before dev iterations started"
@@ -1562,6 +1570,7 @@ def _run_baseline_gate(
             "command": resolved_gate_cmd,
             "decision": decision,
             "output_tail": output_tail,
+            "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "worktree": preserved_worktree,
             "evidence_path": evidence_path,
             "evidence_unavailable": evidence_unavailable,

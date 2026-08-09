@@ -1087,3 +1087,80 @@ class TestEnumerationFailureIsNotAnEmptyGroup:
 
 def _raise_oserror(*_args: object, **_kwargs: object) -> list[str]:
     raise OSError("simulated /proc read failure")
+
+
+def test_a_leaking_dev_verification_command_records_its_teardown(tmp_path: Path) -> None:
+    """A declared verification command is a build or a test run — the leak shape.
+
+    It runs outside the dev sandbox through the same shell as the gate, so it can
+    leave workers behind in exactly the way #2309 describes. The kill already
+    happened at release; what this pins is that the run's own record says so,
+    rather than the fact living only in a log line.
+    """
+    from theforge.config.types import DevVerificationCommand
+    from theforge.coordinator.dev_verification import DevVerificationBroker
+
+    pidfile = tmp_path / "gc.pid"
+    leaky = (
+        f'{sys.executable} -c "import subprocess,sys,pathlib;'
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid))\""
+    )
+    broker = DevVerificationBroker(
+        workspace_path=tmp_path,
+        commands=(
+            DevVerificationCommand(
+                name="verify-leaky", command=leaky, timeout=60, output_tail_chars=200
+            ),
+        ),
+        iteration=1,
+        max_requests=5,
+    )
+    request = broker.request_dir / "r1.json.tmp"
+    request.write_text(json.dumps({"command": "verify-leaky"}), encoding="utf-8")
+    request.rename(broker.request_dir / "r1.json")
+
+    broker.poll_once()
+
+    gc_pid = int(pidfile.read_text().strip())
+    try:
+        assert _wait_until(lambda: not _pid_alive(gc_pid)), (
+            "a verification command's descendant outlived the command (#2309)"
+        )
+    finally:
+        _reap(gc_pid)
+
+    payloads = broker.records()
+    assert len(payloads) == 1
+    teardown = payloads[0].get("process_teardown")
+    assert teardown is not None, "the forced kill left no trace in the run's own record"
+    assert teardown["action"] == process_group.TEARDOWN_KILLED_SURVIVORS
+    assert teardown["completed"] is True
+
+
+def test_a_verification_command_that_leaves_nothing_records_nothing(tmp_path: Path) -> None:
+    """Absence has to mean something: a clean command carries no teardown key."""
+    from theforge.config.types import DevVerificationCommand
+    from theforge.coordinator.dev_verification import DevVerificationBroker
+
+    broker = DevVerificationBroker(
+        workspace_path=tmp_path,
+        commands=(
+            DevVerificationCommand(
+                name="verify-clean",
+                command=f'{sys.executable} -c "print(1)"',
+                timeout=60,
+                output_tail_chars=200,
+            ),
+        ),
+        iteration=1,
+        max_requests=5,
+    )
+    request = broker.request_dir / "r1.json.tmp"
+    request.write_text(json.dumps({"command": "verify-clean"}), encoding="utf-8")
+    request.rename(broker.request_dir / "r1.json")
+
+    broker.poll_once()
+
+    assert "process_teardown" not in broker.records()[0]

@@ -459,3 +459,61 @@ def test_baseline_pass_proceeds_to_normal_sprint_flow(
 
     assert result.specs_succeeded == 1
     assert mock_run_task.called
+
+
+def test_baseline_gate_records_processes_it_left_running(tmp_path: Path) -> None:
+    """A baseline gate that leaks workers says so in the record it returns (#2309).
+
+    The baseline gate runs the project's own gate command — the shape that leaves
+    test workers behind — before any story exists to own the record. The kill
+    happens at release either way; what this pins is that the sprint's baseline
+    record carries the fact, instead of it living only in a log line nobody
+    correlates with the sprint afterwards.
+    """
+    import sys
+    import time
+
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    pidfile = tmp_path / "leaked.pid"
+    leaky_gate = (
+        f'{sys.executable} -c "import subprocess,sys,pathlib;'
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid))\""
+    )
+    config = replace(config, validation=replace(config.validation, gate_command=leaky_gate))
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    leaked_pid = int(pidfile.read_text().strip())
+    try:
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            try:
+                os.kill(leaked_pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.05)
+        else:
+            raise AssertionError("the baseline gate's descendant outlived the gate run")
+    finally:
+        try:
+            os.kill(leaked_pid, 9)
+        except OSError:
+            pass
+
+    assert baseline["passed"] is True, "the gate itself passed; only its leftovers died"
+    teardowns = baseline["process_teardowns"]
+    assert isinstance(teardowns, list) and len(teardowns) == 1
+    assert teardowns[0]["action"] == "killed_survivors"
+    assert teardowns[0]["completed"] is True
+
+
+def test_a_clean_baseline_gate_records_no_teardown(tmp_path: Path) -> None:
+    """Absence has to mean something: a gate that left nothing records nothing."""
+    config, resolved, _base_commit = _init_repo(tmp_path)
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["process_teardowns"] == []
