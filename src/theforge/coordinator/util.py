@@ -283,12 +283,19 @@ def cap_timeout_to_story_ceiling(
         return int(raw_timeout_seconds), audit
 
     _invocations = max(1, int(max_invocations))
-    cap = int(float(story_ceiling_seconds) * share / _invocations)
+    _dev_share_seconds = int(float(story_ceiling_seconds) * share)
+    cap = int(_dev_share_seconds / _invocations)
     audit["cap_seconds"] = cap
     floor_applied = cap < floor_seconds
     audit["floor_seconds"] = int(floor_seconds)
     audit["floor_applied"] = floor_applied
-    effective_cap = max(cap, int(floor_seconds))
+    audit["dev_share_seconds"] = _dev_share_seconds
+    # The floor may raise a too-small cap, but never past the share of the
+    # ceiling development is entitled to in total. Letting it through would hand
+    # a small-ceiling story an allowance it can only use by having a single
+    # cycle — the reported shape, reintroduced from the other direction.
+    effective_cap = min(max(cap, int(floor_seconds)), _dev_share_seconds)
+    audit["floor_capped_by_share"] = max(cap, int(floor_seconds)) > _dev_share_seconds
     final = min(int(raw_timeout_seconds), effective_cap)
     audit["capped"] = final < int(raw_timeout_seconds)
     audit["final_timeout_seconds"] = final
@@ -306,6 +313,11 @@ def cap_timeout_to_story_ceiling(
     if floor_applied:
         audit["rationale"] += (
             f"; ceiling funds only {cap}s per invocation, below the {int(floor_seconds)}s floor"
+        )
+    if audit["floor_capped_by_share"]:
+        audit["rationale"] += (
+            f"; the floor itself was cut to the {_dev_share_seconds}s development share of the "
+            "ceiling"
         )
     return final, audit
 
@@ -326,23 +338,44 @@ def clamp_timeout_to_remaining(
     costed, work-preserving outcome; one killed by the scheduler's deadline is a
     SIGKILL mid-edit with no measurable cost (#2333).
 
+    ``floor_seconds`` is a minimum *useful* invocation, not a licence to outlive
+    the deadline: a story with 40s of working time left funds a 40s invocation,
+    never a 60s one. A floor that could exceed what remains would reintroduce
+    exactly the shape this function exists to prevent — an allowance whose expiry
+    necessarily falls outside the window enclosing it.
+
     Returns ``(timeout, audit_or_None)`` — ``None`` when nothing was clamped.
     """
     if remaining_seconds is None:
         return int(timeout_seconds), None
-    allowed = int(max(float(floor_seconds), remaining_seconds - tail_reserve_seconds))
+    _remaining = float(remaining_seconds)
+    _after_reserve = max(float(floor_seconds), _remaining - tail_reserve_seconds)
+    _floor_capped = _after_reserve > _remaining
+    allowed = int(max(0.0, min(_after_reserve, _remaining)))
     if allowed >= int(timeout_seconds):
         return int(timeout_seconds), None
-    return allowed, {
+    audit = {
         "requested_timeout_seconds": int(timeout_seconds),
-        "remaining_story_seconds": round(float(remaining_seconds)),
+        "remaining_story_seconds": round(_remaining),
         "tail_reserve_seconds": int(tail_reserve_seconds),
+        "floor_seconds": int(floor_seconds),
+        # True when the story had less working time left than the floor, so the
+        # floor itself was cut down to what remains.
+        "floor_capped_by_remaining": _floor_capped,
+        # True when the deadline is already spent. The invocation cannot fit at
+        # all; it is granted nothing rather than a window the story cannot honour.
+        "no_working_time_left": allowed <= 0,
         "granted_timeout_seconds": allowed,
         "rationale": (
             f"invocation clamped {int(timeout_seconds)}s → {allowed}s: the enclosing story "
-            f"deadline has {round(float(remaining_seconds))}s of working time left"
+            f"deadline has {round(_remaining)}s of working time left"
         ),
     }
+    if _floor_capped:
+        audit["rationale"] += (
+            f"; less than the {int(floor_seconds)}s floor, so the floor was cut to what remains"
+        )
+    return allowed, audit
 
 
 def _wait_bounded(proc: subprocess.Popen[str]) -> bool:

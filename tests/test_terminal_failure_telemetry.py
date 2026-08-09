@@ -100,14 +100,17 @@ def test_terminal_failure_renders_last_known_telemetry(tmp_path: Path) -> None:
         started_at=story_started_at.isoformat(),
         workspace_path=tmp_path / "workspace",
         log_dir=tmp_path / ".forge" / "logs" / "failtel-sprint" / "issue-1326",
-        error="Worker timeout (>60s) during phase DEV",
+        error="Story deadline exhausted (>60s of working time) during phase DEV",
         error_type="TimeoutError",
     )
     timeout_result = CoordinatorResult(
         success=False,
         phase=Phase.ESCALATE,
         state=timeout_state,
-        message="Worker thread timed out after 60s",
+        message=(
+            "Story deadline exhausted after 60s of working time "
+            "— not a review or quality failure"
+        ),
     )
 
     sprint_log_dir = tmp_path / ".forge" / "logs" / "failtel-sprint"

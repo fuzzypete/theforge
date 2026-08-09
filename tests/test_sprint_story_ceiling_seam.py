@@ -116,6 +116,58 @@ def test_a_story_near_its_deadline_is_granted_only_the_time_it_has_left() -> Non
     assert cap_timeout_to_story_ceiling(1800, None, 3)[0] == 1800
 
 
+@pytest.mark.parametrize("remaining", [59.0, 40.0, 1.0])
+def test_the_clamp_floor_never_outlives_the_deadline_it_is_bounded_by(remaining: float) -> None:
+    """A story with less than the floor left funds less than the floor.
+
+    The floor is a minimum *useful* invocation, not a licence to outlive the
+    window: granting a 60s invocation to a story with 40s of working time left
+    reintroduces the reported shape — an allowance whose expiry necessarily falls
+    outside the budget enclosing it.
+    """
+    grant, audit = clamp_timeout_to_remaining(1800, remaining_seconds=remaining)
+
+    assert grant <= remaining
+    assert audit is not None
+    assert audit["floor_capped_by_remaining"] is True
+    assert audit["granted_timeout_seconds"] == grant
+
+
+def test_an_exhausted_deadline_grants_nothing_and_says_so() -> None:
+    """At or past the deadline there is no allowance to give, and the audit says it."""
+    for remaining in (0.0, -120.0):
+        grant, audit = clamp_timeout_to_remaining(1800, remaining_seconds=remaining)
+        assert grant == 0
+        assert audit is not None
+        assert audit["no_working_time_left"] is True
+
+
+def test_the_static_floor_never_exceeds_the_development_share_of_the_ceiling() -> None:
+    """A small ceiling cannot be handed a single-cycle allowance via the floor.
+
+    ``MIN_DEV_INVOCATION_SECONDS`` (900) is larger than the whole development
+    share of a 1000s ceiling; without the share bound the floor would grant 90%
+    of the story to one invocation — the reported 92% shape, from below.
+    """
+    ceiling = 1000.0
+    final, audit = cap_timeout_to_story_ceiling(4950, ceiling, 3)
+
+    assert final <= int(ceiling * DEV_INVOCATION_STORY_SHARE)
+    assert audit["floor_applied"] is True
+    assert audit["floor_capped_by_share"] is True
+    assert audit["dev_share_seconds"] == int(ceiling * DEV_INVOCATION_STORY_SHARE)
+
+
+def test_gate_wait_floor_never_outlives_the_deadline_either() -> None:
+    """Same pattern, same fix: the gate's minimum offer is cut to what remains."""
+    worker_budget.register_worker_budget("story-a", 3600.0, started_at=time.monotonic() - 3590)
+    set_worker_slug("story-a")
+
+    allowed = pending.bounded_gate_wait(3600, "ESCALATE")
+    assert allowed <= 10.0  # ~10s of working time left, floor notwithstanding
+    assert allowed >= 0.0
+
+
 # ── 2. Operator waits are not worker unresponsiveness ────────────────────────
 
 
@@ -152,6 +204,66 @@ def test_operator_wait_time_is_credited_back_to_the_story_deadline() -> None:
     assert worker_budget.waiting_on_operator("story-a")[0] is False
     assert budget.operator_wait_seconds >= 0.2
     assert budget.remaining() > 99.0
+
+
+def test_batch_members_share_one_window_and_one_operator_wait_credit(tmp_path: Path) -> None:
+    """Dispatch seam: a batched group is registered under one shared budget.
+
+    One worker thread serves the whole group under one summed deadline, so a gate
+    entered under the leader's slug must credit the deadline every member is
+    measured against — otherwise the members the leader is waiting on behalf of
+    expire while it waits.
+    """
+    from tests.test_sprint_batch_groups import _batch_sprint_config, _preflight_states_for
+    from tests.test_sprint_resume import _make_coordinator_result
+    from tests.test_sprint_resume import _make_manifest as _make_batch_manifest
+    from tests.test_sprint_resume import _make_spec_file as _make_batch_spec
+
+    _make_batch_spec(tmp_path, "Bug A", "bug-a")
+    _make_batch_spec(tmp_path, "Bug B", "bug-b")
+    manifest_path = _make_batch_manifest(tmp_path, ["bug-a.md", "bug-b.md"])
+    config = _batch_sprint_config(tmp_path)
+    states = _preflight_states_for(
+        "bug-a", "bug-b", files={"bug-a": ["src/a.py"], "bug-b": ["src/b.py"]}
+    )
+
+    leader_result = _make_coordinator_result(success=True, cost=0.50)
+    leader_result.state.workspace_path = tmp_path / "bug-a"
+    leader_result.state.branch_name = "forge/bug-a"
+    member_result = _make_coordinator_result(success=True, cost=0.10)
+    observed: dict = {}
+
+    def _leader_run(*_args, **_kwargs):
+        # Runs on the batch worker thread, mid-dispatch: exactly where a gate
+        # would open. Both members must already be registered.
+        leader = worker_budget.get_worker_budget("bug-a")
+        member = worker_budget.get_worker_budget("bug-b")
+        assert leader is not None and member is not None
+        observed["same_group"] = leader.group == member.group is not None
+        observed["same_window"] = leader.worker_timeout_seconds == member.worker_timeout_seconds
+        observed["window"] = leader.worker_timeout_seconds
+        with worker_budget.operator_wait("ESCALATE", budget=leader):
+            time.sleep(0.05)
+            observed["member_credited_mid_wait"] = worker_budget.operator_wait_credit("bug-b")
+        observed["member_credited_after"] = worker_budget.operator_wait_credit("bug-b")
+        return leader_result
+
+    with (
+        patch("theforge.sprint.runner.run_batch_preflight", side_effect=lambda *a, **k: states),
+        patch("theforge.sprint.runner.run_task", side_effect=_leader_run),
+        patch("theforge.sprint.runner.run_review_only", return_value=member_result),
+    ):
+        result = run_sprint(config, manifest_path)
+
+    assert observed["same_group"] is True
+    assert observed["same_window"] is True
+    # The shared window is the sum of what the members would each have been
+    # allowed on their own, not one member's.
+    assert observed["window"] == 2 * config.sprint.worker_timeout_seconds
+    # The leader's wait credits the member's deadline both during and after.
+    assert observed["member_credited_mid_wait"] >= 0.05
+    assert observed["member_credited_after"] >= 0.05
+    assert result.specs_total == 2
 
 
 def test_pending_wait_does_not_expire_the_story_but_working_time_still_does(

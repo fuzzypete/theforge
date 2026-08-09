@@ -132,6 +132,12 @@ def bounded_gate_wait(timeout_seconds: float, phase_label: str = "") -> float:
     promise: the gate asks for no more than the story can still honour, leaving a
     tail in which the answer can be acted on.
 
+    ``MIN_GATE_WAIT_SECONDS`` is a minimum useful offer, not a licence to outlive
+    the deadline: on a story with less working time left than the minimum, the
+    minimum is cut to what remains. A floor that could exceed the enclosing
+    window would recreate the reported failure — a gate whose expiry necessarily
+    falls outside the worker window that contains it.
+
     A no-op outside a sprint worker, where there is no enclosing budget.
     """
     from . import worker_budget as _wb
@@ -141,7 +147,13 @@ def bounded_gate_wait(timeout_seconds: float, phase_label: str = "") -> float:
         return timeout_seconds
     remaining = budget.remaining()
     allowed = float(
-        max(MIN_GATE_WAIT_SECONDS, int(remaining - GATE_DECISION_TAIL_RESERVE_SECONDS))
+        max(
+            0.0,
+            min(
+                max(MIN_GATE_WAIT_SECONDS, int(remaining - GATE_DECISION_TAIL_RESERVE_SECONDS)),
+                remaining,
+            ),
+        )
     )
     if allowed >= timeout_seconds:
         return timeout_seconds

@@ -1150,6 +1150,30 @@ def _run_dev_phase(
     if _clamp_audit is not None:
         state.dev_timeout_clamps.append(_clamp_audit)
         _log(f"  {_clamp_audit['rationale']}")
+    if _dev_timeout <= 0:
+        # The story's deadline is already spent. Launching an agent here would
+        # buy a process, a prompt, and a model call that cannot outlive the next
+        # scheduler poll — and the invocation would be SIGKILLed mid-work with no
+        # measurable cost, which is the failure shape this story is about. Refuse
+        # instead, and say so in terms of the deadline rather than the work.
+        state.phase = Phase.ESCALATE
+        state.error = (
+            "Story deadline exhausted before this development invocation could start "
+            f"(iteration {state.dev_iteration}); refusing to spend on an invocation the "
+            "enclosing worker window cannot contain"
+        )
+        state.error_type = "TimeoutError"
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="DEV", outcome="escalate")
+            logger._safe_emit("escalate", reason=state.error, phase="DEV")
+        _escalate_notify(task, state, notify, config)
+        return CoordinatorResult(
+            success=False,
+            phase=state.phase,
+            state=state,
+            message=state.error,
+        )
     if _dev_override_active:
         _log(f"  Dev timeout: {_dev_timeout}s ({state.preflight_complexity} complexity)")
     else:
