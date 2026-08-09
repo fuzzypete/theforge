@@ -31,6 +31,10 @@ _FAKE_BIN = Path(__file__).parent / "fake_bin"
 _UNSET = object()
 
 
+def _raise_oserror(*_args: object, **_kwargs: object) -> list[str]:
+    raise OSError("simulated /proc read failure")
+
+
 def _pid_alive(pid: int) -> bool:
     try:
         os.kill(pid, 0)
@@ -316,14 +320,29 @@ class TestReapVerifiesGroupIdentity(_SidecarWriter):
         case `release_group_record` keeps the sidecar for. The survivors it
         records are what lets the later sweep prove the leaderless group it finds
         is this one.
+
+        The stand-in sandbox denies signalling the grandchild by pid as well as
+        by group, which is what "teardown reached only the direct child" means. A
+        host that permits the per-pid kill no longer reaches the reaper at all:
+        the lease sweep ends the survivor at release (covered separately in
+        test_process_teardown_lifecycle.py).
         """
+        pidfile = tmp_path / "gc.pid"
+
+        def _kill_only_the_direct_child(pid: int) -> bool:
+            try:
+                grandchild = int(pidfile.read_text().strip())
+            except (OSError, ValueError):
+                grandchild = -1
+            if pid == grandchild:
+                return False
+            os.kill(pid, signal.SIGKILL)
+            return True
+
         monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
         monkeypatch.setattr(process_group, "_killpg_for", lambda _pid: False)
-        monkeypatch.setattr(
-            process_group, "_kill_pid", lambda pid: os.kill(pid, signal.SIGKILL) is None
-        )
+        monkeypatch.setattr(process_group, "_kill_pid", _kill_only_the_direct_child)
 
-        pidfile = tmp_path / "gc.pid"
         script = (
             "import subprocess,sys,pathlib,time;"
             "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
@@ -406,6 +425,173 @@ class TestGroupMembers:
     def test_unsafe_pgid_enumerates_nothing(self) -> None:
         for bogus in (0, 1, -1, None, "4321"):
             assert process_group.group_members(bogus) == {}  # type: ignore[arg-type]
+
+    def test_a_zombie_is_not_a_member(self) -> None:
+        """An exited process is gone to every reader, or teardown disagrees itself.
+
+        Both platforms' group enumerations list a process that has exited but not
+        been reaped, while ``process_tree`` — the reader every descendant check
+        settles on — reports it gone. Left unreconciled, the same corpse counts
+        as a survivor in one place and as nothing in another, and a kill that
+        worked is recorded as a leak that outlived the run (#2309).
+        """
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(proc.pid)
+        try:
+            assert proc.pid in process_group.group_members(pgid)
+            os.kill(proc.pid, signal.SIGKILL)
+            # Deliberately not waited: this process is now the group's only
+            # member and has exited, which is precisely the state pid 1 sees for
+            # every orphan it inherits.
+            assert _wait_until(lambda: process_group.group_members(pgid) == {}), (
+                "a killed-but-unreaped member still counts as a live group member"
+            )
+            members, enumerated = process_group.group_members_checked(pgid)
+            assert (members, enumerated) == ({}, True)
+        finally:
+            proc.wait(timeout=5)
+
+    def test_a_leader_that_died_unreaped_still_proves_the_pgid_is_not_recycled(self) -> None:
+        """Membership and identity ask different questions of the same corpse.
+
+        A process that has exited is not a *member* — nothing is running. But it
+        still occupies its pid, so its start time remains proof the pgid has not
+        been recycled, and that proof is what lets a sweep verify and then kill a
+        group whose direct child died unreaped while its descendants ran on. An
+        earlier attempt at this cleanup excluded zombies from the shared stat
+        parser, which took the proof away and would have left those descendants
+        running (#2309).
+        """
+        script = (
+            "import subprocess,sys,time;"
+            "subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+            "time.sleep(30)"
+        )
+        leader = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", script],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(leader.pid)
+        try:
+            assert _wait_until(lambda: len(process_group.group_members(pgid)) >= 2)
+            recorded = process_group._leader_fingerprint(pgid)
+            os.kill(leader.pid, signal.SIGKILL)
+            assert _wait_until(lambda: leader.pid not in process_group.group_members(pgid)), (
+                "the exited leader still counts as a running member"
+            )
+            assert process_group._leader_fingerprint(pgid) == recorded, (
+                "the pgid lost its identity proof, so a sweep would decline the "
+                "record and leave the group's live descendants running"
+            )
+            assert process_group.group_members(pgid), "its descendant is still running"
+        finally:
+            process_group.kill_agent_group(pgid)
+            leader.wait(timeout=5)
+
+    def test_an_unreadable_group_is_never_reported_as_an_empty_one(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A read that failed learned nothing, and must not read as "no members".
+
+        Membership and liveness are answered by one read for exactly this reason.
+        An earlier version refined the platform enumeration with a second,
+        independently fallible per-process reader while keeping the first read's
+        confidence flag, so a live group whose members all failed that second
+        read reported itself empty *and* fully enumerated — and release then
+        dropped its reaper sidecar without ever signalling the survivors (#2309).
+        """
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(proc.pid)
+        try:
+            assert proc.pid in process_group.group_members(pgid)
+
+            # The descendant reader failing must not change membership at all —
+            # it is no longer consulted for it.
+            monkeypatch.setattr(process_group.process_tree, "process_info", lambda _pid: None)
+            members, enumerated = process_group.group_members_checked(pgid)
+            assert proc.pid in members and enumerated is True
+
+            # The authoritative read failing must say so rather than say "empty".
+            if sys.platform == "darwin":
+                monkeypatch.setattr(process_group, "_sysctl_bytes", lambda _mib: None)
+            else:
+                monkeypatch.setattr(process_group.os, "listdir", _raise_oserror, raising=False)
+            assert process_group.group_members_checked(pgid) == ({}, False)
+        finally:
+            process_group.kill_agent_group(pgid)
+            proc.wait(timeout=5)
+
+    def test_a_live_group_that_cannot_be_read_keeps_its_sidecar(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The consequence that matters: release must not drop the only handle.
+
+        Driven through ``release_group_record`` rather than the enumeration alone,
+        because the defect was not that the read failed — reads fail — but that a
+        failed read reached the release path disguised as a settled group.
+        """
+        monkeypatch.setenv("FORGE_PROJECT_ROOT", str(tmp_path))
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(proc.pid)
+        try:
+            process_group.register_agent_group(pgid, sandbox_dir=str(tmp_path))
+            monkeypatch.setattr(process_group, "group_members_checked", lambda _p: ({}, False))
+            monkeypatch.setattr(process_group, "kill_agent_group", lambda _p: False)
+
+            teardown = process_group.release_group_record(pgid, group_killed=True)
+
+            assert teardown is not None, "a group that could not be read is not 'no teardown'"
+            assert teardown.action == process_group.TEARDOWN_RETAINED_FOR_REAPER
+            assert teardown.completed is False
+            assert list((tmp_path / ".forge" / "runs" / "agents").glob("*.json")), (
+                "the reaper's only handle on the survivors was dropped"
+            )
+            assert proc.poll() is None
+        finally:
+            # Signalled directly: ``kill_agent_group`` is stubbed for this test
+            # and monkeypatch does not unwind until after this block.
+            os.kill(proc.pid, signal.SIGKILL)
+            proc.wait(timeout=5)
+
+    def test_a_group_holding_only_a_zombie_settles_immediately(self) -> None:
+        """The liveness wait must not sit out its grace period for a corpse.
+
+        ``killpg(pgid, 0)`` succeeds while an unreaped member remains, so a
+        teardown that worked would otherwise be waited out in full and then
+        reported as survivors that outlived it.
+        """
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(proc.pid)
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+            assert _wait_until(lambda: process_group.group_members(pgid) == {})
+            started = time.monotonic()
+            assert process_group._await_empty_group(pgid) is True
+            assert time.monotonic() - started < process_group.KILL_GRACE_SECONDS / 2
+        finally:
+            proc.wait(timeout=5)
 
 
 class TestListOrphanAgents:

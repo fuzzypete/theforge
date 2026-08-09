@@ -770,6 +770,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             "gate_runs": state.gate_runs,
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "gate_debug": _serialize_gate_debug_metrics(state),
+            # Gate commands that left processes running and had them killed at
+            # teardown (#2309). Empty on the ordinary run where the gate's tree
+            # ended with it; an entry means this run leaked work onto the host
+            # and something had to end it — the one fact a leaked process
+            # otherwise leaves no trace of anywhere in the record.
+            "gate_process_teardowns": list(state.gate_process_teardowns),
             "gate_diagnostic": _serialize_gate_diagnostic_metrics(state),
             "review_loop": _serialize_review_iteration_metrics(state),
             "usage_summary": _build_iteration_usage_summary(state, config),

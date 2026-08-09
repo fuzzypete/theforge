@@ -42,19 +42,100 @@ Codex (FAKE_CODEX_MODE):
                   (mirroring npm→node→codex), write its PID to
                   $FAKE_GRANDCHILD_PID_FILE, then hang past the runner timeout.
                   Proves the group kill reaches past `npm exec` to the leaf.
+  grandchild_success
+                — spawn the same grandchild but then succeed normally and exit 0,
+                  so only a teardown that checks the group on a CLEAN exit reaps
+                  it (#2309).
+  escapee_success
+                — like grandchild_success, but the grandchild starts its own
+                  session (setsid) and so leaves the process group entirely, so
+                  only descendant observation or the lease token reaches it (#2309).
+  unreadable_escapee_success
+                — the hardest shape: a SIP-protected platform binary given an
+                  EMPTY environment and its own session, so neither the group nor
+                  any token can find it — only descendant observation (#2309).
 
 Gemini (FAKE_GEMINI_MODE):
   happy  — print {"response": "Task complete."} to stdout, exit 0 (default)
+  grandchild_success
+         — spawn a long-sleeping grandchild in the same process group, record its
+           PID in $FAKE_GRANDCHILD_PID_FILE, then print the happy JSON and exit 0
+  escapee_success
+         — same, but the grandchild starts its own session and leaves the group
+  unreadable_escapee_success
+         — a SIP-protected binary with an empty environment in its own session
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
 
 args = sys.argv[1:]
+
+
+def _spawn_grandchild(detach_io: bool = False, own_session: bool = False) -> None:
+    """Spawn a sleeping grandchild in this process group and record its PID.
+
+    ``detach_io`` closes the grandchild off from our stdout/stderr, which the
+    clean-exit modes need: a grandchild holding the capture pipe keeps the
+    runner's ``communicate()`` blocked until the timeout, which would turn a
+    clean-exit test into a timeout test and prove nothing about #2309.
+
+    ``own_session`` makes it leave the process group (setsid), the way a test
+    runner or a daemonising helper does — the escape a pgid cannot describe.
+    """
+    io = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if detach_io else {}
+    grandchild = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=own_session,
+        **io,
+    )
+    pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
+    if pidfile:
+        with open(pidfile, "w") as fh:
+            fh.write(str(grandchild.pid))
+    if own_session:
+        # An escapee is only findable by the two mechanisms that survive setsid,
+        # and one of them (descendant observation) needs the CLI to still be
+        # alive when it samples. Keeping working for a moment is what a dev agent
+        # that kicked off a test run does; spawning and exiting in the same
+        # millisecond would test a race the OS itself cannot close on macOS.
+        time.sleep(0.4)
+
+
+def _spawn_unreadable_escapee() -> None:
+    """Spawn a descendant that no environment token can ever find.
+
+    Two hardenings at once, both of them ordinary rather than adversarial:
+    ``/bin/sleep`` is a SIP-protected platform binary, whose argv/environ macOS
+    refuses to hand out at all, and it is given an empty environment so there is
+    no inherited token to read even where reading is permitted. It then leaves
+    the process group with ``setsid``.
+
+    That leaves exactly one thing still true about it: it had a parent. Only
+    descendant *observation* can find it (#2309, cycle 2).
+    """
+    sleeper = shutil.which("sleep") or "/bin/sleep"
+    grandchild = subprocess.Popen(
+        [sleeper, "30"],
+        env={},
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
+    if pidfile:
+        with open(pidfile, "w") as fh:
+            fh.write(str(grandchild.pid))
+    # Keep working for a moment, the way an agent that kicked off a test run
+    # does. The tracker samples every 50ms; a CLI that spawned and exited in the
+    # same millisecond would be testing a race the OS itself cannot close on
+    # macOS, not the leak this covers.
+    time.sleep(0.4)
 
 
 def _find_flag(flag: str) -> str | None:
@@ -163,12 +244,28 @@ if any(a.startswith("@openai/codex") for a in args):
         print("tokens used")
         print("11,374")
         sys.exit(0)
+    if mode == "unreadable_escapee_success":
+        _spawn_unreadable_escapee()
+        if output_file:
+            with open(output_file, "w") as fh:
+                fh.write("Task complete.\n")
+        else:
+            print("Task complete.")
+        sys.exit(0)
+    if mode in ("grandchild_success", "escapee_success"):
+        # Succeed normally while leaving live work behind — only a teardown that
+        # checks the group on a CLEAN exit reaps the grandchild, and only the
+        # lease reaches it once it has left the group (#2309).
+        _spawn_grandchild(detach_io=True, own_session=mode == "escapee_success")
+        output_text = "Task complete."
+        if output_file:
+            with open(output_file, "w") as fh:
+                fh.write(output_text + "\n")
+        else:
+            print(output_text)
+        sys.exit(0)
     if mode == "grandchild_hang":
-        grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-        pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
-        if pidfile:
-            with open(pidfile, "w") as fh:
-                fh.write(str(grandchild.pid))
+        _spawn_grandchild()
         # Hang past the runner timeout so the group-kill path fires.
         deadline = time.monotonic() + 30
         while time.monotonic() < deadline:
@@ -179,6 +276,14 @@ if any(a.startswith("@openai/codex") for a in args):
 
 elif "@google/gemini-cli" in args:
     mode = os.environ.get("FAKE_GEMINI_MODE", "happy")
+    if mode == "unreadable_escapee_success":
+        _spawn_unreadable_escapee()
+        print(json.dumps({"response": "Task complete."}))
+        sys.exit(0)
+    if mode in ("grandchild_success", "escapee_success"):
+        _spawn_grandchild(detach_io=True, own_session=mode == "escapee_success")
+        print(json.dumps({"response": "Task complete."}))
+        sys.exit(0)
     if mode == "happy":
         print(json.dumps({"response": "Task complete."}))
         sys.exit(0)

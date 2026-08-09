@@ -826,6 +826,17 @@ class TestDevZeroChangeGuard:
         assert result.phase == Phase.DONE
 
 
+def _sigkill_calls(mock_killpg: mock.Mock) -> list:
+    """The ``killpg`` calls that actually signalled, dropping signal-0 probes.
+
+    Release now *asks* whether the group is still alive before dropping its
+    record — a ``killpg(pgid, 0)`` probe — because a shell exiting is not proof
+    its test workers did (#2309). Patching ``os.killpg`` intercepts that probe
+    too, so these assertions filter on the signal rather than the call count.
+    """
+    return [c for c in mock_killpg.call_args_list if c.args[1] == signal.SIGKILL]
+
+
 def test_run_shell_kills_process_group_on_timeout(tmp_path):
     proc = mock.Mock()
     proc.pid = 4321
@@ -843,7 +854,7 @@ def test_run_shell_kills_process_group_on_timeout(tmp_path):
     mock_popen.assert_called_once()
     assert mock_popen.call_args.kwargs["start_new_session"] is True
     mock_getpgid.assert_called_once_with(4321)
-    mock_killpg.assert_called_once_with(9876, signal.SIGKILL)
+    assert _sigkill_calls(mock_killpg) == [mock.call(9876, signal.SIGKILL)]
     # Bounded, not bare: an unbounded wait here lasts for the command's whole
     # natural lifetime whenever the kill above did not land (#1959).
     proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
@@ -863,7 +874,7 @@ def test_run_shell_timeout_ignores_missing_process_group(tmp_path):
 
     assert ok is False
     assert output == "TIMEOUT after 1s: pytest -n auto --dist worksteal"
-    mock_killpg.assert_not_called()
+    assert _sigkill_calls(mock_killpg) == []
     # Bounded, not bare: an unbounded wait here lasts for the command's whole
     # natural lifetime whenever the kill above did not land (#1959).
     proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
@@ -886,7 +897,7 @@ def test_run_shell_timeout_refuses_broadcast_pgid(tmp_path):
 
     assert ok is False
     mock_getpgid.assert_called_once_with(4321)
-    mock_killpg.assert_not_called()
+    assert _sigkill_calls(mock_killpg) == []
     proc.terminate.assert_called_once_with()
     # Bounded, not bare: an unbounded wait here lasts for the command's whole
     # natural lifetime whenever the kill above did not land (#1959).
@@ -907,7 +918,7 @@ def test_run_shell_kills_process_group_on_keyboard_interrupt(tmp_path):
             _cu._run_shell("pytest -n auto --dist worksteal", tmp_path, timeout=1)
 
     mock_getpgid.assert_called_once_with(4321)
-    mock_killpg.assert_called_once_with(9876, signal.SIGKILL)
+    assert _sigkill_calls(mock_killpg) == [mock.call(9876, signal.SIGKILL)]
     # Bounded, not bare: an unbounded wait here lasts for the command's whole
     # natural lifetime whenever the kill above did not land (#1959).
     proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)
@@ -926,7 +937,7 @@ def test_run_shell_keyboard_interrupt_ignores_missing_process_group(tmp_path):
         with pytest.raises(KeyboardInterrupt):
             _cu._run_shell("pytest -n auto --dist worksteal", tmp_path, timeout=1)
 
-    mock_killpg.assert_not_called()
+    assert _sigkill_calls(mock_killpg) == []
     # Bounded, not bare: an unbounded wait here lasts for the command's whole
     # natural lifetime whenever the kill above did not land (#1959).
     proc.wait.assert_called_once_with(timeout=_cu.KILL_GRACE_SECONDS)

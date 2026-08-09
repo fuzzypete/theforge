@@ -28,11 +28,30 @@ Controlled via FAKE_CLAUDE_MODE environment variable:
               — like grandchild_hang but emit one non-result line first so the
                 runner's stream loop runs at least once; lets a test raise an
                 exception mid-stream to exercise the except-BaseException kill.
+  grandchild_success
+              — spawn a long-sleeping grandchild (same process group), write its
+                PID to $FAKE_GRANDCHILD_PID_FILE, emit a normal result event and
+                exit 0. The agent's own run succeeded; what it started did not
+                stop. Nothing here is a timeout or an error, so only a teardown
+                that checks the group on a CLEAN exit reaps the grandchild
+                (#2309).
+  escapee_success
+              — like grandchild_success, but the grandchild starts its OWN
+                session (start_new_session, i.e. setsid), so it leaves the
+                spawned process group entirely. No pgid-based teardown can see
+                it; only descendant observation or the inherited lease token
+                can (#2309).
+  unreadable_escapee_success
+              — the hardest shape: a SIP-protected platform binary (/bin/sleep)
+                given an EMPTY environment and its own session, then a normal
+                successful exit. Not in the group, and carrying no readable
+                token — so only descendant observation can find it (#2309).
 """
 from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -99,11 +118,7 @@ def _spawn_grandchild_and_hang(*, stream_first: bool = False) -> None:
     inject an exception mid-stream to exercise the except-BaseException path).
     """
     _read_user_msg()
-    grandchild = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
-    pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
-    if pidfile:
-        with open(pidfile, "w") as fh:
-            fh.write(str(grandchild.pid))
+    _spawn_grandchild()
     if stream_first:
         _emit({"type": "assistant", "message": {"role": "assistant", "content": []}})
         sys.stdout.flush()
@@ -114,7 +129,89 @@ def _spawn_grandchild_and_hang(*, stream_first: bool = False) -> None:
     sys.exit(0)
 
 
+def _spawn_grandchild(detach_io: bool = False, own_session: bool = False) -> None:
+    """Spawn a sleeping grandchild in this process group and record its PID.
+
+    ``detach_io`` closes the grandchild off from our stdout/stderr, which the
+    clean-exit mode needs: a grandchild holding the runner's capture pipe keeps
+    it reading past the CLI's own exit, which would turn a clean-exit test into
+    a timeout test and prove nothing about #2309.
+
+    ``own_session`` makes it leave the process group (setsid), the way a test
+    runner or a daemonising helper does — the escape a pgid cannot describe.
+    """
+    io = {"stdout": subprocess.DEVNULL, "stderr": subprocess.DEVNULL} if detach_io else {}
+    grandchild = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=own_session,
+        **io,
+    )
+    pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
+    if pidfile:
+        with open(pidfile, "w") as fh:
+            fh.write(str(grandchild.pid))
+    if own_session:
+        # An escapee is only findable by the two mechanisms that survive setsid,
+        # and one of them (descendant observation) needs the CLI to still be
+        # alive when it samples. Keeping working for a moment is what a dev agent
+        # that kicked off a test run does; spawning and exiting in the same
+        # millisecond would test a race the OS itself cannot close on macOS.
+        time.sleep(0.4)
+
+
+def _spawn_unreadable_escapee() -> None:
+    """Spawn a descendant that no environment token can ever find.
+
+    Two hardenings at once, both of them ordinary rather than adversarial:
+    ``/bin/sleep`` is a SIP-protected platform binary, whose argv/environ macOS
+    refuses to hand out at all, and it is given an empty environment so there is
+    no inherited token to read even where reading is permitted. It then leaves
+    the process group with ``setsid``.
+
+    That leaves exactly one thing still true about it: it had a parent. Only
+    descendant *observation* can find it (#2309, cycle 2).
+    """
+    sleeper = shutil.which("sleep") or "/bin/sleep"
+    grandchild = subprocess.Popen(
+        [sleeper, "30"],
+        env={},
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    pidfile = os.environ.get("FAKE_GRANDCHILD_PID_FILE")
+    if pidfile:
+        with open(pidfile, "w") as fh:
+            fh.write(str(grandchild.pid))
+    # Keep working for a moment, the way an agent that kicked off a test run
+    # does. The tracker samples every 50ms; a CLI that spawned and exited in the
+    # same millisecond would be testing a race the OS itself cannot close on
+    # macOS, not the leak this covers.
+    time.sleep(0.4)
+
+
 def main() -> None:
+    if MODE == "unreadable_escapee_success":
+        _read_user_msg()
+        _spawn_unreadable_escapee()
+        _emit(_RESULT_EVENT)
+        sys.exit(0)
+
+    if MODE == "escapee_success":
+        # Succeed normally, having started work that is no longer in our group.
+        _read_user_msg()
+        _spawn_grandchild(detach_io=True, own_session=True)
+        _emit(_RESULT_EVENT)
+        sys.exit(0)
+
+    if MODE == "grandchild_success":
+        # Succeed normally while leaving live work behind — the shape of a dev
+        # agent that ran `pytest -n auto` and returned before the workers did.
+        _read_user_msg()
+        _spawn_grandchild(detach_io=True)
+        _emit(_RESULT_EVENT)
+        sys.exit(0)
+
     if MODE == "grandchild_hang":
         _spawn_grandchild_and_hang()
 

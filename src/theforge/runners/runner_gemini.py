@@ -7,10 +7,11 @@ as a subprocess and returns an AgentResult.
 from __future__ import annotations
 
 import json
-import subprocess
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
+from theforge import process_group
 from theforge.agent_types import AgentResult
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
@@ -154,25 +155,33 @@ def _run_gemini(
 
     label = profile.name or profile.identity_label
     _gemini_env = build_workspace_env(working_dir, extra=secrets)
+    # Out-parameter carrying a forced teardown back from the spawn (#2309); see
+    # run_in_process_group. Populated only when the group outlived the CLI.
+    _teardowns: list[process_group.ProcessTeardown] = []
     outcome, elapsed = _run_with_heartbeat(
-        run_fn=lambda: subprocess.run(
+        # Group-isolated spawn, same as codex: a bare subprocess.run leaves the
+        # npm→node→gemini tree (and anything the agent started) alive on timeout,
+        # and its clean-exit path never checks whether the group emptied at all.
+        run_fn=lambda: process_group.run_in_process_group(
             cmd,
             capture_output=True,
             text=True,
             cwd=str(working_dir),
             timeout=profile.timeout_seconds,
             env=_gemini_env,
+            teardown_out=_teardowns,
         ),
         label=label,
         profile=profile,
         cli_name="gemini",
         quiet=quiet,
     )
+    _teardown = _teardowns[0] if _teardowns else None
 
     if outcome.exception:
         result = _handle_exception(outcome.exception, profile=profile, cli_name="gemini")
         if result:
-            return result
+            return replace(result, process_teardown=_teardown)
         raise outcome.exception
 
     proc = outcome.proc
@@ -201,6 +210,7 @@ def _run_gemini(
             raw={},
             profile_name=profile.name,
             dev_handoff=_try_parse_handoff(_nojson_output),
+            process_teardown=_teardown,
         )
 
     # "latest" is only safe for sequential single-reviewer runs; parallel pools
@@ -216,4 +226,5 @@ def _run_gemini(
         raw=result_json,
         profile_name=profile.name,
         dev_handoff=_try_parse_handoff(_gemini_output),
+        process_teardown=_teardown,
     )

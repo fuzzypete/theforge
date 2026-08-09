@@ -43,6 +43,7 @@ from theforge.artifacts import (
     ensure_parent_dir,
 )
 from theforge.config import ForgeConfig
+from theforge.process_group import ProcessTeardown
 from theforge.task import (
     TaskStory,
     load_story,
@@ -206,6 +207,8 @@ from .run_setup import (  # noqa: E402,I001
     _setup_resume_entry,
 )
 from .validate_phase import (  # noqa: E402
+    SHELL_WORKSPACE_SETUP,
+    _record_gate_teardowns,
     _run_validate_phase,
     _ValidateOutcome,
     record_validate_block,
@@ -1116,9 +1119,11 @@ def run_task(
                 message=_landing_block,
             )
 
+        _setup_teardowns: list[ProcessTeardown] = []
         workspace_path, branch_name, err = _create_workspace(
             config,
             task,
+            teardown_out=_setup_teardowns,
             no_pull=no_pull,
             lands_locally=(
                 base_lands_locally
@@ -1127,6 +1132,10 @@ def run_task(
             ),
             story_content=story_content,
         )
+        # Recorded whether or not setup succeeded: a command that left workers
+        # behind did so either way, and a failed setup is the more likely of the
+        # two to have (#2309).
+        _record_gate_teardowns(state, _setup_teardowns, source=SHELL_WORKSPACE_SETUP)
         if err:
             state.phase = Phase.ESCALATE
             state.error = err
