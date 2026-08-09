@@ -8,7 +8,12 @@ from pathlib import Path
 
 import yaml
 
-from .audit import _load_accumulated_stories
+from .audit import (
+    PREFLIGHT_DEGRADED_ROW_KEYS,
+    _load_accumulated_stories,
+    preflight_degraded_row_fields_from_audit,
+    preflight_degraded_row_fields_from_row,
+)
 
 
 @dataclass
@@ -1101,32 +1106,18 @@ def preflight_degraded_state(story: dict, audit_data: dict | None) -> dict | Non
     The summary row carries flat ``preflight_*`` keys (written since #2346); the
     per-story audit carries a nested ``preflight`` block with the same facts
     under shorter names. Summaries written before #2346 have only the latter, so
-    both are read and folded into one shape. Returns ``None`` when preflight was
-    not degraded — the caller renders nothing for a healthy run.
+    both are read — through the one key map the writers use, so the two
+    spellings cannot drift — and folded into one shape. Returns ``None`` when
+    preflight was not degraded: the caller renders nothing for a healthy run.
     """
-    if not isinstance(story, dict):
-        story = {}
-    degraded = bool(story.get("preflight_degraded", False))
-    reason = _nonempty_str(story.get("preflight_degraded_reason"))
-    action = _nonempty_str(story.get("preflight_failure_action"))
-    signals = [str(s) for s in (story.get("preflight_risk_signals") or [])]
-
-    if not degraded:
+    row = preflight_degraded_row_fields_from_row(story if isinstance(story, dict) else {})
+    if not row["preflight_degraded"]:
         block = (audit_data or {}).get("preflight")
-        if isinstance(block, dict) and block.get("degraded"):
-            degraded = True
-            reason = reason or _nonempty_str(block.get("degraded_reason"))
-            action = action or _nonempty_str(block.get("failure_action"))
-            if not signals:
-                signals = [str(s) for s in (block.get("risk_signals") or [])]
+        row = preflight_degraded_row_fields_from_audit(block)
 
-    if not degraded:
+    if not row["preflight_degraded"]:
         return None
-    return {
-        "degraded_reason": reason,
-        "failure_action": action,
-        "risk_signals": signals,
-    }
+    return {audit_key: row[row_key] for row_key, audit_key in PREFLIGHT_DEGRADED_ROW_KEYS.items()}
 
 
 def _preflight_degraded_detail(state: dict | None) -> str:

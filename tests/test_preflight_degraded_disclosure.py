@@ -169,6 +169,134 @@ class TestPreflightToolSurface:
             assert "bash" not in tools
             assert tools == ["read", "glob", "grep"]
 
+    def test_bash_only_override_yields_an_explicit_read_only_allowlist(self, tmp_path):
+        """Filtering every tool away must not produce an *empty* allowlist.
+
+        ``runner_claude.build_argv`` omits ``--allowedTools`` when the tuple is
+        empty, which hands the CLI its unrestricted default — Bash included.
+        A profile whose only tool is forbidden is therefore restored to the
+        read-only preflight set, and the assertion runs through the real argv
+        builder so the guarantee is checked where it is actually enforced.
+        """
+        from theforge.runners.runner_claude import build_argv
+
+        config = _make_config(tmp_path)
+        bash_only = ModelProfile(
+            name="preflight",
+            cli="claude",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Bash",),
+            phase="preflight",
+        )
+        config = config.__class__(**{**config.__dict__, "preflight_profile": bash_only})
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        with (
+            patch_gate_shell() as mock_shell,
+            patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.plan_flow.run_agent") as mock_plan_agent,
+            patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+        ):
+            mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+            mock_preflight.return_value = _make_agent_result(
+                success=True, output=PREFLIGHT_PROCEED, cost_usd=0.11
+            )
+            mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+            mock_plan_agent.side_effect = mock_dev
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+            ]
+
+            run_task(config, task)
+
+        invoked = mock_preflight.call_args_list[0].kwargs["profile"]
+        assert invoked.allowed_tools == ("Read", "Glob", "Grep")
+
+        argv = build_argv(profile=invoked)
+        assert "--allowedTools" in argv
+        granted = argv[argv.index("--allowedTools") + 1]
+        assert "bash" not in granted.lower()
+        assert granted == "Read Glob Grep"
+
+    def test_empty_allowlist_would_be_unrestricted_in_argv(self):
+        """Pins the runner semantics the guard above exists to defeat."""
+        from theforge.runners.runner_claude import build_argv
+
+        empty = ModelProfile(
+            name="preflight",
+            cli="claude",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=(),
+            phase="preflight",
+        )
+        assert "--allowedTools" not in build_argv(profile=empty)
+
+
+class TestAdjacentInvestigationFlows:
+    """Preflight's narrowing must not narrow the flows that reuse its profile.
+
+    ``diagnose`` and the escalation advisor both build on
+    ``config.preflight_profile``. They are separate jobs with their own
+    invocation shape, and neither should silently lose a tool because preflight
+    was locked down (#2346).
+    """
+
+    def test_diagnose_profile_keeps_bash(self, tmp_path):
+        from theforge.coordinator.diagnose_flow import _build_diagnose_profile
+
+        config = _make_config(tmp_path)
+        profile = _build_diagnose_profile(config)
+        assert "Bash" in profile.allowed_tools
+        assert profile.name == "diagnose"
+
+    def test_diagnose_profile_keeps_bash_even_when_preflight_is_narrowed(self, tmp_path):
+        from theforge.coordinator.diagnose_flow import _build_diagnose_profile
+
+        config = _make_config(tmp_path)
+        narrowed = ModelProfile(
+            name="preflight",
+            cli="claude",
+            model="sonnet",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Read",),
+            phase="preflight",
+        )
+        config = config.__class__(**{**config.__dict__, "preflight_profile": narrowed})
+        assert "Bash" in _build_diagnose_profile(config).allowed_tools
+
+    def test_advisor_invocation_keeps_bash(self, tmp_path, monkeypatch):
+        """The profile the advisor actually hands to run_agent still holds Bash."""
+        from theforge.coordinator import escalation_advisor_flow as flow
+        from theforge.coordinator.state import CoordinatorState, Phase
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        state.phase = Phase.ESCALATE
+        state.story_content = "Body.\n\n## Acceptance criteria\n\n- do the thing\n"
+        state.error = "Review requested changes after 5 cycles."
+
+        captured = {}
+
+        def fake_run_agent(*, prompt, profile, working_dir, secrets):
+            captured["profile"] = profile
+            return _make_agent_result(success=True, output="", profile_name="advisor")
+
+        monkeypatch.setattr(flow, "run_agent", fake_run_agent)
+        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
+
+        flow.run_escalation_advisor(state, config, task, tmp_path / "ws")
+
+        assert "Bash" in captured["profile"].allowed_tools
+
 
 # ── Coordinator seam: degraded state reaches routing and the phase record ─────
 
@@ -285,6 +413,48 @@ class TestSummaryRowFields:
             "preflight_degraded_reason": "agent_failed_with_risk_signals",
             "preflight_failure_action": "escalate",
             "preflight_risk_signals": ["prior_execution_on_branch"],
+        }
+
+    def test_row_key_map_binds_both_writers_and_the_reader(self):
+        """The declared key map is the contract, not documentation beside it.
+
+        Every writer and reader builds its dict from PREFLIGHT_DEGRADED_ROW_KEYS,
+        so the flat row spelling and the nested audit spelling cannot drift.
+        """
+        from theforge.sprint.audit import (
+            PREFLIGHT_DEGRADED_ROW_KEYS,
+            preflight_degraded_row_fields,
+            preflight_degraded_row_fields_from_audit,
+            preflight_degraded_row_fields_from_row,
+        )
+
+        class _State:
+            preflight_degraded = True
+            preflight_degraded_reason = "timeout_no_verdict"
+            preflight_failure_action = "proceed"
+            preflight_risk_signals = ["prior_execution_on_branch"]
+
+        from_state = preflight_degraded_row_fields(_State())
+        assert set(from_state) == set(PREFLIGHT_DEGRADED_ROW_KEYS)
+
+        # A row written from state, read back, is the same row.
+        assert preflight_degraded_row_fields_from_row(from_state) == from_state
+
+        # The nested audit block carries the same facts under the mapped names.
+        nested = {
+            audit_key: from_state[row_key]
+            for row_key, audit_key in PREFLIGHT_DEGRADED_ROW_KEYS.items()
+        }
+        assert preflight_degraded_row_fields_from_audit(nested) == from_state
+
+    def test_row_written_by_an_older_forge_normalizes(self):
+        from theforge.sprint.audit import preflight_degraded_row_fields_from_row
+
+        assert preflight_degraded_row_fields_from_row({}) == {
+            "preflight_degraded": False,
+            "preflight_degraded_reason": None,
+            "preflight_failure_action": None,
+            "preflight_risk_signals": [],
         }
 
     def test_healthy_run_records_the_absence_explicitly(self):

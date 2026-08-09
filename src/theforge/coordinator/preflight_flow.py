@@ -30,7 +30,12 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.agent_types import AgentResult
-from theforge.config import PREFLIGHT_FORBIDDEN_TOOLS, ForgeConfig, ModelProfile
+from theforge.config import (
+    DEFAULT_PREFLIGHT_PROFILE,
+    PREFLIGHT_FORBIDDEN_TOOLS,
+    ForgeConfig,
+    ModelProfile,
+)
 from theforge.sprint.dag import _is_branch_merged
 from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
 
@@ -282,15 +287,30 @@ def _sanitize_preflight_profile(
     API-transport default set, or a fallback profile can each reintroduce it —
     so the removal is enforced here, at the one place every preflight
     invocation passes through.
+
+    An empty ``allowed_tools`` is *not* a narrower surface than a populated one:
+    ``runner_claude`` omits ``--allowedTools`` entirely when the tuple is empty,
+    which hands the CLI its unrestricted default — the opposite of what
+    filtering was for. So a profile whose every tool is forbidden
+    (``allowed_tools=("Bash",)``) is restored to the read-only preflight set
+    rather than left empty. The invocation always carries an explicit
+    allowlist, and that allowlist never contains Bash.
     """
     allowed = tuple(profile.allowed_tools or ())
     kept = tuple(t for t in allowed if str(t).lower() not in PREFLIGHT_FORBIDDEN_TOOLS)
-    if len(kept) == len(allowed):
+    if kept == allowed:
         return profile
     dropped = [t for t in allowed if str(t).lower() in PREFLIGHT_FORBIDDEN_TOOLS]
+    detail = ""
+    if not kept:
+        kept = DEFAULT_PREFLIGHT_PROFILE.allowed_tools
+        detail = (
+            f"; restored the read-only default set ({', '.join(kept)}) rather than "
+            "leaving an empty allowlist, which the CLI reads as unrestricted"
+        )
     log(
         f"  ⓘ PREFLIGHT tool surface narrowed: dropped {', '.join(dropped)} "
-        "(read-only classifier cannot delegate work it cannot be resumed for)"
+        f"(read-only classifier cannot delegate work it cannot be resumed for){detail}"
     )
     return replace(profile, allowed_tools=kept)
 
