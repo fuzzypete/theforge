@@ -1453,3 +1453,56 @@ class TestTheLeaseSweepCostsWhatItShould:
         assert not missed, (
             f"an undated sweep dropped a live process it could have read: {sorted(missed)[:5]}"
         )
+
+
+def test_a_leaking_workspace_setup_command_is_recorded_and_named(tmp_path: Path) -> None:
+    """Workspace setup is a project command too, so its leak reaches the record.
+
+    ``setup_command`` runs whatever the project configured — ``uv sync``, an npm
+    install, a build — in the fresh worktree, before any gate. Its workers were
+    being killed at release with nothing in the run saying so, which is the same
+    hole already closed for the gate, the dev verification commands and
+    pre-validate (#2309). ``gate_run`` is 0 here because no gate has run yet;
+    ``source`` is what keeps that from reading as a gate leak.
+    """
+    from theforge.coordinator.state import CoordinatorState
+    from theforge.coordinator.validate_phase import (
+        SHELL_WORKSPACE_SETUP,
+        _record_gate_teardowns,
+    )
+    from theforge.coordinator.workspace import _run_setup_split
+
+    pidfile = tmp_path / "setup.pid"
+    teardowns: list[process_group.ProcessTeardown] = []
+    ok, _out = _run_setup_split(_leaky_command(pidfile), tmp_path, None, teardown_out=teardowns)
+
+    leaked = int(pidfile.read_text().strip())
+    try:
+        assert _wait_until(lambda: not _pid_alive(leaked)), (
+            "a setup command's descendant outlived the run (#2309)"
+        )
+    finally:
+        _reap(leaked)
+
+    assert ok is True, "the setup command itself succeeded; only its leftovers died"
+    assert teardowns, "the setup command's teardown never reached its caller"
+
+    state = CoordinatorState()
+    _record_gate_teardowns(state, teardowns, source=SHELL_WORKSPACE_SETUP)
+    assert len(state.gate_process_teardowns) == 1
+    recorded = state.gate_process_teardowns[0]
+    assert recorded["source"] == SHELL_WORKSPACE_SETUP
+    assert recorded["gate_run"] == 0, "no gate had run when setup executed"
+    assert recorded["action"] == process_group.TEARDOWN_KILLED_SURVIVORS
+
+
+def test_a_clean_workspace_setup_command_records_nothing(tmp_path: Path) -> None:
+    """Absence keeps meaning something on this path too."""
+    from theforge.coordinator.workspace import _run_setup_split
+
+    teardowns: list[process_group.ProcessTeardown] = []
+    ok, _out = _run_setup_split(
+        f'{sys.executable} -c "print(1)"', tmp_path, None, teardown_out=teardowns
+    )
+    assert ok is True
+    assert teardowns == []

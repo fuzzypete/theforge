@@ -1418,12 +1418,17 @@ def _run_baseline_gate(
                 ),
             }
 
+        # Shared with the gate below: both are project commands run in this
+        # temporary worktree, and a leak from either belongs in the one record
+        # the sprint keeps for this baseline (#2309).
+        gate_teardowns: list[ProcessTeardown] = []
         if config.workspace.setup_command:
             _log(f"Running baseline workspace setup: {config.workspace.setup_command}")
             setup_ok, setup_out = coordinator_workspace._run_setup_split(
                 config.workspace.setup_command,
                 baseline_worktree,
                 config.workspace.python_interpreter,
+                teardown_out=gate_teardowns,
             )
             if not setup_ok:
                 duration = time.monotonic() - started_monotonic
@@ -1466,11 +1471,6 @@ def _run_baseline_gate(
         # ``run_gate_full``'s own trace (written into that worktree) cannot be the
         # durable record. The full output is taken out by value instead.
         gate_full_output: list[str] = []
-        # The baseline gate runs the project's own gate command — the shape that
-        # leaves test workers behind — and it does so before any story exists to
-        # own the record. Collected here so a leak it caused is visible in the
-        # sprint's baseline record rather than only in the log (#2309).
-        gate_teardowns: list[ProcessTeardown] = []
         decision, error, output_tail, resolved_gate_cmd, gate_exit_code = run_gate_full(
             config,
             baseline_worktree,

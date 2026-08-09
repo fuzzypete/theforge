@@ -751,24 +751,23 @@ def _running_under_pytest() -> bool:
     return bool(os.environ.get("PYTEST_CURRENT_TEST")) or "pytest" in sys.modules
 
 
-def _parse_proc_stat(raw: str) -> tuple[int, str] | None:
+def _parse_proc_stat(raw: str) -> tuple[int, str, str] | None:
     """Linux ``/proc/<pid>/stat`` → (process-group id, start-time fingerprint).
 
-    Deliberately answers for a process that has exited but not been reaped, and
-    so deliberately differs from `theforge.process_tree._parse_stat`, which
-    reports one as gone. Its two callers need opposite things and both are right:
+    Returns the process state alongside, rather than deciding what to do about
+    it, because its two callers need opposite things and both are right:
 
-    * `group_members` asks "is anything still *running* here?" — a corpse is not,
-      and it is filtered out there, through the same reader ``process_tree``
-      uses, so membership settles identically on both platforms.
+    * `group_members` asks "is anything still *running* here?" — a process that
+      has exited but not been reaped is not, so it drops one whose state is
+      ``Z``.
     * `_leader_fingerprint` asks "does this pgid still belong to the group I
       recorded?" — a corpse continues to occupy its pid, so its start time is
-      still proof the id has not been recycled.
-
-    Excluding zombies here would take that proof away and, because a corpse
-    answers a signal-0 probe, a sweep would then decline the record and leave the
-    group's *live* descendants running — the exact case the reaper exists for.
-    Measured on Linux-as-pid-1 before this was reverted (#2309).
+      still proof the id has not been recycled. That proof is load-bearing: it
+      is what lets a sweep verify and then kill a group whose direct child died
+      unreaped while its descendants ran on. Excluding zombies here outright
+      took it away, and because a corpse answers a signal-0 probe the sweep then
+      declined the record and left those descendants running — measured on
+      Linux-as-pid-1 (#2309).
     """
     # comm (field 2) is parenthesised and may itself contain spaces, so split
     # after the final ')' rather than tokenising the whole line.
@@ -782,10 +781,10 @@ def _parse_proc_stat(raw: str) -> tuple[int, str] | None:
         pgrp = int(fields[2])
     except ValueError:
         return None
-    return pgrp, f"proc:{fields[19]}"
+    return pgrp, f"proc:{fields[19]}", fields[0]
 
 
-def _read_proc_stat(pid: int) -> tuple[int, str] | None:
+def _read_proc_stat(pid: int) -> tuple[int, str, str] | None:
     try:
         raw = Path(f"/proc/{pid}/stat").read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -807,6 +806,19 @@ _KERN_PROC_PGRP = 2
 # lease sweep reads another process's environment on a platform with no /proc.
 _KERN_PROCARGS2 = 49
 _KINFO_PID_OFFSET = 40
+# ``p_stat`` follows p_flag in ``struct extern_proc``; ``SZOMB`` marks a process
+# that has exited and not yet been reaped. Verified against a live member (SRUN)
+# and the same member after a kill (SZOMB) on the development host.
+_KINFO_P_STAT_OFFSET = 36
+_SZOMB = 5
+
+
+def _kinfo_is_zombie(raw: bytes, offset: int) -> bool:
+    """True when this ``kinfo_proc`` record describes an unreaped corpse."""
+    try:
+        return struct.unpack_from("b", raw, offset + _KINFO_P_STAT_OFFSET)[0] == _SZOMB
+    except struct.error:
+        return False
 
 
 def _sysctl_bytes(mib_values: tuple[int, ...]) -> bytes | None:
@@ -918,61 +930,76 @@ def group_members(pgid: int) -> dict[int, str]:
 
 
 def group_members_checked(pgid: int) -> tuple[dict[int, str], bool]:
-    """``(members, enumerated)`` — the membership, and whether it was really read.
+    """``(members still running, enumeration completed)`` for *pgid*.
 
-    An empty result means two very different things. When the enumeration ran, it
-    means the group is genuinely empty. When the read failed — a ``sysctl`` that
-    returned nothing under load, a ``/proc`` that could not be listed, a platform
-    with no interface at all — it means nothing was learned. Collapsing them lets
-    a failed read look like a settled group, which is how a live group's sidecar
-    could be dropped with no kill at all.
+    An empty result means two very different things, and the flag is what keeps
+    them apart. When the enumeration completed, the group is genuinely empty.
+    When the read failed — a ``sysctl`` that returned nothing under load, a
+    ``/proc`` that could not be listed, a platform with no interface at all —
+    nothing was learned, and a caller must not mistake that for a settled group:
+    doing so drops a live group's reaper sidecar without ever signalling it.
+
+    Membership and liveness come out of the *same* read, deliberately. An earlier
+    version established membership from the platform enumeration and then refined
+    it with a second, independently fallible per-process reader while keeping the
+    first read's confidence flag — so when that second reader failed for every
+    member, a live group reported itself empty *and* fully enumerated, which is
+    exactly the mistake the flag exists to prevent (#2309). One read yields both
+    facts, so the flag always describes the data it is attached to.
     """
     if not is_killable_pgid(pgid):
         return {}, True
-    members, enumerated = _enumerate_group(pgid)
-    # Both platforms' group enumerations list a process that has exited but not
-    # yet been reaped. ``process_tree`` is the reader every descendant check
-    # already settles on, and it reports such a process as gone, so membership is
-    # filtered through it: otherwise the same corpse counts as a survivor here
-    # and as nothing there, and a completed teardown gets recorded as a leak
-    # (#2309). Measured on both macOS and Linux-as-pid-1 before this filter.
-    return {
-        pid: fingerprint
-        for pid, fingerprint in members.items()
-        if process_tree.process_info(pid) is not None
-    }, enumerated
-
-
-def _enumerate_group(pgid: int) -> tuple[dict[int, str], bool]:
-    """Raw platform enumeration of *pgid*; see `group_members_checked`."""
     if sys.platform.startswith("linux"):
-        members: dict[int, str] = {}
-        try:
-            entries = os.listdir("/proc")
-        except OSError:
-            return {}, False
-        for entry in entries:
-            if not entry.isdigit():
-                continue
-            parsed = _read_proc_stat(int(entry))
-            if parsed is not None and parsed[0] == pgid:
-                members[int(entry)] = parsed[1]
-        return members, True
+        return _enumerate_group_linux(pgid)
     if sys.platform == "darwin":
-        record_size = _sysctl_record_size()
-        if record_size <= _KINFO_PID_OFFSET:
-            return {}, False
-        raw = _sysctl_bytes((_CTL_KERN, _KERN_PROC, _KERN_PROC_PGRP, pgid))
-        if raw is None:
-            return {}, False
-        found: dict[int, str] = {}
-        for offset in range(0, len(raw) - record_size + 1, record_size):
-            pid = _kinfo_pid(raw, offset)
-            fingerprint = _kinfo_start_time(raw, offset)
-            if pid is not None and fingerprint is not None:
-                found[pid] = fingerprint
-        return found, True
+        return _enumerate_group_darwin(pgid)
     return {}, False
+
+
+def _enumerate_group_linux(pgid: int) -> tuple[dict[int, str], bool]:
+    """Linux: one ``/proc/<pid>/stat`` read per process gives group and state."""
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return {}, False
+    members: dict[int, str] = {}
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        parsed = _read_proc_stat(int(entry))
+        # A process that vanishes mid-scan is not an incomplete read: it is
+        # simply no longer a member, which is the answer we wanted anyway.
+        if parsed is not None and parsed[0] == pgid and parsed[2] != "Z":
+            members[int(entry)] = parsed[1]
+    return members, True
+
+
+def _enumerate_group_darwin(pgid: int) -> tuple[dict[int, str], bool]:
+    """macOS: one ``KERN_PROC_PGRP`` read gives every member and its state.
+
+    ``p_stat`` sits inside the same ``kinfo_proc`` record as the pid and start
+    time, so "who is in the group" and "which of them are still running" are
+    answered by a single call that either succeeds or says it did not.
+    """
+    record_size = _sysctl_record_size()
+    if record_size <= _KINFO_P_STAT_OFFSET:
+        return {}, False
+    raw = _sysctl_bytes((_CTL_KERN, _KERN_PROC, _KERN_PROC_PGRP, pgid))
+    if raw is None:
+        return {}, False
+    members: dict[int, str] = {}
+    for offset in range(0, len(raw) - record_size + 1, record_size):
+        pid = _kinfo_pid(raw, offset)
+        fingerprint = _kinfo_start_time(raw, offset)
+        if pid is None or fingerprint is None:
+            # A record the layout cannot explain means this answer is not the
+            # whole truth. Reporting it as complete would let a partially
+            # unreadable group read as an empty one.
+            return members, False
+        if _kinfo_is_zombie(raw, offset):
+            continue
+        members[pid] = fingerprint
+    return members, True
 
 
 def register_agent_group(

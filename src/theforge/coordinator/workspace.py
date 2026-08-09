@@ -14,6 +14,7 @@ from pathlib import Path
 from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import ForgeConfig
 from theforge.detach import find_run_id_for_pid as _find_run_id_for_pid
+from theforge.process_group import ProcessTeardown
 from theforge.task import TaskStory
 from theforge.workspace_env import read_venv_base_executable, venv_matches_interpreter
 
@@ -177,10 +178,17 @@ def _write_last_setup_command(workspace_path: Path, cmd: str) -> None:
     (forge_dir / "last_setup_command").write_text(cmd, encoding="utf-8")
 
 
+def _setup_teardown_kwargs(teardown_out: "list[ProcessTeardown] | None") -> dict:
+    """``teardown_out=...`` only when a caller asked for it; see `_create_workspace`."""
+    return {} if teardown_out is None else {"teardown_out": teardown_out}
+
+
 def _run_setup_split(
     setup_command: str,
     workspace_path: Path,
     python_interpreter: str | None = None,
+    *,
+    teardown_out: list[ProcessTeardown] | None = None,
 ) -> tuple[bool, str]:
     """Run workspace setup, splitting venv creation from install.
 
@@ -190,6 +198,11 @@ def _run_setup_split(
     ``python_interpreter`` is the patient project's pinned interpreter. A
     virtualenv already present in the worktree is validated against it before
     anything runs, so a stale one cannot survive the ``test -d .venv`` guard.
+
+    ``teardown_out`` collects any forced process teardown. A setup command is a
+    project command like the gate is — it runs whatever the project configured —
+    so a worker it leaves behind is killed at release either way, and this is
+    what lets the run's record say so rather than only the log (#2309).
     """
     last_setup_command = _read_last_setup_command(workspace_path)
     if last_setup_command is not None and last_setup_command != setup_command:
@@ -212,10 +225,16 @@ def _run_setup_split(
             f"test -d .venv || {python_exe} -m venv .venv",
             workspace_path,
             expected_python=python_interpreter,
+            teardown_out=teardown_out,
         )
         if not ok:
             return ok, out
-        ok, out = _cu._run_shell(install_cmd, workspace_path, expected_python=python_interpreter)
+        ok, out = _cu._run_shell(
+            install_cmd,
+            workspace_path,
+            expected_python=python_interpreter,
+            teardown_out=teardown_out,
+        )
         if ok:
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
@@ -223,7 +242,12 @@ def _run_setup_split(
     cmd = _resolve_setup_command(setup_command, python_interpreter)
     m = _VENV_GUARD_RE.search(cmd)
     if not m:
-        ok, out = _cu._run_shell(cmd, workspace_path, expected_python=python_interpreter)
+        ok, out = _cu._run_shell(
+            cmd,
+            workspace_path,
+            expected_python=python_interpreter,
+            teardown_out=teardown_out,
+        )
         if ok:
             _write_last_setup_command(workspace_path, setup_command)
         return ok, out
@@ -233,10 +257,16 @@ def _run_setup_split(
         f"test -d .venv || {python_exe} -m venv .venv",
         workspace_path,
         expected_python=python_interpreter,
+        teardown_out=teardown_out,
     )
     if not ok:
         return ok, out
-    ok, out = _cu._run_shell(install_cmd, workspace_path, expected_python=python_interpreter)
+    ok, out = _cu._run_shell(
+        install_cmd,
+        workspace_path,
+        expected_python=python_interpreter,
+        teardown_out=teardown_out,
+    )
     if ok:
         _write_last_setup_command(workspace_path, setup_command)
     return ok, out
@@ -1136,8 +1166,15 @@ def _create_workspace(
     no_pull: bool = False,
     lands_locally: bool | None = None,
     story_content: str | None = None,
+    teardown_out: list[ProcessTeardown] | None = None,
 ) -> tuple[Path | None, str | None, str | None]:
     """Create an isolated workspace. Returns (path, branch, error).
+
+    ``teardown_out`` collects any process teardown the configured setup command
+    forced, so the run can record it (#2309). It is forwarded only when a caller
+    actually supplies one: an out-parameter nobody asked for is a no-op, and not
+    sending it leaves the setup call identical for every caller that does not
+    want teardowns back.
 
     ``lands_locally`` is forwarded to the base-branch publication guard: when
     this run merges stories into the local base checkout, the branch is
@@ -1205,6 +1242,7 @@ def _create_workspace(
                     config.workspace.setup_command,
                     workspace_path,
                     config.workspace.python_interpreter,
+                    **_setup_teardown_kwargs(teardown_out),
                 )
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
@@ -1289,6 +1327,7 @@ def _create_workspace(
                     config.workspace.setup_command,
                     workspace_path,
                     config.workspace.python_interpreter,
+                    **_setup_teardown_kwargs(teardown_out),
                 )
                 if not ok_s:
                     return None, None, f"Workspace setup command failed: {out_s}"
@@ -1322,6 +1361,7 @@ def _create_workspace(
             config.workspace.setup_command,
             workspace_path,
             config.workspace.python_interpreter,
+            **_setup_teardown_kwargs(teardown_out),
         )
         if not ok:
             return None, None, f"Workspace setup command failed: {output}"

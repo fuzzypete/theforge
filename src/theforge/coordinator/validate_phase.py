@@ -251,6 +251,9 @@ VALIDATE_SHELL_GATE = "gate"
 VALIDATE_SHELL_GATE_DEBUG = "gate_debug"
 VALIDATE_SHELL_GATE_DIAGNOSTIC = "gate_diagnostic"
 VALIDATE_SHELL_PRE_VALIDATE = "pre_validate"
+# Not a validation shell at all: workspace setup runs before any gate, so its
+# ``gate_run`` is legitimately 0. The source is what tells the two apart.
+SHELL_WORKSPACE_SETUP = "workspace_setup"
 
 
 def _record_gate_teardowns(
