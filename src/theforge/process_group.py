@@ -466,11 +466,25 @@ def _attach_partial_output(
         exc.stderr = err
 
 
+def _group_is_empty(pgid: int) -> bool:
+    """True when nothing in *pgid* is still running.
+
+    A completed enumeration outranks the signal-0 probe here. ``killpg(pgid, 0)``
+    succeeds while the group still holds a process that has exited and not been
+    reaped, so a kill that worked would otherwise be waited out to its full grace
+    and then recorded as survivors that outlived it — which is what forge running
+    as pid 1 sees for every child it kills, since it inherits its own orphans and
+    never reaps them. Where enumeration is unavailable the probe is all there is.
+    """
+    members, enumerated = group_members_checked(pgid)
+    return not members if enumerated else not group_is_alive(pgid)
+
+
 def _await_empty_group(pgid: int, *, grace_seconds: float = KILL_GRACE_SECONDS) -> bool:
-    """Poll until *pgid* holds no processes, bounded by *grace_seconds*."""
+    """Poll until *pgid* holds no running process, bounded by *grace_seconds*."""
     deadline = time.monotonic() + grace_seconds
     while True:
-        if not group_is_alive(pgid):
+        if _group_is_empty(pgid):
             return True
         if time.monotonic() >= deadline:
             return False
@@ -738,7 +752,24 @@ def _running_under_pytest() -> bool:
 
 
 def _parse_proc_stat(raw: str) -> tuple[int, str] | None:
-    """Linux ``/proc/<pid>/stat`` → (process-group id, start-time fingerprint)."""
+    """Linux ``/proc/<pid>/stat`` → (process-group id, start-time fingerprint).
+
+    Deliberately answers for a process that has exited but not been reaped, and
+    so deliberately differs from `theforge.process_tree._parse_stat`, which
+    reports one as gone. Its two callers need opposite things and both are right:
+
+    * `group_members` asks "is anything still *running* here?" — a corpse is not,
+      and it is filtered out there, through the same reader ``process_tree``
+      uses, so membership settles identically on both platforms.
+    * `_leader_fingerprint` asks "does this pgid still belong to the group I
+      recorded?" — a corpse continues to occupy its pid, so its start time is
+      still proof the id has not been recycled.
+
+    Excluding zombies here would take that proof away and, because a corpse
+    answers a signal-0 probe, a sweep would then decline the record and leave the
+    group's *live* descendants running — the exact case the reaper exists for.
+    Measured on Linux-as-pid-1 before this was reverted (#2309).
+    """
     # comm (field 2) is parenthesised and may itself contain spaces, so split
     # after the final ')' rather than tokenising the whole line.
     _, _, rest = raw.rpartition(")")
@@ -837,6 +868,16 @@ def _leader_fingerprint(pgid: int) -> str | None:
     pid, so the leader's start time is a property a recycled pgid cannot
     reproduce — the evidence the reaper needs before signalling anything (#2115).
 
+    Deliberately still answers for a leader that has exited but not been reaped,
+    unlike `group_members`, which reports such a process as gone. The two are
+    asking different questions and the answers are both right: membership asks
+    "is anything still running here?", while this asks "does the pgid still
+    belong to the group I recorded?" — and a corpse continues to occupy its pid,
+    so its start time remains proof that the id has *not* been recycled. That
+    proof is load-bearing: it is what lets a sweep verify and then kill a group
+    whose direct child died unreaped while its descendants ran on, which is the
+    case the reaper exists for (#2309).
+
     Read from the kernel directly — ``/proc`` on Linux, ``sysctl`` on macOS — so
     that taking a fingerprint costs no process spawn: this sits in the path of
     every agent and gate launch, and ``ps`` is an exec that a sandbox profile can
@@ -888,6 +929,22 @@ def group_members_checked(pgid: int) -> tuple[dict[int, str], bool]:
     """
     if not is_killable_pgid(pgid):
         return {}, True
+    members, enumerated = _enumerate_group(pgid)
+    # Both platforms' group enumerations list a process that has exited but not
+    # yet been reaped. ``process_tree`` is the reader every descendant check
+    # already settles on, and it reports such a process as gone, so membership is
+    # filtered through it: otherwise the same corpse counts as a survivor here
+    # and as nothing there, and a completed teardown gets recorded as a leak
+    # (#2309). Measured on both macOS and Linux-as-pid-1 before this filter.
+    return {
+        pid: fingerprint
+        for pid, fingerprint in members.items()
+        if process_tree.process_info(pid) is not None
+    }, enumerated
+
+
+def _enumerate_group(pgid: int) -> tuple[dict[int, str], bool]:
+    """Raw platform enumeration of *pgid*; see `group_members_checked`."""
     if sys.platform.startswith("linux"):
         members: dict[int, str] = {}
         try:

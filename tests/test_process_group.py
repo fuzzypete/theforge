@@ -422,6 +422,98 @@ class TestGroupMembers:
         for bogus in (0, 1, -1, None, "4321"):
             assert process_group.group_members(bogus) == {}  # type: ignore[arg-type]
 
+    def test_a_zombie_is_not_a_member(self) -> None:
+        """An exited process is gone to every reader, or teardown disagrees itself.
+
+        Both platforms' group enumerations list a process that has exited but not
+        been reaped, while ``process_tree`` — the reader every descendant check
+        settles on — reports it gone. Left unreconciled, the same corpse counts
+        as a survivor in one place and as nothing in another, and a kill that
+        worked is recorded as a leak that outlived the run (#2309).
+        """
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(proc.pid)
+        try:
+            assert proc.pid in process_group.group_members(pgid)
+            os.kill(proc.pid, signal.SIGKILL)
+            # Deliberately not waited: this process is now the group's only
+            # member and has exited, which is precisely the state pid 1 sees for
+            # every orphan it inherits.
+            assert _wait_until(lambda: process_group.group_members(pgid) == {}), (
+                "a killed-but-unreaped member still counts as a live group member"
+            )
+            members, enumerated = process_group.group_members_checked(pgid)
+            assert (members, enumerated) == ({}, True)
+        finally:
+            proc.wait(timeout=5)
+
+    def test_a_leader_that_died_unreaped_still_proves_the_pgid_is_not_recycled(self) -> None:
+        """Membership and identity ask different questions of the same corpse.
+
+        A process that has exited is not a *member* — nothing is running. But it
+        still occupies its pid, so its start time remains proof the pgid has not
+        been recycled, and that proof is what lets a sweep verify and then kill a
+        group whose direct child died unreaped while its descendants ran on. An
+        earlier attempt at this cleanup excluded zombies from the shared stat
+        parser, which took the proof away and would have left those descendants
+        running (#2309).
+        """
+        script = (
+            "import subprocess,sys,time;"
+            "subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)']);"
+            "time.sleep(30)"
+        )
+        leader = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", script],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(leader.pid)
+        try:
+            assert _wait_until(lambda: len(process_group.group_members(pgid)) >= 2)
+            recorded = process_group._leader_fingerprint(pgid)
+            os.kill(leader.pid, signal.SIGKILL)
+            assert _wait_until(lambda: leader.pid not in process_group.group_members(pgid)), (
+                "the exited leader still counts as a running member"
+            )
+            assert process_group._leader_fingerprint(pgid) == recorded, (
+                "the pgid lost its identity proof, so a sweep would decline the "
+                "record and leave the group's live descendants running"
+            )
+            assert process_group.group_members(pgid), "its descendant is still running"
+        finally:
+            process_group.kill_agent_group(pgid)
+            leader.wait(timeout=5)
+
+    def test_a_group_holding_only_a_zombie_settles_immediately(self) -> None:
+        """The liveness wait must not sit out its grace period for a corpse.
+
+        ``killpg(pgid, 0)`` succeeds while an unreaped member remains, so a
+        teardown that worked would otherwise be waited out in full and then
+        reported as survivors that outlived it.
+        """
+        proc = subprocess.Popen(  # noqa: S603
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            start_new_session=True,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        pgid = os.getpgid(proc.pid)
+        try:
+            os.kill(proc.pid, signal.SIGKILL)
+            assert _wait_until(lambda: process_group.group_members(pgid) == {})
+            started = time.monotonic()
+            assert process_group._await_empty_group(pgid) is True
+            assert time.monotonic() - started < process_group.KILL_GRACE_SECONDS / 2
+        finally:
+            proc.wait(timeout=5)
+
 
 class TestListOrphanAgents:
     """``forge status`` must be able to see orphans without touching them."""
