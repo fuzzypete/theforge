@@ -48,10 +48,21 @@ trust boundaries — is in [Architecture](architecture.md).
 
 Roadmap truth lives in the
 [GitHub milestones](https://github.com/fuzzypete/theforge/milestones), not in
-this file. The standing sequence: knowledge feed-forward (completed runs
-become advisory memory for future agents), intake autonomy (the gate becomes
-a router: capture → shaped → groomed → ready without operator keystrokes),
-then a frozen, portable 1.0 surface a stranger can point at their own repo.
+this file. The standing sequence: structural work on the two modules whose
+missing abstraction makes every story touching them expensive, knowledge
+feed-forward (completed runs become advisory memory for future agents),
+intake autonomy (the gate becomes a router: capture → shaped → groomed →
+ready without operator keystrokes), then a frozen, portable 1.0 surface a
+stranger can point at their own repo.
+
+Structural comes first for a reason worth stating, because it reads as
+yak-shaving and is not. The forge is a closed loop over stories and an open
+loop over architecture: every gate and review operates at story scope, while
+cohesion degrades across a hundred stories each individually correct against
+its own spec. [ADR-0008](adr/0008-module-size-ratchet.md) tried to close the
+second loop with the first loop's machinery, and Amendment 3 records what
+that cost. The replacement is funded work entering intake — which needs both
+the abstractions named and the spend data to rank by, in that order.
 
 ## Reading order for newcomers
 
