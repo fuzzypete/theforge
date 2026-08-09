@@ -292,11 +292,13 @@ def test_worker_timeout_audit_names_the_timeout(tmp_path: Path) -> None:
 
     record = _story_audits(tmp_path)["feature-a"]
     assert record["abnormal_termination"]["kind"] == ABNORMAL_WORKER_TIMEOUT
-    assert "Worker timeout" in record["abnormal_termination"]["cause"]
+    # The cause names deadline exhaustion, so an operator reads a wall-clock
+    # outcome rather than a verdict on the work (#2333).
+    assert "Story deadline exhausted" in record["abnormal_termination"]["cause"]
 
     history = _accumulated_story(tmp_path, "feature-a")["failure_history"]
     assert history[0]["kind"] == ABNORMAL_WORKER_TIMEOUT
-    assert "Worker timeout" in history[0]["cause"]
+    assert "Story deadline exhausted" in history[0]["cause"]
 
 
 def test_worker_timeout_cause_survives_a_later_successful_generation(tmp_path: Path) -> None:

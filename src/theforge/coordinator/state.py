@@ -1015,6 +1015,12 @@ class CoordinatorState:
     # None/empty on runs where the reconciliation reserved nothing.
     review_funding_reservation: dict | None = None
     adaptive_limits_audit: dict = field(default_factory=dict)
+    # One entry per development invocation whose timeout was shortened to fit
+    # the enclosing story deadline (#2333). Each dict carries the requested
+    # timeout, the story's remaining working seconds, the tail reserve, and what
+    # was granted — the invocation ends on its own recorded, costed timeout
+    # instead of being SIGKILLed by the sprint scheduler with no cost measured.
+    dev_timeout_clamps: list[dict] = field(default_factory=list)
     review_early_terminated: bool = False  # True when early-termination triggered
     workspace_hygiene_audit: list[dict] = field(default_factory=list)
     # Per-phase hygiene gate audit entries. Each dict carries a "phase" key

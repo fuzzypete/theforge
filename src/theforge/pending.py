@@ -112,39 +112,117 @@ def read_pending(run_id: str, project_root: Path | None = None) -> dict[str, Any
         return None
 
 
+#: Working seconds a gate must leave its story after a decision arrives, so the
+#: answer can actually be acted on inside the story's own deadline.
+GATE_DECISION_TAIL_RESERVE_SECONDS = 300
+
+#: However tight the enclosing budget, never offer an operator less than this.
+MIN_GATE_WAIT_SECONDS = 60
+
+
+def bounded_gate_wait(timeout_seconds: float, phase_label: str = "") -> float:
+    """Bound a gate's wait by the story budget that contains it (#2333).
+
+    Gate waits are configured globally (``notifications.human_review_timeout_seconds``,
+    ``plan_review.timeout_seconds``) and were previously passed straight through,
+    so a gate could be told to wait for exactly as long as the enclosing sprint
+    worker was allowed to live — a decision nobody could have supplied in time.
+    The wait itself is excluded from the story's deadline (see
+    :func:`theforge.worker_budget.operator_wait`), so what this bounds is the
+    promise: the gate asks for no more than the story can still honour, leaving a
+    tail in which the answer can be acted on.
+
+    ``MIN_GATE_WAIT_SECONDS`` is a minimum useful offer, not a licence to outlive
+    the deadline: on a story with less working time left than the minimum, the
+    minimum is cut to what remains. A floor that could exceed the enclosing
+    window would recreate the reported failure — a gate whose expiry necessarily
+    falls outside the worker window that contains it.
+
+    A no-op outside a sprint worker, where there is no enclosing budget.
+    """
+    from . import worker_budget as _wb
+
+    budget = _wb.current_worker_budget()
+    if budget is None:
+        return timeout_seconds
+    remaining = budget.remaining()
+    allowed = float(
+        max(
+            0.0,
+            min(
+                max(MIN_GATE_WAIT_SECONDS, int(remaining - GATE_DECISION_TAIL_RESERVE_SECONDS)),
+                remaining,
+            ),
+        )
+    )
+    if allowed >= timeout_seconds:
+        return timeout_seconds
+    _cu._log(
+        f"  Gate wait bounded {int(timeout_seconds)}s → {int(allowed)}s by the enclosing "
+        f"story budget ({_cu._fmt_duration(max(0.0, remaining))} of working time left"
+        f" on {budget.slug}{f'; phase {phase_label}' if phase_label else ''})"
+    )
+    return allowed
+
+
 def poll_pending(
     run_id: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
     poll_interval: float = 2.0,
     project_root: Path | None = None,
+    phase_label: str = "",
+    already_bounded: bool = False,
 ) -> tuple[str, str | None]:
     """Poll the pending file until a decision field appears or timeout expires.
 
+    The whole poll is marked as operator-wait time on the enclosing story budget:
+    time the system spends waiting for a decision it asked a human to make is not
+    time the worker is unresponsive, and the sprint scheduler credits it back to
+    the story deadline rather than charging the story for a wait the system chose
+    to begin (#2333).
+
+    ``already_bounded`` says the caller has already put *timeout_seconds* through
+    :func:`bounded_gate_wait` and written that same figure into the pending file.
+    Re-bounding it here would quietly shorten the window a second time — the story
+    has spent a little working time writing the file and sending notifications
+    since — so the file's ``timeout_at`` would advertise a deadline the poller no
+    longer honours, and the checkpoint would be swept while an operator still
+    believed it was live. One number, chosen once, is written and honoured.
+
+    A caller that has *not* pre-bounded (the default) is bounded here instead, so
+    no gate can reach this poller with an unbounded window.
+
     Returns (decision, decided_at) or ("timeout", None) on expiry.
     """
-    deadline = time.monotonic() + timeout_seconds
+    from . import worker_budget as _wb
+
+    effective_timeout = (
+        timeout_seconds if already_bounded else bounded_gate_wait(timeout_seconds, phase_label)
+    )
+    deadline = time.monotonic() + effective_timeout
     last_log = time.monotonic()
 
-    while time.monotonic() < deadline:
-        data = read_pending(run_id, project_root)
-        if isinstance(data, dict) and data.get("decision"):
-            decision = str(data["decision"]).strip()
-            decided_at = data.get("decided_at")
-            _cu._log(f"  Pending decision received: {decision!r}")
-            return decision, decided_at
+    with _wb.operator_wait(phase_label or "pending decision"):
+        while time.monotonic() < deadline:
+            data = read_pending(run_id, project_root)
+            if isinstance(data, dict) and data.get("decision"):
+                decision = str(data["decision"]).strip()
+                decided_at = data.get("decided_at")
+                _cu._log(f"  Pending decision received: {decision!r}")
+                return decision, decided_at
 
-        now = time.monotonic()
-        if now - last_log >= 60:
-            remaining = max(0, deadline - now)
-            _cu._log(
-                f"  Waiting for pending decision on {run_id}"
-                f" ({_cu._fmt_duration(remaining)} remaining)"
-            )
-            last_log = now
+            now = time.monotonic()
+            if now - last_log >= 60:
+                remaining = max(0, deadline - now)
+                _cu._log(
+                    f"  Waiting for pending decision on {run_id}"
+                    f" ({_cu._fmt_duration(remaining)} remaining)"
+                )
+                last_log = now
 
-        sleep_secs = min(poll_interval, max(0.0, deadline - time.monotonic()))
-        if sleep_secs > 0:
-            time.sleep(sleep_secs)
+            sleep_secs = min(poll_interval, max(0.0, deadline - time.monotonic()))
+            if sleep_secs > 0:
+                time.sleep(sleep_secs)
 
     # Wording is deliberately neutral about what happens next: this poller is
     # shared by the human-review, plan-review, and escalate gates, and none of
@@ -152,7 +230,7 @@ def poll_pending(
     # caller's decision (preserve for an operator, or apply advice under
     # retry.escalate_timeout_policy), so the poller reports only the fact (#2279).
     _cu._log(
-        f"  Pending decision timed out after {_cu._fmt_duration(timeout_seconds)}"
+        f"  Pending decision timed out after {_cu._fmt_duration(effective_timeout)}"
         " — no decision received"
     )
     return "timeout", None

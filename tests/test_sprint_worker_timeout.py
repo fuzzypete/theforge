@@ -596,7 +596,12 @@ def test_per_story_deadline_expires_only_the_elapsed_future(tmp_path: Path, caps
         result = run_sprint(config, manifest)
 
     stderr = capsys.readouterr().err
-    assert "TIMEOUT story-a (worker unresponsive after 3600s — marking as failed)" in stderr
+    # An elapsed deadline is exhausted time, not evidence the worker stopped
+    # responding — the message says which, and says it is a wall-clock outcome
+    # rather than a quality verdict (#2333).
+    assert "TIMEOUT story-a (story deadline exhausted after 3600s of working time" in stderr
+    assert "marking as failed on wall clock, not on quality)" in stderr
+    assert "worker unresponsive" not in stderr
     assert hanging_future.cancel_called is True
     assert completed_future is not None
     assert completed_future.cancel_called is False
