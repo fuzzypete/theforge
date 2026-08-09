@@ -164,8 +164,66 @@ stories start carrying incidental extractions to get under their ceiling, the
 ratchet has stopped being a holding action and become an unplanned refactor
 distributed across whoever happened to be blocked.
 
+## Amendment 2026-08-08: the cost is spend, not only scheduling
+
+The Context section above argues module size costs throughput, via collisions that serialize
+parallel work. Spend data gathered after this ADR was accepted says that is the smaller half.
+
+Average cost per run, from the audit substrate:
+
+| month | avg $/run | avg complexity | avg duration | success rate |
+|---|---|---|---|---|
+| 2026-04 | $2.81 | 5.9 | 18 min | 73% |
+| 2026-05 | $3.79 | 5.7 | 19 min | 79% |
+| 2026-07 | $7.26 | 5.5 | 14 min | 73% |
+| 2026-08 | $12.19 | 6.4 | 20 min | 76% |
+
+Cost per run rose 4.3x while complexity, duration and success rate stayed flat. It is not an
+artifact of failures: restricted to successful runs alone, the same period goes $3.00 to $11.33.
+
+It decomposes into two factors that account for the increase with no residual:
+
+| | 2026-04 | 2026-08 | factor |
+|---|---|---|---|
+| invocations per run | 2.8 | 5.1 | 1.8x |
+| cost per invocation | $1.00 | $2.39 | 2.4x |
+
+The first factor is review panel growth — review calls per run went 1.8 to 3.4. The second is the
+one this ADR is about, and git corroborates it independently of the audit substrate:
+
+| | 2026-04 | 2026-07 | factor |
+|---|---|---|---|
+| files per merge | 5.9 | 10.3 | 1.7x |
+| insertions per merge | 351 | 1,475 | 4.2x |
+
+Stories did not get harder; the changes they produce got four times bigger, landing in modules that
+tripled over the same window. Every reviewer reads that diff and the modules around it, so change
+size and module size multiply into token cost directly. Duration stayed flat because the work is not
+slower — more tokens flow through the same number of minutes.
+
+Routing was ruled out as the explanation. The strong-tier model now takes roughly 95% of dev runs
+where it took a minority in April, but the split is complexity-appropriate — strong tier draws
+complexity 4-9, cheap tier 1-3 — and the cold-start starvation bug that could have concentrated
+selection artificially closed in v0.12.0 (#1617). Complexity 7-9 work did grow from 37% to 50% of
+the queue, which is real and nowhere near sufficient to explain 4.3x.
+
+Two consequences for how the reduction milestone is justified and scoped.
+
+The argument is spend, not tidiness, and it compounds without an upper bound that anything currently
+enforces. The ratchet freezes module size and does not touch change size, so the 4.2x factor keeps
+running after this ADR's decision is fully implemented.
+
+Nothing measures or bounds per-story change size today. A story landing 1,475 insertions across 10
+files passes every gate. That is the upstream cause of the larger factor and it is not what the
+ratchet addresses, so it wants naming as separate work rather than being assumed to fall out of
+module reduction.
+
 ## References
 
 - `CONVENTIONS.md` — `max_module_lines`
 - Sprint summaries, `advisory_convention_violations`, first seen 2026-05-04
 - #2314 — implementation
+- #2325 — first reduction unit (naming `run_sprint`'s execution context)
+- #1617 — cold-start starvation, closed v0.12.0; ruled out as a cause of the model-mix shift
+- Amendment figures: `.forge/audits/index.sqlite` (`audit_records`, `invocation_identities`,
+  `reviews`); `git log --merges --shortstat` for the per-merge columns
