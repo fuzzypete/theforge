@@ -72,6 +72,10 @@ _PINNED_LIST_ELEMENTS: tuple[str, ...] = (
     "iterations.budget_consumption_log",  # RetryBudgetConsumption
     "validate_blocks",  # validate_phase.record_validate_block
     "cost.agents",  # audit_render._agent_entry
+    # Gate commands whose descendants had to be killed (#2309). Pinned because a
+    # dropped field here would take with it the only record that a run leaked
+    # work onto the host — the fact has no other artifact anywhere.
+    "iterations.gate_process_teardowns",
     # The invocation ledger's billed-component list (#2205). Pinned because the
     # whole point of the ledger is that each billed identity is a first-class
     # record: a field silently dropped from an element would take a separately
@@ -176,6 +180,20 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
             output_tail="tail",
             output_truncated=False,
         )
+    )
+    state.gate_process_teardowns.append(
+        {
+            "gate_run": 1,
+            **ProcessTeardown(
+                pgid=7311,
+                action=TEARDOWN_KILLED_SURVIVORS,
+                member_count=9,
+                members=(7311, 7312),
+                escaped_pids=(7399,),
+                sandbox_dir="/tmp/forge/worktrees/test",
+                completed=True,
+            ).to_audit_dict(),
+        }
     )
     state.review_iteration_telemetry.append(
         ReviewIterationTelemetry(

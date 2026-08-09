@@ -62,6 +62,18 @@ from pathlib import Path
 SAMPLE_INTERVAL_SECONDS = 0.05
 
 
+def is_real_pid(value: object) -> bool:
+    """True only for a value that can denote a real process.
+
+    The same guard, and for the same reason, as
+    ``theforge.process_group.is_killable_pgid``: a test double's unset ``pid`` is
+    a ``Mock``, not a number, and letting one into a set of processes to signal
+    is how a bogus id reaches a kill (#1793). Values ``<= 1`` are never a spawned
+    descendant — pid 1 is ``init``/``launchd``.
+    """
+    return isinstance(value, int) and not isinstance(value, bool) and value > 1
+
+
 @dataclass(frozen=True)
 class ProcessInfo:
     """One live process, in the fields that are always readable."""
@@ -181,9 +193,7 @@ def _darwin_info(pid: int) -> ProcessInfo | None:
         return None
     buf = ctypes.create_string_buffer(_BSDINFO_SIZE)
     try:
-        written = lib.proc_pidinfo(
-            pid, _PROC_PIDTBSDINFO, ctypes.c_uint64(0), buf, _BSDINFO_SIZE
-        )
+        written = lib.proc_pidinfo(pid, _PROC_PIDTBSDINFO, ctypes.c_uint64(0), buf, _BSDINFO_SIZE)
     except (OSError, AttributeError, ValueError):
         return None
     if written < _BSDINFO_SIZE:
@@ -217,7 +227,7 @@ def _layout_is_valid() -> bool:
         me is not None
         and me.pid == os.getpid()
         and me.ppid == os.getppid()
-        and me.pgid == os.getpgid(0)
+        and me.pgid == os.getpgrp()
     )
     _state["layout_ok"] = ok
     return ok
@@ -261,6 +271,24 @@ def _supported() -> bool:
     if sys.platform.startswith("linux"):
         return True
     return sys.platform == "darwin" and _layout_is_valid()
+
+
+def live_pids() -> list[int]:
+    """Every live pid this user can see.
+
+    Shared with `theforge.process_group`'s lease sweep so both containment
+    mechanisms enumerate the same way: the retry-on-growth handling here is the
+    difference between "the table was busy" and "there are no processes", and a
+    sweep that cannot tell those apart reports a clean host under load.
+    """
+    if sys.platform.startswith("linux"):
+        try:
+            return [int(entry) for entry in os.listdir("/proc") if entry.isdigit()]
+        except OSError:
+            return []
+    if sys.platform == "darwin" and _layout_is_valid():
+        return _darwin_listpids(_PROC_ALL_PIDS, 0)
+    return []
 
 
 def process_info(pid: int) -> ProcessInfo | None:
@@ -315,8 +343,8 @@ class DescendantTracker:
     """
 
     def __init__(self, *, root_pid: int | None = None, pgid: int | None = None) -> None:
-        self._roots = {pid for pid in (root_pid,) if pid is not None and pid > 1}
-        self._pgid = pgid if pgid is not None and pgid > 1 else None
+        self._roots = {pid for pid in (root_pid,) if is_real_pid(pid)}
+        self._pgid = pgid if is_real_pid(pgid) else None
         self._seen: dict[int, str] = {}
         self._frontier: set[int] = set(self._roots)
         self._lock = threading.Lock()
@@ -354,7 +382,10 @@ class DescendantTracker:
             fresh = [
                 pid
                 for pid in candidates
-                if pid > 1 and pid != me and pid not in self._seen and pid not in self._roots
+                if is_real_pid(pid)
+                and pid != me
+                and pid not in self._seen
+                and pid not in self._roots
             ]
         for pid in fresh:
             info = process_info(pid)
@@ -381,9 +412,11 @@ class DescendantTracker:
             try:
                 self.observe()
             except Exception:  # noqa: BLE001
-                # Sampling is an observation, never a reason to fail a run: a
-                # pass that raises costs this sample, not the invocation.
-                return
+                # Sampling is an observation, never a reason to fail a run — and
+                # never a reason to stop watching either. One bad pass costs this
+                # sample; returning here would silently blind the tracker for the
+                # rest of the invocation, which is the failure it exists to catch.
+                continue
 
     def stop(self) -> None:
         """Stop sampling, after one final pass."""
@@ -411,7 +444,7 @@ class DescendantTracker:
         skip = {os.getpid()} | (exclude or set())
         alive: dict[int, str] = {}
         for pid, fingerprint in recorded.items():
-            if pid in skip or pid <= 1:
+            if pid in skip or not is_real_pid(pid):
                 continue
             info = process_info(pid)
             if info is not None and info.fingerprint == fingerprint:

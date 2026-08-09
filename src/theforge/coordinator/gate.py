@@ -8,6 +8,7 @@ from pathlib import Path
 
 from theforge.config import ForgeConfig
 from theforge.coordinator.state import GateDebugTelemetry, GateLabel
+from theforge.process_group import ProcessTeardown
 from theforge.task import TaskStory
 from theforge.traces import write_trace
 
@@ -75,6 +76,7 @@ def run_gate_full(
     *,
     output_digest: list[str] | None = None,
     full_output: list[str] | None = None,
+    process_teardowns: list[ProcessTeardown] | None = None,
     label: GateLabel | None = None,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
@@ -105,6 +107,14 @@ def run_gate_full(
     command actually ran, including timeout and infrastructure error, since
     those are exactly the outcomes whose evidence is hardest to recover.
 
+    ``process_teardowns``, when given, receives a `ProcessTeardown` if the gate
+    command left processes running that teardown had to kill — a test runner's
+    workers outliving the run that started them (#2309). Same out-parameter shape
+    as ``output_digest``, and for the same reason: it is a fact about the run's
+    aftermath rather than part of the gate's verdict, and a caller that does not
+    record it should not have to unpack it. Without it the only trace of a leak
+    the gate caused is a log line.
+
     ``label``, when given, names the gate's purpose and target in the "Running
     gate" log line so semantically different gates that resolve to the same
     command (baseline vs. per-story reuse vs. validation) are distinguishable
@@ -127,11 +137,16 @@ def run_gate_full(
     gate_identity = label.describe() if label is not None else "gate"
     _cu._log_verbose(f"Running {gate_identity}: {gate_cmd}")
     gate_timeout = config.validation.gate_timeout or 600
+    # Passed only when the caller asked for it: an out-parameter nobody supplied
+    # is a no-op, and not sending it keeps this call compatible with the stubs
+    # that stand in for the shell across the suite.
+    _teardown_kwargs = {} if process_teardowns is None else {"teardown_out": process_teardowns}
     ok, output, exit_code, timed_out = _cu._run_shell_detailed(
         gate_cmd,
         workspace_path,
         timeout=gate_timeout,
         expected_python=config.workspace.python_interpreter,
+        **_teardown_kwargs,
     )
 
     if iter_num is not None:

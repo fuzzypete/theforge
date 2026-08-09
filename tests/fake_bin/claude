@@ -39,7 +39,8 @@ Controlled via FAKE_CLAUDE_MODE environment variable:
               — like grandchild_success, but the grandchild starts its OWN
                 session (start_new_session, i.e. setsid), so it leaves the
                 spawned process group entirely. No pgid-based teardown can see
-                it; only the inherited lease token can (#2309).
+                it; only descendant observation or the inherited lease token
+                can (#2309).
   unreadable_escapee_success
               — the hardest shape: a SIP-protected platform binary (/bin/sleep)
                 given an EMPTY environment and its own session, then a normal
@@ -149,7 +150,13 @@ def _spawn_grandchild(detach_io: bool = False, own_session: bool = False) -> Non
     if pidfile:
         with open(pidfile, "w") as fh:
             fh.write(str(grandchild.pid))
-
+    if own_session:
+        # An escapee is only findable by the two mechanisms that survive setsid,
+        # and one of them (descendant observation) needs the CLI to still be
+        # alive when it samples. Keeping working for a moment is what a dev agent
+        # that kicked off a test run does; spawning and exiting in the same
+        # millisecond would test a race the OS itself cannot close on macOS.
+        time.sleep(0.4)
 
 
 def _spawn_unreadable_escapee() -> None:

@@ -16,6 +16,7 @@ from typing import NamedTuple
 from theforge.advisory_conventions import AdvisoryArtifactError, update_advisory_violations
 from theforge.config import ForgeConfig
 from theforge.gate_diagnostics import run_gate_diagnostic_pass
+from theforge.process_group import ProcessTeardown
 from theforge.task import TaskStory
 
 from . import util as _cu
@@ -701,6 +702,12 @@ def _run_validate_phase(
     # gate was skipped or run_gate_full was stubbed; the stall brake then has no
     # signature to compare and fails open.
     _gate_digest: list[str] = []
+    # Populated only when the gate command left processes running that teardown
+    # had to kill (#2309). `make gate` runs the project's test runner, which is
+    # exactly the shape that spawns workers outliving the run that started them,
+    # and a leaked worker produces no artifact of its own — so the record has to
+    # come from here or not at all.
+    _gate_teardowns: list[ProcessTeardown] = []
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
         _log("  Gate: none (story override)")
@@ -723,8 +730,13 @@ def _run_validate_phase(
                 task=task,
                 iter_num=state.dev_trace_count,
                 output_digest=_gate_digest,
+                process_teardowns=_gate_teardowns,
             )
         )
+        for _teardown in _gate_teardowns:
+            state.gate_process_teardowns.append(
+                {"gate_run": state.gate_runs, **_teardown.to_audit_dict()}
+            )
         # The gate command ran. Count it here — before decision/error routing —
         # so timeouts and errors, which return without ever appending to
         # gate_decisions, are still counted as the executions they were (#1984).

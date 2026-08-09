@@ -141,10 +141,9 @@ LEASE_ENV_VAR = "FORGE_PROCESS_LEASE"
 class ProcessLease:
     """A per-spawn token that every descendant inherits and cannot shed.
 
-    ``started_at`` is wall-clock epoch seconds taken just before the spawn. It is
-    only an optimisation: no descendant can predate its own ancestor, so a sweep
-    may skip processes older than this rather than reading every process's
-    environment.
+    ``started_at`` records when the spawn happened. Kept for the record rather
+    than for filtering: a sweep that skipped processes on age would depend on two
+    clocks agreeing, and the reads it saves are not what a pass costs.
     """
 
     token: str
@@ -185,38 +184,23 @@ def _lease_holders_linux(needle: bytes) -> list[int]:
     ]
 
 
-def _kinfo_start_seconds(raw: bytes, offset: int) -> float | None:
-    """Epoch seconds from the ``p_starttime`` timeval opening a ``kinfo_proc``."""
-    try:
-        seconds, micros = struct.unpack_from("qi", raw, offset)
-    except struct.error:
-        return None
-    return seconds + micros / 1_000_000
+def _lease_holders_darwin(needle: bytes) -> list[int]:
+    """macOS: read each live process's environ via ``KERN_PROCARGS2``.
 
+    The candidate list comes from `theforge.process_tree`, whose ``libproc``
+    enumeration retries when the table grows under it. The ``KERN_PROC_ALL``
+    sysctl this used to walk returns ENOMEM in exactly that case and, having no
+    way to say so, reported an empty process table — so under a loaded host the
+    sweep silently found nothing, which is precisely when a leak is most likely
+    (#2309, cycle 2).
 
-def _lease_holders_darwin(needle: bytes, since: float) -> list[int]:
-    """macOS: scan the process table, reading each candidate's env via sysctl.
-
-    ``KERN_PROCARGS2`` returns a process's argv+environ blob and is readable for
-    our own processes, which is all a descendant of ours can be. Processes that
-    started before the lease did are skipped without that read — the scan is on
-    the path of every invocation release, and the whole table is the expensive
-    part, not the match.
+    No start-time filter: it saved a read per process but made a sweep's result
+    depend on clock agreement between two sources, and the reads it saved are not
+    what the pass costs.
     """
-    record_size = _sysctl_record_size()
-    if record_size <= _KINFO_PID_OFFSET:
-        return []
-    raw = _sysctl_bytes((_CTL_KERN, _KERN_PROC, _KERN_PROC_ALL, 0))
-    if not raw:
-        return []
     holders: list[int] = []
-    for offset in range(0, len(raw) - record_size + 1, record_size):
-        pid = _kinfo_pid(raw, offset)
-        if pid is None or pid <= 1:
-            continue
-        started = _kinfo_start_seconds(raw, offset)
-        # A second of slack: clock granularity, not a real ordering question.
-        if started is not None and started < since - 1.0:
+    for pid in process_tree.live_pids():
+        if pid <= 1:
             continue
         args = _sysctl_bytes((_CTL_KERN, _KERN_PROCARGS2, pid))
         if args and needle in args:
@@ -235,7 +219,7 @@ def lease_holders(lease: ProcessLease) -> list[int]:
     if sys.platform.startswith("linux"):
         found = _lease_holders_linux(needle)
     elif sys.platform == "darwin":
-        found = _lease_holders_darwin(needle, lease.started_at)
+        found = _lease_holders_darwin(needle)
     else:
         return []
     me = os.getpid()
@@ -288,10 +272,7 @@ def kill_escapees(
         _kill_pid(pid)
     remaining = process_tree.wait_until_gone(targets, timeout=KILL_GRACE_SECONDS)
     if remaining:
-        _log(
-            f"  ⚠ pids={sorted(remaining)} survived the kill; they are a real leak, "
-            "not a delay"
-        )
+        _log(f"  ⚠ pids={sorted(remaining)} survived the kill; they are a real leak, not a delay")
     return pids, not remaining
 
 
@@ -737,7 +718,6 @@ _CTL_KERN = 1
 _KERN_PROC = 14
 _KERN_PROC_PID = 1
 _KERN_PROC_PGRP = 2
-_KERN_PROC_ALL = 0
 # ``KERN_PROCARGS2`` returns a process's argv + environ blob, which is how the
 # lease sweep reads another process's environment on a platform with no /proc.
 _KERN_PROCARGS2 = 49

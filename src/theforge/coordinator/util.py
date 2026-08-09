@@ -470,7 +470,15 @@ def _run_shell_detailed(
         # that exited cleanly is not evidence its group did: `make gate` can
         # return while a pytest-xdist worker it started is still on the CPU, so
         # release checks and kills rather than assuming (#2309).
-        release_group_record(pgid, group_killed=group_gone, sandbox_dir=str(cwd), lease=lease)
+        teardown = release_group_record(
+            pgid,
+            group_killed=group_gone,
+            sandbox_dir=str(cwd),
+            lease=lease,
+            tracker=tracker,
+        )
+        if teardown is not None and teardown_out is not None:
+            teardown_out.append(teardown)
         if owns_streams:
             for stream_name in ("stdout", "stderr"):
                 stream = getattr(proc, stream_name, None)

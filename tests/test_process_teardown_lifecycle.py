@@ -12,6 +12,7 @@ mock cannot show that a grandchild is gone, which is the entire claim here.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import signal
@@ -50,6 +51,40 @@ def _wait_until(predicate, timeout: float = 5.0) -> bool:  # type: ignore[no-unt
             return True
         time.sleep(0.05)
     return predicate()
+
+
+def _audit_config(tmp_path: Path):  # type: ignore[no-untyped-def]
+    """A minimal-but-real ForgeConfig, loaded from a file like a real run's."""
+    from theforge.config import (
+        DEFAULT_DEV_PROFILE,
+        DEFAULT_PREFLIGHT_PROFILE,
+        DEFAULT_REVIEW_PROFILE,
+        ForgeConfig,
+        RetryPolicy,
+        ValidationConfig,
+        WorkspaceConfig,
+        build_provenance,
+    )
+
+    (tmp_path / "spec.md").write_text("# spec", encoding="utf-8")
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+    config = ForgeConfig(
+        project="test",
+        project_root=tmp_path,
+        workspace=WorkspaceConfig(
+            create_command="mkdir -p {slug}",
+            path_pattern="{slug}",
+            branch_pattern="forge/{slug}",
+        ),
+        validation=ValidationConfig(gate_command="make gate"),
+        dev_profile=DEFAULT_DEV_PROFILE,
+        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
+        review_pool=[DEFAULT_REVIEW_PROFILE],
+        synthesis_profile=None,
+        retry=RetryPolicy(),
+    )
+    return dataclasses.replace(config, provenance=build_provenance(config, config_path))
 
 
 def _reap(pid: int) -> None:
@@ -547,6 +582,68 @@ class TestGeminiCleanExitTeardown(_RunnerTeardownBase):
 # ---------------------------------------------------------------------------
 
 
+def test_a_leaking_gate_is_recorded_in_the_run_audit(tmp_path: Path) -> None:
+    """The run says the gate leaked, not just the console the run scrolled past.
+
+    The gate is where ``pytest -n auto`` actually runs, so it is the likeliest
+    source of a leak — and a killed worker leaves no artifact, no cost line and
+    no failure, so unless the teardown fact is carried from the shell into the
+    record, the run that caused it reads exactly like one that did not.
+    """
+    from theforge.coordinator import gate as gate_mod
+    from theforge.coordinator.audit import generate_audit_log
+    from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+    from theforge.coordinator.validate_phase import _record_gate_run
+    from theforge.task import TaskStory
+
+    config = _audit_config(tmp_path)
+    workspace = tmp_path / "ws"
+    workspace.mkdir()
+    pidfile = tmp_path / "gc.pid"
+    leaky_gate = (
+        f'{sys.executable} -c "import subprocess,sys,pathlib;'
+        "gc=subprocess.Popen([sys.executable,'-c','import time;time.sleep(30)'],"
+        "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL);"
+        f"pathlib.Path(r'{pidfile}').write_text(str(gc.pid))\""
+    )
+    config = dataclasses.replace(
+        config, validation=dataclasses.replace(config.validation, gate_command=leaky_gate)
+    )
+
+    state = CoordinatorState()
+    state.started_at = "2026-01-01T00:00:00+00:00"
+    state.run_id = "deadbeefcafe"
+    teardowns: list[process_group.ProcessTeardown] = []
+    decision, _err, _tail, _cmd, _code = gate_mod.run_gate_full(
+        config, workspace, process_teardowns=teardowns
+    )
+    gc_pid = int(pidfile.read_text().strip())
+    try:
+        assert _wait_until(lambda: not _pid_alive(gc_pid))
+    finally:
+        _reap(gc_pid)
+    assert decision == "PASS", "the gate itself passed; only its leftovers were killed"
+    assert teardowns, "the gate's forced teardown never reached its caller"
+
+    _record_gate_run(state, workspace, decision="PASS")
+    for teardown in teardowns:
+        state.gate_process_teardowns.append(
+            {"gate_run": state.gate_runs, **teardown.to_audit_dict()}
+        )
+    state.validate_durations.append(1.0)
+    record = generate_audit_log(
+        config,
+        TaskStory(name="Test", slug="test", story_path=tmp_path / "spec.md"),
+        CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done"),
+    )
+    recorded = record["iterations"]["gate_process_teardowns"]
+    assert len(recorded) == 1
+    assert recorded[0]["gate_run"] == 1
+    assert recorded[0]["action"] == process_group.TEARDOWN_KILLED_SURVIVORS
+    assert recorded[0]["completed"] is True
+    assert gc_pid in recorded[0]["members"] + recorded[0]["escaped_pids"]
+
+
 class TestGateShellCleanExitTeardown:
     def test_gate_command_that_exits_first_does_not_leave_workers_running(
         self, tmp_path: Path
@@ -616,43 +713,13 @@ def test_forced_teardown_appears_in_the_run_audit(tmp_path: Path) -> None:
     at. ``None`` on an invocation that ended cleanly is equally load-bearing: it
     is the difference between "nothing survived" and "nobody checked".
     """
-    import dataclasses
-
     from theforge.agent_types import AgentResult
-    from theforge.config import (
-        DEFAULT_DEV_PROFILE,
-        DEFAULT_PREFLIGHT_PROFILE,
-        DEFAULT_REVIEW_PROFILE,
-        ForgeConfig,
-        RetryPolicy,
-        ValidationConfig,
-        WorkspaceConfig,
-        build_provenance,
-    )
     from theforge.coordinator.audit import generate_audit_log
     from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
     from theforge.task import TaskStory
 
+    config = _audit_config(tmp_path)
     spec_path = tmp_path / "spec.md"
-    spec_path.write_text("# spec", encoding="utf-8")
-    config_path = tmp_path / "forge.yaml"
-    config_path.write_text("project: test\n", encoding="utf-8")
-    config = ForgeConfig(
-        project="test",
-        project_root=tmp_path,
-        workspace=WorkspaceConfig(
-            create_command="mkdir -p {slug}",
-            path_pattern="{slug}",
-            branch_pattern="forge/{slug}",
-        ),
-        validation=ValidationConfig(gate_command="make gate"),
-        dev_profile=DEFAULT_DEV_PROFILE,
-        preflight_profile=DEFAULT_PREFLIGHT_PROFILE,
-        review_pool=[DEFAULT_REVIEW_PROFILE],
-        synthesis_profile=None,
-        retry=RetryPolicy(),
-    )
-    config = dataclasses.replace(config, provenance=build_provenance(config, config_path))
 
     teardown = process_group.ProcessTeardown(
         pgid=90210,

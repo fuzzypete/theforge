@@ -48,8 +48,8 @@ Codex (FAKE_CODEX_MODE):
                   it (#2309).
   escapee_success
                 — like grandchild_success, but the grandchild starts its own
-                  session (setsid) and so leaves the process group entirely; only
-                  the inherited lease token can still reach it (#2309).
+                  session (setsid) and so leaves the process group entirely, so
+                  only descendant observation or the lease token reaches it (#2309).
   unreadable_escapee_success
                 — the hardest shape: a SIP-protected platform binary given an
                   EMPTY environment and its own session, so neither the group nor
@@ -98,7 +98,13 @@ def _spawn_grandchild(detach_io: bool = False, own_session: bool = False) -> Non
     if pidfile:
         with open(pidfile, "w") as fh:
             fh.write(str(grandchild.pid))
-
+    if own_session:
+        # An escapee is only findable by the two mechanisms that survive setsid,
+        # and one of them (descendant observation) needs the CLI to still be
+        # alive when it samples. Keeping working for a moment is what a dev agent
+        # that kicked off a test run does; spawning and exiting in the same
+        # millisecond would test a race the OS itself cannot close on macOS.
+        time.sleep(0.4)
 
 
 def _spawn_unreadable_escapee() -> None:
