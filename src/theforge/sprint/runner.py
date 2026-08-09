@@ -13,7 +13,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -58,6 +58,7 @@ from ..intake import (
 )
 from ..log_util import _log_line
 from ..task import BatchMember, TaskStory
+from . import unmeasured as unmeasured_spend_policy
 from .abnormal import (
     ABNORMAL_LAUNCH_GUARD_DROP,
     ABNORMAL_SHARED_INFRASTRUCTURE,
@@ -69,15 +70,17 @@ from .abnormal import (
 )
 from .audit import (
     _get_or_create_sprint_id,
+    _load_accepted_unmeasured_spend,
     _write_sprint_audit,
     _write_sprint_summary,
     _write_story_audit,
     load_prior_generation_story_audit,
+    persist_accepted_unmeasured_spend,
     persist_accumulated_story_state,
     write_live_story_audit,
 )
 from .auth_gate import enforce_sprint_auth_readiness
-from .budget import evaluate_budget
+from .budget import budget_verification_spend, evaluate_budget
 from .ci_checks import PrCheckState, poll_required_checks, required_pr_check_state
 from .collision import (
     batch_group_id,
@@ -130,6 +133,7 @@ from .story_state import (
     coerce_outcome,
     landing_failure_outcome,
 )
+from .unmeasured import AcceptedUnmeasuredSpend, UnmeasuredSource
 
 # CLI transports whose spend forge cannot measure at all, warned about up front.
 # `codex` left this set in #2019: `codex exec --json` reports a real token split
@@ -898,30 +902,60 @@ def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
         return 0.0
 
 
-def _prior_sprint_cost_incomplete(project_root: Path, sprint_id: str | None) -> bool:
+def _prior_sprint_block(project_root: Path, sprint_id: str | None) -> dict:
+    """Return this sprint's block from sprint-audit.yaml, or ``{}``."""
+    if not sprint_id:
+        return {}
+    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
+    if not audit_path.exists():
+        return {}
+    try:
+        with open(audit_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+        sprint_block = data.get("sprint", {})
+        if not isinstance(sprint_block, dict):
+            return {}
+        if sprint_block.get("sprint_id") != sprint_id:
+            return {}
+        return sprint_block
+    except (OSError, yaml.YAMLError, AttributeError):
+        return {}
+
+
+def _prior_unmeasured_spend_sources(project_root: Path, sprint_id: str | None) -> list[str]:
+    """The sources the prior generation recorded as unmeasured, if any."""
+    recorded = _prior_sprint_block(project_root, sprint_id).get("unmeasured_spend_sources") or []
+    return [str(s) for s in recorded if s] if isinstance(recorded, list) else []
+
+
+def _prior_sprint_cost_incomplete(
+    project_root: Path,
+    sprint_id: str | None,
+    accepted: Mapping[str, AcceptedUnmeasuredSpend] | None = None,
+) -> bool:
     """Return True when the prior generation recorded an incomplete sprint cost.
 
     A carried total from a generation that could not measure all of its spend is
     itself a lower bound; the budget check must know that before enforcing a cap
     against it (#1992). Absent/unreadable records report False — the pre-#1992
     shape simply carries no completeness claim.
+
+    ``accepted`` clears the flag only when the prior generation NAMED what it
+    could not measure and every one of those sources has been accepted with a
+    recorded ceiling (#2310). An incomplete generation that named nothing keeps
+    the flag: there is no source there for an operator to have resolved, so the
+    whole-generation carry remains the honest statement.
     """
-    if not sprint_id:
+    sprint_block = _prior_sprint_block(project_root, sprint_id)
+    if sprint_block.get("cost_complete") is not False:
         return False
-    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
-    if not audit_path.exists():
-        return False
-    try:
-        with open(audit_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        sprint_block = data.get("sprint", {})
-        if not isinstance(sprint_block, dict):
+    if accepted:
+        recorded = sprint_block.get("unmeasured_spend_sources") or []
+        if isinstance(recorded, list) and unmeasured_spend_policy.all_sources_accepted(
+            [str(s) for s in recorded if s], accepted
+        ):
             return False
-        if sprint_block.get("sprint_id") != sprint_id:
-            return False
-        return sprint_block.get("cost_complete") is False
-    except (OSError, yaml.YAMLError, AttributeError):
-        return False
+    return True
 
 
 def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
@@ -3215,6 +3249,8 @@ def run_sprint(
     force: bool = False,
     live_story_slugs: "set[str] | None" = None,
     unresolved_live_slugs: "set[str] | None" = None,
+    accept_unmeasured_spend: Sequence[str] | None = None,
+    accept_unmeasured_reason: str | None = None,
 ) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -3257,6 +3293,16 @@ def run_sprint(
             like ``live_story_slugs`` everywhere protection or deferral matters —
             an unresolved lookup is not evidence that no agent is running — but
             reported honestly as unresolved rather than as observed live work.
+        accept_unmeasured_spend: Unmeasured-spend source ids the operator has
+            deliberately accepted (``issue-2206`` or ``carried:issue-2206`` —
+            both name the same work). Each is resolved against the records the
+            failing run already wrote; one with no derivable ceiling is REFUSED
+            with the reason logged, and the budget guard stays closed on it. An
+            accepted source's ceiling is charged to budget verification in place
+            of the unknown, and the resolution is persisted so a later resume
+            reads it rather than requiring the flag again (#2310).
+        accept_unmeasured_reason: Free-text reason recorded on each acceptance
+            made by this invocation.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
@@ -3660,13 +3706,26 @@ def run_sprint(
     # evaluate rather than dispatch more work against an understated total
     # (#1992). Guarded by ``cost_lock`` alongside ``accumulated_cost``.
     unmeasured_spend: list[str] = []
+    # The subset of ``unmeasured_spend`` this generation produced itself, as
+    # opposed to inherited under a ``carried:`` prefix. An operator acceptance
+    # stands in for one recorded call at one recorded ceiling; spend that
+    # happened HERE is a new unknown nobody has bounded, so it must never be
+    # absorbed by an acceptance made for an earlier occurrence of the same story
+    # (#2310). Guarded by ``cost_lock`` alongside ``unmeasured_spend``.
+    current_generation_unmeasured: set[str] = set()
+
+    def _flag_unmeasured_here(source: str) -> None:
+        """Record a source whose unmeasured spend occurred in THIS run."""
+        unmeasured_spend.append(source)
+        current_generation_unmeasured.add(source)
+
     # Entry-level intake remediation runs in the CLI before run_sprint and
     # spends the same sprint-authorized budget; fold its agent cost into
     # the sprint total so operator-visible accounting matches actual spend.
     if entry_intake_outcomes:
         for _issue_num, _entry_outcome in entry_intake_outcomes.items():
             if _intake_outcome_cost_measured(_entry_outcome) is None:
-                unmeasured_spend.append(f"entry-intake:issue-{_issue_num}")
+                _flag_unmeasured_here(f"entry-intake:issue-{_issue_num}")
         _entry_intake_cost = sum(_intake_outcome_cost(o) for o in entry_intake_outcomes.values())
         if _entry_intake_cost > 0.0:
             accumulated_cost += _entry_intake_cost
@@ -3794,6 +3853,123 @@ def run_sprint(
                 canonical_ref=_prior.get("canonical_ref"),
                 detail=_prior_detail,
             )
+    # ── Operator resolutions of unmeasured spend (#2310) ─────────────────────
+    # A fail-closed guard that no action can satisfy is not a safety property;
+    # it is an absorbing state whose only exit is to stop using the pipeline for
+    # the story — the very outcome the guard exists to prevent. These records
+    # are the deliberate exit: each names one source, the origin of the call
+    # that went unpriced, and the ceiling charged in its place. Nothing here
+    # relabels unmeasured spend as measured — ``cost_complete`` stays False for
+    # it, and the accepted ceiling is charged to budget verification only.
+    #
+    # The cache is keyed by (occurrence, source), never by source alone. A story
+    # has ONE per-story audit, and running it again overwrites that file — so the
+    # carried occurrence and a new one produced here are two different records
+    # read from the same path at two different times. Keyed by source alone, the
+    # carried read wins and the refusal on the NEW unknown would name the old
+    # run's id and ceiling: an operator would go looking at a call they had
+    # already accepted, and the amount they were being asked about would be the
+    # wrong one (#2310 review).
+    _OCCURRENCE_CARRIED = "carried"
+    _OCCURRENCE_CURRENT = "current"
+    _unmeasured_source_cache: dict[tuple[str, str], UnmeasuredSource] = {}
+
+    def _describe_unmeasured_source(
+        raw: str, *, occurrence: str | None = None
+    ) -> UnmeasuredSource:
+        """Resolve one raw source id to its origin and derivable ceiling.
+
+        ``occurrence`` defaults to whichever bucket the source is in: one this
+        run produced reads the audit as it stands now, an inherited one reads it
+        as it stood before any story here could rewrite it.
+        """
+        _occurrence = occurrence or (
+            _OCCURRENCE_CURRENT if raw in current_generation_unmeasured else _OCCURRENCE_CARRIED
+        )
+        key = (_occurrence, unmeasured_spend_policy.normalize_source_id(raw))
+        cached = _unmeasured_source_cache.get(key)
+        if cached is None:
+            _slug = unmeasured_spend_policy.source_slug(raw)
+            _story_audit = (
+                unmeasured_spend_policy.read_story_audit(config.project_root, resolved.name, _slug)
+                if _slug
+                else None
+            )
+            cached = unmeasured_spend_policy.build_source(raw, _story_audit)
+            _unmeasured_source_cache[key] = cached
+        return cached
+
+    accepted_unmeasured: dict[str, AcceptedUnmeasuredSpend] = {}
+    if _sprint_id is not None:
+        for _persisted in _load_accepted_unmeasured_spend(_sprint_id, config.project_root):
+            _restored = AcceptedUnmeasuredSpend.from_dict(_persisted)
+            if _restored is not None:
+                accepted_unmeasured[_restored.source] = _restored
+    _newly_accepted = False
+    if accept_unmeasured_spend:
+        # The set an operator could possibly be talking about: what this run has
+        # already flagged, plus what the prior generation recorded. Accepting a
+        # name outside it would record a resolution of nothing.
+        _known_sources = {unmeasured_spend_policy.normalize_source_id(s) for s in unmeasured_spend}
+        _known_sources.update(
+            unmeasured_spend_policy.normalize_source_id(s)
+            for s in _prior_unmeasured_spend_sources(config.project_root, _sprint_id)
+        )
+        _accepted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        for _raw_accept in accept_unmeasured_spend:
+            _normalized = unmeasured_spend_policy.normalize_source_id(_raw_accept)
+            if not _normalized:
+                continue
+            if _normalized not in _known_sources:
+                _log(
+                    f"REFUSED --accept-unmeasured-spend {_raw_accept}: this sprint has no "
+                    f"unmeasured source by that name "
+                    f"(known: {', '.join(sorted(_known_sources)) or 'none'})"
+                )
+                continue
+            # An operator is always accepting an occurrence that has already been
+            # recorded, so this reads the audit as it stands before dispatch —
+            # never a record some story in this run is about to overwrite.
+            _source = _describe_unmeasured_source(_raw_accept, occurrence=_OCCURRENCE_CARRIED)
+            _accepted = unmeasured_spend_policy.accept(
+                _source,
+                accepted_at=_accepted_at,
+                reason=accept_unmeasured_reason,
+            )
+            if _accepted is None:
+                _log(
+                    f"REFUSED --accept-unmeasured-spend {_raw_accept}: {_source.ceiling_reason}. "
+                    "The guard stays closed — accepting an unbounded unknown would defeat "
+                    "the measurement it stands in for."
+                )
+                continue
+            accepted_unmeasured[_accepted.source] = _accepted
+            _newly_accepted = True
+            _log(
+                f"Accepted unmeasured spend {_accepted.source}: charging "
+                f"${_accepted.accepted_ceiling_usd:.2f} to budget verification "
+                f"({_source.describe()})"
+            )
+    if _newly_accepted:
+        # Written before any dispatch: the resolution is what makes this run
+        # legal, so it must be on disk even if the run dies mid-sprint.
+        if not persist_accepted_unmeasured_spend(
+            _sprint_id,
+            resolved.name,
+            config.project_root,
+            [r.as_dict() for r in accepted_unmeasured.values()],
+        ):
+            # Reporting the acceptance as recorded when it is not would leave an
+            # operator to rediscover the same refusal with no idea they had
+            # already answered it. It still applies to this run — nothing was
+            # lost yet — but say plainly that it will not survive.
+            _log(
+                "WARNING: could not persist the unmeasured-spend acceptance to "
+                f"{config.project_root / '.forge' / 'sprints' / (_sprint_id or '?')}"
+                "/state.yaml — it applies to THIS run only and must be passed "
+                "again on the next one."
+            )
+
     _state_writer: SprintStateWriter | None = None
     stopped_reason: str | None = None
     ci_halt_slug: str | None = None
@@ -3841,8 +4017,41 @@ def run_sprint(
             _log(f"Resuming with prior cost: ${prior_cost:.2f}")
         if _prior_sprint_cost_incomplete(config.project_root, _sprint_id):
             # The carried total came from a generation that recorded incomplete
-            # cost, so it is a lower bound too (#1992).
-            unmeasured_spend.append("carried:prior-generation")
+            # cost, so it is a lower bound too (#1992). An accepted ceiling can
+            # stand in for it — but only per source, and only if the ledger
+            # actually carries that source. Clearing the whole-generation marker
+            # without re-surfacing what it stood for would let the acceptance
+            # open the guard while its ceiling was charged to nothing, under a
+            # cap the ceiling might not even fit (#2310 review).
+            _cleared_by_acceptance = not _prior_sprint_cost_incomplete(
+                config.project_root, _sprint_id, accepted_unmeasured
+            )
+            if _cleared_by_acceptance:
+                # The marker itself is never re-surfaced. It is a derived
+                # statement that SOME source that generation named was
+                # unmeasured, so once every one of those sources is accepted it
+                # asserts nothing the per-source records do not already assert —
+                # and it has no origin, no ceiling and no accept path, so
+                # carrying it forward would refuse the run on a condition no
+                # operator action can satisfy (#2310 review). Only the named,
+                # acceptable sources come across.
+                _carried_already = {
+                    unmeasured_spend_policy.normalize_source_id(s) for s in unmeasured_spend
+                }
+                for _prior_norm in unmeasured_spend_policy.acceptable_prior_sources(
+                    _prior_unmeasured_spend_sources(config.project_root, _sprint_id)
+                ):
+                    if _prior_norm in _carried_already:
+                        continue
+                    # Accepted, and nothing else in this run's ledger names it —
+                    # typically because the accumulated story row was pruned.
+                    # It is still spend this sprint carries, so it goes in the
+                    # ledger by name: its ceiling gets charged, the audit records
+                    # it, and the total stays a lower bound.
+                    unmeasured_spend.append(f"carried:{_prior_norm}")
+                    _carried_already.add(_prior_norm)
+            else:
+                unmeasured_spend.append("carried:prior-generation")
         if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
@@ -3871,6 +4080,21 @@ def run_sprint(
             _log(
                 f"  {triage.slug:<20} {triage.action.upper().replace('_', ' ')} ({triage.reason})"
             )
+
+    # Pin which run each inherited unmeasured source belongs to, BEFORE any story
+    # can rewrite its per-story audit. That file is the only durable record of a
+    # source's occurrence identity, and a story re-running here overwrites it —
+    # so read once, up front, or a source carried from run A would later be
+    # measured against run B's record and an acceptance the operator legitimately
+    # made would be silently discarded (#2310 review).
+    carried_occurrence_ids: dict[str, str | None] = {}
+    for _carried_raw in unmeasured_spend:
+        if _carried_raw in current_generation_unmeasured:
+            continue
+        _carried_origin = _describe_unmeasured_source(
+            _carried_raw, occurrence=_OCCURRENCE_CARRIED
+        ).origin
+        carried_occurrence_ids[_carried_raw] = _carried_origin.get("run_id")
 
     def _recorded_prior_done(slug: str, canonical_ref: str | None = None) -> bool:
         """True when this sprint already recorded the story as run-to-DONE.
@@ -4353,7 +4577,7 @@ def run_sprint(
     # excludes every dollar spent on intake auto-fix attempts.
     for _intake_slug, _intake_outcome in intake_outcomes.items():
         if _intake_outcome_cost_measured(_intake_outcome) is None:
-            unmeasured_spend.append(f"intake:{_intake_slug}")
+            _flag_unmeasured_here(f"intake:{_intake_slug}")
     _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
     if _intake_remediation_cost > 0.0:
         accumulated_cost += _intake_remediation_cost
@@ -4952,7 +5176,7 @@ def run_sprint(
                 if _recovered_stranded is not None:
                     _stranded_cost = _recovered_stranded
             if _stranded_cost is None:
-                unmeasured_spend.append(f"stranded-unmeasured:{slug}")
+                _flag_unmeasured_here(f"stranded-unmeasured:{slug}")
             _set_outcome(
                 slug,
                 StoryOutcome.DROPPED,
@@ -5009,7 +5233,7 @@ def run_sprint(
             _carried_cost = _attribute_prior_generation_cost(slug)
             if work_detail:
                 if _carried_cost is None:
-                    unmeasured_spend.append(f"dropped-with-work:{slug}")
+                    _flag_unmeasured_here(f"dropped-with-work:{slug}")
                 _set_outcome(
                     slug,
                     StoryOutcome.DROPPED,
@@ -5812,12 +6036,34 @@ def run_sprint(
                     break
 
                 with cost_lock:
-                    _budget_decision = evaluate_budget(
-                        accumulated_cost=accumulated_cost,
-                        prior_cost=prior_cost,
-                        budget_usd=resolved.budget_usd,
-                        unmeasured_spend=list(unmeasured_spend),
+                    _budget_accumulated = accumulated_cost
+                    _budget_prior = prior_cost
+                    _budget_unresolved, _budget_applied = unmeasured_spend_policy.partition(
+                        list(unmeasured_spend),
+                        accepted_unmeasured,
+                        current_generation=set(current_generation_unmeasured),
+                        occurrence_ids=carried_occurrence_ids,
                     )
+                # Origin/ceiling lookup reads per-story audits, so it runs
+                # outside ``cost_lock`` — it is reporting, not accounting.
+                _budget_details = (
+                    {
+                        raw: _describe_unmeasured_source(raw).describe()
+                        for raw in _budget_unresolved
+                    }
+                    if _budget_unresolved
+                    else None
+                )
+                _budget_decision = evaluate_budget(
+                    accumulated_cost=_budget_accumulated,
+                    prior_cost=_budget_prior,
+                    budget_usd=resolved.budget_usd,
+                    unmeasured_spend=_budget_unresolved,
+                    accepted_unmeasured_ceiling_usd=unmeasured_spend_policy.accepted_ceiling_total(
+                        _budget_applied
+                    ),
+                    source_details=_budget_details,
+                )
                 if _budget_decision is not None:
                     dag.mark_skipped(task.slug)
                     _budget_reason = _budget_decision.story_reason
@@ -6355,7 +6601,7 @@ def run_sprint(
                     # spend. Record the shortfall alongside it so the dispatch
                     # check knows the running total is a lower bound (#1992).
                     if result.state.total_cost_measured is None:
-                        unmeasured_spend.append(slug)
+                        _flag_unmeasured_here(slug)
                     accumulated_cost += result.state.total_cost
 
                 spec_str = slug_to_spec[slug]
@@ -6728,6 +6974,22 @@ def run_sprint(
     _cost_complete = not unmeasured_spend and all(
         e.cost_usd is not None for e in _story_state.stories()
     )
+    # An acceptance resolves the BUDGET question, never the measurement one:
+    # ``_cost_complete`` above still reads the raw source list, so an accepted
+    # source keeps the sprint total reported as a lower bound. What acceptance
+    # changes is which figure the cap was verified against (#2310).
+    _final_unresolved, _final_accepted = unmeasured_spend_policy.partition(
+        list(unmeasured_spend),
+        accepted_unmeasured,
+        current_generation=set(current_generation_unmeasured),
+        occurrence_ids=carried_occurrence_ids,
+    )
+    _final_accepted_ceiling = unmeasured_spend_policy.accepted_ceiling_total(_final_accepted)
+    _budget_verification_usd = budget_verification_spend(
+        accumulated_cost=accumulated_cost,
+        prior_cost=prior_cost,
+        accepted_unmeasured_ceiling_usd=_final_accepted_ceiling,
+    )
     # Banner, summary, notifications, and SprintResult all project from the
     # same canonical structure — by construction they cannot disagree.
     _canonical_counts = _story_state.counts()
@@ -6748,6 +7010,9 @@ def run_sprint(
         budget_usd=resolved.budget_usd,
         cost_complete=_cost_complete,
         unmeasured_spend_sources=tuple(unmeasured_spend),
+        unresolved_unmeasured_spend_sources=tuple(_final_unresolved),
+        accepted_unmeasured_spend=tuple(r.as_dict() for r in _final_accepted),
+        budget_verification_spend_usd=_budget_verification_usd,
         results=results,
         stopped_reason=stopped_reason,
     )
