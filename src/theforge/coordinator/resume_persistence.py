@@ -26,6 +26,14 @@ run is least healthy:
 * **Merge, never replace.** Each phase writes its own block as it produces it.
   A later save must not erase an earlier phase's block just because the state it
   was called with no longer carries that phase's fields.
+* **Best-founded wins, not latest.** Where two saves both carry a block for the
+  same phase, the one that examined more of the story is kept, and a degraded
+  attempt never displaces a non-degraded one.  The record exists so later work
+  can proceed, and a failed attempt carries strictly less of what later work
+  needs — keeping it because it happened to be written last is how a resumed
+  story deterministically replays the failure it was resumed to get past
+  (#2351).  Every such selection is recorded in :data:`RESUME_SELECTION_KEY` so
+  what the story resumes from is readable without diffing run directories.
 * **Never overwrite a real value with a null.** Both when merging on save and
   when applying on load.
 * **Best-effort.** A sidecar that cannot be written or read must never take down
@@ -74,6 +82,21 @@ PHASE_BLOCKS: tuple[str, ...] = (
 #: lacks it, and classification then reports the obligation as *unknown* rather
 #: than inventing a completed review.
 REVIEW_PROGRESS_KEY = "review_progress"
+
+#: Sibling key carrying the complexity/routing audit — and, nested inside it,
+#: the story allocation.  Not a phase block (nothing reports it as a recovered
+#: phase) but merged and restored alongside them.
+ROUTING_AUDIT_KEY = "complexity_routing_audit"
+
+#: Non-phase key holding the merge's block-selection decisions (#2351).  A
+#: bounded list, oldest first, so an operator reading the record can see that a
+#: less-founded save was refused — or that a better-founded one displaced what
+#: was there — without comparing files across run directories.
+RESUME_SELECTION_KEY = "resume_selection"
+
+#: Cap on retained selection entries.  The record is a recovery aid read when
+#: the run is least healthy; an unbounded audit trail inside it is a liability.
+_MAX_SELECTION_ENTRIES = 20
 
 #: Verdicts that end the review loop.  Anything else recorded as the latest
 #: verdict means the loop was still owed another cycle when the attempt stopped.
@@ -282,7 +305,147 @@ def capture_phase_blocks(state: "CoordinatorState") -> dict[str, Any]:
 # ── Persistence ──────────────────────────────────────────────────────────
 
 
-_METADATA_KEYS = frozenset({"version", "slug", "run_id", "story_content_hash"})
+_METADATA_KEYS = frozenset(
+    {"version", "slug", "run_id", "story_content_hash", RESUME_SELECTION_KEY}
+)
+
+
+# ── Foundedness ──────────────────────────────────────────────────────────
+#
+# What makes one save's block more authoritative than another's for the same
+# phase.  Two signals, in that order of weight:
+#
+# 1. *degraded* — an attempt the coordinator marked degraded produced its block
+#    from a failure, not from an observation.
+# 2. *examined* — how much of the story the phase actually inspected.  Preflight
+#    records this directly as ``criteria_checked``; an attempt that checked
+#    nothing cannot supersede one that checked something, whatever their order.
+#
+# Blocks carrying neither signal (``plan_review``, ``escalation``,
+# ``timeout_escalation``, ``review_progress``) have no foundation to compare and
+# are treated as equally founded, so ordinary incoming-wins merging applies.  A
+# signal must not be invented for them: their content is a decision, not an
+# observation, and the latest one is the one the coordinator acted on.
+
+#: Mirror of ``preflight.COMPLEXITY_SOURCE_DEGRADED``.  Duplicated rather than
+#: imported to keep this module stdlib-only (convention 4).
+_DEGRADED_COMPLEXITY_SOURCE = "preflight_degraded_conservative"
+
+#: Foundation ranks, low to high.  A tuple compares lexicographically, so a
+#: non-degraded block outranks a degraded one whatever either examined.
+_DEGRADED_RANK = 0
+_FOUNDED_RANK = 1
+
+
+def _preflight_foundation(block: Any) -> tuple[int, int] | None:
+    """Return ``(degraded_rank, examined)`` for a preflight block, or None.
+
+    None means the block carries no foundedness signal at all (a record written
+    before either field existed), which the merge treats as "no opinion".
+    """
+    if not isinstance(block, dict) or not block:
+        return None
+    degraded = block.get("degraded")
+    criteria = block.get("criteria_checked")
+    examined = len(criteria) if isinstance(criteria, list) else None
+    if degraded is None and examined is None:
+        return None
+    return (_DEGRADED_RANK if bool(degraded) else _FOUNDED_RANK, examined or 0)
+
+
+def _derived_foundation(block: Any, preflight_block: Any) -> tuple[int, int] | None:
+    """Foundation of a value *derived from* preflight rather than observed.
+
+    ``complexity_routing_audit`` carries its own provenance (``complexity_source``
+    / ``preflight_degraded``, stamped by ``preflight.stamp_complexity_provenance``);
+    ``routing_decision`` carries none and inherits the foundation of the
+    preflight block written in the same save.
+    """
+    inherited = _preflight_foundation(preflight_block)
+    degraded: bool | None = None
+    if isinstance(block, dict):
+        provenance = block.get("preflight_degraded")
+        if isinstance(provenance, dict) and "degraded" in provenance:
+            degraded = bool(provenance.get("degraded"))
+        else:
+            source = block.get("complexity_source")
+            if isinstance(source, str) and source:
+                degraded = source == _DEGRADED_COMPLEXITY_SOURCE
+    if degraded is None:
+        return inherited
+    return (
+        _DEGRADED_RANK if degraded else _FOUNDED_RANK,
+        inherited[1] if inherited is not None else 0,
+    )
+
+
+def block_foundation(
+    name: str, block: Any, sibling_blocks: dict[str, Any] | None = None
+) -> tuple[int, int] | None:
+    """Return how well-founded ``block`` is, or None when it carries no signal.
+
+    ``sibling_blocks`` are the other blocks written by the same save (or already
+    on the record), which is where a derived block's provenance lives.
+    """
+    if name == "preflight":
+        return _preflight_foundation(block)
+    if name in ("routing_decision", ROUTING_AUDIT_KEY):
+        return _derived_foundation(block, (sibling_blocks or {}).get("preflight"))
+    return None
+
+
+def _foundation_report(foundation: tuple[int, int] | None) -> dict[str, Any] | None:
+    """Operator-readable form of a foundation tuple."""
+    if foundation is None:
+        return None
+    return {"degraded": foundation[0] == _DEGRADED_RANK, "examined": foundation[1]}
+
+
+def _merge_phase_blocks(
+    base: dict[str, Any],
+    blocks: dict[str, Any],
+    *,
+    prior_run_id: str | None,
+    run_id: str | None,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Fold ``blocks`` into ``base`` block by block, best-founded winning.
+
+    Returns the merged blocks and the selection decisions worth disclosing.
+    Equal foundation — including two blocks that both carry no signal — keeps
+    the incoming block, so ordinary additive saves behave exactly as before.
+    """
+    merged = dict(base)
+    decisions: list[dict[str, Any]] = []
+    for name, value in blocks.items():
+        if not value:
+            continue
+        existing_block = base.get(name)
+        if not existing_block:
+            merged[name] = value
+            continue
+        prior = block_foundation(name, existing_block, base)
+        incoming = block_foundation(name, value, blocks)
+        if prior is not None and incoming is not None and incoming != prior:
+            keep_existing = incoming < prior
+            decisions.append(
+                {
+                    "phase": name,
+                    "action": "kept_existing" if keep_existing else "replaced_existing",
+                    "reason": (
+                        "incoming_block_less_founded"
+                        if keep_existing
+                        else "incoming_block_more_founded"
+                    ),
+                    "prior_foundation": _foundation_report(prior),
+                    "incoming_foundation": _foundation_report(incoming),
+                    "prior_run_id": prior_run_id,
+                    "incoming_run_id": run_id,
+                }
+            )
+            if keep_existing:
+                continue
+        merged[name] = value
+    return merged, decisions
 
 
 def merge_resume_record(
@@ -300,20 +463,43 @@ def merge_resume_record(
     holds an earlier phase's fields must not erase them.  When the recorded
     story hash disagrees with the current one the prior blocks describe a
     different story and are discarded rather than merged.
+
+    Each block is decided on its own foundation rather than by save order (see
+    the foundedness section above), so a degraded attempt that examined nothing
+    does not displace a stored block from an attempt that succeeded.  Selections
+    that changed or preserved what the story resumes from are recorded under
+    :data:`RESUME_SELECTION_KEY`, which is metadata and never re-enters the
+    block merge.
     """
     base: dict[str, Any] = {}
+    prior_selection: list[dict[str, Any]] = []
+    prior_run_id: str | None = None
     if isinstance(existing, dict) and existing.get("version") == RECORD_VERSION:
         recorded_hash = existing.get("story_content_hash")
         if not (story_hash and recorded_hash and recorded_hash != story_hash):
             base = {k: v for k, v in existing.items() if k not in _METADATA_KEYS}
-    merged = {**base, **{k: v for k, v in blocks.items() if v}}
-    return {
+            recorded_selection = existing.get(RESUME_SELECTION_KEY)
+            if isinstance(recorded_selection, list):
+                prior_selection = [e for e in recorded_selection if isinstance(e, dict)]
+            recorded_run_id = existing.get("run_id")
+            prior_run_id = recorded_run_id if isinstance(recorded_run_id, str) else None
+    merged, decisions = _merge_phase_blocks(
+        base,
+        {k: v for k, v in blocks.items() if v},
+        prior_run_id=prior_run_id,
+        run_id=run_id,
+    )
+    record: dict[str, Any] = {
         "version": RECORD_VERSION,
         "slug": slug,
         "run_id": run_id or (existing or {}).get("run_id"),
         "story_content_hash": story_hash or (existing or {}).get("story_content_hash"),
         **merged,
     }
+    selection = [*prior_selection, *decisions][-_MAX_SELECTION_ENTRIES:]
+    if selection:
+        record[RESUME_SELECTION_KEY] = selection
+    return record
 
 
 def save_resume_record(
@@ -574,6 +760,51 @@ def _set_if_unset(state: "CoordinatorState", attr: str, value: Any) -> bool:
     return True
 
 
+#: Marker keys stamped on a value carried forward from a degraded attempt.
+#: A degraded preflight still yields a conservative complexity score so routing,
+#: timeouts, and allocation have a number — but nothing observed founded it, and
+#: a resumed attempt that consumes it must be able to say so (#2351).
+UNFOUNDED_KEY = "unfounded"
+UNFOUNDED_REASON_KEY = "unfounded_reason"
+UNFOUNDED_SOURCE_KEY = "unfounded_source"
+
+
+def _degraded_provenance(record: dict[str, Any]) -> dict[str, str] | None:
+    """Why this record's derived values are unfounded, or None when they are not.
+
+    The preflight block is the direct signal; the routing audit's own
+    provenance stamp is the fallback for a record whose preflight block was
+    never written or predates the ``degraded`` field.
+    """
+    preflight = record.get("preflight")
+    if isinstance(preflight, dict) and preflight.get("degraded"):
+        return {
+            "reason": str(preflight.get("degraded_reason") or "preflight_degraded"),
+            "source": "preflight",
+        }
+    audit = record.get(ROUTING_AUDIT_KEY)
+    if isinstance(audit, dict):
+        stamped = audit.get("preflight_degraded")
+        if isinstance(stamped, dict) and stamped.get("degraded"):
+            return {
+                "reason": str(stamped.get("degraded_reason") or "preflight_degraded"),
+                "source": ROUTING_AUDIT_KEY,
+            }
+        if audit.get("complexity_source") == _DEGRADED_COMPLEXITY_SOURCE:
+            return {"reason": _DEGRADED_COMPLEXITY_SOURCE, "source": ROUTING_AUDIT_KEY}
+    return None
+
+
+def _mark_unfounded(block: dict[str, Any], provenance: dict[str, str]) -> dict[str, Any]:
+    """Return ``block`` copied with the unfounded markers stamped on it."""
+    return {
+        **block,
+        UNFOUNDED_KEY: True,
+        UNFOUNDED_REASON_KEY: provenance["reason"],
+        UNFOUNDED_SOURCE_KEY: provenance["source"],
+    }
+
+
 def _apply_preflight(state: "CoordinatorState", block: dict[str, Any]) -> bool:
     """Restore preflight fields onto ``state``; return whether anything landed.
 
@@ -703,14 +934,25 @@ def apply_resume_record_to_state(state: "CoordinatorState", record: dict[str, An
         state.routing_decision = routing
         recovered.append("routing_decision")
 
-    routing_audit = record.get("complexity_routing_audit")
+    routing_audit = record.get(ROUTING_AUDIT_KEY)
     if isinstance(routing_audit, dict) and routing_audit and not state.complexity_routing_audit:
+        # A value this attempt has already derived is never overwritten (the
+        # guard above); what lands here is the record's copy being the *only*
+        # available one. When the attempt that derived it was degraded, it is
+        # carried forward marked as unfounded rather than silently taken as
+        # founded, so every later consumer of the figure sees what it rests on.
+        provenance = _degraded_provenance(record)
+        if provenance is not None:
+            routing_audit = _mark_unfounded(routing_audit, provenance)
         state.complexity_routing_audit = routing_audit
         # The story allocation rides inside the routing audit (#2169) so a
         # resumed attempt reports spend against the same basis the first
         # attempt derived, instead of re-deriving against a moved distribution.
         allocation = routing_audit.get("story_allocation")
         if isinstance(allocation, dict) and allocation and not state.story_allocation:
+            if provenance is not None:
+                allocation = _mark_unfounded(allocation, provenance)
+                routing_audit["story_allocation"] = allocation
             state.story_allocation = allocation
 
     plan_review = record.get("plan_review")
@@ -753,6 +995,12 @@ def recover_phase_state(
     ``reentry_impact`` carries the re-entry analysis when the recovery changes
     which phases run — today, when a recovered escalate-gate decision means the
     outstanding review cycle will not be run.  None otherwise.
+
+    ``block_selection`` carries the record's merge decisions, so the audit and
+    the ``phase_recovery`` log event state which attempt's phase output the
+    story is resuming from — a save that refused a degraded block, or one that
+    was displaced by a better-founded one, is visible there rather than only by
+    diffing run directories (#2351).
     """
     record = load_resume_record(project_root, slug)
     if record is None:
@@ -762,6 +1010,7 @@ def recover_phase_state(
             "recovered_phases": [],
             "source_run_id": None,
             "reentry_impact": None,
+            "block_selection": [],
         }
 
     usable, reason = validate_resume_record(record, story_content=story_content)
@@ -772,6 +1021,7 @@ def recover_phase_state(
             "recovered_phases": [],
             "source_run_id": record.get("run_id"),
             "reentry_impact": None,
+            "block_selection": [],
         }
 
     recovered = apply_resume_record_to_state(state, record)
@@ -782,4 +1032,20 @@ def recover_phase_state(
         "source_run_id": record.get("run_id"),
         "recorded_phases": [name for name in PHASE_BLOCKS if record.get(name)],
         "reentry_impact": _reentry_impact(record, recovered),
+        "block_selection": block_selection(record),
     }
+
+
+def block_selection(record: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Return the merge's block-selection decisions for ``record``.
+
+    One derivation, read by ``recover_phase_state`` and available to any status
+    surface that wants to report what a resume would proceed from without
+    starting a run.
+    """
+    if not isinstance(record, dict):
+        return []
+    entries = record.get(RESUME_SELECTION_KEY)
+    if not isinstance(entries, list):
+        return []
+    return [entry for entry in entries if isinstance(entry, dict)]
