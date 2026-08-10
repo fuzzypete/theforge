@@ -422,6 +422,176 @@ def test_dependency_skip(tmp_path: Path) -> None:
     assert any("issue-8" in a for a in entry["recommended_next_actions"])
 
 
+def test_dependency_skip_names_the_deps_the_run_recorded(tmp_path: Path) -> None:
+    """The recorded reason names the blocker; a landed depends_on entry does not.
+
+    ``depends_on`` is the story's declaration, and it keeps naming dependencies
+    that have since landed. The sprint's own skip sentence names what actually
+    held the story back (#2312).
+    """
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-9",
+                    "outcome": "SKIPPED",
+                    "depends_on": ["issue-8", "issue-2226"],
+                    "error": "dependency failed: issue-8",
+                }
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-9"]
+    assert entry["primary_failure_class"] == "dependency_skip"
+    actions = entry["recommended_next_actions"]
+    assert any("issue-8" in a for a in actions)
+    assert not any("issue-2226" in a for a in actions)
+
+
+# ── Engine: skips classified from the reason the run recorded (#2312) ─────────
+
+
+def _skipped_with_reason(reason: str, **extra: object) -> dict:
+    story = {"slug": "issue-2206", "path": "Issue #2206", "outcome": "SKIPPED", "error": reason}
+    story.update(extra)
+    return story
+
+
+_BUDGET_UNVERIFIABLE_REASON = (
+    "budget unverifiable (spend unmeasured for 2 source(s) "
+    "[carried:issue-2206, carried:prior-generation]; measured $0.00 of $50.00 cap is a "
+    "lower bound, so the cap cannot be verified)"
+)
+
+
+def test_budget_unverifiable_skip_is_not_a_dependency_skip(tmp_path: Path) -> None:
+    """A budget-verification skip keeps its own class, reason and action (#2312).
+
+    The story declares a dependency that has landed and its log directory still
+    holds a *prior generation's* provider quota error. Neither may supply the
+    classification, the displayed reason, or the recommended action.
+    """
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    _BUDGET_UNVERIFIABLE_REASON,
+                    depends_on=["issue-2226"],
+                )
+            ]
+        ),
+    )
+    stale = d / "issue-2206"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "review-iter1.log").write_text(
+        "You've hit your usage limit. Upgrade to Pro or try again at Aug 8th, 2026 7:59 AM.\n",
+        encoding="utf-8",
+    )
+
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "sprint_budget_unverifiable"
+    # The reason a surface shows is the reason the run recorded: the first
+    # non-baseline evidence excerpt leads with it, not with the stale quota text.
+    lead = entry["evidence"][0]
+    assert lead["rule_id"] == "sprint_budget_unverifiable"
+    assert "spend unmeasured for 2 source(s)" in lead["excerpt"]
+    # The other generation's artifacts are not carried as evidence for a skip
+    # this run decided on its own — surfaces quote evidence as the cause.
+    assert {item["rule_id"] for item in entry["evidence"]} == {
+        "sprint_budget_unverifiable",
+        "captured_outcome",
+    }
+    actions = entry["recommended_next_actions"]
+    assert not any("land blocking dependencies" in a for a in actions)
+    assert not any("issue-2226" in a for a in actions)
+    assert not any("quota" in a for a in actions)
+    assert any("unmeasured" in a for a in actions)
+    # Nothing inferred from the other run's artifacts is asserted as a factor.
+    assert entry["contributing_factors"] == []
+
+
+def test_budget_exhausted_skip_classifies_as_budget_exhausted(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "budget exhausted (sprint $48.00 + carried $4.00 = $52.00 >= $50.00)",
+                    depends_on=["issue-2226"],
+                )
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "sprint_budget_exhausted"
+    assert any("budget" in a for a in entry["recommended_next_actions"])
+    assert not any("land blocking dependencies" in a for a in entry["recommended_next_actions"])
+
+
+def test_auth_circuit_skip_classifies_as_credential_rejection(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "agent credential rejected during DEV of issue-2205: OAuth token revoked",
+                    depends_on=["issue-2226"],
+                )
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "agent_auth_rejected"
+    assert any("re-authenticate" in a for a in entry["recommended_next_actions"])
+
+
+def test_collision_stand_down_skip_classifies_as_stand_down(tmp_path: Path) -> None:
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "collision gate stood down: the files it planned to change are held "
+                    "by preserved work that has not landed"
+                )
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "collision_stand_down"
+    assert any("preserved work" in a for a in entry["recommended_next_actions"])
+
+
+def test_unclassified_skip_reason_says_so_instead_of_naming_a_class(tmp_path: Path) -> None:
+    """A recorded reason no rule receives is reported as unclassified (#2312)."""
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "the scheduler withdrew the story for a reason nothing classifies",
+                    depends_on=["issue-2226"],
+                )
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "taxonomy_gap"
+    excerpts = " ".join(item["excerpt"] for item in entry["evidence"])
+    assert "the scheduler withdrew the story" in excerpts
+    actions = entry["recommended_next_actions"]
+    assert not any("land blocking dependencies" in a for a in actions)
+    assert any("no rule in this taxonomy classifies" in a for a in actions)
+
+
 # ── Engine: unknown residual never drops ──────────────────────────────────────
 
 
@@ -1133,7 +1303,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 10
+    assert payload["ruleset_version"] == 11
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
@@ -2043,6 +2213,49 @@ def test_completion_seam_summary_to_rca(tmp_path: Path) -> None:
     assert rca["sprint_run_id"] == "run-seam"
     entry = rca["stories"]["issue-1326"]
     assert entry["primary_failure_class"] == "worker_timeout"
+
+
+def test_report_seam_budget_skip_reaches_the_operator_intact(tmp_path: Path) -> None:
+    """Engine → digest seam: what the operator reads is what the run recorded.
+
+    The classification handoff crosses two artifacts (summary → sprint-rca.yaml)
+    and one renderer, and every part of the #2312 defect was only visible at the
+    end of that chain: the class, the quoted reason, and the NEXT action.
+    """
+    import io
+    from unittest.mock import patch
+
+    from theforge.cli.sprint_digest import display_sprint_digest
+
+    d = _sprint_dir(tmp_path, name="issues-2206,2226")
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {"slug": "issue-2226", "path": "Issue #2226", "outcome": "DONE"},
+                _skipped_with_reason(_BUDGET_UNVERIFIABLE_REASON, depends_on=["issue-2226"]),
+            ],
+            run_id="6796605f9982",
+        ),
+    )
+    stale = d / "issue-2206"
+    stale.mkdir(parents=True, exist_ok=True)
+    (stale / "review-iter1.log").write_text(
+        "You've hit your usage limit. Upgrade to Pro or try again at Aug 8th, 2026 7:59 AM.\n",
+        encoding="utf-8",
+    )
+    assert write_sprint_rca(d) is not None
+
+    buf = io.StringIO()
+    with patch("sys.stdout", buf):
+        assert display_sprint_digest("6796605f9982", tmp_path) == 0
+    out = buf.getvalue()
+
+    assert "sprint_budget_unverifiable" in out
+    assert "dependency_skip" not in out
+    assert "spend unmeasured for 2 source(s)" in out
+    assert "usage limit" not in out
+    assert "land blocking dependencies" not in out
 
 
 # ── CLI: forge rca verb ───────────────────────────────────────────────────────
