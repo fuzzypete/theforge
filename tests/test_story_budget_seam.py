@@ -477,6 +477,50 @@ class TestResumeCarriesTheAllocation:
 
         assert state.story_allocation == allocation
 
+    def test_a_degraded_only_allocation_carries_forward_marked_unfounded(
+        self, tmp_path: Path
+    ) -> None:
+        """A figure derived while degraded stays labelled through the seam (#2351).
+
+        The degraded attempt's allocation is the only one on the record, so it
+        is what the resumed story is judged against — but nothing observed
+        founded it, and preflight's rescale and the audit evaluation must both
+        carry that fact rather than presenting it as a derived number.
+        """
+        from theforge.coordinator.resume_persistence import apply_resume_record_to_state
+
+        allocation = sb.allocation_from_samples(9, _SCORE_9_COSTS, configured_usd=50.0).as_dict()
+        record = {
+            "preflight": {
+                "complexity": "large",
+                "complexity_score": 9,
+                "verdict": "PROCEED",
+                "degraded": True,
+                "degraded_reason": "agent_failed_with_risk_signals",
+                "criteria_checked": [],
+            },
+            "complexity_routing_audit": {
+                "complexity_source": "preflight_degraded_conservative",
+                "story_allocation": allocation,
+            },
+        }
+        state = CoordinatorState()
+        apply_resume_record_to_state(state, record)
+
+        assert state.story_allocation["unfounded"] is True
+        assert state.story_allocation["unfounded_reason"] == "agent_failed_with_risk_signals"
+
+        _apply_preflight_config(_config(tmp_path), state)
+
+        # The rescale reuses the carried allocation and keeps its provenance.
+        assert state.story_allocation["carried"] is True
+        assert state.story_allocation["unfounded"] is True
+        assert state.complexity_routing_audit["story_allocation"]["unfounded"] is True
+
+        block = sb.evaluate_allocation_dict(state.story_allocation, 4.0)
+        assert block["unfounded"] is True
+        assert block["unfounded_reason"] == "agent_failed_with_risk_signals"
+
     def test_resumed_preflight_reuses_the_restored_allocation(self, tmp_path: Path) -> None:
         """The restored allocation survives the resumed run's preflight re-run.
 
