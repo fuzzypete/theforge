@@ -140,6 +140,42 @@ clarification; if you rewrote the diagnosis, remove the worktree
 re-running so the dev starts clean. `unknown` just means the tree predates the
 record — it is not a defect.
 
+### Which attempt a resume proceeds from (issue #2351)
+
+The per-story resume record (`.forge/resume_state/<slug>.json`) keeps the
+**best-founded** block for each phase, not the most recent one. A preflight
+attempt that was killed by signal — `degraded: true`, `criteria_checked: []` —
+no longer displaces a stored block from an attempt that exited cleanly, so
+resuming continues from the clean result instead of deterministically replaying
+the failure and the higher complexity score it derived while observing nothing.
+
+Two signals decide it, in order: whether the attempt was marked degraded, then
+how much it examined (`criteria_checked` for preflight). `routing_decision` and
+`complexity_routing_audit` inherit the founding preflight's standing via the
+`complexity_source` / `preflight_degraded` provenance already stamped on the
+audit. Blocks that record a *decision* rather than an observation
+(`plan_review`, `escalation`, `timeout_escalation`, `review_progress`) carry no
+foundedness signal and still merge latest-wins.
+
+Every selection is recorded, so this never has to be reconstructed by diffing
+run directories:
+
+- `resume_selection` on the record itself — a bounded list of
+  `{phase, action, reason, prior_foundation, incoming_foundation, prior_run_id,
+  incoming_run_id}`, where `action` is `kept_existing` (a less-founded save was
+  refused) or `replaced_existing` (a better-founded save displaced what was
+  there).
+- `phase_recovery.block_selection` in the run audit and in the `phase_recovery`
+  log event — the same list, at the moment a resume reads it.
+
+Where a degraded attempt's derived values are the **only** ones available, they
+are still carried forward — a resumed story needs a number — but marked:
+`state.complexity_routing_audit` and `story_allocation` carry `unfounded: true`,
+`unfounded_reason` (the degraded reason), and `unfounded_source`. Those markers
+survive preflight's re-scale and the allocation evaluation, so an allocation or
+worker ceiling resting on a phase that observed nothing reads as such on the
+story row rather than as a derived figure.
+
 ## 2. Branch & forward-port model
 
 - Fixes land on the **base branch**. `forward-port.yml` then auto-carries every

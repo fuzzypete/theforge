@@ -101,6 +101,307 @@ def _escalation_state() -> CoordinatorState:
     return state
 
 
+#: Routing decision a degraded attempt produced — distinguishable from the one
+#: the founded attempts produced, so adopting the wrong one is visible.
+DEGRADED_ROUTING_BLOCK = {
+    "origin": "degraded_fallback",
+    "code_review": {"final": {"models": ["opus"]}},
+}
+
+
+def _founded_preflight_state(*, criteria: int = 2, score: int = 8) -> CoordinatorState:
+    """A preflight attempt that exited cleanly having checked ``criteria`` criteria."""
+    state = _preflight_state()
+    state.preflight_complexity_score = score
+    state.preflight_criteria_checked = [
+        {"criterion": f"criterion {index}", "satisfied": True} for index in range(criteria)
+    ]
+    state.preflight_degraded = False
+    state.complexity_routing_audit = {
+        "complexity": "large",
+        "complexity_source": "preflight",
+        "preflight_degraded": {"degraded": False, "complexity_source": "preflight"},
+        "story_allocation": {"allocation_usd": 12.0, "complexity_score": score},
+    }
+    return state
+
+
+def _degraded_preflight_state() -> CoordinatorState:
+    """A preflight attempt killed by signal: nothing checked, scored conservatively."""
+    state = _preflight_state()
+    state.preflight_complexity_score = 9
+    state.preflight_criteria_checked = []
+    state.preflight_degraded = True
+    state.preflight_degraded_reason = "agent_failed_with_risk_signals"
+    state.preflight_failure_action = "escalate"
+    state.preflight_risk_signals = ["killed_by_signal"]
+    state.routing_decision = dict(DEGRADED_ROUTING_BLOCK)
+    state.complexity_routing_audit = {
+        "complexity": "large",
+        "complexity_source": "preflight_degraded_conservative",
+        "preflight_degraded": {
+            "degraded": True,
+            "degraded_reason": "agent_failed_with_risk_signals",
+            "complexity_source": "preflight_degraded_conservative",
+        },
+        "story_allocation": {"allocation_usd": 50.8, "complexity_score": 9},
+    }
+    return state
+
+
+class TestFoundedBlockSelection:
+    """A failed attempt never displaces a stored result of the same phase (#2351).
+
+    The record is written so later work can proceed; an attempt that examined
+    nothing carries strictly less of what later work needs, whatever its order.
+    """
+
+    def test_degraded_save_does_not_displace_a_founded_one(self, tmp_path: Path) -> None:
+        save_resume_record(
+            tmp_path,
+            _founded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-clean",
+        )
+        save_resume_record(
+            tmp_path,
+            _degraded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-killed",
+        )
+
+        loaded = load_resume_record(tmp_path, "test-story")
+        assert loaded is not None
+        assert loaded["preflight"]["degraded"] is False
+        assert loaded["preflight"]["complexity_score"] == 8
+        assert len(loaded["preflight"]["criteria_checked"]) == 2
+        assert loaded["routing_decision"] == ROUTING_BLOCK
+        assert loaded["complexity_routing_audit"]["complexity_source"] == "preflight"
+        assert loaded["complexity_routing_audit"]["story_allocation"]["allocation_usd"] == 12.0
+
+    def test_resume_proceeds_from_the_founded_attempt(self, tmp_path: Path) -> None:
+        """The fix-success criterion: resuming continues from the clean result."""
+        save_resume_record(
+            tmp_path,
+            _founded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-clean",
+        )
+        save_resume_record(
+            tmp_path,
+            _degraded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-killed",
+        )
+
+        resumed = CoordinatorState()
+        recovery = recover_phase_state(
+            tmp_path, resumed, slug="test-story", story_content=STORY_CONTENT
+        )
+
+        assert recovery["status"] == "recovered"
+        assert resumed.preflight_degraded is False
+        assert resumed.preflight_complexity_score == 8
+        assert resumed.preflight_failure_action is None
+        assert resumed.routing_decision == ROUTING_BLOCK
+        # The founded figure is founded: nothing is marked carried-unfounded.
+        assert "unfounded" not in resumed.complexity_routing_audit
+        assert "unfounded" not in resumed.story_allocation
+
+    def test_a_zero_criteria_save_cannot_supersede_a_checked_one(self, tmp_path: Path) -> None:
+        """Foundedness, not degraded-ness alone, decides between two clean saves."""
+        checked = _founded_preflight_state(criteria=2, score=8)
+        nothing_checked = _founded_preflight_state(criteria=0, score=9)
+
+        save_resume_record(
+            tmp_path, checked, slug="test-story", story_content=STORY_CONTENT, run_id="run-a"
+        )
+        save_resume_record(
+            tmp_path,
+            nothing_checked,
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-b",
+        )
+
+        loaded = load_resume_record(tmp_path, "test-story")
+        assert loaded is not None
+        assert loaded["preflight"]["complexity_score"] == 8
+
+    def test_a_better_founded_later_save_replaces_the_stored_one(self, tmp_path: Path) -> None:
+        save_resume_record(
+            tmp_path,
+            _founded_preflight_state(criteria=1, score=8),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-thin",
+        )
+        thorough = _founded_preflight_state(criteria=3, score=6)
+        save_resume_record(
+            tmp_path,
+            thorough,
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-thorough",
+        )
+
+        loaded = load_resume_record(tmp_path, "test-story")
+        assert loaded is not None
+        assert loaded["preflight"]["complexity_score"] == 6
+        assert len(loaded["preflight"]["criteria_checked"]) == 3
+
+        entries = loaded["resume_selection"]
+        replaced = [e for e in entries if e["phase"] == "preflight"]
+        assert [e["action"] for e in replaced] == ["replaced_existing"]
+        assert replaced[0]["reason"] == "incoming_block_more_founded"
+        assert replaced[0]["prior_foundation"] == {"degraded": False, "examined": 1}
+        assert replaced[0]["incoming_foundation"] == {"degraded": False, "examined": 3}
+        assert replaced[0]["prior_run_id"] == "run-thin"
+        assert replaced[0]["incoming_run_id"] == "run-thorough"
+
+    def test_selection_is_disclosed_to_the_operator_on_recovery(self, tmp_path: Path) -> None:
+        """What the story resumes from is readable without diffing run dirs."""
+        save_resume_record(
+            tmp_path,
+            _founded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-clean",
+        )
+        save_resume_record(
+            tmp_path,
+            _degraded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-killed",
+        )
+
+        recovery = recover_phase_state(
+            tmp_path, CoordinatorState(), slug="test-story", story_content=STORY_CONTENT
+        )
+
+        by_phase = {entry["phase"]: entry for entry in recovery["block_selection"]}
+        assert by_phase["preflight"]["action"] == "kept_existing"
+        assert by_phase["preflight"]["reason"] == "incoming_block_less_founded"
+        assert by_phase["preflight"]["prior_foundation"] == {"degraded": False, "examined": 2}
+        assert by_phase["preflight"]["incoming_foundation"] == {"degraded": True, "examined": 0}
+        assert by_phase["preflight"]["incoming_run_id"] == "run-killed"
+        assert by_phase["complexity_routing_audit"]["action"] == "kept_existing"
+        assert by_phase["routing_decision"]["action"] == "kept_existing"
+
+    def test_selection_metadata_does_not_re_enter_the_block_merge(self, tmp_path: Path) -> None:
+        """The disclosure is metadata: it never becomes a phase block itself."""
+        for state, run_id in (
+            (_founded_preflight_state(), "run-clean"),
+            (_degraded_preflight_state(), "run-killed"),
+            (_plan_review_state(), "run-later"),
+        ):
+            save_resume_record(
+                tmp_path, state, slug="test-story", story_content=STORY_CONTENT, run_id=run_id
+            )
+
+        loaded = load_resume_record(tmp_path, "test-story")
+        assert loaded is not None
+        # Survives the save that carried no selection decision of its own.
+        assert [e["phase"] for e in loaded["resume_selection"]] == [
+            "preflight",
+            "routing_decision",
+            "complexity_routing_audit",
+        ]
+        recovery = recover_phase_state(
+            tmp_path, CoordinatorState(), slug="test-story", story_content=STORY_CONTENT
+        )
+        assert "resume_selection" not in recovery["recorded_phases"]
+        assert "resume_selection" not in recovery["recovered_phases"]
+
+    def test_blocks_with_no_foundedness_signal_keep_incoming_wins(self) -> None:
+        """A decision is not an observation: the latest one is what the
+        coordinator acted on, so escalation and plan review still merge by order."""
+        existing = {
+            "version": RECORD_VERSION,
+            "slug": "test-story",
+            "escalation": {"decision": "advisory_pending"},
+            "plan_review": {"decision": "reject"},
+        }
+        merged = merge_resume_record(
+            existing,
+            {
+                "escalation": {"decision": "operator_approved"},
+                "plan_review": {"decision": "approve"},
+            },
+            slug="test-story",
+            story_hash=None,
+            run_id="run-2",
+        )
+        assert merged["escalation"]["decision"] == "operator_approved"
+        assert merged["plan_review"]["decision"] == "approve"
+        assert "resume_selection" not in merged
+
+
+class TestDegradedValuesCarryForwardAsUnfounded:
+    """A figure derived while degraded is marked wherever later stages read it."""
+
+    def test_degraded_only_record_marks_the_routing_audit_and_allocation(
+        self, tmp_path: Path
+    ) -> None:
+        save_resume_record(
+            tmp_path,
+            _degraded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-killed",
+        )
+
+        resumed = CoordinatorState()
+        recover_phase_state(tmp_path, resumed, slug="test-story", story_content=STORY_CONTENT)
+
+        assert resumed.complexity_routing_audit["unfounded"] is True
+        assert resumed.complexity_routing_audit["unfounded_reason"] == (
+            "agent_failed_with_risk_signals"
+        )
+        assert resumed.story_allocation["unfounded"] is True
+        assert resumed.story_allocation["unfounded_source"] == "preflight"
+        assert resumed.complexity_routing_audit["story_allocation"]["unfounded"] is True
+
+    def test_a_value_this_attempt_derived_is_not_overwritten(self, tmp_path: Path) -> None:
+        save_resume_record(
+            tmp_path,
+            _degraded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-killed",
+        )
+
+        live = CoordinatorState()
+        live.complexity_routing_audit = {"complexity": "medium", "complexity_source": "preflight"}
+        live.story_allocation = {"allocation_usd": 3.0, "complexity_score": 5}
+
+        recover_phase_state(tmp_path, live, slug="test-story", story_content=STORY_CONTENT)
+
+        assert live.complexity_routing_audit["complexity"] == "medium"
+        assert "unfounded" not in live.complexity_routing_audit
+        assert live.story_allocation["allocation_usd"] == 3.0
+
+    def test_founded_record_carries_no_unfounded_marker(self, tmp_path: Path) -> None:
+        save_resume_record(
+            tmp_path,
+            _founded_preflight_state(),
+            slug="test-story",
+            story_content=STORY_CONTENT,
+            run_id="run-clean",
+        )
+
+        resumed = CoordinatorState()
+        recover_phase_state(tmp_path, resumed, slug="test-story", story_content=STORY_CONTENT)
+
+        assert "unfounded" not in resumed.complexity_routing_audit
+        assert "unfounded" not in resumed.story_allocation
+
+
 class TestRecordPersistence:
     """The record round-trips, merges across phases, and refuses bad input."""
 
