@@ -17,7 +17,7 @@ models:
     #                                 the cheap-bucket tie-break: got 4 preflights (at sonnet-equal cost, no
     #                                 savings) but zero dev runs — profile reranker starves zero-history models
     #                                 regardless of order. Reverted same day; real fix is #1617.
-    - openai/gpt-5.5/cli          # OpenAI's recommended coding model; overlay entry below
+    - openai/gpt-5.5/cli          # OpenAI's recommended coding model (promoted to the catalog, #2252)
     # GPT-5.6 (2026-08-05, #2207). Identifiers verified against the live /v1/models list for this
     # key: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna.
     #
@@ -32,21 +32,25 @@ models:
     # carrying a server-side default reasoning_effort. Codex does its own tool calling, so cli avoids
     # the whole path. This also removes the only OpenAI api profiles from this project.
     #
-    # NOT fixed by this change: cost. runners/runner_codex.py:624 prices codex usage through
-    # schema_utils._estimate_cost, the same PRICING_TABLE lookup the api path uses, so these models
-    # still record cost-unknown on either transport until #2335 lands. Expect $?.??? and do not read
-    # it as this change having failed.
-    # UNBLOCKED 2026-08-08 (#2207). The BLOCKED gate here was the temperature bug: check-providers
-    # live-probe returned 400 on both ("'temperature' does not support 0 with this model. Only the
-    # default (1) value") because _is_reasoning_model in runners/schema_utils.py matched only ^o\d
-    # plus two deepseek prefixes. #2222 removed temperature from all adapters, so the gate is gone.
+    # Cost: FIXED. The note here used to say these record cost-unknown until #2335 lands. #2335 has
+    # landed and closed, and the audit for run 41b3bef1268f (2026-08-11) carries a real $2.18 against
+    # gpt-5.6-sol on the codex transport. Expect figures, not $?.???.
     #
-    # Prices below are now provider-attested — read from OpenAI's own model docs 2026-08-08, not the
-    # secondary-source seeds this block previously carried. Those seeds were wrong by exactly 2x on
-    # both entries (sol $2.50/$15 vs actual $5/$30; terra $1/$6 vs actual $2/$12), which would have
-    # ranked both as cheaper than they are and biased exploration toward them. pricing_provenance is
-    # set so the figures are routing-effective rather than indicative; #2206 supersedes them with
-    # observed cost once these models have run history.
+    # Prices are provider-attested — re-read from OpenAI's published pricing 2026-08-11, confirming
+    # the 2026-08-08 figures. They are the SHORT-CONTEXT rates; long context bills sol $10/$45 and
+    # terra $4/$18, and the schema holds one rate per identity, so a long-context run is understated.
+    # An earlier secondary-source seed was wrong by exactly 2x on both (sol $2.50/$15, terra $1/$6),
+    # which would have ranked them cheaper than they are and biased exploration toward them.
+    # #2206 supersedes these with observed cost once each has run history.
+    #
+    # RETIREMENT PENDING, NOT BLOCKED. These entries were promoted into the shipped catalog on
+    # 2026-08-11, so the definitions below are now duplicates rather than the sole source. They
+    # CANNOT be replaced with `- openai/gpt-5.6-sol/cli` shorthands yet: the orchestrator runs an
+    # installed rc, and no rc carrying the catalog entries has been cut. Swapping early makes the
+    # identity unresolvable and `forge check-config` fails closed with "Unknown model ... not in
+    # AGENT_REGISTRY", which takes every forge command down (observed, 2026-08-11). This is the
+    # sequencing #2252 recorded: promote, ship an rc, then retire the duplicate. Do the swap in the
+    # first release AFTER an rc containing these catalog entries.
     - provider: openai
       model: gpt-5.6-sol
       transport: {kind: cli}
@@ -68,10 +72,22 @@ models:
     # Both phases it is eligible for need tools — review calls submit_review — so it is unusable in
     # both. It was also handed the escalation-advisor role, which phase_eligibility cannot restrict
     # (#2332), and produced no advisory report, leaving that gate with six options and no
-    # recommendation. Separately it is absent from the accounting table, so its runs record
-    # cost-unknown (#2335). Nothing here disputes the price or the tier; the model cannot call tools
-    # on this adapter. Re-enable when #2332 and #2335 have landed and a live probe returns a
-    # tool-call response, and record the run id here.
+    # recommendation.
+    #
+    # BENCH REASON REVISED 2026-08-11. Two of the three stated reasons no longer hold, and the
+    # remaining one is probably not about this model at all:
+    #   - "absent from the accounting table, so its runs record cost-unknown (#2335)": #2335 landed
+    #     and is closed. A declared price is now accounted for.
+    #   - "the model cannot call tools on this adapter": the entry below declares transport api, and
+    #     api is exactly what produced the identical tool-call 400 on gpt-5.6-sol and -terra. That
+    #     was a transport defect, not a model limitation, and correcting those two to cli fixed it.
+    #     This entry was never re-probed under cli, so the evidence behind this line describes the
+    #     adapter it was declared on rather than anything about luna.
+    # #2332 (escalation-advisor role ignores phase_eligibility) is still OPEN and is the one live
+    # blocker, so this stays benched. Re-enable by declaring transport cli — not api — after #2332
+    # lands and a live `codex exec --json -m gpt-5.6-luna` tool-call probe returns a structured
+    # response; record the run id here. Price below is OpenAI's published short-context rate
+    # (re-read 2026-08-11); long context bills $0.40/$1.80.
     # - provider: openai
     #   model: gpt-5.6-luna
     #   transport: {kind: api}
@@ -99,7 +115,7 @@ models:
     #                                 since 2026-05, Google's recommended model for agentic+coding. Beats
     #                                 3.1-pro on tool-call chaining (MCP Atlas 83.6%, Terminal-Bench 76.2 vs
     #                                 70.3) — the exact no-submit failure class that benched 3.1-pro (#1598).
-    #                                 Overlay entry below; promote to AGENT_REGISTRY when the registry story lands.
+    #                                 Promoted to the shipped catalog by #2252; this line is now policy only.
     # Both benches below are RETAINED as of 2026-08-05 (#2207), but their exit condition is
     # restated. The prior wording — "re-enable when adaptive routing can decide reviewer fitness
     # automatically" — was not checkable, so neither bench had a defined exit and both persisted by
