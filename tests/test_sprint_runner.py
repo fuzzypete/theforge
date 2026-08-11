@@ -28,6 +28,7 @@ from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phas
 from theforge.sprint.dag import (
     StoryDAG,
     _branch_merge_evidence,
+    _has_base_commit_closing_issue,
     _is_branch_merged,
     build_dag,
     resolve_satisfied_dependencies,
@@ -682,6 +683,19 @@ def test_is_branch_merged_not_ancestor_without_audit(tmp_path: Path) -> None:
     assert result is False
 
 
+def _is_issue_grep(cmd: list[str], issue_number: int) -> bool:
+    """True when ``cmd`` is the base-commit scan for ``issue_number``.
+
+    Matches on the presence of a ``--grep=`` argument mentioning the issue
+    rather than on its exact spelling: the prefilter pattern is an
+    implementation detail, and pinning it here would make these mocks agree
+    with a prefilter that no longer matches what git is actually asked.
+    """
+    return cmd[:2] == ["git", "log"] and any(
+        c.startswith("--grep=") and str(issue_number) in c for c in cmd
+    )
+
+
 def _mock_base_commit(message: bytes, issue_number: int = 265):
     """Git mock: branch is not an ancestor, base carries ``message`` for the issue."""
 
@@ -690,7 +704,7 @@ def _mock_base_commit(message: bytes, issue_number: int = 265):
         if "--is-ancestor" in cmd:
             m.returncode = 1
             m.stdout = b""
-        elif cmd[:2] == ["git", "log"] and f"--grep=#{issue_number}" in cmd:
+        elif _is_issue_grep(cmd, issue_number):
             m.returncode = 0
             m.stdout = message
         else:
@@ -826,6 +840,50 @@ def test_branch_merge_evidence_landed_audit_does_not_veto_closing_reference(
         evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
     assert evidence.merged is True
     assert evidence.source == "issue_commit"
+
+
+def _init_repo_with_commit(path: Path, message: str) -> None:
+    """Create a real single-branch git repo whose HEAD commit carries ``message``."""
+    import subprocess
+
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "README.md").write_text("seed\n")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", message], cwd=path, check=True)
+
+
+@pytest.mark.parametrize(
+    ("message", "issue_number", "expected"),
+    [
+        # Every spelling the matcher advertises must survive the git prefilter.
+        ("fix: land it\n\nCloses #265", 265, True),
+        ("fix: land it\n\nCloses GH-265", 265, True),
+        ("fix: land it\n\ncloses gh-265", 265, True),
+        ("fix: land it\n\nResolves owner/repo#265", 265, True),
+        ("fix: land it\n\nFixes: #265", 265, True),
+        # Bare mentions are not evidence.
+        ("config: disable model\n\nDisabled pending #265", 265, False),
+        ("feat: thing (#265)", 265, False),
+        # Adjacent issue numbers must not collide.
+        ("fix: other\n\nCloses #2650", 265, False),
+        ("fix: other\n\nCloses GH-2650", 265, False),
+    ],
+)
+def test_has_base_commit_closing_issue_against_real_git(
+    tmp_path: Path, message: str, issue_number: int, expected: bool
+) -> None:
+    """Exercise the real ``git log`` prefilter, not a mock of it (#2374).
+
+    The prefilter and the Python matcher are two separate patterns over the
+    same message. A mocked ``subprocess.run`` cannot catch them disagreeing —
+    which is exactly how ``Closes GH-N`` came to be advertised by the matcher
+    while the ``--fixed-strings --grep=#N`` prefilter dropped it before the
+    matcher ever ran.
+    """
+    _init_repo_with_commit(tmp_path, message)
+    assert _has_base_commit_closing_issue(tmp_path, "main", issue_number) is expected
 
 
 def test_branch_merge_evidence_audit_veto_reads_real_substrate(tmp_path: Path) -> None:

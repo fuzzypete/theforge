@@ -34,6 +34,18 @@ from theforge.task import TaskStory
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+def _is_issue_grep(cmd: list[str], issue_number: int) -> bool:
+    """True when ``cmd`` is the base-commit closing-reference scan for the issue.
+
+    Matches on the presence of a ``--grep=`` argument mentioning the issue
+    rather than its exact spelling, so these mocks do not silently stop
+    matching when the prefilter pattern changes (#2374).
+    """
+    return cmd[:2] == ["git", "log"] and any(
+        c.startswith("--grep=") and str(issue_number) in c for c in cmd
+    )
+
+
 def _make_config(tmp_path: Path) -> ForgeConfig:
     return ForgeConfig(
         project="test",
@@ -436,7 +448,7 @@ class TestReadPriorSprintCost:
                     '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
                     '"mergedAt":"2026-05-01T12:34:56Z"}]'
                 )
-            elif cmd[:2] == ["git", "log"] and "--grep=(#1102)" in cmd:
+            elif _is_issue_grep(cmd, 1102):
                 m.returncode = 0
                 m.stdout = b""
             elif "log" in cmd:
@@ -600,7 +612,7 @@ class TestReadPriorSprintCost:
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
-            if cmd[:2] == ["git", "log"] and "--grep=#1072" in cmd:
+            if _is_issue_grep(cmd, 1072):
                 m.returncode = 0
                 m.stdout = b"fix(sprint): land it\n\nCloses #1072\n\x1e"
             elif "log" in cmd:
@@ -657,7 +669,7 @@ class TestReadPriorSprintCost:
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
-            if cmd[:2] == ["git", "log"] and "--grep=#1074" in cmd:
+            if _is_issue_grep(cmd, 1074):
                 m.returncode = 0
                 m.stdout = b"config: raise timeout, disable model\n\nContext: #1074\n\x1e"
             elif cmd[:2] == ["git", "log"]:

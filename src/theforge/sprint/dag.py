@@ -99,7 +99,7 @@ _COMMIT_RECORD_SEP = "\x1e"
 #: and checked for a closing reference.
 _MAX_COMMIT_SCAN = 200
 
-#: GitHub's closing keywords. Only these turn a ``#N`` reference into a claim
+#: GitHub's closing keywords. Only these turn an issue reference into a claim
 #: that the issue was completed by the commit; every other mention is a
 #: cross-reference, which is what cross-references are for.
 _CLOSING_KEYWORDS = (
@@ -114,6 +114,19 @@ _CLOSING_KEYWORDS = (
     "resolved",
 )
 
+#: The sigils GitHub accepts immediately before an issue number. Both the git
+#: prefilter and the authoritative Python matcher are built from this tuple, so
+#: a spelling can never be advertised by one and silently dropped by the other
+#: — the drift that made ``Closes GH-N`` unreachable at runtime. Neither entry
+#: may contain a regex metacharacter, since both are interpolated into an ERE
+#: (for ``git log --grep``) and a Python pattern unescaped.
+_REFERENCE_SIGILS = ("#", "GH-")
+
+
+def _reference_alternation() -> str:
+    """Return the ``#|GH-`` alternation shared by the prefilter and matcher."""
+    return "|".join(_REFERENCE_SIGILS)
+
 
 def _closing_reference_pattern(issue_number: int) -> re.Pattern[str]:
     """Return a matcher for an explicit closing reference to ``issue_number``.
@@ -125,10 +138,21 @@ def _closing_reference_pattern(issue_number: int) -> re.Pattern[str]:
     keywords = "|".join(_CLOSING_KEYWORDS)
     return re.compile(
         rf"\b(?:{keywords})\b\s*:?\s*"
-        rf"(?:[\w.-]+/[\w.-]+)?(?:#|GH-)"
+        rf"(?:[\w.-]+/[\w.-]+)?(?:{_reference_alternation()})"
         rf"{issue_number}(?![0-9])",
         re.IGNORECASE,
     )
+
+
+def _reference_grep_pattern(issue_number: int) -> str:
+    """Return the ``git log --grep`` ERE that retrieves every supported spelling.
+
+    This is only a prefilter — it narrows the commits git hands back, and
+    :func:`_closing_reference_pattern` decides. It must therefore be at least as
+    permissive as the matcher for every sigil in :data:`_REFERENCE_SIGILS`;
+    anything it drops the matcher never sees (#2374).
+    """
+    return f"({_reference_alternation()}){issue_number}"
 
 
 def _has_base_commit_closing_issue(
@@ -155,9 +179,14 @@ def _has_base_commit_closing_issue(
                 "git",
                 "log",
                 f"--format=%B{_COMMIT_RECORD_SEP}",
-                "--fixed-strings",
-                f"--grep=#{issue_number}",
-                # Bound the scan: ``--grep`` is a substring match, so a
+                # Extended regex + case-insensitive so the prefilter covers
+                # every sigil the matcher accepts (``#N`` and ``GH-N``, in any
+                # case). The issue number is an int, so nothing user-controlled
+                # reaches the pattern.
+                "--extended-regexp",
+                "--regexp-ignore-case",
+                f"--grep={_reference_grep_pattern(issue_number)}",
+                # Bound the scan: the prefilter is a substring match, so a
                 # low-numbered issue can match a great many commits. Missing a
                 # closing reference older than this window costs a re-run of a
                 # landed story; the opposite error discards live work.
