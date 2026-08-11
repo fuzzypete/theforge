@@ -129,6 +129,31 @@ def has_review_approve(
     return False
 
 
+def latest_run_outcome(project_root: Path, slug: str) -> dict | None:
+    """Return the recorded outcome of the most recent run for ``slug``.
+
+    Read-only companion to :func:`has_review_approve`, which is a positive-only
+    signal (did *any* run APPROVE?). Merge-evidence resolution also needs the
+    negative case — the last run ended unsuccessfully with nothing landed — so
+    a textual commit-message match cannot claim a merge the audit trail
+    contradicts (#2374).
+
+    Returns ``None`` when the repo has no audit history at all or no record for
+    the slug. Substrate errors propagate: a caller that wants to treat an
+    unreadable audit as "no opinion" must catch them itself.
+    """
+    from theforge.coordinator import audit_substrate
+
+    sub_path = audit_substrate.substrate_path(project_root)
+    if not sub_path.exists() and not audit_substrate.has_audit_inputs(project_root):
+        return None
+    conn = audit_substrate.require_substrate(project_root)
+    try:
+        return audit_substrate.latest_run_outcome_in_substrate(conn, slug)
+    finally:
+        conn.close()
+
+
 def _serialize_plan_review_result(result: object, attempt: int) -> dict:
     profile_name = getattr(result, "profile_name", "") or "unknown"
     # Preserve an unmeasured cost (None) rather than coercing to 0.0 — a

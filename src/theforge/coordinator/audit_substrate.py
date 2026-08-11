@@ -2088,6 +2088,38 @@ def has_review_approve_in_substrate(
             yield record
 
 
+def latest_run_outcome_in_substrate(
+    conn: sqlite3.Connection,
+    slug: str,
+) -> dict | None:
+    """Return the most recent run's recorded outcome fields for ``slug``.
+
+    Yields the three record-level dimensions merge-evidence resolution needs to
+    tell "this story landed" from "this story's last run ended badly":
+    ``outcome_success`` (1/0/None), ``verdict`` (run-level final review verdict)
+    and ``landing_status``. Returns ``None`` when no record exists for the slug.
+
+    Ordering is by ``started_at`` descending with ``run_id`` as a deterministic
+    tiebreak, so records written within the same timestamp resolve stably.
+    """
+    row = conn.execute(
+        "SELECT outcome_success, verdict, landing_status FROM audit_records "
+        "WHERE slug = ? ORDER BY started_at DESC, run_id DESC LIMIT 1",
+        (slug,),
+    ).fetchone()
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        outcome, verdict, landing = row["outcome_success"], row["verdict"], row["landing_status"]
+    else:
+        outcome, verdict, landing = row[0], row[1], row[2]
+    return {
+        "outcome_success": outcome,
+        "verdict": verdict,
+        "landing_status": landing,
+    }
+
+
 def iter_records(conn: sqlite3.Connection, *, order_by_started: bool = True) -> Iterable[dict]:
     """Iterate raw_json dicts for all audit records."""
     sql = "SELECT raw_json, record_schema_version FROM audit_records"

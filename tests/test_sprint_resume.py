@@ -34,6 +34,18 @@ from theforge.task import TaskStory
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
+def _is_issue_grep(cmd: list[str], issue_number: int) -> bool:
+    """True when ``cmd`` is the base-commit closing-reference scan for the issue.
+
+    Matches on the presence of a ``--grep=`` argument mentioning the issue
+    rather than its exact spelling, so these mocks do not silently stop
+    matching when the prefilter pattern changes (#2374).
+    """
+    return cmd[:2] == ["git", "log"] and any(
+        c.startswith("--grep=") and str(issue_number) in c for c in cmd
+    )
+
+
 def _make_config(tmp_path: Path) -> ForgeConfig:
     return ForgeConfig(
         project="test",
@@ -436,7 +448,7 @@ class TestReadPriorSprintCost:
                     '[{"number":1111,"url":"https://github.com/o/r/pull/1111",'
                     '"mergedAt":"2026-05-01T12:34:56Z"}]'
                 )
-            elif cmd[:2] == ["git", "log"] and "--grep=(#1102)" in cmd:
+            elif _is_issue_grep(cmd, 1102):
                 m.returncode = 0
                 m.stdout = b""
             elif "log" in cmd:
@@ -461,7 +473,7 @@ class TestReadPriorSprintCost:
             triage = _triage_spec("issue-1102.md", config, tmp_path)
 
         assert triage.action == "skip_merged"
-        assert triage.reason == "already merged in PR #1111, skipping"
+        assert triage.reason == "already merged to main (evidence: merged PR #1111)"
 
     def test_triage_same_tip_failed_landing_audit_stays_full(self, tmp_path: Path) -> None:
         """A zero-delta APPROVE with failed landing stays eligible during resume."""
@@ -590,19 +602,19 @@ class TestReadPriorSprintCost:
         assert triage.action == "skip_merged"
         assert "audit trail" in triage.reason
 
-    def test_triage_open_issue_with_base_commit_reference_skips_merged(
+    def test_triage_open_issue_with_base_commit_closing_reference_skips_merged(
         self, tmp_path: Path
     ) -> None:
-        """A base commit referencing the open issue is enough to skip (#2111)."""
+        """A base commit *closing* the open issue is enough to skip (#2111, #2374)."""
 
         _make_spec_file(tmp_path, "Issue 1072", "issue-1072")
         config = _make_config(tmp_path)
 
         def _mock_run(cmd, **kwargs):
             m = MagicMock()
-            if cmd[:2] == ["git", "log"] and "--grep=(#1072)" in cmd:
+            if _is_issue_grep(cmd, 1072):
                 m.returncode = 0
-                m.stdout = b"abc123\n"
+                m.stdout = b"fix(sprint): land it\n\nCloses #1072\n\x1e"
             elif "log" in cmd:
                 m.returncode = 0
                 m.stdout = b""
@@ -625,7 +637,67 @@ class TestReadPriorSprintCost:
             triage = _triage_spec("issue-1072.md", config, tmp_path)
 
         assert triage.action == "skip_merged"
-        assert triage.reason == "already merged to main"
+        assert triage.reason == (
+            "already merged to main (evidence: closing reference in a main commit message)"
+        )
+
+    def test_triage_bare_issue_mention_with_preserved_work_does_not_skip(
+        self, tmp_path: Path
+    ) -> None:
+        """The #2374 shape end-to-end: a passing mention must not discard preserved work.
+
+        Base carries an unrelated configuration commit citing the issue as
+        context. The branch is not an ancestor of base, has five commits of
+        preserved work, and its last recorded run was unsuccessful with a
+        REQUEST_CHANGES verdict and no landing. Every authoritative source says
+        the story has not landed, so triage must not skip it.
+        """
+
+        _make_spec_file(tmp_path, "Issue 1074", "issue-1074")
+        config = _make_config(tmp_path)
+        worktree = tmp_path / "issue-1074"
+        worktree.mkdir()
+
+        record = {
+            "task": {"slug": "issue-1074"},
+            "run_id": "sr-1074",
+            "landing_status": "",
+            "outcome": {"success": False},
+            "reviews": [{"verdict": "REQUEST_CHANGES"}],
+        }
+        audit_substrate.seed_records(tmp_path, [record])
+
+        def _mock_run(cmd, **kwargs):
+            m = MagicMock()
+            if _is_issue_grep(cmd, 1074):
+                m.returncode = 0
+                m.stdout = b"config: raise timeout, disable model\n\nContext: #1074\n\x1e"
+            elif cmd[:2] == ["git", "log"]:
+                m.returncode = 0
+                m.stdout = b"aaa1 five\nbbb2 four\nccc3 three\nddd4 two\neee5 one\n"
+            elif "rev-list" in cmd and "--count" in cmd:
+                m.returncode = 0
+                m.stdout = b"5"
+            elif "--is-ancestor" in cmd:
+                m.returncode = 1
+                m.stdout = b""
+            else:
+                m.returncode = 0
+                m.stdout = b""
+            return m
+
+        with (
+            patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_run),
+            patch("theforge.sprint.dag.has_review_approve", return_value=False),
+            patch(
+                "theforge.sprint.dag._run_gate",
+                return_value=("dev", "gate failed", ""),
+            ),
+        ):
+            triage = _triage_spec("issue-1074.md", config, tmp_path)
+
+        assert triage.action != "skip_merged"
+        assert "merged" not in triage.reason
 
     def test_triage_open_issue_with_topology_merge_skips_merged(self, tmp_path: Path) -> None:
         """A topologically merged branch skips even while its issue is open (#2111)."""
@@ -659,7 +731,9 @@ class TestReadPriorSprintCost:
             triage = _triage_spec("issue-1073.md", config, tmp_path)
 
         assert triage.action == "skip_merged"
-        assert triage.reason == "already merged to main"
+        assert triage.reason == (
+            "already merged to main (evidence: branch merged into main history)"
+        )
 
     def test_triage_worktree_with_prior_approve(self, tmp_path: Path) -> None:
         """Worktree has commits ahead and prior APPROVE in audit trail → skip."""
