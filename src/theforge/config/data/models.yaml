@@ -20,7 +20,28 @@
 #   routing:    tier, capability, cost_rank, dev_capable, phase_eligibility,
 #               cost_rank_basis
 #   base_url:   endpoint metadata (locally served OpenAI-compatible servers)
-#   cost:       input_per_mtok, output_per_mtok, pricing_provenance
+#   cost:       input_per_mtok, output_per_mtok, cached_input_per_mtok,
+#               pricing_provenance
+#   identity:   status (served|retired), verified_against, verified_on,
+#               retired_reason
+#   invocation: reasoning_mode (enabled|disabled)
+#
+# `identity` is what the entry claims about its *upstream* identifier, and when
+# that claim was last checked. A `status: retired` entry is not routable at all:
+# it exists so a configuration still naming the identifier is told what the
+# provider did with it, instead of being told the name was never known. A served
+# entry whose `verified_on` is absent or older than the window in
+# config/model_identity.py is *unconfirmed* — still routable, but reported by
+# `forge check-config` so an operator sees it before a run does (#2352).
+#
+# `cost.cached_input_per_mtok` is for providers that bill a prompt-cache hit at
+# their own published rate rather than as a fixed fraction of the uncached rate.
+# Omitting it keeps the generic discount in runners/schema_utils.
+#
+# `invocation.reasoning_mode` states a behavioural mode the provider expresses as
+# a *request parameter* rather than as a distinct model name. An entry banded for
+# reasoning on a provider that works that way has to declare it, or the band
+# describes a mode no invocation ever asks for.
 #
 # `cost.pricing_provenance` names the concrete billed identity the figures were
 # recorded for. Omitting it marks them *unattributed*: routing ignores them.
@@ -281,9 +302,34 @@ models:
       pricing_provenance: gpt-5.4-pro
 
   # ── DeepSeek (API) ───────────────────────────────────────────────────
+  #
+  # #2352. `deepseek-chat` and `deepseek-reasoner` were retired upstream and are
+  # declared as such below rather than deleted. Deleting them would have made a
+  # configuration that still names one fail with "unknown model", which reads as
+  # a typo; the retirement is the thing the operator needs told.
+  #
+  # These two entries are checked against DeepSeek's published model list and
+  # pricing page, and carry the date that check was made — see `identity:`. That
+  # is what the previous entries could not say: they resolved upstream, returned
+  # token counts and exited 0 long after the names they used stopped designating
+  # the models their capability, tier and price were recorded against.
+  #
+  # DeepSeek bills a prompt-cache hit at its own published rate (~2% of the
+  # uncached rate), not at the flat 10%-of-input discount other providers use, so
+  # the rate is stated explicitly via `cached_input_per_mtok` rather than derived.
+  #
+  # Reasoning is now a *request* parameter (`thinking: {type, reasoning_effort}`),
+  # not a distinct model name. `invocation.reasoning_mode` is what makes the
+  # reasoning band below a claim about an invocation forge actually makes.
   - provider: deepseek
-    model: deepseek-reasoner
+    model: deepseek-v4-pro
     transport: {kind: api}
+    identity:
+      status: served
+      verified_against: api-docs.deepseek.com model list + pricing page
+      verified_on: 2026-08-10
+    invocation:
+      reasoning_mode: enabled
     routing:
       tier: strong
       capability: 9
@@ -293,21 +339,59 @@ models:
       # understates what filling a role with it costs.
       cost_rank_basis: declared-policy
     cost:
-      input_per_mtok: 0.55
-      output_per_mtok: 2.19
-      pricing_provenance: deepseek-reasoner
+      input_per_mtok: 0.435
+      output_per_mtok: 0.87
+      cached_input_per_mtok: 0.003625
+      pricing_provenance: deepseek-v4-pro
 
   - provider: deepseek
-    model: deepseek-chat
+    model: deepseek-v4-flash
     transport: {kind: api}
+    identity:
+      status: served
+      verified_against: api-docs.deepseek.com model list + pricing page
+      verified_on: 2026-08-10
+    invocation:
+      reasoning_mode: enabled
     routing:
       tier: fast
       capability: 7
       cost_rank: 1
     cost:
-      input_per_mtok: 0.27
-      output_per_mtok: 1.10
-      pricing_provenance: deepseek-chat
+      input_per_mtok: 0.14
+      output_per_mtok: 0.28
+      cached_input_per_mtok: 0.0028
+      pricing_provenance: deepseek-v4-flash
+
+  # Retired upstream. Not routable, carries no price: an identifier that no
+  # longer designates what was recorded about it must not be able to price
+  # anything, and the rates these entries used to carry were from a rate card
+  # DeepSeek has replaced.
+  - provider: deepseek
+    model: deepseek-reasoner
+    transport: {kind: api}
+    identity:
+      status: retired
+      verified_against: api-docs.deepseek.com model list
+      verified_on: 2026-08-10
+      retired_reason: >-
+        Removed from DeepSeek's published model list; superseded by
+        deepseek-v4-pro. The name still resolves upstream, so calls through it
+        succeed while designating a different model than the one whose
+        capability, tier and price were recorded here (#2352).
+
+  - provider: deepseek
+    model: deepseek-chat
+    transport: {kind: api}
+    identity:
+      status: retired
+      verified_against: api-docs.deepseek.com model list
+      verified_on: 2026-08-10
+      retired_reason: >-
+        Removed from DeepSeek's published model list; superseded by
+        deepseek-v4-flash. The name still resolves upstream, so calls through it
+        succeed while designating a different model than the one whose
+        capability, tier and price were recorded here (#2352).
 
   # ── Google (API) ─────────────────────────────────────────────────────
   - provider: google

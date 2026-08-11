@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sys
+from datetime import date
 from pathlib import Path
 
 from theforge.cli.hooks import post_run_hook_upgrade_warnings
@@ -271,6 +272,33 @@ def _unattributed_pricing_models(
     return flagged
 
 
+def _unconfirmed_identity_models(
+    model_keys: list[str],
+    registry: dict | None = None,
+) -> list[tuple[str, str]]:
+    """Return ``(model_key, explanation)`` for enabled models with an unchecked identifier.
+
+    A model identifier is a claim about something outside this repository, and it
+    can stop being true without anything here changing — providers retire and
+    re-point names, and a retired name that keeps resolving upstream produces
+    successful runs whose declarations describe a different model. That is only
+    catchable before spend if it is reported where configuration is read (#2352).
+
+    Reported, never fatal: an unchecked identifier is usually fine. What it must
+    not be is invisible.
+    """
+    today = date.today()
+    rows: list[tuple[str, str]] = []
+    for model_key in model_keys:
+        try:
+            spec = resolve_agent_spec(model_key, registry=registry)
+        except ValueError:
+            continue  # unresolvable keys (including retired ones) report elsewhere
+        if not spec.identity.confirmed_on(today):
+            rows.append((model_key, spec.identity.describe(today)))
+    return rows
+
+
 def _cost_band_bases(
     model_keys: list[str],
     registry: dict | None = None,
@@ -487,6 +515,17 @@ def _format_config(
             # The cost band is the other price-shaped routing input, so show what
             # each enabled model's band is derived from — an operator diagnosing a
             # selection can otherwise only see the number, not its source (#2203).
+            # An identifier nothing has checked against the provider recently is
+            # the state that produced #2352: the declaration kept describing a
+            # model the name had stopped designating, and the only symptom was a
+            # cost figure that looked plausible.
+            unconfirmed = _unconfirmed_identity_models(
+                config.models, registry=config.model_registry
+            )
+            if unconfirmed:
+                lines.append("  upstream identifier not confirmed:")
+                for model_key, explanation in unconfirmed:
+                    lines.append(f"    {model_key:<32}{explanation}")
             bands = _cost_band_bases(config.models, registry=config.model_registry)
             if bands:
                 lines.append("  cost band basis:")

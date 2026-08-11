@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, Protocol
 
 from theforge.agent_types import ModelUsage
@@ -84,10 +85,12 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("google", "gemini-2.5-flash-lite"): (0.10, 0.40),
     ("google", "gemini-2.0-flash"): (0.10, 0.40),
     ("google", "gemini-2.0-flash-lite"): (0.075, 0.30),
-    ("deepseek", "deepseek-chat"): (0.27, 1.10),  # V3 alias
-    ("deepseek", "deepseek-r1"): (0.55, 2.19),
-    ("deepseek", "deepseek-v3"): (0.27, 1.10),
-    ("deepseek", "deepseek-reasoner"): (0.55, 2.19),  # R1 alias
+    # DeepSeek is deliberately absent. Its rates — including the cache-hit tier
+    # it bills separately, which this table has no column for — are declared on
+    # the catalog entries in config/data/models.yaml and read through
+    # :func:`pricing_for`. The rows that used to sit here were the third
+    # hand-maintained copy of a rate card and outlived two of its revisions
+    # (#2352); the retired identifiers they priced now record no price at all.
 }
 
 # Models we intentionally route to the Responses API (/v1/responses).
@@ -202,10 +205,143 @@ _DEFAULT_MAX_ITERATIONS = 75
 
 _MISSING_PRICING_WARNED: set[tuple[str, str]] = set()
 
-# Fraction of the uncached input rate charged for a cache HIT. OpenAI and
-# Anthropic both bill cached input at 10% of the normal input rate; callers that
-# need a different discount pass ``cached_input_rate_mult`` explicitly.
+# Fraction of the uncached input rate charged for a cache HIT, for providers that
+# express their cache tier that way. OpenAI and Anthropic both bill cached input
+# at 10% of the normal input rate. A provider that publishes an independent
+# cache-hit rate instead (DeepSeek bills roughly 2%, which no fixed fraction of
+# the uncached rate approximates) states it on its catalog entry and is priced
+# from that figure rather than from this multiplier — see :class:`ModelRates`.
 CACHED_INPUT_RATE_MULT = 0.1
+
+
+# Providers whose reported prompt-token count INCLUDES the tokens served from
+# cache. ``_estimate_cost`` documents ``cached_input_tokens`` as a subset of
+# ``input_tokens`` and subtracts it, which is right for these and wrong for the
+# others: Anthropic reports ``cache_read_input_tokens`` *alongside* an
+# ``input_tokens`` that already excludes them, so handing its cache count to the
+# estimator would delete real uncached input from the bill.
+_CACHE_READS_INSIDE_INPUT: frozenset[str] = frozenset({"openai", "deepseek"})
+
+
+def cache_reads_are_subset_of_input(provider: str) -> bool:
+    """Is this provider's cache-read count part of its reported input count?"""
+    return provider in _CACHE_READS_INSIDE_INPUT
+
+
+@dataclass(frozen=True)
+class ModelRates:
+    """The rate card in force for one ``(provider, model)``.
+
+    ``cached_input_per_mtok`` is ``None`` for a provider that has no separately
+    published cache tier; the generic :data:`CACHED_INPUT_RATE_MULT` discount
+    applies in that case. Zero is a real rate and is honoured as one.
+    """
+
+    input_per_mtok: float
+    output_per_mtok: float
+    cached_input_per_mtok: float | None = None
+
+
+def _catalog_rates() -> dict[tuple[str, str], ModelRates]:
+    """Rate cards carried by the shipped model catalog, keyed like PRICING_TABLE.
+
+    The catalog is where a model's price is *declared alongside the identity it
+    was recorded for* — a price with no ``pricing_provenance`` is a literal
+    nothing can vouch for (see config/pricing.py), so those entries are skipped
+    and fall through to the table below. Where two catalog entries share a
+    ``(provider, model)`` and disagree on price (the same model offered over both
+    CLI and API), the pair is dropped rather than arbitrated: an ambiguous rate
+    is not a better answer than the explicit table.
+
+    Imported lazily so this module keeps its light import graph, and recomputed
+    per call is avoided by the module-level cache below.
+    """
+    from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
+    from theforge.config.pricing import PRICING_PROVENANCE_LOCAL_ENDPOINT  # noqa: PLC0415
+
+    rates: dict[tuple[str, str], ModelRates] = {}
+    ambiguous: set[tuple[str, str]] = set()
+    for spec in AGENT_REGISTRY.values():
+        if spec.input_cost_per_mtok is None or spec.output_cost_per_mtok is None:
+            continue
+        if not spec.pricing_attributable:
+            continue
+        if spec.pricing_provenance == PRICING_PROVENANCE_LOCAL_ENDPOINT:
+            # A local endpoint's 0.00 is true of the *endpoint*, not of the model
+            # name — the same name reached over a vendor's API is billed. The
+            # runners already zero a genuinely local invocation by base_url, so
+            # importing the figure here would only mis-price the other case.
+            continue
+        key = (spec.provider, spec.model)
+        entry = ModelRates(
+            input_per_mtok=spec.input_cost_per_mtok,
+            output_per_mtok=spec.output_cost_per_mtok,
+            cached_input_per_mtok=spec.cached_input_cost_per_mtok,
+        )
+        existing = rates.get(key)
+        if existing is not None and existing != entry:
+            ambiguous.add(key)
+            continue
+        rates[key] = entry
+    for key in ambiguous:
+        rates.pop(key, None)
+    return rates
+
+
+_CATALOG_RATES_CACHE: dict[tuple[str, str], ModelRates] | None = None
+
+
+def catalog_rates() -> dict[tuple[str, str], ModelRates]:
+    """Memoized :func:`_catalog_rates`. ``AGENT_REGISTRY`` is built once at import."""
+    global _CATALOG_RATES_CACHE
+    if _CATALOG_RATES_CACHE is None:
+        _CATALOG_RATES_CACHE = _catalog_rates()
+    return _CATALOG_RATES_CACHE
+
+
+def pricing_for(provider: str, model: str) -> ModelRates | None:
+    """Return the rate card for ``(provider, model)``, or None if none is known.
+
+    Catalog first, :data:`PRICING_TABLE` second. The catalog is the surface where
+    a rate is declared next to the identity it was recorded for and the date that
+    identity was last checked against the provider, so it is the one that gets to
+    answer when both do. The table remains for identities the catalog does not
+    describe — vendor CLI shorthands resolve to concrete billed names that are
+    never catalog entries in their own right (``claude-sonnet-4-6``), and stream
+    events report those names directly.
+    """
+    catalog = catalog_rates().get((provider, model))
+    if catalog is not None:
+        return catalog
+    price = PRICING_TABLE.get((provider, model))
+    if price is None:
+        return None
+    return ModelRates(input_per_mtok=price[0], output_per_mtok=price[1])
+
+
+def rate_card_confirmed(provider: str, model: str, *, today: date | None = None) -> bool:
+    """Is the rate card used for ``(provider, model)`` attached to a checked identity?
+
+    True only when the figures came from a catalog entry whose upstream
+    identifier has been checked against the provider inside the verification
+    window. A rate read from :data:`PRICING_TABLE` is never confirmed: that table
+    records no identity and no date, which is exactly how it carried DeepSeek's
+    superseded rates across two revisions of the provider's pricing without
+    anything noticing.
+
+    Consumed by the API cost-provenance stamp so an estimate off a rate card that
+    may no longer apply is distinguishable from one that is current (#2352).
+    """
+    from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
+
+    if catalog_rates().get((provider, model)) is None:
+        return False
+    reference = today or date.today()
+    return any(
+        spec.identity.confirmed_on(reference)
+        for spec in AGENT_REGISTRY.values()
+        if (spec.provider, spec.model) == (provider, model)
+    )
 
 
 def _estimate_cost(
@@ -218,20 +354,22 @@ def _estimate_cost(
     cached_input_tokens: int = 0,
     cached_input_rate_mult: float = CACHED_INPUT_RATE_MULT,
 ) -> float | None:
-    """Estimate cost from pricing table; returns None if model unknown.
+    """Estimate cost from the rate card in force; returns None if model unknown.
 
     ``cached_input_tokens`` is the SUBSET of ``input_tokens`` that was served from
-    the provider's prompt cache, and is discounted to ``cached_input_rate_mult`` of
-    the input rate rather than double-counted. Callers that cannot distinguish the
-    cache tier leave it at 0 and get the previous flat-rate behaviour unchanged.
+    the provider's prompt cache. It is billed at the provider's own published
+    cache rate when the catalog entry declares one, and otherwise at
+    ``cached_input_rate_mult`` of the input rate. Callers that cannot distinguish
+    the cache tier leave it at 0 and get the flat-rate behaviour unchanged.
     """
-    price = PRICING_TABLE.get((provider, model))
-    if price is None:
+    rates = pricing_for(provider, model)
+    if rates is None:
         key = (provider, model)
         if key not in _MISSING_PRICING_WARNED:
             logger.warning(
                 "Missing pricing entry for provider=%s model=%s; cost cannot be estimated. "
-                "Add this model to PRICING_TABLE so audit and budget totals stay accurate.",
+                "Declare a cost block on the model's catalog entry (or add it to "
+                "PRICING_TABLE) so audit and budget totals stay accurate.",
                 provider,
                 model,
             )
@@ -242,10 +380,15 @@ def _estimate_cost(
     cached = max(0, min(cached_input_tokens, input_tokens))
     uncached_input_tokens = input_tokens - cached
     billable_output_tokens = output_tokens + thinking_tokens
+    cached_rate = (
+        rates.cached_input_per_mtok
+        if rates.cached_input_per_mtok is not None
+        else rates.input_per_mtok * cached_input_rate_mult
+    )
     return (
-        ((uncached_input_tokens / 1_000_000) * price[0])
-        + ((cached / 1_000_000) * price[0] * cached_input_rate_mult)
-        + ((billable_output_tokens / 1_000_000) * price[1])
+        ((uncached_input_tokens / 1_000_000) * rates.input_per_mtok)
+        + ((cached / 1_000_000) * cached_rate)
+        + ((billable_output_tokens / 1_000_000) * rates.output_per_mtok)
     )
 
 
@@ -271,6 +414,12 @@ class LoopTurn:
     text_output: str | None  # final text when no tool calls
     structured_data: dict | None  # final structured output when available
     usage: ModelUsage | None  # token usage for this turn
+    # Provider-reported chain of thought, where the provider returns one as a
+    # field separate from ``text_output`` (DeepSeek's ``reasoning_content``).
+    # Load-bearing, not merely observability: a provider that reports one may
+    # require it back on the next request to continue a tool-calling
+    # conversation, so the loop records it and the translators replay it.
+    reasoning_content: str | None = None
 
 
 class ProviderAdapter(Protocol):

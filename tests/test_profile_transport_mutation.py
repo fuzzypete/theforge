@@ -144,19 +144,19 @@ def test_preflight_complexity_adaptation_cli_to_api_dev_profile(tmp_path: Path) 
     config = _config(
         tmp_path,
         dev_profile=_profile_from("anthropic/sonnet/cli"),
-        models=["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
+        models=["anthropic/sonnet/cli", "deepseek/deepseek-v4-pro/api"],
     )
 
     updated = _apply_complexity_adaptation(config, "medium")
 
-    _assert_api_profile(updated.dev_profile, provider="deepseek", model="deepseek-reasoner")
+    _assert_api_profile(updated.dev_profile, provider="deepseek", model="deepseek-v4-pro")
 
 
 def test_preflight_complexity_adaptation_api_to_cli_dev_profile(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
-        dev_profile=_profile_from("deepseek/deepseek-chat/api"),
-        models=["deepseek/deepseek-chat/api", "anthropic/opus/cli"],
+        dev_profile=_profile_from("deepseek/deepseek-v4-flash/api"),
+        models=["deepseek/deepseek-v4-flash/api", "anthropic/opus/cli"],
     )
 
     updated = _apply_complexity_adaptation(config, "large")
@@ -187,7 +187,7 @@ def test_review_phase_dev_escalation_cli_to_api_updates_transport(
     config = _config(
         tmp_path,
         dev_profile=_profile_from("anthropic/sonnet/cli"),
-        models=["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
+        models=["anthropic/sonnet/cli", "deepseek/deepseek-v4-pro/api"],
         retry=RetryPolicy(
             max_dev_iterations=2,
             max_review_cycles=3,
@@ -227,7 +227,7 @@ def test_review_phase_dev_escalation_cli_to_api_updates_transport(
 
     assert outcome is _ReviewOutcome.RETRY_DEV
     assert result is None
-    _assert_api_profile(updated.dev_profile, provider="deepseek", model="deepseek-reasoner")
+    _assert_api_profile(updated.dev_profile, provider="deepseek", model="deepseek-v4-pro")
 
 
 def test_plan_review_escalation_cli_to_api_updates_regen_profile(
@@ -239,7 +239,7 @@ def test_plan_review_escalation_cli_to_api_updates_regen_profile(
     config = _config(
         tmp_path,
         dev_profile=_profile_from("anthropic/sonnet/cli"),
-        models=["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
+        models=["anthropic/sonnet/cli", "deepseek/deepseek-v4-pro/api"],
         retry=RetryPolicy(max_dev_iterations=2, max_review_cycles=3, plan_escalation_threshold=1),
         plan_agent_review=PlanAgentReviewConfig.of(
             enabled=True,
@@ -298,4 +298,4 @@ def test_plan_review_escalation_cli_to_api_updates_regen_profile(
 
     assert result is None
     assert captured_profiles
-    _assert_api_profile(captured_profiles[0], provider="deepseek", model="deepseek-reasoner")
+    _assert_api_profile(captured_profiles[0], provider="deepseek", model="deepseek-v4-pro")

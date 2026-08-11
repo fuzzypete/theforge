@@ -143,8 +143,8 @@ def cmd_eval_preflight(args: object) -> int:
     if models_arg:
         model_names = [m.strip() for m in models_arg.split(",") if m.strip()]
     else:
-        # Default candidate shortlist per spec AC: GPT-5.4, Claude Sonnet, DeepSeek-reasoner
-        model_names = ["gpt-5.4", "claude-sonnet-4-5", "deepseek-reasoner"]
+        # Default candidate shortlist per spec AC: GPT-5.4, Claude Sonnet, DeepSeek V4 Pro
+        model_names = ["gpt-5.4", "claude-sonnet-4-5", "deepseek-v4-pro"]
 
     profiles = [_infer_profile(m, default_budget, default_timeout) for m in model_names]
     print(f"[eval-preflight] Evaluating {len(profiles)} model(s): {', '.join(model_names)}")
@@ -190,7 +190,7 @@ def register_parser(subparsers: object) -> None:
         metavar="MODEL[,MODEL...]",
         help=(
             "Comma-separated model identifiers to evaluate. "
-            "Default: gpt-5.4,claude-sonnet-4-5,deepseek-reasoner"
+            "Default: gpt-5.4,claude-sonnet-4-5,deepseek-v4-pro"
         ),
     )
     p.add_argument(
