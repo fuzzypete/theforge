@@ -27,6 +27,7 @@ from theforge.config.types import IntakeConfig
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint.dag import (
     StoryDAG,
+    _branch_adds_content_to_base,
     _branch_merge_evidence,
     _has_base_commit_closing_issue,
     _is_branch_merged,
@@ -861,6 +862,76 @@ def test_real_unmerged_branch_with_bare_mention_is_not_merged(tmp_path: Path) ->
     evidence = _real_git_evidence(tmp_path)
 
     assert evidence.merged is False
+
+
+def test_merge_tree_refusal_on_stdout_is_not_read_as_a_conflict(tmp_path: Path) -> None:
+    """Exit 1 with a non-oid first line is a refusal, not a conflict.
+
+    Today git writes "not something we can merge" to stderr and leaves stdout
+    empty, so this shape cannot be produced from a real repo — it is mocked
+    deliberately. It guards the branch of the exit-1 check that the real-git
+    deleted-branch test cannot reach.
+    """
+
+    def _mock_refusal(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if cmd[:2] == ["git", "merge-tree"]:
+            m.returncode = 1
+            m.stdout = b"merge-tree: nosuch - not something we can merge\n"
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_refusal):
+        assert _branch_adds_content_to_base(tmp_path, "main", "feat/issue-265") is False
+
+
+def _conflicting_repo(path: Path, base_message: str) -> None:
+    """Unmerged branch that edits the same lines base edits, so replay conflicts."""
+    _seed_repo(path)
+    (path / "f.txt").write_text("one\n")
+    _git(path, "add", ".")
+    _git(path, "commit", "-q", "-m", "add f")
+    _git(path, "checkout", "-q", "-b", "feat/issue-265")
+    (path / "f.txt").write_text("branch side\n")
+    _git(path, "add", ".")
+    _git(path, "commit", "-q", "-m", "branch edit")
+    _git(path, "checkout", "-q", "main")
+    (path / "f.txt").write_text("base side\n")
+    _git(path, "add", ".")
+    _git(path, "commit", "-q", "-m", base_message)
+
+
+def test_real_conflicting_unmerged_branch_is_not_merged(tmp_path: Path) -> None:
+    """A conflict is content evidence of divergence, not an inconclusive result.
+
+    Regression for the cycle-3 P1: treating every non-zero ``merge-tree`` exit
+    as "cannot determine" let a conflicting, definitively unmerged branch be
+    skipped on the strength of a closing reference in a base commit.
+    """
+    _conflicting_repo(tmp_path, "fix: base side wins\n\nCloses #265")
+
+    evidence = _real_git_evidence(tmp_path)
+
+    assert evidence.merged is False
+
+
+def test_real_deleted_branch_with_closing_reference_is_merged(tmp_path: Path) -> None:
+    """A missing branch must not be mistaken for a conflict.
+
+    ``merge-tree`` reports an unknown ref with exit 1 — the same status as a
+    conflict — so only the tree-oid check separates them. An externally merged
+    branch that was then deleted has no evidence left but the closing
+    reference, and vetoing it here would discard that entirely.
+    """
+    _seed_repo(tmp_path)
+    _git(tmp_path, "commit", "-q", "--allow-empty", "-m", "feat: landed\n\nCloses #265")
+
+    evidence = _real_git_evidence(tmp_path)
+
+    assert evidence.merged is True
+    assert evidence.source == "issue_commit"
 
 
 def test_real_squash_merge_vetoed_by_unsuccessful_audit(tmp_path: Path) -> None:

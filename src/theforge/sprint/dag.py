@@ -91,6 +91,11 @@ def _has_prior_review_approve(
     )
 
 
+#: A git object id: 40 hex chars under sha1, 64 under sha256. Used to tell a
+#: tree oid on ``merge-tree``'s first output line from an error message, since
+#: both can accompany exit status 1.
+_OID_RE = re.compile(r"[0-9a-f]{40}(?:[0-9a-f]{24})?")
+
 #: Record separator used to split ``git log`` output into whole commit messages.
 #: ``\x1e`` cannot appear in a commit message produced by git's own tooling.
 _COMMIT_RECORD_SEP = "\x1e"
@@ -225,13 +230,26 @@ def _branch_adds_content_to_base(
     advances with unrelated commits. ``git merge-tree --write-tree`` computes
     that merge without touching the worktree.
 
-    Only a *positive* proof vetoes: this returns True solely when the merge
-    succeeds and yields a tree different from base's. Any inconclusive outcome —
-    a conflict, a git too old for ``--write-tree``, an unparseable oid, a
-    timeout — returns False, leaving the closing reference to stand. Failing the
-    other way would resurrect the regression this function exists to prevent,
-    and the reported bug is independently held shut by the closing-reference
-    requirement and :func:`_audit_contradicts_merge`.
+    Only a *positive* proof vetoes, and a conflict is one. ``merge-tree`` exits
+    0 for a clean merge and 1 for a conflicted one; a conflict means base and
+    branch changed the same lines differently, so the branch's work as written
+    is demonstrably not what base carries. That is content evidence, not an
+    inconclusive result, and it vetoes (#2374).
+
+    Everything genuinely inconclusive returns False and leaves the closing
+    reference standing: a git too old for ``--write-tree`` (exit 129), an
+    unreadable ref, an unparseable oid, a timeout. A missing branch lands here
+    too, and needs care: ``merge-tree`` rejects an unknown ref with exit 1 —
+    the *same* status as a conflict — writing "not something we can merge" to
+    stderr and nothing to stdout. So the exit code alone cannot separate the
+    two; a merge that actually ran is identified by the tree oid on its first
+    stdout line. That distinction matters, because an externally merged branch
+    that was then deleted has no evidence left *but* the closing reference.
+
+    One accepted false negative: a branch squash-merged long ago whose files
+    base has since rewritten conflicts on replay and is vetoed. That re-runs a
+    landed story, which is the safe direction — the failure this whole change
+    exists to prevent is discarding live work.
     """
     try:
         merged = subprocess.run(
@@ -240,11 +258,18 @@ def _branch_adds_content_to_base(
             capture_output=True,
             timeout=30,
         )
-        if merged.returncode != 0:
+        # 0 = clean merge, 1 = conflict, anything else = could not run.
+        if merged.returncode not in (0, 1):
             return False
         merged_tree = merged.stdout.decode("utf-8", errors="replace").strip().splitlines()
-        if not merged_tree:
+        if not merged_tree or not _OID_RE.fullmatch(merged_tree[0].strip()):
+            # No tree oid on the first line: git refused the merge rather than
+            # performing one, so nothing was proved either way. Today an
+            # unknown ref yields empty stdout; the oid check also covers a
+            # refusal that writes some other diagnostic there.
             return False
+        if merged.returncode == 1:
+            return True
         base_tree = subprocess.run(
             ["git", "rev-parse", f"{base_branch}^{{tree}}"],
             cwd=str(project_root),
