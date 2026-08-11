@@ -262,6 +262,50 @@ models:
       output_per_mtok: 30.00
       pricing_provenance: gpt-5.5
 
+  # GPT-5.6 family (promoted 2026-08-11 from the inline `models.enabled`
+  # declarations this repo carried since #2207; those were the sole definition of
+  # these identities, so nothing could select them by shorthand until now).
+  #
+  # CLI only, and deliberately so. They were first declared `api` on the belief
+  # that a family shipping no `-codex` variant had no Codex CLI support. That
+  # belief was never tested and was wrong — `codex exec -m` passes the identifier
+  # through unchanged. The `api` declaration was the sole cause of 22 tool-call
+  # 400s ("Function tools with reasoning_effort are not supported ... in
+  # /v1/chat/completions"), which broke plan review, code review and the
+  # escalation advisor together, since all three need tools and the API adapter
+  # sends them against a model carrying a server-side default reasoning_effort.
+  # Codex does its own tool calling, so the CLI path avoids it entirely. Do not
+  # add API entries for this family without a live tool-call probe.
+  #
+  # Prices are OpenAI's published short-context rates, re-read from the pricing
+  # page 2026-08-11. Long-context requests bill higher — sol $10/$45, terra
+  # $4/$18 — and the schema records a single rate per identity, so cost on a
+  # long-context run is understated rather than wrong-by-typo. #2206 supersedes
+  # these with observed cost once each has run history.
+  - provider: openai
+    model: gpt-5.6-sol
+    transport: {kind: cli}
+    routing:
+      tier: strong
+      capability: 9
+      cost_rank: 3
+    cost:
+      input_per_mtok: 5.00
+      output_per_mtok: 30.00
+      pricing_provenance: gpt-5.6-sol
+
+  - provider: openai
+    model: gpt-5.6-terra
+    transport: {kind: cli}
+    routing:
+      tier: fast
+      capability: 8
+      cost_rank: 2
+    cost:
+      input_per_mtok: 2.00
+      output_per_mtok: 12.00
+      pricing_provenance: gpt-5.6-terra
+
   # ── OpenAI (API) ─────────────────────────────────────────────────────
   - provider: openai
     model: gpt-5.4
