@@ -664,14 +664,13 @@ class TestReasoningContentHandling:
         assert assistant["content"] == "I will read the file"
         assert assistant["reasoning_content"] == "the file is the likely source"
 
-    def test_reasoning_content_is_not_replayed_into_the_next_request(self):
-        """Not an oversight — the provider defines that field for another feature.
+    def test_reasoning_content_round_trips_onto_the_outgoing_assistant_message(self):
+        """DeepSeek requires it back once tools are in play.
 
-        DeepSeek's API reference scopes an input assistant ``reasoning_content``
-        to Chat Prefix Completion, where ``prefix`` must be true. Emitting it on
-        an ordinary tool-loop turn would opt every thinking-mode review into a
-        beta feature it never asked for, so the translator builds each outgoing
-        message from named keys and leaves it behind.
+        Per the provider's thinking-mode guide: with tool calls the intermediate
+        assistant's ``reasoning_content`` "must participate in the context
+        concatenation and must be passed back to the API in all subsequent user
+        interaction turns", and omitting it returns 400.
         """
         from theforge.runners.adapters.openai import _translate_messages_openai_chat
 
@@ -688,15 +687,38 @@ class TestReasoningContentHandling:
             ]
         )
         assert translated[0]["content"] == "I will read the file"
-        assert "reasoning_content" not in translated[0]
+        assert translated[0]["reasoning_content"] == "the file is the likely source"
         assert translated[0]["tool_calls"][0]["id"] == "c1"
+
+    def test_a_provider_that_reports_no_reasoning_sends_no_such_key(self):
+        """The replay is data-driven, so nothing changes for OpenAI.
+
+        OpenAI's Chat Completions never returns ``reasoning_content``, so an
+        OpenAI history never carries it and its request bodies are byte-identical
+        to before. That is what lets the round-trip live in shared code without a
+        branch on provider.
+        """
+        from theforge.runners.adapters.openai import _translate_messages_openai_chat
+
+        translated = _translate_messages_openai_chat(
+            [
+                {
+                    "role": "assistant",
+                    "content": "calling a tool",
+                    "tool_calls": [
+                        ToolCallRequest(id="c1", name="read_file", arguments={"path": "a.py"})
+                    ],
+                }
+            ]
+        )
+        assert "reasoning_content" not in translated[0]
 
     def test_a_thinking_mode_tool_call_turn_round_trips_into_a_second_request(self):
         """Two provider calls, so the second one's body is the thing under test.
 
-        The single-turn tests cannot see this: the failure they would miss is a
-        second request that either drops the assistant's text or carries a field
-        the provider rejects.
+        This is the shape that 400s in production: the first turn thinks and
+        calls a tool, and the continuation is rejected unless it carries the
+        reasoning back. A single-call test cannot see it.
         """
         from theforge.runners.api import _run_loop_deepseek
 
@@ -733,8 +755,46 @@ class TestReasoningContentHandling:
         }
         assistant = [m for m in follow_up["messages"] if m["role"] == "assistant"][0]
         assert assistant["content"] == "I will read the file"
-        assert "reasoning_content" not in assistant
+        assert assistant["reasoning_content"] == "the file is the likely source"
         assert assistant["tool_calls"][0]["id"] == "c1"
+
+    def test_the_finalizer_also_replays_the_reasoning_it_was_handed(self):
+        """The finalizer replays the *whole* history, so it 400s on the same rule.
+
+        It is the second DeepSeek call site that concatenates a prior tool-call
+        turn, and it runs at the end of every review that ran out of iterations
+        or time — exactly when the history is longest and a rejection costs most.
+        """
+        from theforge.runners.finalizers import _make_deepseek_finalizer
+
+        profile = _deepseek_profile(
+            reasoning_mode="enabled", reasoning_effort="low", phase="review"
+        )
+        client = MagicMock()
+        response = MagicMock()
+        response.choices[0].message.content = "{}"
+        response.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+        client.chat.completions.create.return_value = response
+
+        finalizer = _make_deepseek_finalizer(profile, None, client=client)
+        finalizer(
+            [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": "I will read the file",
+                    "reasoning_content": "the file is the likely source",
+                    "tool_calls": [
+                        ToolCallRequest(id="c1", name="read_file", arguments={"path": "a.py"})
+                    ],
+                },
+                {"role": "tool_results", "results": [{"id": "c1", "content": "ok"}]},
+            ]
+        )
+
+        sent = client.chat.completions.create.call_args[1]["messages"]
+        assistant = [m for m in sent if m["role"] == "assistant"][0]
+        assert assistant["reasoning_content"] == "the file is the likely source"
 
 
 # ── An estimate says what rate card it rests on ───────────────────────────

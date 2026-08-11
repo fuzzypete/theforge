@@ -632,14 +632,16 @@ class AgentLoopManager:
         says what it is about to do and then calls a tool had that sentence
         erased from its own history on the next turn.
 
-        ``reasoning_content`` is recorded on the turn but deliberately NOT
-        replayed to the provider. DeepSeek's API reference defines the input
-        ``reasoning_content`` field as belonging to Chat Prefix Completion —
-        "when using this feature, the ``prefix`` parameter must be set to true" —
-        so sending it on an ordinary tool-loop turn is not the documented
-        contract for this field and would enable a different (beta) feature as a
-        side effect. It is kept on the message so the audit trail carries what
-        the model actually reasoned, which is the part that was missing.
+        ``reasoning_content`` is the chain of thought the provider reported for
+        this turn. It is recorded here because a tool-calling thinking-mode
+        conversation is only continuable if it can be replayed: DeepSeek rejects
+        a follow-up request whose assistant tool-call turn omits it. Storing it
+        on the loop-internal message — rather than in a provider-specific side
+        channel — is what lets the translators put it back on the wire without
+        the loop knowing which providers care.
+
+        A turn the provider reported no reasoning for stores nothing, so a
+        non-reasoning provider's history is byte-identical to what it was.
         """
         new_messages = list(messages)
         assistant: dict[str, Any] = {

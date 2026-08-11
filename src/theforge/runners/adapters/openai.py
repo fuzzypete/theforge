@@ -281,12 +281,27 @@ def _make_openai_usage(usage: Any, model: str) -> ModelUsage | None:
 def _translate_messages_openai_chat(messages: list[dict]) -> list[dict]:
     """Translate loop-internal messages to OpenAI Chat Completions format.
 
-    Each outgoing message is built from named keys rather than by copying the
-    loop-internal dict, which is what keeps ``reasoning_content`` — recorded on
-    the assistant turn for the audit trail — out of the request body. DeepSeek
-    accepts that field on an input assistant message only as part of Chat Prefix
-    Completion, which requires ``prefix: true``; emitting it here would opt every
-    thinking-mode tool loop into a beta feature it never asked for.
+    ``reasoning_content`` round-trips: an assistant turn is replayed carrying
+    whatever chain of thought the provider reported for it. DeepSeek's thinking
+    mode *requires* this once tools are in play — "the intermediate assistant's
+    ``reasoning_content`` must participate in the context concatenation and must
+    be passed back to the API in all subsequent user interaction turns… if your
+    code does not correctly pass back ``reasoning_content``, the API will return
+    a 400 error" (api-docs.deepseek.com, thinking-mode guide, retrieved
+    2026-08-10). Without it the first tool call succeeds and every continuation
+    after it is rejected, which makes a routed reviewer unable to finish a review.
+
+    The rule is *narrower* than "always send" and *wider* than "never send", and
+    that is why this is data-driven rather than a provider flag: the field is
+    replayed exactly when the provider produced one. OpenAI's Chat Completions
+    never returns ``reasoning_content``, so an OpenAI history never carries the
+    key and its request bodies are unchanged; DeepSeek returns it on every
+    thinking-mode turn, so its histories round-trip it. No branch on provider is
+    needed, and no shared code has to hold an opinion about either.
+
+    (For a DeepSeek conversation with no tool calls the same guide says a
+    replayed ``reasoning_content`` "will be ignored", so replaying it there is
+    harmless. The failing case is only the tool-call one.)
     """
     result = []
     for msg in messages:
@@ -296,6 +311,9 @@ def _translate_messages_openai_chat(messages: list[dict]) -> list[dict]:
         elif role == "assistant":
             calls = msg.get("tool_calls", [])
             m: dict[str, Any] = {"role": "assistant", "content": msg.get("content")}
+            reasoning = msg.get("reasoning_content")
+            if reasoning:
+                m["reasoning_content"] = reasoning
             if calls:
                 m["tool_calls"] = [
                     {

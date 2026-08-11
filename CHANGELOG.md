@@ -37,7 +37,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `extra_body`, since it is DeepSeek's own body extension), on the single-shot,
   tool-loop and finalizer paths alike. A retired identity is reserved against
   project redeclaration, so `models.custom` and inline `models.enabled` mappings
-  cannot put a retired name back into the selectable set. Cost provenance gains a
+  cannot put a retired name back into the selectable set. A provider-reported
+  `reasoning_content` now round-trips onto the assistant turn it belongs to,
+  which DeepSeek requires once tool calls are in play — without it the first tool
+  call succeeds and every continuation is rejected with a 400. Cost provenance
+  gains a
   fourth value, `estimated_unconfirmed`: an estimate derived from a rate card
   whose model identity is not currently confirmed is now distinguishable from one
   that is, per component and for the invocation as a whole.

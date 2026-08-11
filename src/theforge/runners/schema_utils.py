@@ -416,9 +416,9 @@ class LoopTurn:
     usage: ModelUsage | None  # token usage for this turn
     # Provider-reported chain of thought, where the provider returns one as a
     # field separate from ``text_output`` (DeepSeek's ``reasoning_content``).
-    # Captured rather than discarded so a reasoning model's actual reasoning is
-    # observable; see ``AgentLoopManager._append_tool_results`` for why it is not
-    # replayed into the next request.
+    # Load-bearing, not merely observability: a provider that reports one may
+    # require it back on the next request to continue a tool-calling
+    # conversation, so the loop records it and the translators replay it.
     reasoning_content: str | None = None
 
 

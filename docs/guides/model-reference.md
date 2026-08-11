@@ -132,6 +132,11 @@ Per Google's April 2026 recommendation:
   reasoning_effort}`), not a model-name distinction. The catalog entries declare
   `invocation.reasoning_mode: enabled`, and forge's score-driven reasoning-effort
   axis maps `low`/`medium`/`high` onto DeepSeek's `low`/`high`/`max`.
+- In thinking mode **with tool calls**, DeepSeek requires the assistant turn's
+  `reasoning_content` to be passed back on every subsequent request, and returns
+  400 if it is not. Forge records it on the loop's assistant turn and replays it;
+  without that the first tool call succeeds and every continuation is rejected,
+  which reads as a reviewer that starts and then dies mid-review.
 - DeepSeek bills prompt-cache hits at roughly 2% of the uncached rate. That tier
   is declared as `cost.cached_input_per_mtok` and applied from the counts the
   provider reports, rather than through forge's generic 10% cache discount.
