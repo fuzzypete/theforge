@@ -10,10 +10,11 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from theforge.agent_types import (
     COST_ESTIMATED,
+    COST_ESTIMATED_UNCONFIRMED,
     COST_UNKNOWN,
     AgentResult,
     ModelUsage,
@@ -25,6 +26,7 @@ from theforge.runners.adapters.anthropic import (
 from theforge.runners.adapters.deepseek import (
     _deepseek_client,
     _run_deepseek,
+    deepseek_request_kwargs,
 )
 from theforge.runners.adapters.google import (
     _make_google_adapter,
@@ -57,7 +59,9 @@ from theforge.runners.schema_utils import (
     _build_submit_tools_google,
     _build_submit_tools_openai,
     _estimate_cost,
+    cache_reads_are_subset_of_input,
     noop_finalizer,
+    rate_card_confirmed,
     uses_openai_responses_api,
 )
 from theforge.runners.stuck_detection import StuckTracker, build_observation
@@ -157,12 +161,23 @@ class _UsageAccumulator:
         self.cache_creation_tokens += usage.cache_creation_tokens
 
     def to_model_usage(self, model: str, provider: str) -> ModelUsage:
+        # The accumulated cache-read count is passed through, not just recorded:
+        # a provider that bills prompt-cache hits at a distinct rate only gets
+        # that rate applied if the estimator is told how many hits there were.
+        # Withholding it priced every cached token at the uncached rate (#2352).
+        # Only for providers whose input count *contains* the cache reads —
+        # ``_estimate_cost`` subtracts them, which would delete real uncached
+        # input for a provider that reports the two side by side.
+        cached_input_tokens = (
+            self.cache_read_tokens if cache_reads_are_subset_of_input(provider) else 0
+        )
         cost = _estimate_cost(
             provider,
             model,
             self.input_tokens,
             self.output_tokens,
             thinking_tokens=self.thinking_tokens,
+            cached_input_tokens=cached_input_tokens,
         )
         return ModelUsage(
             model=model,
@@ -459,7 +474,13 @@ class AgentLoopManager:
                 consecutive_malformed = 0
 
             # Append assistant turn + all tool results in a single history entry
-            messages = self._append_tool_results(messages, turn.tool_calls, turn_results)
+            messages = self._append_tool_results(
+                messages,
+                turn.tool_calls,
+                turn_results,
+                content=turn.text_output,
+                reasoning_content=turn.reasoning_content,
+            )
 
             # Progress-aware stuck detection: observe this iteration's calls/results.
             # On detection, inject a nudge; if the pattern persists after the nudge,
@@ -600,16 +621,37 @@ class AgentLoopManager:
         messages: list[dict],
         calls: list[ToolCallRequest],
         results: list[dict],
+        *,
+        content: str | None = None,
+        reasoning_content: str | None = None,
     ) -> list[dict]:
-        """Add assistant tool-call turn + tool result turn to messages."""
+        """Add assistant tool-call turn + tool result turn to messages.
+
+        ``content`` is the text the model emitted *alongside* its tool calls. It
+        was previously hardcoded to None, which silently dropped it: a model that
+        says what it is about to do and then calls a tool had that sentence
+        erased from its own history on the next turn.
+
+        ``reasoning_content`` is the chain of thought the provider reported for
+        this turn. It is recorded here because a tool-calling thinking-mode
+        conversation is only continuable if it can be replayed: DeepSeek rejects
+        a follow-up request whose assistant tool-call turn omits it. Storing it
+        on the loop-internal message — rather than in a provider-specific side
+        channel — is what lets the translators put it back on the wire without
+        the loop knowing which providers care.
+
+        A turn the provider reported no reasoning for stores nothing, so a
+        non-reasoning provider's history is byte-identical to what it was.
+        """
         new_messages = list(messages)
-        new_messages.append(
-            {
-                "role": "assistant",
-                "content": None,
-                "tool_calls": calls,
-            }
-        )
+        assistant: dict[str, Any] = {
+            "role": "assistant",
+            "content": content,
+            "tool_calls": calls,
+        }
+        if reasoning_content:
+            assistant["reasoning_content"] = reasoning_content
+        new_messages.append(assistant)
         new_messages.append(
             {
                 "role": "tool_results",
@@ -860,7 +902,16 @@ def _run_loop_deepseek(
     tool_schemas = [t.to_openai_function() for t in tools] + (
         _build_submit_tools_openai(responses_api=False) if is_review else []
     )
-    adapter = _make_openai_chat_adapter(profile, secrets, client=client)
+    # The loop's request-level controls are built by the same helper the
+    # single-shot and finalizer paths use, so the reasoning mode a DeepSeek entry
+    # is banded for is requested on every call the run makes rather than on
+    # whichever entry point happened to be wired for it (#2352).
+    adapter = _make_openai_chat_adapter(
+        profile,
+        secrets,
+        client=client,
+        extra_kwargs=deepseek_request_kwargs(profile),
+    )
     finalizer = (
         _make_deepseek_finalizer(profile, secrets, client=client) if is_review else noop_finalizer
     )
@@ -945,16 +996,35 @@ def _run_single_api_model(
         return runner_fn(prompt, profile, secrets)
 
 
-def _stamp_api_cost_provenance(result: AgentResult) -> AgentResult:
+def _estimated_provenance(provider: str | None, model: str | None) -> str:
+    """Which flavour of "forge computed this" applies to ``(provider, model)``.
+
+    A derived cost is only as good as the rate card behind it, and a rate card is
+    only as good as the evidence that the identifier it was recorded for still
+    designates the model that ran. Where that evidence is current the cost is
+    :data:`COST_ESTIMATED`; where it is absent or aged out the cost is
+    :data:`COST_ESTIMATED_UNCONFIRMED` — the same number, carrying an honest
+    statement of what it rests on (#2352).
+    """
+    if not provider or not model:
+        return COST_ESTIMATED_UNCONFIRMED
+    return COST_ESTIMATED if rate_card_confirmed(provider, model) else COST_ESTIMATED_UNCONFIRMED
+
+
+def _stamp_api_cost_provenance(result: AgentResult, provider: str | None = None) -> AgentResult:
     """Mark an API result's costs as forge-derived estimates (#2205).
 
     No API transport forge speaks returns a price: every provider reports token
-    counts and forge multiplies them by :data:`schema_utils.PRICING_TABLE`. So a
-    cost that reached here was computed, not billed, and a consumer attributing
-    spend has to be able to see that. Stamped at this one seam rather than at
-    each adapter's ``_estimate_cost`` call because the statement is a property of
-    the transport, not of any one provider — a new adapter is covered the day it
-    is added.
+    counts and forge multiplies them by a rate card. So a cost that reached here
+    was computed, not billed, and a consumer attributing spend has to be able to
+    see that. Stamped at this one seam rather than at each adapter's
+    ``_estimate_cost`` call because the statement is a property of the transport,
+    not of any one provider — a new adapter is covered the day it is added.
+
+    *Which* estimate it is depends on the rate card, so each component is
+    classified against its own model name (#2352): a result can span models, and
+    "this figure rests on a card nothing has confirmed" is true of one component
+    at a time, not of the invocation.
 
     A ``None`` cost stays :data:`COST_UNKNOWN`: nothing was observed, so there is
     nothing to characterize. An already-stated provenance is never overwritten —
@@ -965,20 +1035,26 @@ def _stamp_api_cost_provenance(result: AgentResult) -> AgentResult:
     usage = tuple(
         u
         if u.cost_usd is None or u.cost_provenance != COST_UNKNOWN
-        else dataclasses.replace(u, cost_provenance=COST_ESTIMATED)
+        else dataclasses.replace(u, cost_provenance=_estimated_provenance(provider, u.model))
         for u in (result.model_usage or ())
     )
     provenance = result.cost_provenance
     if result.cost_usd is None:
         provenance = COST_UNKNOWN
     elif provenance == COST_UNKNOWN:
-        provenance = COST_ESTIMATED
+        # The invocation-level statement is the weakest of its components': if any
+        # part of this cost rests on an unconfirmed card, the total does too.
+        provenance = (
+            COST_ESTIMATED_UNCONFIRMED
+            if any(u.cost_provenance == COST_ESTIMATED_UNCONFIRMED for u in usage)
+            else _estimated_provenance(provider, result.model_used)
+        )
     if provenance == result.cost_provenance and usage == result.model_usage:
         return result
     return dataclasses.replace(result, cost_provenance=provenance, model_usage=usage)
 
 
-def _stamp_api_transport(result: AgentResult) -> AgentResult:
+def _stamp_api_transport(result: AgentResult, provider: str | None = None) -> AgentResult:
     """Record that this result came over the API transport.
 
     The transport is a *hint the identity projection needs*: a bare model name
@@ -996,7 +1072,7 @@ def _stamp_api_transport(result: AgentResult) -> AgentResult:
     """
     if not isinstance(result, AgentResult):
         return result
-    result = _stamp_api_cost_provenance(result)
+    result = _stamp_api_cost_provenance(result, provider)
     if result.transport_used:
         return result
     return dataclasses.replace(result, transport_used="api")
@@ -1077,9 +1153,10 @@ def run_api_agent(
             # callers that return non-dataclass objects (e.g., mocks in tests).
             if model_config:
                 return _stamp_api_transport(
-                    dataclasses.replace(result, model_config=model_config, model_used=model)
+                    dataclasses.replace(result, model_config=model_config, model_used=model),
+                    profile.provider,
                 )
-            return _stamp_api_transport(result)
+            return _stamp_api_transport(result, profile.provider)
 
         last_result = result
 
@@ -1105,6 +1182,7 @@ def run_api_agent(
         _log_verbose(f"  ... {label} done | {status} | cost={cost_str}")
     if model_config:
         return _stamp_api_transport(
-            dataclasses.replace(last_result, model_config=model_config, model_used=model)
+            dataclasses.replace(last_result, model_config=model_config, model_used=model),
+            profile.provider,
         )
-    return _stamp_api_transport(last_result)
+    return _stamp_api_transport(last_result, profile.provider)

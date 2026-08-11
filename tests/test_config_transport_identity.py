@@ -658,7 +658,7 @@ class TestTransportCrossesPhaseBoundaries:
             tmp_path,
             {
                 "project": "p",
-                "models": ["anthropic/sonnet/cli", "deepseek/deepseek-reasoner/api"],
+                "models": ["anthropic/sonnet/cli", "deepseek/deepseek-v4-pro/api"],
                 "budget_usd": 30.0,
             },
         )
@@ -668,7 +668,7 @@ class TestTransportCrossesPhaseBoundaries:
         assert dev.transport is not None
         # Whichever model won, dispatch state is internally consistent.
         assert dev.mode == dev.transport.kind
-        if dev.model == "deepseek-reasoner":
+        if dev.model == "deepseek-v4-pro":
             assert dev.mode == "api"
             assert dev.cli is None
         else:

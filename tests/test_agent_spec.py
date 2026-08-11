@@ -66,7 +66,7 @@ class TestAgentRegistry:
             assert AGENT_REGISTRY[key].transport.kind == "cli"
 
     def test_api_backed_models_resolve_to_api_transport(self):
-        for key in ("deepseek/deepseek-reasoner/api", "deepseek/deepseek-chat/api"):
+        for key in ("deepseek/deepseek-v4-pro/api", "deepseek/deepseek-v4-flash/api"):
             assert AGENT_REGISTRY[key].transport.kind == "api"
 
     def test_openai_api_transport_entries_exist(self):
@@ -135,7 +135,7 @@ class TestAgentRegistry:
         assert resolve_agent_spec("claude/opus") is AGENT_REGISTRY["anthropic/opus/cli"]
 
     def test_resolve_agent_spec_known(self):
-        spec = resolve_agent_spec("deepseek/deepseek-reasoner/api")
+        spec = resolve_agent_spec("deepseek/deepseek-v4-pro/api")
         assert spec.provider == "deepseek"
         assert spec.transport.kind == "api"
         assert spec.transport.runner == "deepseek"
@@ -178,14 +178,14 @@ class TestRoleDerivationDoesNotBranchOnCliIdentity:
     """AC: Role derivation selects by tier/capability/cost/dev_capable — not by CLI string."""
 
     def test_dev_role_uses_cheapest_regardless_of_transport(self):
-        # deepseek-chat (API, cost_rank=1) vs claude/opus (CLI, cost_rank=3).
+        # deepseek-v4-flash (API, cost_rank=1) vs claude/opus (CLI, cost_rank=3).
         # If role derivation branched on CLI identity it might prefer CLI for dev,
-        # but it must pick the cheapest — the API-backed deepseek-chat.
+        # but it must pick the cheapest — the API-backed deepseek-v4-flash.
         assignment = derive_roles(
-            ["deepseek/deepseek-chat/api", "anthropic/opus/cli"],
+            ["deepseek/deepseek-v4-flash/api", "anthropic/opus/cli"],
             budget_usd=10.0,
         )
-        assert assignment.dev.ref.model == "deepseek-chat"
+        assert assignment.dev.ref.model == "deepseek-v4-flash"
         assert assignment.dev.ref.provider == "deepseek"
 
 
@@ -213,9 +213,7 @@ class TestTransportPropagatesToProfile:
     def test_api_transport_reaches_profile(self):
         from theforge.config.bridge import role_assignment_to_profiles
 
-        ra = derive_roles(
-            ["deepseek/deepseek-reasoner/api", "anthropic/opus/cli"], budget_usd=10.0
-        )
+        ra = derive_roles(["deepseek/deepseek-v4-pro/api", "anthropic/opus/cli"], budget_usd=10.0)
         profiles = role_assignment_to_profiles(ra)
         dev_profile = profiles["dev_profile"]
         assert dev_profile.transport is not None
@@ -241,7 +239,7 @@ class TestRunnerDispatchUsesTransportKind:
         assert _profile_transport_kind(p) == "cli"
 
     def test_api_profile_dispatches_as_api(self):
-        p = self._profile(provider="deepseek", model="deepseek-reasoner")
+        p = self._profile(provider="deepseek", model="deepseek-v4-pro")
         assert _profile_transport_kind(p) == "api"
 
     def test_api_profile_for_openai_dispatches_as_api(self):

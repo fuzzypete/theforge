@@ -123,7 +123,9 @@ def _agents_from_models(
                 registry_source=info.registry_source,
                 input_cost_per_mtok=info.input_cost_per_mtok,
                 output_cost_per_mtok=info.output_cost_per_mtok,
+                cached_input_cost_per_mtok=info.cached_input_cost_per_mtok,
                 pricing_provenance=info.pricing_provenance,
+                reasoning_mode=info.reasoning_mode,
             )
         )
     return agents

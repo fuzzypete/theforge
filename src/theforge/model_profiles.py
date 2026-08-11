@@ -2783,7 +2783,7 @@ def canonical_id_for_legacy_key(model_key: str, entry: dict | None = None) -> st
       4. ``-cli``/``-api`` suffix-aware unique-spec lookup
          (e.g. ``sonnet-cli`` → unique anthropic/sonnet CLI spec).
       5. Bare-name unique-spec lookup with constructable transport
-         (e.g. ``deepseek-deepseek-reasoner`` → unique deepseek/deepseek-reasoner
+         (e.g. ``deepseek-deepseek-v4-pro`` → unique deepseek/deepseek-v4-pro
          API spec), narrowed by a transport hint recorded on ``entry`` when the
          bare name alone is ambiguous (``gpt-5.4`` + ``transport_used: cli`` →
          ``openai/gpt-5.4/cli``).
@@ -2907,8 +2907,8 @@ def _resolve_canonical_key(key: str, entry_transport: str | None) -> str | None:
 
     if transport_hint is None:
         # Try `<provider>-<model>` style: split at the first dash where the
-        # prefix matches a known provider, e.g. ``deepseek-deepseek-reasoner``
-        # → provider=deepseek, model=deepseek-reasoner.
+        # prefix matches a known provider, e.g. ``deepseek-deepseek-v4-pro``
+        # → provider=deepseek, model=deepseek-v4-pro.
         try:
             from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
         except Exception:  # noqa: BLE001

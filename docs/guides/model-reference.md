@@ -114,15 +114,32 @@ Per Google's April 2026 recommendation:
 
 | Phase | Small | Medium | Large |
 |---|---|---|---|
-| Preflight | `deepseek-reasoner` | `deepseek-reasoner` | `deepseek-reasoner` |
+| Preflight | `deepseek-v4-pro` | `deepseek-v4-pro` | `deepseek-v4-pro` |
 | Planning | not recommended | not recommended | not recommended |
 | Dev | not recommended | not recommended | not recommended |
 | Review | not recommended | not recommended | not recommended |
 
 **Notes:**
-- DeepSeek Reasoner is used for preflight classification — the reasoning
+- `deepseek-v4-pro` is used for preflight classification — the reasoning
   overhead is justified because preflight drives $20-50 of downstream spend
 - Not recommended for dev or review due to tool-use limitations
+- **`deepseek-chat` and `deepseek-reasoner` are retired upstream** (#2352) and
+  are no longer routable. Both still resolve at DeepSeek's API, which is why the
+  catalog declares the retirement explicitly rather than deleting the entries:
+  naming one in `models.enabled` now fails at config load with the replacement
+  named, instead of running and recording spend off a replaced rate card.
+- Reasoning is a request parameter on this provider (`thinking: {type,
+  reasoning_effort}`), not a model-name distinction. The catalog entries declare
+  `invocation.reasoning_mode: enabled`, and forge's score-driven reasoning-effort
+  axis maps `low`/`medium`/`high` onto DeepSeek's `low`/`high`/`max`.
+- In thinking mode **with tool calls**, DeepSeek requires the assistant turn's
+  `reasoning_content` to be passed back on every subsequent request, and returns
+  400 if it is not. Forge records it on the loop's assistant turn and replays it;
+  without that the first tool call succeeds and every continuation is rejected,
+  which reads as a reviewer that starts and then dies mid-review.
+- DeepSeek bills prompt-cache hits at roughly 2% of the uncached rate. That tier
+  is declared as `cost.cached_input_per_mtok` and applied from the counts the
+  provider reports, rather than through forge's generic 10% cache discount.
 - Cost: ~$0.30 per preflight call
 
 ---
