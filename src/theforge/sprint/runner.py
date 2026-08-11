@@ -14,8 +14,9 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 import yaml
@@ -1615,8 +1616,8 @@ def _run_baseline_gate(
 def _continuation_evidence(
     *,
     reexec: bool,
-    live_story_slugs: set[str],
-    unresolved_slugs: "set[str] | None" = None,
+    live_story_slugs: "AbstractSet[str]",
+    unresolved_slugs: "AbstractSet[str] | None" = None,
 ) -> str | None:
     """Describe why this launch is a continuation of in-flight work, or None.
 
@@ -3271,6 +3272,284 @@ def _refresh_external_satisfied(
     return newly_satisfied
 
 
+@dataclass(frozen=True)
+class SprintCostSnapshot:
+    """One consistent read of the sprint ledger, taken under its lock.
+
+    Every consumer that needs more than one of these figures at once needs them
+    to agree — a budget check that reads the total, then re-reads the unmeasured
+    list after a worker has landed, is evaluating a cap against two different
+    moments. Taking the whole read in one go is what makes that impossible.
+    """
+
+    accumulated: float
+    prior: float
+    unmeasured: tuple[str, ...]
+    current_generation_unmeasured: frozenset[str]
+
+    @property
+    def spent(self) -> float:
+        """This generation's spend plus what it inherited on resume."""
+        return self.accumulated + self.prior
+
+    @property
+    def measured(self) -> bool:
+        """False while any spend in the total could not be measured (#1992)."""
+        return not self.unmeasured
+
+
+class SprintCostLedger:
+    """The single owner of what a sprint has spent.
+
+    Before this existed the figure lived in ``run_sprint``'s frame and closures
+    advanced it through ``nonlocal accumulated_cost``, so nothing could answer
+    "what has this sprint spent, and what last changed that" without reading
+    every writer. The ledger is the answer to both: it is the only thing that
+    writes the total, and every advance goes through a named method on it.
+
+    Writes are serialised because workers land concurrently, and the pairing of
+    a cost with the unmeasured flag that qualifies it (``record_story_cost``)
+    has to be one step or a dispatch check can read a total it believes is
+    measured when it is not.
+    """
+
+    def __init__(self, *, accumulated: float = 0.0, prior: float = 0.0) -> None:
+        self._lock = threading.Lock()
+        self._accumulated = float(accumulated)
+        self._prior = float(prior)
+        self._unmeasured: list[str] = []
+        self._current_generation: set[str] = set()
+
+    # -- reads ----------------------------------------------------------
+    @property
+    def accumulated(self) -> float:
+        """Spend this generation has measured or recovered."""
+        with self._lock:
+            return self._accumulated
+
+    @property
+    def prior(self) -> float:
+        """Spend carried in from earlier generations of the same sprint."""
+        with self._lock:
+            return self._prior
+
+    @property
+    def spent(self) -> float:
+        """Everything this sprint is accountable for, this run plus carried."""
+        return self.snapshot().spent
+
+    @property
+    def unmeasured_sources(self) -> tuple[str, ...]:
+        """Sources of spend the sprint could not measure, in discovery order."""
+        with self._lock:
+            return tuple(self._unmeasured)
+
+    @property
+    def current_generation_unmeasured(self) -> frozenset[str]:
+        """The subset of unmeasured sources THIS generation produced (#2310)."""
+        with self._lock:
+            return frozenset(self._current_generation)
+
+    @property
+    def measured(self) -> bool:
+        """True only when every dollar in the total was actually measured."""
+        with self._lock:
+            return not self._unmeasured
+
+    def snapshot(self) -> SprintCostSnapshot:
+        """Read the whole ledger at one moment."""
+        with self._lock:
+            return SprintCostSnapshot(
+                accumulated=self._accumulated,
+                prior=self._prior,
+                unmeasured=tuple(self._unmeasured),
+                current_generation_unmeasured=frozenset(self._current_generation),
+            )
+
+    # -- writes ---------------------------------------------------------
+    def add(self, amount: float) -> float:
+        """Advance the total by ``amount`` and return the new figure."""
+        with self._lock:
+            self._accumulated += amount
+            return self._accumulated
+
+    def set_prior(self, amount: float) -> None:
+        """Record spend inherited from an earlier generation (resume triage)."""
+        with self._lock:
+            self._prior = float(amount)
+
+    def flag_unmeasured_here(self, source: str) -> None:
+        """Record a source whose unmeasured spend occurred in THIS run.
+
+        Spend that happened here is a new unknown nobody has bounded, so it must
+        never be absorbed by an operator acceptance made for an earlier
+        occurrence of the same story (#2310).
+        """
+        with self._lock:
+            self._unmeasured.append(source)
+            self._current_generation.add(source)
+
+    def note_carried_unmeasured(self, source: str) -> None:
+        """Record unmeasured spend inherited from an earlier generation."""
+        with self._lock:
+            self._unmeasured.append(source)
+
+    def record_story_cost(self, slug: str, cost: float, *, measured: float | None) -> float:
+        """Fold a finished story's spend into the total in one step.
+
+        The budget can only ever be enforced against measured spend, so the
+        shortfall is recorded alongside the figure rather than after it — the
+        dispatch check must never see the advanced total without also seeing
+        that it is a lower bound (#1992).
+        """
+        with self._lock:
+            if measured is None:
+                self._unmeasured.append(slug)
+                self._current_generation.add(slug)
+            self._accumulated += cost
+            return self._accumulated
+
+
+@dataclass(frozen=True)
+class SprintStop:
+    """Why a sprint stopped, and the story that halted it if there was one."""
+
+    reason: str
+    halt_slug: str | None = None
+
+
+class SprintStopCondition:
+    """The single owner of whether a sprint has stopped and why.
+
+    The reason and the halt slug are one fact, not two: a CI halt that recorded
+    the reason but lost the slug leaves the summary unable to say what broke.
+    Recording them together through one owner is what keeps them from drifting.
+
+    Two write paths exist because the sprint genuinely has two policies.
+    ``stop`` is for the caller that has just established the authoritative
+    reason (a red required check names its own story); ``stop_if_unset`` is
+    first-writer-wins, for the callers that must not overwrite an earlier and
+    more specific cause with a downstream consequence of it.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._stop: SprintStop | None = None
+
+    @property
+    def stopped(self) -> bool:
+        with self._lock:
+            return self._stop is not None
+
+    @property
+    def record(self) -> SprintStop | None:
+        """The whole stop, reason and halt slug together, or None."""
+        with self._lock:
+            return self._stop
+
+    @property
+    def reason(self) -> str | None:
+        with self._lock:
+            return self._stop.reason if self._stop is not None else None
+
+    @property
+    def halt_slug(self) -> str | None:
+        with self._lock:
+            return self._stop.halt_slug if self._stop is not None else None
+
+    def stop(self, reason: str, *, halt_slug: str | None = None) -> SprintStop:
+        """Record the stop, replacing any earlier one."""
+        with self._lock:
+            self._stop = SprintStop(reason=reason, halt_slug=halt_slug)
+            return self._stop
+
+    def stop_if_unset(self, reason: str, *, halt_slug: str | None = None) -> bool:
+        """Record the stop only if nothing has stopped the sprint yet.
+
+        Returns True when this call is the one that stopped it, so a caller can
+        hang its one-shot side effects (the operator notification) off the same
+        decision rather than re-deriving it.
+        """
+        with self._lock:
+            if self._stop is not None:
+                return False
+            self._stop = SprintStop(reason=reason, halt_slug=halt_slug)
+            return True
+
+
+@dataclass(frozen=True)
+class SprintRunContext:
+    """What a sprint consults but never changes.
+
+    Everything here is settled before the first story is dispatched: the
+    resolved sprint, the identifiers its audit trail is written under, and the
+    operator's invocation choices. The nested functions of ``run_sprint`` read
+    these and only read them, and the frozen dataclass is what says so — the
+    split between what a sprint mutates and what it merely consults is a fact
+    about this type versus :class:`SprintExecutionState`, not a convention.
+
+    ``config`` and ``resolved`` are objects rather than values; freezing the
+    context pins *which* ones the run uses, not their internals.
+    """
+
+    config: ForgeConfig
+    resolved: ResolvedSprint
+    sprint_id: str | None
+    run_id: str | None
+    auto_merge: bool = False
+    interactive: bool = False
+    notify: bool = False
+    resume: bool = False
+    reexec: bool = False
+    no_pull: bool = False
+    force: bool = False
+    state_update_fn: "Callable[[dict], None] | None" = None
+    dropped_slugs: "dict[str, str] | None" = None
+    skipped_issues: "list | None" = None
+    entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None
+    live_story_slugs: frozenset[str] = frozenset()
+    unresolved_live_slugs: frozenset[str] = frozenset()
+
+    @property
+    def name(self) -> str:
+        return self.resolved.name
+
+    @property
+    def budget_usd(self) -> float:
+        return self.resolved.budget_usd
+
+
+@dataclass
+class SprintExecutionState:
+    """The sprint's execution state, as a thing with a name.
+
+    This is what ``run_sprint`` used to hold in its stack frame: reachable only
+    from inside the function, nameable by nothing, assertable by no test that
+    was not willing to run a whole sprint. Constructing one needs only a
+    :class:`SprintRunContext`, so a caller can build the state a sprint would
+    have and assert against it without dispatching a story.
+
+    The two questions the old ``nonlocal`` writes left unanswered each have a
+    single owner here: :attr:`cost` is the only thing that advances the sprint
+    total, and :attr:`stop` is the only thing that decides the sprint has
+    stopped. Neither can be advanced by assigning to a shared variable, because
+    neither is one.
+    """
+
+    context: SprintRunContext
+    cost: SprintCostLedger = field(default_factory=SprintCostLedger)
+    stop: SprintStopCondition = field(default_factory=SprintStopCondition)
+    stories: SprintStoryState = field(default_factory=SprintStoryState)
+    merged_slugs: set[str] = field(default_factory=set)
+    results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
+    story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = field(
+        default_factory=dict
+    )
+    live_telemetry_snapshots: dict[str, dict] = field(default_factory=dict)
+    batch_assignments: dict[str, int] = field(default_factory=dict)
+    batch_number: int = 0
+
+
 def run_sprint(
     config: ForgeConfig,
     sprint: "Path | ResolvedSprint",
@@ -3588,6 +3867,34 @@ def run_sprint(
     except Exception:
         pass
 
+    # Everything the sprint consults is settled by this point, so bind it once
+    # into a named, frozen context and hold the mutable half in a named state
+    # object. Below this line the nested functions read ``_ctx`` and write
+    # ``_sprint_state``; the two questions the old ``nonlocal`` writes left open
+    # — what accumulates cost, and what decides the sprint has stopped — are
+    # answered by ``_sprint_state.cost`` and ``_sprint_state.stop`` and by
+    # nothing else.
+    _ctx = SprintRunContext(
+        config=config,
+        resolved=resolved,
+        sprint_id=_sprint_id,
+        run_id=run_id,
+        auto_merge=auto_merge,
+        interactive=interactive,
+        notify=notify,
+        resume=resume,
+        reexec=reexec,
+        no_pull=no_pull,
+        force=force,
+        state_update_fn=state_update_fn,
+        dropped_slugs=dropped_slugs,
+        skipped_issues=skipped_issues,
+        entry_intake_outcomes=entry_intake_outcomes,
+        live_story_slugs=frozenset(_confirmed_live_slugs),
+        unresolved_live_slugs=frozenset(_unresolved_live_slugs),
+    )
+    _sprint_state = SprintExecutionState(context=_ctx)
+
     # Pin the configuration this sprint runs under (#1980). Captured once, on
     # first entry, and reloaded on every re-entry — --resume, and the re-exec
     # that follows a source update, which is the path that first exposed this:
@@ -3595,9 +3902,9 @@ def run_sprint(
     # invalid, and the next re-entry read the changed file. A project root that
     # has since moved off the pin is reported as drift, never silently adopted.
     _config_snapshot: "SprintConfigSnapshot | None" = None
-    if _sprint_id:
+    if _ctx.sprint_id:
         try:
-            _config_snapshot = capture_or_load(config.project_root, _sprint_id)
+            _config_snapshot = capture_or_load(_ctx.config.project_root, _ctx.sprint_id)
         except Exception:  # pragma: no cover - snapshotting must never abort a sprint
             _config_snapshot = None
     config_snapshot_mod.activate(_config_snapshot)
@@ -3625,10 +3932,10 @@ def run_sprint(
     # would otherwise erase the previous attempt's recorded cause before anything
     # had a chance to read it (#2030).
     _prior_failure_history_by_ref: dict[str, list[dict]] = {}
-    if _sprint_id:
+    if _ctx.sprint_id:
         from .audit import _load_accumulated_stories  # noqa: PLC0415
 
-        for _prior in _load_accumulated_stories(_sprint_id, config.project_root):
+        for _prior in _load_accumulated_stories(_ctx.sprint_id, _ctx.config.project_root):
             if not isinstance(_prior, dict):
                 continue
             _ref = _prior.get("canonical_ref")
@@ -3652,13 +3959,13 @@ def run_sprint(
     # dispatched. That term is checked at the "dependency-resolved" pass below,
     # still ahead of every agent spend.
     _refuse_dirty_root_before_spend(
-        config,
+        _ctx.config,
         lands_in_project_root=config_lands_in_project_root,
         stage="sprint-entry",
     )
 
-    if not no_pull and _project_root_is_git_checkout(config.project_root):
-        coordinator_workspace.pull_base_branch(config, lands_locally=_sprint_lands_locally)
+    if not _ctx.no_pull and _project_root_is_git_checkout(_ctx.config.project_root):
+        coordinator_workspace.pull_base_branch(_ctx.config, lands_locally=_sprint_lands_locally)
 
     def _publish_sprint_phase(
         phase: str,
@@ -3671,20 +3978,20 @@ def run_sprint(
         Headless invocations pass no ``run_id`` and have no state file; those
         callers simply produce no live phase.
         """
-        if not run_id:
+        if not _ctx.run_id:
             return
         update_state_phase(
-            run_id, config.project_root, phase, detail=detail, started_at=started_at
+            _ctx.run_id, _ctx.config.project_root, phase, detail=detail, started_at=started_at
         )
 
     baseline_started_at = datetime.datetime.now(datetime.timezone.utc)
     _continuation_reason = _continuation_evidence(
-        reexec=reexec,
-        live_story_slugs=_confirmed_live_slugs,
-        unresolved_slugs=_unresolved_live_slugs,
+        reexec=_ctx.reexec,
+        live_story_slugs=_ctx.live_story_slugs,
+        unresolved_slugs=_ctx.unresolved_live_slugs,
     )
     if _continuation_reason is not None:
-        baseline_gate = _skipped_baseline_gate(config, _continuation_reason)
+        baseline_gate = _skipped_baseline_gate(_ctx.config, _continuation_reason)
         _sprint_logger.emit(
             "baseline_gate_skipped",
             reason="reexec_continuation",
@@ -3699,26 +4006,26 @@ def run_sprint(
         # is never that of finished work (#2014).
         _publish_sprint_phase(
             SPRINT_PHASE_BASELINE_GATE,
-            detail=f"merge base of {config.workspace.base_branch}",
+            detail=f"merge base of {_ctx.config.workspace.base_branch}",
             started_at=baseline_started_at.isoformat(),
         )
         try:
-            baseline_gate = _run_baseline_gate(config, resolved, run_id=run_id)
+            baseline_gate = _run_baseline_gate(_ctx.config, _ctx.resolved, run_id=_ctx.run_id)
         finally:
             _publish_sprint_phase(SPRINT_PHASE_STARTING)
-    resolved.baseline_gate = baseline_gate
+    _ctx.resolved.baseline_gate = baseline_gate
     _log(str(baseline_gate.get("message", "Baseline gate check completed")))
     if not bool(baseline_gate.get("passed", False)):
         _write_sprint_audit(
-            manifest=resolved,
+            manifest=_ctx.resolved,
             result=SprintResult(
-                name=resolved.name,
+                name=_ctx.resolved.name,
                 specs_total=total,
                 specs_succeeded=0,
                 specs_failed=total,
                 specs_skipped=0,
                 total_cost_usd=0.0,
-                budget_usd=resolved.budget_usd,
+                budget_usd=_ctx.resolved.budget_usd,
                 results=[],
                 stopped_reason="broken_baseline",
             ),
@@ -3726,72 +4033,62 @@ def run_sprint(
             started_at=baseline_started_at,
             finished_at=datetime.datetime.now(datetime.timezone.utc),
             duration=float(baseline_gate.get("duration_seconds", 0.0)),
-            project_root=config.project_root,
+            project_root=_ctx.config.project_root,
             slug_map={ref: task.slug for task, _src, ref in task_entries},
             tasks_by_slug={task.slug: task for task, _src, _ref in task_entries},
-            sprint_id=_sprint_id,
-            dropped_slugs=dropped_slugs,
-            skipped_issues=skipped_issues,
-            run_id=run_id,
+            sprint_id=_ctx.sprint_id,
+            dropped_slugs=_ctx.dropped_slugs,
+            skipped_issues=_ctx.skipped_issues,
+            run_id=_ctx.run_id,
         )
         raise RuntimeError(str(baseline_gate.get("message", "Broken baseline")))
 
     started_at = datetime.datetime.now(datetime.timezone.utc)
-    accumulated_cost = 0.0
-    # Every source of spend this sprint could not measure, in the order it was
-    # discovered ("issue-1945" for a story, "intake:issue-1946" for a
-    # remediation pass, "carried:..." for spend inherited on resume). While this is
-    # non-empty, ``accumulated_cost`` is a measured LOWER BOUND, not the
-    # sprint's spend — the budget check must refuse to certify a cap it cannot
-    # evaluate rather than dispatch more work against an understated total
-    # (#1992). Guarded by ``cost_lock`` alongside ``accumulated_cost``.
-    unmeasured_spend: list[str] = []
-    # The subset of ``unmeasured_spend`` this generation produced itself, as
-    # opposed to inherited under a ``carried:`` prefix. An operator acceptance
-    # stands in for one recorded call at one recorded ceiling; spend that
-    # happened HERE is a new unknown nobody has bounded, so it must never be
-    # absorbed by an acceptance made for an earlier occurrence of the same story
-    # (#2310). Guarded by ``cost_lock`` alongside ``unmeasured_spend``.
-    current_generation_unmeasured: set[str] = set()
-
-    def _flag_unmeasured_here(source: str) -> None:
-        """Record a source whose unmeasured spend occurred in THIS run."""
-        unmeasured_spend.append(source)
-        current_generation_unmeasured.add(source)
+    # The sprint's spend, and every source of spend it could not measure, live
+    # in the ledger — the single writer, so no closure can advance the total by
+    # assigning to a shared variable. While the ledger reports unmeasured
+    # sources its total is a measured LOWER BOUND, not the sprint's spend: the
+    # budget check must refuse to certify a cap it cannot evaluate rather than
+    # dispatch more work against an understated total (#1992). The ledger also
+    # tracks which of those sources THIS generation produced, as opposed to
+    # inheriting under a ``carried:`` prefix, so an operator acceptance made for
+    # an earlier occurrence never absorbs a new unknown nobody has bounded
+    # (#2310).
+    _cost_ledger = _sprint_state.cost
 
     # Entry-level intake remediation runs in the CLI before run_sprint and
     # spends the same sprint-authorized budget; fold its agent cost into
     # the sprint total so operator-visible accounting matches actual spend.
-    if entry_intake_outcomes:
-        for _issue_num, _entry_outcome in entry_intake_outcomes.items():
+    if _ctx.entry_intake_outcomes:
+        for _issue_num, _entry_outcome in _ctx.entry_intake_outcomes.items():
             if _intake_outcome_cost_measured(_entry_outcome) is None:
-                _flag_unmeasured_here(f"entry-intake:issue-{_issue_num}")
-        _entry_intake_cost = sum(_intake_outcome_cost(o) for o in entry_intake_outcomes.values())
+                _cost_ledger.flag_unmeasured_here(f"entry-intake:issue-{_issue_num}")
+        _entry_intake_cost = sum(
+            _intake_outcome_cost(o) for o in _ctx.entry_intake_outcomes.values()
+        )
         if _entry_intake_cost > 0.0:
-            accumulated_cost += _entry_intake_cost
+            _cost_ledger.add(_entry_intake_cost)
             _log(
                 f"Entry-intake remediation cost: ${_entry_intake_cost:.4f} "
                 "(rolled into sprint total)"
             )
-    prior_cost = 0.0
-    results: list[tuple[str, CoordinatorResult]] = []
-    if notify and config.notifications.backend not in ("ntfy", "none"):
+    if _ctx.notify and _ctx.config.notifications.backend not in ("ntfy", "none"):
         from ..notify_backends import send_notifications
 
         send_notifications(
-            config,
-            f'TheForge: sprint started \u2014 "{resolved.name}"',
-            f"{total} stories \u00b7 budget ${resolved.budget_usd:.2f}",
+            _ctx.config,
+            f'TheForge: sprint started \u2014 "{_ctx.resolved.name}"',
+            f"{total} stories \u00b7 budget ${_ctx.resolved.budget_usd:.2f}",
         )
     # Canonical sprint story state — single source of truth for every
     # operator-facing surface (forge status, banner, summary, notifications).
     # No local counters are kept; counts are projected from this structure.
-    _story_state = SprintStoryState()
     # Pre-restart spend that the canonical story state will not be holding by
     # the time totals are projected. It is re-attached at wrap-up (see
     # ``_bump_story_cost``); without it the summary total — which sums the
     # canonical state — silently drops spend that SprintResult still counts via
-    # ``prior_cost``, so two operator-facing totals disagree about one run.
+    # the ledger's carried prior, so two operator-facing totals disagree about
+    # one run.
     #
     # Two disjoint ways the canonical state loses it, both only for stories that
     # re-enter this generation:
@@ -3817,7 +4114,7 @@ def run_sprint(
     # then reject the transition to RUNNING — producing a live row that shows
     # the story as skipped/failed while phase, model, and cost continue to
     # advance from the active run.
-    if _sprint_id is not None:
+    if _ctx.sprint_id is not None:
         from .audit import _load_accumulated_stories as _preload  # noqa: PLC0415
 
         _current_run_slugs = set(slug_to_context.keys())
@@ -3834,7 +4131,7 @@ def run_sprint(
             if _cost > 0.0:
                 unseeded_prior_story_cost[slug] = unseeded_prior_story_cost.get(slug, 0.0) + _cost
 
-        for _prior in _preload(_sprint_id, config.project_root):
+        for _prior in _preload(_ctx.sprint_id, _ctx.config.project_root):
             _prior_slug = _prior.get("slug")
             if not _prior_slug:
                 continue
@@ -3843,7 +4140,7 @@ def run_sprint(
             # start with an empty ledger and enforce the cap against a carried
             # lower bound as if it were complete (#1992).
             if "cost_usd" in _prior and _prior.get("cost_usd") is None:
-                unmeasured_spend.append(f"carried:{_prior_slug}")
+                _cost_ledger.note_carried_unmeasured(f"carried:{_prior_slug}")
             _prior_outcome = (_prior.get("outcome") or "").upper()
             if _prior_slug in _current_run_slugs and _prior_outcome not in _succeeded_outcomes:
                 _defer_prior_cost(_prior_slug, _prior)
@@ -3885,7 +4182,7 @@ def run_sprint(
             _prior_detail = dict(_prior_detail_raw) if isinstance(_prior_detail_raw, dict) else {}
             for _stale in ("final_outcome", "review_verdict", "review_p1", "review_p2"):
                 _prior_detail.pop(_stale, None)
-            _story_state.register(
+            _sprint_state.stories.register(
                 _prior_slug,
                 _prior.get("path", _prior_slug),
                 outcome=_mapped_outcome,
@@ -3924,14 +4221,18 @@ def run_sprint(
         as it stood before any story here could rewrite it.
         """
         _occurrence = occurrence or (
-            _OCCURRENCE_CURRENT if raw in current_generation_unmeasured else _OCCURRENCE_CARRIED
+            _OCCURRENCE_CURRENT
+            if raw in _cost_ledger.current_generation_unmeasured
+            else _OCCURRENCE_CARRIED
         )
         key = (_occurrence, unmeasured_spend_policy.normalize_source_id(raw))
         cached = _unmeasured_source_cache.get(key)
         if cached is None:
             _slug = unmeasured_spend_policy.source_slug(raw)
             _story_audit = (
-                unmeasured_spend_policy.read_story_audit(config.project_root, resolved.name, _slug)
+                unmeasured_spend_policy.read_story_audit(
+                    _ctx.config.project_root, _ctx.resolved.name, _slug
+                )
                 if _slug
                 else None
             )
@@ -3940,8 +4241,10 @@ def run_sprint(
         return cached
 
     accepted_unmeasured: dict[str, AcceptedUnmeasuredSpend] = {}
-    if _sprint_id is not None:
-        for _persisted in _load_accepted_unmeasured_spend(_sprint_id, config.project_root):
+    if _ctx.sprint_id is not None:
+        for _persisted in _load_accepted_unmeasured_spend(
+            _ctx.sprint_id, _ctx.config.project_root
+        ):
             _restored = AcceptedUnmeasuredSpend.from_dict(_persisted)
             if _restored is not None:
                 accepted_unmeasured[_restored.source] = _restored
@@ -3950,10 +4253,12 @@ def run_sprint(
         # The set an operator could possibly be talking about: what this run has
         # already flagged, plus what the prior generation recorded. Accepting a
         # name outside it would record a resolution of nothing.
-        _known_sources = {unmeasured_spend_policy.normalize_source_id(s) for s in unmeasured_spend}
+        _known_sources = {
+            unmeasured_spend_policy.normalize_source_id(s) for s in _cost_ledger.unmeasured_sources
+        }
         _known_sources.update(
             unmeasured_spend_policy.normalize_source_id(s)
-            for s in _prior_unmeasured_spend_sources(config.project_root, _sprint_id)
+            for s in _prior_unmeasured_spend_sources(_ctx.config.project_root, _ctx.sprint_id)
         )
         _accepted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         for _raw_accept in accept_unmeasured_spend:
@@ -3994,9 +4299,9 @@ def run_sprint(
         # Written before any dispatch: the resolution is what makes this run
         # legal, so it must be on disk even if the run dies mid-sprint.
         if not persist_accepted_unmeasured_spend(
-            _sprint_id,
-            resolved.name,
-            config.project_root,
+            _ctx.sprint_id,
+            _ctx.resolved.name,
+            _ctx.config.project_root,
             [r.as_dict() for r in accepted_unmeasured.values()],
         ):
             # Reporting the acceptance as recorded when it is not would leave an
@@ -4005,15 +4310,13 @@ def run_sprint(
             # lost yet — but say plainly that it will not survive.
             _log(
                 "WARNING: could not persist the unmeasured-spend acceptance to "
-                f"{config.project_root / '.forge' / 'sprints' / (_sprint_id or '?')}"
+                f"{_ctx.config.project_root / '.forge' / 'sprints' / (_ctx.sprint_id or '?')}"
                 "/state.yaml — it applies to THIS run only and must be passed "
                 "again on the next one."
             )
 
     _state_writer: SprintStateWriter | None = None
-    stopped_reason: str | None = None
-    ci_halt_slug: str | None = None
-    merged_slugs: set[str] = set()
+    _stop = _sprint_state.stop
 
     def _set_outcome(slug: str, outcome: StoryOutcome | str, **fields: object) -> None:
         """Transition a story's canonical outcome.
@@ -4023,14 +4326,14 @@ def run_sprint(
         writer (when present) shares the same SprintStoryState instance and
         the on-disk live status file is updated in lockstep.
         """
-        if not _story_state.has(slug):
+        if not _sprint_state.stories.has(slug):
             ctx = slug_to_context.get(slug)
             if ctx is not None:
                 _t, _src, _ref = ctx
                 _key = f"Issue #{_ref.split(':')[1]}" if _ref.startswith("issue:") else _ref
-                _story_state.register(slug, _key, canonical_ref=_ref)
+                _sprint_state.stories.register(slug, _key, canonical_ref=_ref)
             else:
-                _story_state.register(slug, slug)
+                _sprint_state.stories.register(slug, slug)
         canonical_outcome = coerce_outcome(outcome)
         if canonical_outcome.is_terminal and "finished_at" not in fields:
             fields["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -4039,7 +4342,7 @@ def run_sprint(
             # AND atomically rewrites the live .state file.
             _state_writer.update(slug, status=outcome, **fields)
         else:
-            _story_state.transition(slug, outcome=outcome, **fields)
+            _sprint_state.stories.transition(slug, outcome=outcome, **fields)
 
     # Derive slug_to_spec from unified context mapping
     slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
@@ -4050,12 +4353,13 @@ def run_sprint(
     # and carry forward prior costs.
     triages: dict[str, StoryTriage] = {}
     if reconcile:
-        prior_cost, recovered_prior_started_at, recovered_prior_entries_by_ref = (
-            _read_prior_sprint_accounting(config.project_root, _sprint_id)
+        _recovered_prior_cost, recovered_prior_started_at, recovered_prior_entries_by_ref = (
+            _read_prior_sprint_accounting(_ctx.config.project_root, _ctx.sprint_id)
         )
-        if prior_cost > 0.0:
-            _log(f"Resuming with prior cost: ${prior_cost:.2f}")
-        if _prior_sprint_cost_incomplete(config.project_root, _sprint_id):
+        _cost_ledger.set_prior(_recovered_prior_cost)
+        if _recovered_prior_cost > 0.0:
+            _log(f"Resuming with prior cost: ${_recovered_prior_cost:.2f}")
+        if _prior_sprint_cost_incomplete(_ctx.config.project_root, _ctx.sprint_id):
             # The carried total came from a generation that recorded incomplete
             # cost, so it is a lower bound too (#1992). An accepted ceiling can
             # stand in for it — but only per source, and only if the ledger
@@ -4064,7 +4368,7 @@ def run_sprint(
             # open the guard while its ceiling was charged to nothing, under a
             # cap the ceiling might not even fit (#2310 review).
             _cleared_by_acceptance = not _prior_sprint_cost_incomplete(
-                config.project_root, _sprint_id, accepted_unmeasured
+                _ctx.config.project_root, _ctx.sprint_id, accepted_unmeasured
             )
             if _cleared_by_acceptance:
                 # The marker itself is never re-surfaced. It is a derived
@@ -4076,10 +4380,11 @@ def run_sprint(
                 # operator action can satisfy (#2310 review). Only the named,
                 # acceptable sources come across.
                 _carried_already = {
-                    unmeasured_spend_policy.normalize_source_id(s) for s in unmeasured_spend
+                    unmeasured_spend_policy.normalize_source_id(s)
+                    for s in _cost_ledger.unmeasured_sources
                 }
                 for _prior_norm in unmeasured_spend_policy.acceptable_prior_sources(
-                    _prior_unmeasured_spend_sources(config.project_root, _sprint_id)
+                    _prior_unmeasured_spend_sources(_ctx.config.project_root, _ctx.sprint_id)
                 ):
                     if _prior_norm in _carried_already:
                         continue
@@ -4088,10 +4393,10 @@ def run_sprint(
                     # It is still spend this sprint carries, so it goes in the
                     # ledger by name: its ceiling gets charged, the audit records
                     # it, and the total stays a lower bound.
-                    unmeasured_spend.append(f"carried:{_prior_norm}")
+                    _cost_ledger.note_carried_unmeasured(f"carried:{_prior_norm}")
                     _carried_already.add(_prior_norm)
             else:
-                unmeasured_spend.append("carried:prior-generation")
+                _cost_ledger.note_carried_unmeasured("carried:prior-generation")
         if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
@@ -4106,14 +4411,14 @@ def run_sprint(
                 continue
             triage = _triage_spec(
                 canonical_ref,
-                config,
-                config.project_root,
+                _ctx.config,
+                _ctx.config.project_root,
                 task=task,
                 on_gate_start=lambda label: _publish_reuse_gate_start(
-                    run_id, config.project_root, label
+                    _ctx.run_id, _ctx.config.project_root, label
                 ),
                 on_gate_end=lambda label: _publish_reuse_gate_end(
-                    run_id, config.project_root, label
+                    _ctx.run_id, _ctx.config.project_root, label
                 ),
             )
             triages[canonical_ref] = triage
@@ -4128,8 +4433,9 @@ def run_sprint(
     # measured against run B's record and an acceptance the operator legitimately
     # made would be silently discarded (#2310 review).
     carried_occurrence_ids: dict[str, str | None] = {}
-    for _carried_raw in unmeasured_spend:
-        if _carried_raw in current_generation_unmeasured:
+    _carried_current = _cost_ledger.current_generation_unmeasured
+    for _carried_raw in _cost_ledger.unmeasured_sources:
+        if _carried_raw in _carried_current:
             continue
         _carried_origin = _describe_unmeasured_source(
             _carried_raw, occurrence=_OCCURRENCE_CARRIED
@@ -4162,7 +4468,7 @@ def run_sprint(
             record = _prior if isinstance(_prior, dict) else None
         if record is not None:
             return str(record.get("outcome") or "").upper() == "DONE" and landing_settled(record)
-        entry = _story_state.get(slug)
+        entry = _sprint_state.stories.get(slug)
         if entry is None or entry.outcome is not StoryOutcome.DONE:
             return False
         return landing_settled(dict(entry.extras))
@@ -4195,7 +4501,7 @@ def run_sprint(
     # Build satisfied set: closed dep slugs detected at manifest build time,
     # resume-mode skip states, plus any cross-sprint depends_on slugs whose
     # branch is already merged to the base branch.
-    pre_satisfied: set[str] = set(resolved.closed_dependency_slugs)
+    pre_satisfied: set[str] = set(_ctx.resolved.closed_dependency_slugs)
     # Slugs the reconcile triage classified as already-merged / to-skip. These
     # must be excluded from every dispatch/spend path below (intake remediation,
     # batch preflight) and pre-marked complete in the DAG, so a re-exec'd process
@@ -4211,9 +4517,9 @@ def run_sprint(
     all_tasks = [ctx[0] for ctx in slug_to_context.values()]
     satisfied_slugs = resolve_satisfied_dependencies(
         all_tasks,
-        project_root=config.project_root,
-        base_branch=config.workspace.base_branch,
-        branch_pattern=config.workspace.branch_pattern,
+        project_root=_ctx.config.project_root,
+        base_branch=_ctx.config.workspace.base_branch,
+        branch_pattern=_ctx.config.workspace.branch_pattern,
         pre_satisfied=pre_satisfied,
     )
     normalized = normalize_dependency_plan(all_tasks, satisfied=satisfied_slugs)
@@ -4236,7 +4542,7 @@ def run_sprint(
         in_manifest_dependency_parents - satisfied_slugs - skip_slugs
     )
     _refuse_dirty_root_before_spend(
-        config,
+        _ctx.config,
         lands_in_project_root=(
             bool(_dispatchable_dependency_parents) and dependency_parents_land_in_project_root
         ),
@@ -4245,10 +4551,10 @@ def run_sprint(
 
     # Surface the current sprint phase to forge status --watch so operators
     # see meaningful progress signals during the multi-minute pre-init window.
-    if run_id:
+    if _ctx.run_id:
         from .state_writer import update_state_phase as _update_state_phase
 
-        _update_state_phase(run_id, config.project_root, "intake-remediation")
+        _update_state_phase(_ctx.run_id, _ctx.config.project_root, "intake-remediation")
 
     # Per-story projection used by audit and summary writers when a slug never
     # produces a CoordinatorResult (e.g., dropped at the intake gate, blocked
@@ -4261,7 +4567,7 @@ def run_sprint(
     story_cost_adjustments: dict[str, float] = {}
 
     def _persist_accumulated_story_entries() -> None:
-        if _sprint_id is None:
+        if _ctx.sprint_id is None:
             return
         accumulated_by_ref = {
             ref: dict(entry) for ref, entry in recovered_prior_entries_by_ref.items()
@@ -4281,9 +4587,9 @@ def run_sprint(
                 merged_entry["failure_history"] = history
             accumulated_by_ref[canonical_ref] = merged_entry
         persist_accumulated_story_state(
-            _sprint_id,
-            resolved.name,
-            config.project_root,
+            _ctx.sprint_id,
+            _ctx.resolved.name,
+            _ctx.config.project_root,
             list(accumulated_by_ref.values()),
         )
 
@@ -4306,17 +4612,17 @@ def run_sprint(
         if block is None and not exhausted:
             return None
         block = block or {}
-        with cost_lock:
-            _spent = accumulated_cost + prior_cost
-        _remaining = round(resolved.budget_usd - _spent, 4)
+        _cost_snapshot = _cost_ledger.snapshot()
+        _spent = _cost_snapshot.spent
+        _remaining = round(_ctx.resolved.budget_usd - _spent, 4)
         block["reported_cost_usd"] = story_cost
-        block["sprint_budget_usd"] = resolved.budget_usd
+        block["sprint_budget_usd"] = _ctx.resolved.budget_usd
         block["sprint_spent_usd"] = round(_spent, 4)
         block["sprint_remaining_usd"] = _remaining
         # A lower-bound sprint total cannot certify headroom; say so rather
         # than asserting a number the sprint does not actually have (#1992).
-        block["sprint_cost_measured"] = not unmeasured_spend
-        block["sprint_headroom_remained"] = None if unmeasured_spend else _remaining > 0
+        block["sprint_cost_measured"] = _cost_snapshot.measured
+        block["sprint_headroom_remained"] = None if not _cost_snapshot.measured else _remaining > 0
         if exhausted:
             block["allocation_exhausted"] = exhausted
             block["status"] = "allocation_exhausted"
@@ -4405,7 +4711,7 @@ def run_sprint(
             # happened while sprint headroom remained is only visible as such
             # when both numbers sit on the same row.
             "story_allocation": _story_allocation_entry(result.state, _story_cost),
-            "story_run_id": run_id,
+            "story_run_id": _ctx.run_id,
             "preflight": preflight,
             "preflight_original_verdict": getattr(
                 result.state, "preflight_cached_original_verdict", None
@@ -4546,7 +4852,7 @@ def run_sprint(
             "outcome": outcome,
             "verdict": None,
             "cost_usd": cost_usd,
-            "story_run_id": run_id,
+            "story_run_id": _ctx.run_id,
             "preflight": None,
             "preflight_original_verdict": None,
             "preflight_source_run_id": None,
@@ -4605,7 +4911,7 @@ def run_sprint(
     # different reason: they are still scheduled, but an agent is writing to
     # their worktree right now, so intake and preflight would be reasoning about
     # (and spending on) a story already being worked.
-    _dropped_exclusion = {s for s in (dropped_slugs or {}) if s in slug_to_context}
+    _dropped_exclusion = {s for s in (_ctx.dropped_slugs or {}) if s in slug_to_context}
     _no_dispatch_slugs = skip_slugs | _dropped_exclusion
     dispatch_tasks = [
         t
@@ -4614,21 +4920,21 @@ def run_sprint(
     ]
 
     intake_outcomes = _run_intake_remediation_pass(
-        config=config,
+        config=_ctx.config,
         tasks=dispatch_tasks,
         log=_log,
-        force=force,
-        sprint_id=_sprint_id,
+        force=_ctx.force,
+        sprint_id=_ctx.sprint_id,
     )
     # Intake remediation agent spend (auto_fix LLM rewrites) must roll up
     # into the sprint total. Without this, sprint.total_cost_usd silently
     # excludes every dollar spent on intake auto-fix attempts.
     for _intake_slug, _intake_outcome in intake_outcomes.items():
         if _intake_outcome_cost_measured(_intake_outcome) is None:
-            _flag_unmeasured_here(f"intake:{_intake_slug}")
+            _cost_ledger.flag_unmeasured_here(f"intake:{_intake_slug}")
     _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
     if _intake_remediation_cost > 0.0:
-        accumulated_cost += _intake_remediation_cost
+        _cost_ledger.add(_intake_remediation_cost)
         _log(
             f"Intake remediation cost: ${_intake_remediation_cost:.4f} (rolled into sprint total)"
         )
@@ -4636,7 +4942,7 @@ def run_sprint(
         story_cost_adjustments[_slug] = story_cost_adjustments.get(
             _slug, 0.0
         ) + _intake_outcome_cost(_outcome)
-    for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
+    for _issue_num, _outcome in (_ctx.entry_intake_outcomes or {}).items():
         _issue_slug = f"issue-{_issue_num}"
         story_cost_adjustments[_issue_slug] = story_cost_adjustments.get(
             _issue_slug, 0.0
@@ -4738,17 +5044,19 @@ def run_sprint(
         if dropped_slugs_intake:
             normalized = _filter_normalized_for_intake(normalized, dropped_slugs_intake)
 
-    if run_id:
+    if _ctx.run_id:
         from .state_writer import update_state_phase as _update_state_phase
 
-        _update_state_phase(run_id, config.project_root, "preflight")
+        _update_state_phase(_ctx.run_id, _ctx.config.project_root, "preflight")
 
     # Re-derive the filter here: ``normalized`` may have been re-bound by the
     # intake drop above, and reconcile-skipped merged stories (plus pre-launch
     # dropped stories) must never enter the preflight batch (WORKSPACE re-entry
     # against their stale worktree, or spending budget on an already-dropped
     # story).
-    _no_dispatch_slugs = skip_slugs | {s for s in (dropped_slugs or {}) if s in slug_to_context}
+    _no_dispatch_slugs = skip_slugs | {
+        s for s in (_ctx.dropped_slugs or {}) if s in slug_to_context
+    }
     preflight_tasks = [
         t
         for t in normalized.tasks
@@ -4756,18 +5064,18 @@ def run_sprint(
     ]
     preflight_states = run_batch_preflight(
         preflight_tasks,
-        config,
-        sprint_name=resolved.name,
-        no_pull=no_pull,
+        _ctx.config,
+        sprint_name=_ctx.resolved.name,
+        no_pull=_ctx.no_pull,
         max_parallel=max_parallel,
-        notify=notify,
+        notify=_ctx.notify,
     )
     story_worker_timeouts: dict[str, int] = {}
     for task, _src, _canonical_ref in task_entries:
-        if resolved.worker_timeout_seconds is not None:
-            story_worker_timeouts[task.slug] = resolved.worker_timeout_seconds
+        if _ctx.resolved.worker_timeout_seconds is not None:
+            story_worker_timeouts[task.slug] = _ctx.resolved.worker_timeout_seconds
             _log(
-                f"  Worker timeout {task.slug}: {resolved.worker_timeout_seconds}s "
+                f"  Worker timeout {task.slug}: {_ctx.resolved.worker_timeout_seconds}s "
                 "(manifest override)"
             )
             continue
@@ -4791,7 +5099,7 @@ def run_sprint(
             f"  Worker timeout {task.slug}: {_timeout_seconds}s "
             f"({_complexity} complexity, {_source})"
         )
-    if resume:
+    if _ctx.resume:
         _register_resumed_story_footprints(triages, preflight_states)
     bundle_assignments = compute_bundle_assignments(preflight_states, normalized.tasks)
     if bundle_assignments:
@@ -4812,7 +5120,7 @@ def run_sprint(
     batch_groups = compute_batch_groups(
         preflight_states,
         normalized.tasks,
-        batch_config=config.sprint.batch,
+        batch_config=_ctx.config.sprint.batch,
         excluded_slugs=_scheduled_bundled_slugs,
     )
     for _group in batch_groups:
@@ -4832,10 +5140,10 @@ def run_sprint(
         _log(f"Injected synthetic dependency constraints for {len(synthetic_edges)} stories")
     augmented_tasks = inject_synthetic_deps(normalized.tasks, synthetic_edges)
     blocked_slugs = dict(normalized.blocked)
-    if run_id:
+    if _ctx.run_id:
         from .state_writer import update_state_phase as _update_state_phase
 
-        _update_state_phase(run_id, config.project_root, "dag-build")
+        _update_state_phase(_ctx.run_id, _ctx.config.project_root, "dag-build")
     try:
         dag = build_dag(augmented_tasks, satisfied=satisfied_slugs)
     except ValueError as exc:
@@ -4843,7 +5151,7 @@ def run_sprint(
 
     # Dependencies already satisfied outside this sprint still count as landed
     # for deferred integration ordering.
-    merged_slugs.update(satisfied_slugs)
+    _sprint_state.merged_slugs.update(satisfied_slugs)
 
     # Resume / re-exec: pre-mark skip_merged / skip stories as complete in DAG.
     # skip_merged stories are already merged and should satisfy dependencies
@@ -4857,7 +5165,7 @@ def run_sprint(
             if triage and triage.action in ("skip_merged", "skip"):
                 _log(f"SKIP {slug} ({triage.reason})")
                 if triage.action == "skip_merged":
-                    merged_slugs.add(slug)
+                    _sprint_state.merged_slugs.add(slug)
                     dag.mark_complete(slug)
                     _prior_entry = recovered_prior_entries_by_ref.get(canonical_ref)
                     if _prior_entry is not None:
@@ -4872,21 +5180,21 @@ def run_sprint(
                     # Preserve preloaded prior-run outcome (e.g., DONE) when
                     # accumulated state already has a stronger terminal —
                     # otherwise mark SKIPPED for the legacy aggregate contract.
-                    _existing = _story_state.get(slug)
+                    _existing = _sprint_state.stories.get(slug)
                     if _existing is None or not _existing.outcome.is_succeeded:
                         _set_outcome(slug, StoryOutcome.SKIPPED, reason=triage.reason)
                 else:
                     dag.mark_skipped(slug)
-                    _existing = _story_state.get(slug)
+                    _existing = _sprint_state.stories.get(slug)
                     if _existing is None or not _existing.outcome.is_succeeded:
                         _set_outcome(slug, StoryOutcome.SKIPPED, reason=triage.reason)
                     _record_current_story_entry(slug, "SKIPPED", error=triage.reason)
 
-    auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - merged_slugs
+    auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - _sprint_state.merged_slugs
     if (
         max_parallel > 1
-        and not auto_merge
-        and config.workspace.on_approve != "merge-pr"
+        and not _ctx.auto_merge
+        and _ctx.config.workspace.on_approve != "merge-pr"
         and auto_enabled_dependency_merges
     ):
         listed = ", ".join(sorted(auto_enabled_dependency_merges))
@@ -4910,7 +5218,7 @@ def run_sprint(
     #
     # ``preserved-escalated`` is a disjoint case: the worktree is intentionally
     # kept for human review, and counts as skipped (not failed) in aggregates.
-    _dropped_slugs: dict[str, str] = dict(dropped_slugs or {})
+    _dropped_slugs: dict[str, str] = dict(_ctx.dropped_slugs or {})
     _dropped_work: dict[str, WorktreeWork] = {}
     # slug -> what the generation that ran the story before this one recorded.
     # Populated when its drop record is written, and read back for the story's
@@ -4923,10 +5231,10 @@ def run_sprint(
     def _inspect_dropped_work(slug: str) -> WorktreeWork:
         work = inspect_worktree_work(
             slug,
-            project_root=config.project_root,
-            path_pattern=config.workspace.path_pattern,
-            base_branch=config.workspace.base_branch,
-            branch_pattern=getattr(config.workspace, "branch_pattern", None),
+            project_root=_ctx.config.project_root,
+            path_pattern=_ctx.config.workspace.path_pattern,
+            base_branch=_ctx.config.workspace.base_branch,
+            branch_pattern=getattr(_ctx.config.workspace, "branch_pattern", None),
         )
         _dropped_work[slug] = work
         return work
@@ -4943,8 +5251,8 @@ def run_sprint(
         try:
             killed = reclaim_inherited_agents(
                 slug,
-                project_root=config.project_root,
-                path_pattern=config.workspace.path_pattern,
+                project_root=_ctx.config.project_root,
+                path_pattern=_ctx.config.workspace.path_pattern,
             )
         except Exception as exc:  # noqa: BLE001 - cleanup must not fail the sprint
             _log(f"WARN {slug}: could not reclaim inherited agent group(s): {exc}")
@@ -5024,7 +5332,7 @@ def run_sprint(
                 return float(raw)
             except (TypeError, ValueError):
                 return None
-        entry = _story_state.get(slug)
+        entry = _sprint_state.stories.get(slug)
         if entry is not None:
             return entry.cost_usd
         return 0.0
@@ -5034,17 +5342,15 @@ def run_sprint(
 
         The prior generation's audit is the only surviving account of a story
         that was still in flight when the boundary was crossed: it never wrote an
-        accumulated row, so its spend is in neither ``prior_cost`` nor this
-        generation's ledger, and the story's row would report 0.0 for work that
-        cost real money (#2214). Rolling it into ``accumulated_cost`` as the row
+        accumulated row, so its spend is in neither the ledger's carried prior nor
+        its accumulated total, and the story's row would report 0.0 for work that
+        cost real money (#2214). Rolling it into the ledger as the row
         is written keeps the sprint total and the sum of the rows equal, and the
         bump happens once per story however many times this is asked.
 
         Returns ``None`` when nothing was recovered — never 0.0, which would
         assert that the prior generation spent nothing.
         """
-        nonlocal accumulated_cost
-
         carried = _prior_generation_work.get(slug)
         if not carried:
             return None
@@ -5052,10 +5358,8 @@ def run_sprint(
         if cost is None:
             return None
         if not carried.get("cost_attributed"):
-            # No lock: the drop loop runs before any worker is dispatched, so
-            # this generation has no other writer to the ledger yet.
             carried["cost_attributed"] = True
-            accumulated_cost += cost
+            _cost_ledger.add(cost)
             _log(f"RECOVERED {slug}: ${cost:.4f} of prior-generation spend rolled into the total")
         return cost
 
@@ -5104,8 +5408,8 @@ def run_sprint(
         try:
             drop_result = _abnormal_story_result(
                 slug,
-                config=config,
-                sprint_name=resolved.name,
+                config=_ctx.config,
+                sprint_name=_ctx.resolved.name,
                 started_at=dropped_at,
                 error=f"Dropped before dispatch: {cause_text}",
                 error_type="LaunchGuardDrop",
@@ -5124,8 +5428,8 @@ def run_sprint(
             )
             drop_result.state.abnormal_termination = cause
             prior = load_prior_generation_story_audit(
-                config.project_root,
-                resolved.name,
+                _ctx.config.project_root,
+                _ctx.resolved.name,
                 slug,
                 exclude_run_id=drop_result.state.run_id,
             )
@@ -5141,10 +5445,10 @@ def run_sprint(
                     f"{prior.summary['cost_usd']})"
                 )
             _write_story_audit(
-                config,
+                _ctx.config,
                 task_ctx[0],
                 drop_result,
-                sprint_id=_sprint_id,
+                sprint_id=_ctx.sprint_id,
                 # A dropped story shares its log directory with the generation
                 # that actually ran it. Its audit.yaml is that run's evidence and
                 # must survive the drop record, not be replaced by it.
@@ -5224,7 +5528,7 @@ def run_sprint(
                 if _recovered_stranded is not None:
                     _stranded_cost = _recovered_stranded
             if _stranded_cost is None:
-                _flag_unmeasured_here(f"stranded-unmeasured:{slug}")
+                _cost_ledger.flag_unmeasured_here(f"stranded-unmeasured:{slug}")
             _set_outcome(
                 slug,
                 StoryOutcome.DROPPED,
@@ -5281,7 +5585,7 @@ def run_sprint(
             _carried_cost = _attribute_prior_generation_cost(slug)
             if work_detail:
                 if _carried_cost is None:
-                    _flag_unmeasured_here(f"dropped-with-work:{slug}")
+                    _cost_ledger.flag_unmeasured_here(f"dropped-with-work:{slug}")
                 _set_outcome(
                     slug,
                     StoryOutcome.DROPPED,
@@ -5322,7 +5626,7 @@ def run_sprint(
 
     # Persist resume-time already-completed stories before any possible re-exec
     # handoff so later generations can recover the full logical sprint history.
-    if resume:
+    if _ctx.resume:
 
         def _already_done_story_entry(
             canonical_ref: str,
@@ -5348,7 +5652,7 @@ def run_sprint(
                 "outcome_source": entry_outcome_source,
                 "verdict": prior_entry.get("verdict"),
                 "cost_usd": _optional_cost(prior_entry.get("cost_usd")),
-                "story_run_id": prior_entry.get("story_run_id", run_id),
+                "story_run_id": prior_entry.get("story_run_id", _ctx.run_id),
                 "preflight": prior_entry.get("preflight"),
                 "preflight_original_verdict": prior_entry.get("preflight_original_verdict"),
                 "preflight_source_run_id": prior_entry.get("preflight_source_run_id"),
@@ -5392,7 +5696,7 @@ def run_sprint(
                     ),
                 ),
             )
-        for _closed_slug in sorted(resolved.closed_dependency_slugs):
+        for _closed_slug in sorted(_ctx.resolved.closed_dependency_slugs):
             _canonical_ref = f"issue:{_closed_slug.removeprefix('issue-')}"
             if _canonical_ref in triages:
                 continue
@@ -5402,15 +5706,15 @@ def run_sprint(
             )
         if _resume_accumulated_by_ref:
             persist_accumulated_story_state(
-                _sprint_id,
-                resolved.name,
-                config.project_root,
+                _ctx.sprint_id,
+                _ctx.resolved.name,
+                _ctx.config.project_root,
                 list(_resume_accumulated_by_ref.values()),
             )
 
     # Initialise live state file for forge sprint-status (only when a CLI run_id
     # is present — headless/test invocations without a run_id skip this).
-    if run_id:
+    if _ctx.run_id:
         _bundle_candidate_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
         _initial_stories: list[dict] = []
         _initial_story_slugs: set[str] = set()
@@ -5485,7 +5789,7 @@ def run_sprint(
                 # not something an operator should read as idle.
                 _in_flight_reason = (
                     REASON_IN_FLIGHT_UNRESOLVED
-                    if _slug in _unresolved_live_slugs
+                    if _slug in _ctx.unresolved_live_slugs
                     else REASON_IN_FLIGHT
                 )
                 _status = "waiting"
@@ -5515,7 +5819,7 @@ def run_sprint(
                 }
             )
             _initial_story_slugs.add(_slug)
-        for _closed_slug in sorted(resolved.closed_dependency_slugs):
+        for _closed_slug in sorted(_ctx.resolved.closed_dependency_slugs):
             if _closed_slug in _initial_story_slugs:
                 continue
             _issue_number = _closed_slug.removeprefix("issue-")
@@ -5537,27 +5841,27 @@ def run_sprint(
             )
             _initial_story_slugs.add(_closed_slug)
         _state_writer = SprintStateWriter(
-            run_id,
-            config.project_root,
-            resolved.name,
-            sprint_id=_sprint_id,
-            story_state=_story_state,
-            budget_usd=resolved.budget_usd,
+            _ctx.run_id,
+            _ctx.config.project_root,
+            _ctx.resolved.name,
+            sprint_id=_ctx.sprint_id,
+            story_state=_sprint_state.stories,
+            budget_usd=_ctx.resolved.budget_usd,
             max_parallel=max_parallel,
-            base_branch=getattr(getattr(config, "workspace", None), "base_branch", None),
+            base_branch=getattr(getattr(_ctx.config, "workspace", None), "base_branch", None),
         )
         _state_writer.init(_initial_stories)
         _state_writer.set_phase("running")
         # Register shape-gate-skipped issues in the canonical structure so
         # forge status surfaces them with the gate reason. They are visible
         # to every operator surface from this point on.
-        for _sk in skipped_issues or []:
+        for _sk in _ctx.skipped_issues or []:
             _sk_dict = _sk.as_dict() if hasattr(_sk, "as_dict") else dict(_sk)
             _sk_num = _sk_dict.get("issue_number")
             if _sk_num is None:
                 continue
             _sk_slug = f"issue-{_sk_num}"
-            if _story_state.has(_sk_slug):
+            if _sprint_state.stories.has(_sk_slug):
                 continue
             from .shape_gate import skipped_issue_state_fields  # noqa: PLC0415
 
@@ -5574,7 +5878,7 @@ def run_sprint(
                 _sk_reason = "operator-action — operator deliverable"
                 _sk_detail["operator_action"] = True
             _sk_detail["final_outcome"] = _sk_outcome.name
-            _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
+            _sk_intake = (_ctx.entry_intake_outcomes or {}).get(_sk_num)
             if _sk_intake is not None:
                 _sk_detail["intake_kind"] = _sk_intake.kind.value
                 _sk_detail["intake_detail"] = _sk_intake.detail
@@ -5588,10 +5892,10 @@ def run_sprint(
                 reason=_sk_reason,
                 detail=_sk_detail,
             )
-    elif skipped_issues or []:
+    elif _ctx.skipped_issues or []:
         # Headless invocation (no run_id) — still register skipped issues in
         # the canonical structure so summary projects them.
-        for _sk in skipped_issues or []:
+        for _sk in _ctx.skipped_issues or []:
             _sk_dict = _sk.as_dict() if hasattr(_sk, "as_dict") else dict(_sk)
             _sk_num = _sk_dict.get("issue_number")
             if _sk_num is None:
@@ -5609,14 +5913,14 @@ def run_sprint(
                 _sk_reason = "operator-action — operator deliverable"
                 _sk_detail["operator_action"] = True
             _sk_detail["final_outcome"] = _sk_outcome.name
-            _sk_intake = (entry_intake_outcomes or {}).get(_sk_num)
+            _sk_intake = (_ctx.entry_intake_outcomes or {}).get(_sk_num)
             if _sk_intake is not None:
                 _sk_detail["intake_kind"] = _sk_intake.kind.value
                 _sk_detail["intake_detail"] = _sk_intake.detail
                 _sk_detail["intake_findings"] = [f.as_dict() for f in _sk_intake.findings]
                 _sk_detail["intake_audit"] = dict(_sk_intake.audit)
                 _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
-            _story_state.register(
+            _sprint_state.stories.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
                 outcome=_sk_outcome,
@@ -5641,11 +5945,6 @@ def run_sprint(
         """
         return story_deadlines[slug] + worker_budget.operator_wait_credit(slug)
 
-    cost_lock = threading.Lock()
-    story_times: dict[str, tuple[datetime.datetime, datetime.datetime]] = {}
-    live_telemetry_snapshots: dict[str, dict] = {}
-    batch_assignments: dict[str, int] = {}
-    batch_number = 0
     worker_phases: dict[str, str] = {}
     phase_lock = threading.Lock()
     pending_integration: dict[str, tuple[TaskStory, CoordinatorResult]] = {}
@@ -5754,7 +6053,7 @@ def run_sprint(
             if result.landing_status == "landed":
                 return
             result.landing_status = "landed"
-            merged_slugs.add(member_slug)
+            _sprint_state.merged_slugs.add(member_slug)
             dag.mark_complete(member_slug)
             _set_outcome(member_slug, StoryOutcome.DONE, phase=result.phase.name, landed=True)
             _log(f"✓ {member_slug}: landed with batch leader {leader_slug}")
@@ -5774,8 +6073,8 @@ def run_sprint(
                 reason=reason,
             )
             _log(f"✗ {member_slug}: {reason}")
-        _write_story_audit(config, task, result, sprint_id=_sprint_id)
-        _times = story_times.get(member_slug)
+        _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
+        _times = _sprint_state.story_times.get(member_slug)
         if _times is not None:
             _persist_current_story_result(
                 member_slug, result, started_at=_times[0], finished_at=_times[1]
@@ -5822,9 +6121,9 @@ def run_sprint(
         _queued_probe_at[slug] = time.monotonic()
         poll_result = _poll_queued_pr(
             pr_url,
-            config.project_root,
-            config.workspace.merge_wait_timeout_seconds if blocking else 0,
-            base_branch=config.workspace.base_branch,
+            _ctx.config.project_root,
+            _ctx.config.workspace.merge_wait_timeout_seconds if blocking else 0,
+            base_branch=_ctx.config.workspace.base_branch,
         )
         if not blocking and poll_result["status"] != "merged":
             # A single probe cannot tell "still in the queue" from "decided
@@ -5841,14 +6140,14 @@ def run_sprint(
         _queued_probe_at.pop(slug, None)
 
         if poll_result["status"] == "merged":
-            merged_slugs.add(slug)
+            _sprint_state.merged_slugs.add(slug)
             dag.mark_complete(slug)
             result.landing_status = "landed"
             # The immutability marker: this DONE is confirmed-landed and must
             # not be clobbered by a later re-dispatch or wrap-up pass.
             _set_outcome(slug, StoryOutcome.DONE, landed=True)
             _persist_story_landing(slug, result)
-            _write_story_audit(config, task, result, sprint_id=_sprint_id)
+            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
             _resolve_batch_leader_landing(slug, "landed")
             _end_collision_claim(slug, "queued PR merged")
             _log(f"INFO {slug}: queued PR merged ({context}); unblocking dependents")
@@ -5859,7 +6158,7 @@ def run_sprint(
         )
 
         _err = _queued_pr_failure_message(
-            poll_result, pr_url, config.workspace.merge_wait_timeout_seconds
+            poll_result, pr_url, _ctx.config.workspace.merge_wait_timeout_seconds
         )
         _mark_mf(result.state, result, _err, result.state.branch_name)
         _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
@@ -5873,7 +6172,7 @@ def run_sprint(
         # the current base comes from the dag.ready() re-check at the top of the
         # deadlock-cleanup branch.
         dag.mark_skipped(slug)
-        _write_story_audit(config, task, result, sprint_id=_sprint_id)
+        _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
         _resolve_batch_leader_landing(slug, "failed")
         _end_collision_claim(slug, f"queued PR {poll_result['status']}")
         _log(f"✗ {slug}: queued PR {poll_result['status']} ({context})")
@@ -5940,31 +6239,31 @@ def run_sprint(
         This is the sole merge site for sprint execution.  Workers never merge;
         they set landing_status="pending_integration" and return.
         """
-        nonlocal stopped_reason, ci_halt_slug
-
-        if not all(dep in merged_slugs for dep in task.depends_on):
+        if not all(dep in _sprint_state.merged_slugs for dep in task.depends_on):
             result.landing_status = "pending_integration"
-            _write_story_audit(config, task, result, sprint_id=_sprint_id)
+            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
             return False
 
-        branch = config.workspace.branch_pattern.format(slug=slug)
-        wt = config.project_root / config.workspace.path_pattern.format(slug=slug)
+        branch = _ctx.config.workspace.branch_pattern.format(slug=slug)
+        wt = _ctx.config.project_root / _ctx.config.workspace.path_pattern.format(slug=slug)
 
         # Read effective mode from the pending merge action stored by _finalize_approve.
         # Falls back to config.workspace.on_approve for legacy/direct callers.
-        effective_on_approve = (result.merge or {}).get("action") or config.workspace.on_approve
+        effective_on_approve = (result.merge or {}).get(
+            "action"
+        ) or _ctx.config.workspace.on_approve
         story_run_id = result.state.run_id or _sprint_run_id
 
         story_logger = StructuredLogger(
             run_id=story_run_id,
-            project=config.project,
+            project=_ctx.config.project,
             task=task.slug,
-            log_file=config.log.log_file,
-            enabled=config.log.enabled,
-            project_root=config.project_root,
+            log_file=_ctx.config.log.log_file,
+            enabled=_ctx.config.log.enabled,
+            project_root=_ctx.config.project_root,
         )
 
-        with integration_lock(config.project_root):
+        with integration_lock(_ctx.config.project_root):
             from ..coordinator.completion import (  # noqa: PLC0415
                 land_story,
                 resolve_landing_review,
@@ -5972,7 +6271,7 @@ def run_sprint(
 
             parsed_review = resolve_landing_review(result.state)
             merge_info, landing_status = land_story(
-                config,
+                _ctx.config,
                 task,
                 branch,
                 wt,
@@ -6002,17 +6301,17 @@ def run_sprint(
         _persist_story_landing(slug, result)
 
         if merge_info.get("merged"):
-            merged_slugs.add(slug)
+            _sprint_state.merged_slugs.add(slug)
             dag.mark_complete(slug)
-            _write_story_audit(config, task, result, sprint_id=_sprint_id)
+            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
             _resolve_batch_leader_landing(slug, "landed")
             if effective_on_approve == "merge-pr" and not merge_info.get(
                 "auto_merge_queued", False
             ):
                 ci_result = poll_required_checks(
-                    config.project_root,
-                    config.workspace.base_branch,
-                    config.workspace.ci_check_timeout_seconds,
+                    _ctx.config.project_root,
+                    _ctx.config.workspace.base_branch,
+                    _ctx.config.workspace.ci_check_timeout_seconds,
                 )
                 if ci_result["status"] in {"fail", "timeout"}:
                     failing = ", ".join(ci_result["failing_checks"]) or "pending required checks"
@@ -6020,13 +6319,13 @@ def run_sprint(
                     # naming it keeps the halt reason honest about what is known
                     # versus merely unknown (#2270).
                     unjudged = ", ".join(ci_result.get("unjudged_checks") or [])
-                    stopped_reason = (
+                    _stop.stop(
                         "Required CI checks "
                         f"{ci_result['status']} after merging {slug} "
                         f"at {ci_result['sha']}: {failing}"
-                        + (f" (no verdict produced by: {unjudged})" if unjudged else "")
+                        + (f" (no verdict produced by: {unjudged})" if unjudged else ""),
+                        halt_slug=slug,
                     )
-                    ci_halt_slug = slug
                     _log(
                         f"HALT {slug}: required CI checks {ci_result['status']} "
                         f"for {ci_result['sha']} ({failing})"
@@ -6035,20 +6334,20 @@ def run_sprint(
 
         if merge_info.get("merge_queued"):
             queued_prs[slug] = (task, result, merge_info["pr_url"])
-            _write_story_audit(config, task, result, sprint_id=_sprint_id)
+            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
             _log(f"INFO {slug}: PR auto-merge queued; waiting for GitHub to report MERGED")
             return True
 
         result.state.error = merge_info.get("error") or "integration failed"
         _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
-        _write_story_audit(config, task, result, sprint_id=_sprint_id)
+        _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
         _resolve_batch_leader_landing(slug, "failed")
         return True
 
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
         while not dag.is_done():
             _log(f"[debug] loop: active={list(active.keys())} fin={dag._finished}")
-            _refresh_external_satisfied(dag, all_tasks, config, merged_slugs)
+            _refresh_external_satisfied(dag, all_tasks, _ctx.config, _sprint_state.merged_slugs)
             ready = [t for t in dag.ready() if t.slug not in active]
 
             for task in ready:
@@ -6103,17 +6402,15 @@ def run_sprint(
                 if len(active) >= max_parallel:
                     break
 
-                with cost_lock:
-                    _budget_accumulated = accumulated_cost
-                    _budget_prior = prior_cost
-                    _budget_unresolved, _budget_applied = unmeasured_spend_policy.partition(
-                        list(unmeasured_spend),
-                        accepted_unmeasured,
-                        current_generation=set(current_generation_unmeasured),
-                        occurrence_ids=carried_occurrence_ids,
-                    )
-                # Origin/ceiling lookup reads per-story audits, so it runs
-                # outside ``cost_lock`` — it is reporting, not accounting.
+                _budget_snapshot = _cost_ledger.snapshot()
+                _budget_unresolved, _budget_applied = unmeasured_spend_policy.partition(
+                    list(_budget_snapshot.unmeasured),
+                    accepted_unmeasured,
+                    current_generation=set(_budget_snapshot.current_generation_unmeasured),
+                    occurrence_ids=carried_occurrence_ids,
+                )
+                # Origin/ceiling lookup reads per-story audits, so it runs off
+                # the snapshot — it is reporting, not accounting.
                 _budget_details = (
                     {
                         raw: _describe_unmeasured_source(raw).describe()
@@ -6123,9 +6420,9 @@ def run_sprint(
                     else None
                 )
                 _budget_decision = evaluate_budget(
-                    accumulated_cost=_budget_accumulated,
-                    prior_cost=_budget_prior,
-                    budget_usd=resolved.budget_usd,
+                    accumulated_cost=_budget_snapshot.accumulated,
+                    prior_cost=_budget_snapshot.prior,
+                    budget_usd=_ctx.resolved.budget_usd,
                     unmeasured_spend=_budget_unresolved,
                     accepted_unmeasured_ceiling_usd=unmeasured_spend_policy.accepted_ceiling_total(
                         _budget_applied
@@ -6136,14 +6433,16 @@ def run_sprint(
                     dag.mark_skipped(task.slug)
                     _budget_reason = _budget_decision.story_reason
                     _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=_budget_reason)
-                    if stopped_reason is None:
-                        stopped_reason = _budget_decision.stopped_reason
-                        if notify and config.notifications.backend not in ("ntfy", "none"):
+                    if _stop.stop_if_unset(_budget_decision.stopped_reason):
+                        if _ctx.notify and _ctx.config.notifications.backend not in (
+                            "ntfy",
+                            "none",
+                        ):
                             from ..notify_backends import send_notifications
 
                             send_notifications(
-                                config,
-                                _budget_decision.notification_title(resolved.name),
+                                _ctx.config,
+                                _budget_decision.notification_title(_ctx.resolved.name),
                                 f"{_budget_decision.detail} \u2014 remaining stories skipped",
                             )
                     _log(f"SKIPPED {task.slug} ({_budget_reason})")
@@ -6154,7 +6453,9 @@ def run_sprint(
 
                 # Eager merge for sequential mode; disabled in parallel mode
                 effective_am = (
-                    False if max_parallel > 1 else (auto_merge or task.slug in dependent_slugs)
+                    False
+                    if max_parallel > 1
+                    else (_ctx.auto_merge or task.slug in dependent_slugs)
                 )
 
                 # Will *this* story's approval merge into the project-root
@@ -6176,7 +6477,7 @@ def run_sprint(
                 )
 
                 spec_str = slug_to_spec[task.slug]
-                triage = triages.get(spec_str) if resume else None
+                triage = triages.get(spec_str) if _ctx.resume else None
                 # A story whose agent survived the re-exec is dispatched through
                 # the deferred path: it waits for that agent, triages what it
                 # left, and resumes — so it reaches a real terminal outcome in
@@ -6206,7 +6507,7 @@ def run_sprint(
                         and m not in active
                         and m not in _inflight_slugs
                         and m in slug_to_context
-                        and (triages.get(slug_to_spec[m]) if resume else None) is None
+                        and (triages.get(slug_to_spec[m]) if _ctx.resume else None) is None
                     ]
                     if len(_dispatchable) < 2:
                         # The group did not become ready as a unit (a member was
@@ -6228,7 +6529,9 @@ def run_sprint(
                         for _member_slug, _member_task in zip(
                             _dispatchable, _batch_tasks, strict=True
                         ):
-                            batch_assignments[_member_slug] = batch_number
+                            _sprint_state.batch_assignments[_member_slug] = (
+                                _sprint_state.batch_number
+                            )
                             _submission_counter[0] += 1
                             print(
                                 _story_header(_submission_counter[0], total, _member_slug),
@@ -6254,11 +6557,14 @@ def run_sprint(
                                 _member_slug,
                                 worker_phases,
                                 phase_lock,
-                                state_update_fn,
+                                _ctx.state_update_fn,
                                 plan_done=None,
                                 state_writer=_state_writer,
                                 audit_flush=_make_audit_flush_fn(
-                                    config, _member_task, resolved.name, sprint_id=_sprint_id
+                                    _ctx.config,
+                                    _member_task,
+                                    _ctx.resolved.name,
+                                    sprint_id=_ctx.sprint_id,
                                 ),
                             )
                             stop_events[_member_slug] = _batch_stop_evt
@@ -6283,16 +6589,16 @@ def run_sprint(
                             )
                         _batch_fut = pool.submit(
                             _run_batch_group,
-                            config,
+                            _ctx.config,
                             _leader_task,
                             _batch_tasks[1:],
                             _sprint_run_id,
-                            resolved.name,
-                            interactive,
-                            notify,
+                            _ctx.resolved.name,
+                            _ctx.interactive,
+                            _ctx.notify,
                             effective_am,
                             _batch_state_fns,
-                            no_pull,
+                            _ctx.no_pull,
                             preflight_states,
                             _batch_stop_evt,
                             base_lands_locally=_sprint_lands_locally,
@@ -6305,7 +6611,7 @@ def run_sprint(
                             story_deadlines[_member_slug] = _batch_deadline
                         continue
 
-                batch_assignments[task.slug] = batch_number
+                _sprint_state.batch_assignments[task.slug] = _sprint_state.batch_number
                 _submission_counter[0] += 1
                 print(
                     _story_header(_submission_counter[0], total, task.slug),
@@ -6327,17 +6633,17 @@ def run_sprint(
                     gate = threading.Event()
                     plan_gates[task.slug] = gate
 
-                worker_config = config
+                worker_config = _ctx.config
 
                 state_fn = _make_worker_phase_fn(
                     task.slug,
                     worker_phases,
                     phase_lock,
-                    state_update_fn,
+                    _ctx.state_update_fn,
                     plan_done=plan_done if use_plan_gates else None,
                     state_writer=_state_writer,
                     audit_flush=_make_audit_flush_fn(
-                        config, task, resolved.name, sprint_id=_sprint_id
+                        _ctx.config, task, _ctx.resolved.name, sprint_id=_ctx.sprint_id
                     ),
                 )
                 stop_evt = threading.Event()
@@ -6373,13 +6679,13 @@ def run_sprint(
                     task,
                     triage,
                     _sprint_run_id,
-                    resolved.name,
-                    interactive,
-                    notify,
-                    resume,
+                    _ctx.resolved.name,
+                    _ctx.interactive,
+                    _ctx.notify,
+                    _ctx.resume,
                     effective_am,
                     state_fn,
-                    no_pull,
+                    _ctx.no_pull,
                     gate,
                     preflight_states,
                     stop_evt,
@@ -6491,7 +6797,7 @@ def run_sprint(
                 ]
 
             _log(f"[debug] wait() returned: {len(done_futs)} done")
-            batch_number += 1
+            _sprint_state.batch_number += 1
 
             if expired_slugs:
                 for slug in expired_slugs:
@@ -6541,8 +6847,8 @@ def run_sprint(
                     timed_out_at = datetime.datetime.now(datetime.timezone.utc)
                     snapshot = _snapshot_last_known(slug, _state_writer)
                     last_phase = snapshot["last_phase"]
-                    if slug in story_times:
-                        story_started_at = story_times[slug][0]
+                    if slug in _sprint_state.story_times:
+                        story_started_at = _sprint_state.story_times[slug][0]
                     elif snapshot["last_started_at"] is not None:
                         story_started_at = snapshot["last_started_at"]
                     else:
@@ -6558,8 +6864,8 @@ def run_sprint(
                     )
                     _timeout_result = _abnormal_story_result(
                         slug,
-                        config=config,
-                        sprint_name=resolved.name,
+                        config=_ctx.config,
+                        sprint_name=_ctx.resolved.name,
                         started_at=story_started_at,
                         error=_timeout_error,
                         error_type="TimeoutError",
@@ -6577,8 +6883,8 @@ def run_sprint(
                         source="sprint.runner:worker-deadline",
                     )
                     _timeout_result.state.abnormal_termination = _timeout_cause
-                    story_times[slug] = (story_started_at, timed_out_at)
-                    live_telemetry_snapshots[slug] = snapshot
+                    _sprint_state.story_times[slug] = (story_started_at, timed_out_at)
+                    _sprint_state.live_telemetry_snapshots[slug] = snapshot
                     # A worker the auth breaker cancelled can also cross its
                     # deadline before returning. It is still a story the sprint
                     # killed over a dead credential, not one that failed — same
@@ -6592,12 +6898,12 @@ def run_sprint(
                         )
                         _timeout_outcome = StoryOutcome.SKIPPED
                         _log(f"SKIPPED {slug} ({_cancel_reason})")
-                    results.append((spec_str, _timeout_result))
+                    _sprint_state.results.append((spec_str, _timeout_result))
                     _write_story_audit(
-                        config,
+                        _ctx.config,
                         slug_to_context[slug][0],
                         _timeout_result,
-                        sprint_id=_sprint_id,
+                        sprint_id=_ctx.sprint_id,
                         telemetry_snapshot=snapshot,
                     )
                     _set_outcome(
@@ -6646,8 +6952,8 @@ def run_sprint(
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
                     snapshot = _snapshot_last_known(slug, _state_writer)
                     last_phase = snapshot["last_phase"]
-                    if slug in story_times:
-                        story_started_at = story_times[slug][0]
+                    if slug in _sprint_state.story_times:
+                        story_started_at = _sprint_state.story_times[slug][0]
                     elif snapshot["last_started_at"] is not None:
                         story_started_at = snapshot["last_started_at"]
                     else:
@@ -6656,8 +6962,8 @@ def run_sprint(
                     _exc_error = f"Worker exception{_phase_label}: {exc}"
                     _exc_result = _abnormal_story_result(
                         slug,
-                        config=config,
-                        sprint_name=resolved.name,
+                        config=_ctx.config,
+                        sprint_name=_ctx.resolved.name,
                         started_at=story_started_at,
                         error=_exc_error,
                         error_type=type(exc).__name__,
@@ -6672,8 +6978,8 @@ def run_sprint(
                         source="sprint.runner:worker-exception",
                     )
                     _exc_result.state.abnormal_termination = _exc_cause
-                    story_times[slug] = (story_started_at, failed_at)
-                    live_telemetry_snapshots[slug] = snapshot
+                    _sprint_state.story_times[slug] = (story_started_at, failed_at)
+                    _sprint_state.live_telemetry_snapshots[slug] = snapshot
                     # Same attribution as the other two cancellation exits: a
                     # worker that raised on its way out of an auth-breaker
                     # cancellation was killed by the sprint, not by the story.
@@ -6686,12 +6992,12 @@ def run_sprint(
                         )
                         _exc_outcome = StoryOutcome.SKIPPED
                         _log(f"SKIPPED {slug} ({_cancel_reason})")
-                    results.append((spec_str, _exc_result))
+                    _sprint_state.results.append((spec_str, _exc_result))
                     _write_story_audit(
-                        config,
+                        _ctx.config,
                         slug_to_context[slug][0],
                         _exc_result,
-                        sprint_id=_sprint_id,
+                        sprint_id=_ctx.sprint_id,
                         telemetry_snapshot=snapshot,
                     )
                     _set_outcome(
@@ -6715,18 +7021,16 @@ def run_sprint(
                 worker_budget.unregister_worker_budget(slug)
                 story_wait_started.discard(slug)
                 stop_events.pop(slug, None)
-                story_times[slug] = (t0, t1)
+                _sprint_state.story_times[slug] = (t0, t1)
 
-                with cost_lock:
-                    # The budget can only ever be enforced against measured
-                    # spend. Record the shortfall alongside it so the dispatch
-                    # check knows the running total is a lower bound (#1992).
-                    if result.state.total_cost_measured is None:
-                        _flag_unmeasured_here(slug)
-                    accumulated_cost += result.state.total_cost
+                _cost_ledger.record_story_cost(
+                    slug,
+                    result.state.total_cost,
+                    measured=result.state.total_cost_measured,
+                )
 
                 spec_str = slug_to_spec[slug]
-                results.append((spec_str, result))
+                _sprint_state.results.append((spec_str, result))
 
                 spec_cost = result.state.total_cost_measured
                 icon = "✓" if result.success else "✗"
@@ -6751,13 +7055,12 @@ def run_sprint(
                             f"{_auth_phase} of {slug}"
                             + (f": {_auth_detail[:200]}" if _auth_detail else "")
                         )
-                        if stopped_reason is None:
-                            stopped_reason = (
-                                f"Agent authentication failed ({auth_circuit_reason}); "
-                                "remaining stories skipped — every subsequent call would "
-                                "present the same rejected credential"
-                            )
-                        _log(f"HALT sprint: {stopped_reason}")
+                        _stop.stop_if_unset(
+                            f"Agent authentication failed ({auth_circuit_reason}); "
+                            "remaining stories skipped — every subsequent call would "
+                            "present the same rejected credential"
+                        )
+                        _log(f"HALT sprint: {_stop.reason}")
                         # Stop in-flight workers at their next phase boundary and
                         # release any plan gate they are parked on, so the sprint
                         # ends in seconds rather than at the worker timeout.
@@ -6790,7 +7093,7 @@ def run_sprint(
                     if _state_writer is not None:
                         _state_writer.update(slug, status="skipped")
                     dag.mark_skipped(slug)
-                    _write_story_audit(config, task, result, sprint_id=_sprint_id)
+                    _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
                     _print_worker_status(active, worker_phases, dag, total)
                     continue
 
@@ -6813,7 +7116,7 @@ def run_sprint(
                     if _state_writer is not None:
                         _state_writer.update(slug, status="skipped")
                     dag.mark_skipped(slug)
-                    _write_story_audit(config, task, result, sprint_id=_sprint_id)
+                    _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
                     _print_worker_status(active, worker_phases, dag, total)
                     continue
 
@@ -6839,7 +7142,11 @@ def run_sprint(
                     )
 
                 _classify_outcome = _classify_and_record(
-                    task, result, dag, merged_slugs, story_state=_story_state
+                    task,
+                    result,
+                    dag,
+                    _sprint_state.merged_slugs,
+                    story_state=_sprint_state.stories,
                 )
                 _terminal_model = _terminal_story_model(result)
                 _outcome_fields: dict[str, object] = {
@@ -6857,7 +7164,7 @@ def run_sprint(
                     _classify_outcome == StoryOutcome.ALREADY_DONE
                     and result.state.preflight_verdict == "ALREADY_DONE"
                 ):
-                    _existing_entry = _story_state.get(task.slug)
+                    _existing_entry = _sprint_state.stories.get(task.slug)
                     _existing_detail = (
                         dict(_existing_entry.detail) if _existing_entry is not None else {}
                     )
@@ -6920,7 +7227,7 @@ def run_sprint(
                                     )
                                 changed = True
                 else:
-                    _write_story_audit(config, task, result, sprint_id=_sprint_id)
+                    _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
 
                 # The landing verdict — not the worker exiting — is what ends a
                 # collision claim (#2234). Re-check every live claim, not just
@@ -6950,7 +7257,7 @@ def run_sprint(
                     _ctx_task, source, _ctx_ref = ctx
                     if result.success:
                         try:
-                            source.on_complete(task, result, config)
+                            source.on_complete(task, result, _ctx.config)
                         except Exception as exc:
                             _log(f"WARN on_complete callback failed for {slug}: {exc}")
                     elif result.phase == Phase.ESCALATE:
@@ -6967,7 +7274,7 @@ def run_sprint(
                             )
                         else:
                             try:
-                                source.on_escalate(task, result.state, config)
+                                source.on_escalate(task, result.state, _ctx.config)
                             except Exception as exc:
                                 _log(f"WARN on_escalate callback failed for {slug}: {exc}")
 
@@ -6981,12 +7288,12 @@ def run_sprint(
         for slug, (task, result, pr_url) in list(queued_prs.items()):
             poll_result = _poll_queued_pr(
                 pr_url,
-                config.project_root,
-                config.workspace.merge_wait_timeout_seconds,
-                base_branch=config.workspace.base_branch,
+                _ctx.config.project_root,
+                _ctx.config.workspace.merge_wait_timeout_seconds,
+                base_branch=_ctx.config.workspace.base_branch,
             )
             if poll_result["status"] == "merged":
-                merged_slugs.add(slug)
+                _sprint_state.merged_slugs.add(slug)
                 dag.mark_complete(slug)
                 result.landing_status = "landed"
                 _set_outcome(slug, StoryOutcome.DONE, landed=True)
@@ -6997,14 +7304,14 @@ def run_sprint(
                 )
 
                 _err = _queued_pr_failure_message(
-                    poll_result, pr_url, config.workspace.merge_wait_timeout_seconds
+                    poll_result, pr_url, _ctx.config.workspace.merge_wait_timeout_seconds
                 )
                 _mark_mf(result.state, result, _err, result.state.branch_name)
                 _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
                 _resolve_batch_leader_landing(slug, "failed")
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
             _persist_story_landing(slug, result)
-            _write_story_audit(config, task, result, sprint_id=_sprint_id)
+            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
             del queued_prs[slug]
             # The landing verdict is in: end the claim outright rather than
             # re-deriving it from the result, whose phase mark_merge_failed can
@@ -7029,7 +7336,7 @@ def run_sprint(
     if _state_writer is not None:
         _stranded = _state_writer.terminalize_stories(
             outcome=StoryOutcome.FAILED,
-            reason=stopped_reason or "sprint ended before this story reached a verdict",
+            reason=_stop.reason or "sprint ended before this story reached a verdict",
         )
         if _stranded:
             _log(
@@ -7037,8 +7344,8 @@ def run_sprint(
                 f"{len(_stranded)} story/stories still non-terminal at sprint end: "
                 + ", ".join(_stranded)
             )
-        _terminal_counts = _story_state.counts()
-        if stopped_reason is not None:
+        _terminal_counts = _sprint_state.stories.counts()
+        if _stop.stopped:
             _terminal_sprint_phase = SPRINT_PHASE_STOPPED
         elif _terminal_counts["failed"]:
             _terminal_sprint_phase = SPRINT_PHASE_FAILED
@@ -7054,23 +7361,23 @@ def run_sprint(
     def _bump_story_cost(slug: str, extra: float) -> None:
         if extra <= 0.0:
             return
-        entry = _story_state.get(slug)
+        entry = _sprint_state.stories.get(slug)
         if entry is None:
             return
         if entry.cost_usd is None:
             # Unknown + known is still unknown: adding measured intake spend to a
             # cost-unknown story must not turn it into a confident figure (#1992).
             return
-        _story_state.transition(slug, cost_usd=entry.cost_usd + extra)
+        _sprint_state.stories.transition(slug, cost_usd=entry.cost_usd + extra)
 
     for _slug, _outcome in (intake_outcomes or {}).items():
         _bump_story_cost(_slug, _intake_outcome_cost(_outcome))
-    for _issue_num, _outcome in (entry_intake_outcomes or {}).items():
+    for _issue_num, _outcome in (_ctx.entry_intake_outcomes or {}).items():
         _bump_story_cost(f"issue-{_issue_num}", _intake_outcome_cost(_outcome))
 
     # Re-attach pre-restart spend the canonical state is no longer holding, so
     # the summary total (which sums that state) matches SprintResult's
-    # accumulated + prior_cost. Runs here, after the work loop, for the same
+    # accumulated + carried prior. Runs here, after the work loop, for the same
     # reason the intake attribution above does: transition() overwrites
     # cost_usd with the coordinator's current-generation total while a story
     # is running, so any earlier attribution would be discarded.
@@ -7090,34 +7397,35 @@ def run_sprint(
             f"${_carried_total:.4f} ({_carried_detail})"
         )
 
-    final_cost = accumulated_cost + prior_cost
+    _final_cost = _cost_ledger.snapshot()
+    final_cost = _final_cost.spent
     # A sprint total is only a total when every story's cost was measured. When
     # any story ran on a transport that reported no cost, ``final_cost`` is a
     # measured lower bound and every surface must say so rather than present it
     # as the sprint's cost (#1992). Intake remediation spends the same budget
     # outside any story's CoordinatorState, so its unmeasured passes count too.
-    _cost_complete = not unmeasured_spend and all(
-        e.cost_usd is not None for e in _story_state.stories()
+    _cost_complete = _final_cost.measured and all(
+        e.cost_usd is not None for e in _sprint_state.stories.stories()
     )
     # An acceptance resolves the BUDGET question, never the measurement one:
     # ``_cost_complete`` above still reads the raw source list, so an accepted
     # source keeps the sprint total reported as a lower bound. What acceptance
     # changes is which figure the cap was verified against (#2310).
     _final_unresolved, _final_accepted = unmeasured_spend_policy.partition(
-        list(unmeasured_spend),
+        list(_final_cost.unmeasured),
         accepted_unmeasured,
-        current_generation=set(current_generation_unmeasured),
+        current_generation=set(_final_cost.current_generation_unmeasured),
         occurrence_ids=carried_occurrence_ids,
     )
     _final_accepted_ceiling = unmeasured_spend_policy.accepted_ceiling_total(_final_accepted)
     _budget_verification_usd = budget_verification_spend(
-        accumulated_cost=accumulated_cost,
-        prior_cost=prior_cost,
+        accumulated_cost=_final_cost.accumulated,
+        prior_cost=_final_cost.prior,
         accepted_unmeasured_ceiling_usd=_final_accepted_ceiling,
     )
     # Banner, summary, notifications, and SprintResult all project from the
     # same canonical structure — by construction they cannot disagree.
-    _canonical_counts = _story_state.counts()
+    _canonical_counts = _sprint_state.stories.counts()
     specs_succeeded = _canonical_counts["succeeded"]
     specs_failed = _canonical_counts["failed"]
     specs_skipped = _canonical_counts["skipped"]
@@ -7126,20 +7434,20 @@ def run_sprint(
     # /notifications all report the same total.
     canonical_total = _canonical_counts["total"] or total
     sprint_result = SprintResult(
-        name=resolved.name,
+        name=_ctx.resolved.name,
         specs_total=canonical_total,
         specs_succeeded=specs_succeeded,
         specs_failed=specs_failed,
         specs_skipped=specs_skipped,
         total_cost_usd=final_cost,
-        budget_usd=resolved.budget_usd,
+        budget_usd=_ctx.resolved.budget_usd,
         cost_complete=_cost_complete,
-        unmeasured_spend_sources=tuple(unmeasured_spend),
+        unmeasured_spend_sources=_final_cost.unmeasured,
         unresolved_unmeasured_spend_sources=tuple(_final_unresolved),
         accepted_unmeasured_spend=tuple(r.as_dict() for r in _final_accepted),
         budget_verification_spend_usd=_budget_verification_usd,
-        results=results,
-        stopped_reason=stopped_reason,
+        results=_sprint_state.results,
+        stopped_reason=_stop.reason,
     )
 
     _sprint_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
@@ -7151,7 +7459,7 @@ def run_sprint(
         f"Total: {_sprint_cost_str}"
         f"  {_sprint_dur}"
     )
-    _sprint_outcome = "done" if specs_failed == 0 and stopped_reason is None else "partial"
+    _sprint_outcome = "done" if specs_failed == 0 and not _stop.stopped else "partial"
     _sprint_logger.emit(
         "run_end",
         outcome=_sprint_outcome,
@@ -7159,19 +7467,19 @@ def run_sprint(
         total_cost_measured_usd=round(final_cost, 6),
         total_duration_s=round(_sprint_elapsed, 2),
     )
-    if notify:
+    if _ctx.notify:
         # Notifications project from canonical counts/total so every
         # operator surface reports the same numbers by construction.
-        if config.notifications.backend != "none":
+        if _ctx.config.notifications.backend != "none":
             _notify(
-                f"TheForge: {resolved.name}",
+                f"TheForge: {_ctx.resolved.name}",
                 (
                     f"✓ {specs_succeeded} passed, ✗ {specs_failed} failed, "
                     f"⊘ {specs_skipped} skipped"
                 ),
             )
-        if config.notifications.ntfy is not None:
-            _ntfy_title = f'TheForge: sprint done \u2014 "{resolved.name}"'
+        if _ctx.config.notifications.ntfy is not None:
+            _ntfy_title = f'TheForge: sprint done \u2014 "{_ctx.resolved.name}"'
             _ntfy_body_lines = [
                 (
                     f"{canonical_total} stories: {specs_succeeded} succeeded "
@@ -7179,18 +7487,18 @@ def run_sprint(
                 ),
                 f"Total cost: {_sprint_cost_str}   Duration: {_sprint_dur}",
             ]
-            if stopped_reason:
-                _ntfy_body_lines.append(f"Stopped: {stopped_reason}")
+            if _stop.reason:
+                _ntfy_body_lines.append(f"Stopped: {_stop.reason}")
             _ntfy_publish(
-                config.notifications.ntfy.url,
+                _ctx.config.notifications.ntfy.url,
                 _ntfy_title,
                 "\n".join(_ntfy_body_lines),
-                priority=config.notifications.ntfy.priority,
+                priority=_ctx.config.notifications.ntfy.priority,
             )
-        if config.notifications.backend not in ("ntfy", "none"):
+        if _ctx.config.notifications.backend not in ("ntfy", "none"):
             from ..notify_backends import send_notifications
 
-            _sc_title = f'TheForge sprint complete \u2014 "{resolved.name}"'
+            _sc_title = f'TheForge sprint complete \u2014 "{_ctx.resolved.name}"'
             _sc_body_lines = [
                 (
                     f"{canonical_total} stories: {specs_succeeded} succeeded "
@@ -7198,9 +7506,9 @@ def run_sprint(
                 ),
                 f"Total cost: {_sprint_cost_str}   Duration: {_fmt_duration(_sprint_elapsed)}",
             ]
-            if stopped_reason:
-                _sc_body_lines.append(f"Stopped: {stopped_reason}")
-            send_notifications(config, _sc_title, "\n".join(_sc_body_lines))
+            if _stop.reason:
+                _sc_body_lines.append(f"Stopped: {_stop.reason}")
+            send_notifications(_ctx.config, _sc_title, "\n".join(_sc_body_lines))
 
     # Build slug map and canonical_refs for audit writers
     slug_map: dict[str, str] = {ctx[2]: slug for slug, ctx in slug_to_context.items()}
@@ -7208,56 +7516,56 @@ def run_sprint(
 
     # Write sprint-audit.yaml (existing format; kept for backward compatibility)
     _write_sprint_audit(
-        manifest=resolved,
+        manifest=_ctx.resolved,
         result=sprint_result,
         canonical_refs=canonical_refs,
         started_at=started_at,
         finished_at=finished_at,
         duration=duration,
-        project_root=config.project_root,
-        story_times=story_times,
-        batch_assignments=batch_assignments,
+        project_root=_ctx.config.project_root,
+        story_times=_sprint_state.story_times,
+        batch_assignments=_sprint_state.batch_assignments,
         slug_map=slug_map,
         tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
-        ci_break_slug=ci_halt_slug,
-        sprint_id=_sprint_id,
+        ci_break_slug=_stop.halt_slug,
+        sprint_id=_ctx.sprint_id,
         dropped_slugs=_dropped_slugs,
-        skipped_issues=skipped_issues,
+        skipped_issues=_ctx.skipped_issues,
         current_story_entries_by_ref=current_story_entries_by_ref,
         triage_actions_by_ref={
             canonical_ref: triage.action for canonical_ref, triage in triages.items()
         },
-        run_id=run_id,
-        live_telemetry_snapshots=live_telemetry_snapshots,
+        run_id=_ctx.run_id,
+        live_telemetry_snapshots=_sprint_state.live_telemetry_snapshots,
     )
 
     # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
     if _sprint_log_dir is not None:
         _write_sprint_summary(
-            manifest=resolved,
+            manifest=_ctx.resolved,
             result=sprint_result,
             canonical_refs=canonical_refs,
             started_at=started_at,
             finished_at=finished_at,
             duration=duration,
             sprint_log_dir=_sprint_log_dir,
-            story_times=story_times,
-            batch_assignments=batch_assignments,
+            story_times=_sprint_state.story_times,
+            batch_assignments=_sprint_state.batch_assignments,
             slug_map=slug_map,
-            run_id=run_id,
+            run_id=_ctx.run_id,
             tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
-            ci_break_slug=ci_halt_slug,
-            sprint_id=_sprint_id,
-            project_root=config.project_root,
+            ci_break_slug=_stop.halt_slug,
+            sprint_id=_ctx.sprint_id,
+            project_root=_ctx.config.project_root,
             dropped_slugs=_dropped_slugs,
-            skipped_issues=skipped_issues,
+            skipped_issues=_ctx.skipped_issues,
             triage_actions_by_ref={
                 canonical_ref: triage.action for canonical_ref, triage in triages.items()
             },
             current_story_entries_by_ref=current_story_entries_by_ref,
-            story_state=_story_state,
-            config=config,
-            live_telemetry_snapshots=live_telemetry_snapshots,
+            story_state=_sprint_state.stories,
+            config=_ctx.config,
+            live_telemetry_snapshots=_sprint_state.live_telemetry_snapshots,
         )
 
         # Eagerly generate sprint-rca.yaml when any story finished non-DONE.
@@ -7284,9 +7592,9 @@ def run_sprint(
 
     try:
         _commit_story_run_audits(
-            config.project_root,
-            config.workspace.base_branch,
-            publish=_base_branch_tracks_origin(config, lands_locally=_sprint_lands_locally),
+            _ctx.config.project_root,
+            _ctx.config.workspace.base_branch,
+            publish=_base_branch_tracks_origin(_ctx.config, lands_locally=_sprint_lands_locally),
         )
     except RuntimeError as exc:
         _state = getattr(exc, "state", None)
@@ -7299,12 +7607,12 @@ def run_sprint(
         raise
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
-    if config.hooks and config.hooks.post_sprint:
+    if _ctx.config.hooks and _ctx.config.hooks.post_sprint:
         from ..coordinator.hooks import build_post_sprint_payload
         from ..coordinator.hooks import run_hook as _run_hook
 
         _stories = []
-        for spec_str, res in results:
+        for spec_str, res in _sprint_state.results:
             # Derive slug: use workspace_path leaf (set during WORKSPACE phase) or slug_map
             _ws = res.state.workspace_path
             if _ws is not None:
@@ -7325,20 +7633,20 @@ def run_sprint(
                 }
             )
         _ps_payload = build_post_sprint_payload(
-            sprint_name=resolved.name,
+            sprint_name=_ctx.resolved.name,
             stories=_stories,
             run_id=_sprint_run_id,
-            config=config,
+            config=_ctx.config,
             total_cost_usd=final_cost if _cost_complete else None,
             duration_seconds=_sprint_elapsed,
         )
         _run_hook(
-            config.hooks.post_sprint,
+            _ctx.config.hooks.post_sprint,
             _ps_payload,
-            config.hooks.timeout_seconds,
+            _ctx.config.hooks.timeout_seconds,
             "post_sprint",
             _sprint_logger,
-            secrets=config.secrets,
+            secrets=_ctx.config.secrets,
         )
 
     return sprint_result
