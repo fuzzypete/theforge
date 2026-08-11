@@ -126,6 +126,7 @@ def _openai_result(
         profile.model,
         input_tokens,
         output_tokens,
+        transport="api",
         thinking_tokens=thinking_tokens,
         cached_input_tokens=cache_read_tokens,
     )

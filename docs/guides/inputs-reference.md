@@ -588,6 +588,35 @@ A `models.custom` declaration stands alone: it does not inherit from a shipped
 entry, and replacing a shipped identity requires `override: true` alongside the
 definition.
 
+**A declared price is the price that gets recorded.** The `cost:` figures are
+read once, at load, into a rate registry keyed by
+`(provider, model, transport.kind)`, and every run prices its tokens from the
+identity it actually dispatched on. Declaring a price is all that is needed for
+that model's spend to be measured — no code change, no second table to update.
+
+Two consequences worth knowing:
+
+- **A price belongs to one transport.** `openai/gpt-5.5/cli` and
+  `openai/gpt-5.5/api` are different identities and are priced separately. If
+  you price one and dispatch on the other, the unpriced one records cost as
+  unknown — it does not borrow its sibling's rate, because the two genuinely
+  bill differently often enough that guessing is worse than saying nothing.
+- **You are told before you spend.** Any model the configuration can dispatch
+  on — seated profile, adaptive-pool candidate, `fallback_models` entry, or
+  `api_fallback` target — that cannot be priced is warned about when the config
+  loads, naming the paths it is reachable on. `forge check-config` shows these
+  in its WARNINGS section. The load does not fail: an unpriced model still runs
+  and records its cost as unknown.
+- **A `fallback_models` entry is checked as an API identity, even on a CLI
+  profile.** That is where it actually runs: the failures that trigger a model
+  fallback are quota exhaustion and model-not-found, which the CLI that just
+  refused would only reproduce, so forge retries through the provider's API
+  adapter. Price the fallback on `<provider>/<model>/api`, not on the CLI
+  identity the primary uses.
+
+Transports that report their own spend (the Claude CLI's billed total, gh-aw's
+AI-credit accounting) need no `cost:` block and are never warned about.
+
 **Existing configuration keeps loading.** The flat `models.custom` form below
 and inline `models.enabled` mappings written before this schema existed are
 translated into it at the parse boundary — adopting the canonical shape is

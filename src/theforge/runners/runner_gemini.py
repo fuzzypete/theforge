@@ -12,13 +12,14 @@ from pathlib import Path
 from typing import Any
 
 from theforge import process_group
-from theforge.agent_types import AgentResult
+from theforge.agent_types import COST_ESTIMATED, COST_UNKNOWN, AgentResult, ModelUsage
 from theforge.log_util import _log_line
 from theforge.task.handoff_parser import ParseError, extract_dev_handoff
 from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
+from .rate_registry import CACHED_INPUT_RATE_MULT as _CACHED_INPUT_RATE_MULT
 from .sandbox import SandboxCapabilityError, workspace_effect_sandbox_command
 
 # ── Logging helpers ───────────────────────────────────────────────────
@@ -33,6 +34,84 @@ def _log_verbose(msg: str) -> None:
 
     if _LOG_LEVEL >= LogLevel.VERBOSE:
         _log_line("[forge]", msg)
+
+
+def _int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _parse_gemini_usage(
+    result_json: dict[str, Any],
+    profile: "ModelProfile",
+) -> tuple[float | None, tuple[ModelUsage, ...]]:
+    """Price whatever token usage the Gemini CLI reported, or return nothing.
+
+    The Gemini CLI reports usage in a ``stats.models`` block on the invocations
+    that emit one and reports nothing on the others (parse failures, sandbox
+    refusals, error exits). Where a count exists it is priced from the rate card
+    for the *gemini CLI* identity specifically — never from a gemini API
+    identity's rates, which the transport-keyed lookup makes structural rather
+    than a matter of care (#2335). Where no count exists this returns
+    ``(None, ())`` and the caller records cost-unknown: an estimate is never
+    fabricated from an absent measurement.
+    """
+    from .schema_utils import rates_for  # noqa: PLC0415
+
+    stats = result_json.get("stats")
+    models = stats.get("models") if isinstance(stats, dict) else None
+    if not isinstance(models, dict) or not models:
+        return None, ()
+
+    total = 0.0
+    any_priced = False
+    usages: list[ModelUsage] = []
+    for model_name, block in models.items():
+        tokens = block.get("tokens") if isinstance(block, dict) else None
+        if not isinstance(tokens, dict):
+            continue
+        cached = _int(tokens.get("cached"))
+        # ``prompt`` is the full prompt count and includes the cached portion,
+        # which is what _estimate_cost documents ``cached_input_tokens`` to be.
+        input_tokens = _int(tokens.get("prompt"))
+        output_tokens = _int(tokens.get("candidates"))
+        thinking_tokens = _int(tokens.get("thoughts"))
+        if not (input_tokens or output_tokens or thinking_tokens):
+            continue
+        rates = rates_for("google", str(model_name), "cli")
+        cost: float | None = None
+        if rates is not None:
+            uncached = max(0, input_tokens - min(cached, input_tokens))
+            cached_rate = (
+                rates.cached_input_per_mtok
+                if rates.cached_input_per_mtok is not None
+                else rates.input_per_mtok * _CACHED_INPUT_RATE_MULT
+            )
+            cost = (
+                (uncached / 1_000_000) * rates.input_per_mtok
+                + (min(cached, input_tokens) / 1_000_000) * cached_rate
+                + ((output_tokens + thinking_tokens) / 1_000_000) * rates.output_per_mtok
+            )
+            total += cost
+            any_priced = True
+        usages.append(
+            ModelUsage(
+                model=str(model_name),
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                cache_read_tokens=min(cached, input_tokens),
+                cache_creation_tokens=0,
+                cost_usd=cost,
+                thinking_tokens=thinking_tokens,
+                # Forge multiplied tokens by a rate card; the CLI billed nothing.
+                cost_provenance=COST_ESTIMATED if cost is not None else COST_UNKNOWN,
+            )
+        )
+    if not usages:
+        return None, ()
+    return (total if any_priced else None), tuple(usages)
 
 
 def _try_parse_handoff(output: str) -> dict | None:
@@ -217,14 +296,20 @@ def _run_gemini(
     # would trample each other since --resume latest is not invocation-scoped.
     resume_sid = None if is_pool else "latest"
     _gemini_output = result_json.get("response", result_json.get("result", proc.stdout))
+    # Only this path — the one that parsed a result — can carry usage. The
+    # error, sandbox-refusal and no-JSON returns above keep cost_usd=None, so an
+    # error's cost never changes from unknown to an estimate.
+    _cost, _usage = _parse_gemini_usage(result_json, profile)
     return AgentResult(
         success=proc.returncode == 0,
         output=_gemini_output,
         session_id=resume_sid,
-        cost_usd=None,
+        cost_usd=_cost,
         exit_code=proc.returncode,
         raw=result_json,
         profile_name=profile.name,
         dev_handoff=_try_parse_handoff(_gemini_output),
         process_teardown=_teardown,
+        model_usage=_usage,
+        cost_provenance=COST_ESTIMATED if _cost is not None else COST_UNKNOWN,
     )

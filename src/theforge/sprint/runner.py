@@ -59,6 +59,7 @@ from ..intake import (
 )
 from ..log_util import _log_line
 from ..process_group import ProcessTeardown
+from ..runners.rate_registry import AccountingMode, accounting_mode_for
 from ..task import BatchMember, TaskStory
 from . import unmeasured as unmeasured_spend_policy
 from .abnormal import (
@@ -138,13 +139,30 @@ from .story_state import (
 )
 from .unmeasured import AcceptedUnmeasuredSpend, UnmeasuredSource
 
-# CLI transports whose spend forge cannot measure at all, warned about up front.
-# `codex` left this set in #2019: `codex exec --json` reports a real token split
-# per turn, so codex runs now carry measured cost like the claude transport.
+# Whether a CLI transport's spend is measurable is now a property of its
+# accounting mode (theforge.runners.rate_registry.AccountingMode), not of a
+# hardcoded name list: the runner that prices a transport and the warning that
+# announces it cannot measure one must read the same classification or they
+# drift apart (#2335). `codex` left the untracked set in #2019 because
+# `codex exec --json` reports a real token split; `gemini` is still warned about
+# because it reports usage only on the invocations that emit a stats block, so
+# its cost record is conditional rather than guaranteed.
 # Actual per-run measurement failures are still caught downstream by the
-# cost-is-None checks that feed `unmeasured_spend` — this set is only the
-# pre-sprint warning, evaluated over config profiles before any run exists.
-_UNTRACKED_COST_CLIS: frozenset[str] = frozenset({"gemini"})
+# cost-is-None checks that feed `unmeasured_spend` — this is only the pre-sprint
+# warning, evaluated over config profiles before any run exists.
+_UNTRACKED_ACCOUNTING_MODES = frozenset(
+    {
+        AccountingMode.UNMEASURABLE,
+        AccountingMode.TOKEN_ESTIMATED_IF_REPORTED,
+    }
+)
+
+
+def _cli_cost_untracked(runner: str | None) -> bool:
+    """Is a CLI transport's spend unmeasurable, or measurable only sometimes?"""
+    return accounting_mode_for("cli", runner) in _UNTRACKED_ACCOUNTING_MODES
+
+
 _STORY_RUN_AUDIT_DIR = ".forge/audits/runs"
 _STORY_RUN_AUDIT_COMMIT_CMD = (
     f'git commit -m "chore(audit): record sprint run audits" -- {_STORY_RUN_AUDIT_DIR}'
@@ -1723,7 +1741,7 @@ def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
     warnings: list[str] = []
     seen: set[tuple[str, str, str, str | None, str | None]] = set()
     for agent in agents:
-        if agent.transport_kind != "cli" or agent.runner not in _UNTRACKED_COST_CLIS:
+        if agent.transport_kind != "cli" or not _cli_cost_untracked(agent.runner):
             continue
         fallback_provider = getattr(agent.api_fallback, "provider", None)
         fallback_model = getattr(agent.api_fallback, "model", None)
