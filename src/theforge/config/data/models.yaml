@@ -394,6 +394,12 @@ models:
         capability, tier and price were recorded here (#2352).
 
   # ── Google (API) ─────────────────────────────────────────────────────
+  # Priced 2026-08-11 from Google's published API pricing (standard tier, text
+  # input; the output figure includes thinking tokens). These were the only
+  # pool-reachable entries in this catalog carrying no rate card, so every load
+  # of an untouched config warned twice and any run routed here recorded its
+  # spend as unknown. Audio input is billed separately at $1.00/MTok and is not
+  # represented — no phase sends audio.
   - provider: google
     model: gemini-3-flash-preview
     transport: {kind: api}
@@ -401,6 +407,10 @@ models:
       tier: cheap
       capability: 7
       cost_rank: 1
+    cost:
+      input_per_mtok: 0.50
+      output_per_mtok: 3.00
+      pricing_provenance: gemini-3-flash-preview
 
   - provider: google
     model: gemini-3.1-pro-preview
@@ -464,6 +474,10 @@ models:
       capability: 7
       cost_rank: 1
       dev_capable: false
+    cost:
+      input_per_mtok: 0.50
+      output_per_mtok: 3.00
+      pricing_provenance: gemini-3-flash-preview
 
   - provider: google
     model: gemini-3.1-pro-preview
