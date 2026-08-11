@@ -105,9 +105,33 @@ class TestReachableFromShippedDefaults:
         )
 
     def test_an_unconfirmed_identifier_was_not_promoted(self):
-        """The gpt-5.6 family is blocked pending an adapter fix — it must not ship."""
+        """Only the gpt-5.6 members this project has actually run may ship.
+
+        The original bar was the whole family, because the adapter fix it was
+        waiting on had not landed. It has: the family was declared ``api`` on an
+        untested belief that Codex CLI could not serve it, and ``api`` was the
+        sole cause of the tool-call 400s that blocked every phase needing tools.
+        Correcting the transport to ``cli`` fixed it, and run 41b3bef1268f
+        (2026-08-11) landed with ``gpt-5.6-sol`` on the codex transport and a
+        real accounted cost.
+
+        Luna keeps the original bar. It has never completed a tool call on any
+        transport, it is still declared ``api`` — the transport now known to be
+        the defect — and the escalation-advisor role that mis-assigned it
+        (#2332) is still open.
+        """
         models = {spec.model for spec in AGENT_REGISTRY.values()}
-        assert not {m for m in models if m.startswith("gpt-5.6")}
+        assert "gpt-5.6-luna" not in models
+
+        # The transport lesson, held mechanically rather than in a comment: this
+        # family reaches tools only through Codex. An ``api`` entry reintroduces
+        # the 400s, and nothing else in the catalog would catch it.
+        served = {
+            (spec.model, spec.transport.kind)
+            for spec in AGENT_REGISTRY.values()
+            if spec.model.startswith("gpt-5.6")
+        }
+        assert served == {("gpt-5.6-sol", "cli"), ("gpt-5.6-terra", "cli")}
 
 
 # ── A duplicate declaration is resolved visibly, not silently ─────────────
