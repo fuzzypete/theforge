@@ -149,13 +149,18 @@ REASONING_EFFORT_TRANSPORT_SUPPORT: dict[str, EffortKnob] = {
     # Google API adapter builds a ThinkingConfig from ``thinking_budget`` and
     # bills ``thoughts_token_count`` through _estimate_cost (adapters/google.py).
     "google": EffortKnob(KNOB_BUDGET, True),
+    # DeepSeek expresses reasoning as a request parameter — ``thinking:
+    # {type, reasoning_effort}`` — rather than as a distinct model name, and
+    # reports the spend back as ``completion_tokens_details.reasoning_tokens``,
+    # which adapters/openai.py folds into ``thinking_tokens`` and _estimate_cost
+    # bills at the output rate (#2352).
+    "deepseek": EffortKnob(KNOB_EFFORT, True),
     # No passthrough today.
     "claude": EffortKnob(KNOB_NONE, False),
     "gemini": EffortKnob(KNOB_NONE, False),  # CLI has no mechanism; ignores it
     "ghaw": EffortKnob(KNOB_NONE, False),
     "anthropic": EffortKnob(KNOB_NONE, False),
     "openai": EffortKnob(KNOB_NONE, False),
-    "deepseek": EffortKnob(KNOB_NONE, False),
 }
 
 _UNKNOWN_TRANSPORT_KNOB = EffortKnob(KNOB_NONE, False)

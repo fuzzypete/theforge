@@ -460,7 +460,15 @@ models:
       cost:
         input_per_mtok: 2.00
         output_per_mtok: 12.00
+        cached_input_per_mtok: 0.20     # only if the provider bills its cache
+                                        # tier at its own published rate
         pricing_provenance: gemini-4-pro-2026-08
+      identity:
+        status: served                  # served | retired
+        verified_against: provider model list
+        verified_on: 2026-08-10
+      invocation:
+        reasoning_mode: enabled         # enabled | disabled
 ```
 
 **Adding a model needs no code and no release** as long as it runs on an adapter
@@ -476,6 +484,32 @@ carried for reference, ignored by cost banding and price tie-breaks. Write
 record but cannot vouch for. `cost_rank_basis` states why the band holds when it
 is not simply this entry's own attributable price band; a band that is neither
 price-attributable nor explained is a load error rather than a silent guess.
+
+`cached_input_per_mtok` is for providers that publish an independent rate for a
+prompt-cache hit rather than expressing it as a fraction of the uncached rate.
+Omit it and forge applies its generic 10%-of-input discount, which is what
+OpenAI and Anthropic actually bill.
+
+**Upstream identifiers.** `identity` is what the entry claims about the name the
+*provider* serves, and when that claim was last checked. It matters because a
+retired identifier often keeps resolving: the call succeeds and returns real
+token counts while the capability, tier and price recorded here describe a model
+that is no longer behind the name.
+
+- `status: retired` makes the entry unroutable. It is not deleted, so a
+  configuration still naming the identifier is told what the provider did with
+  it — `retired_reason` is required and should name the replacement.
+- `verified_on` / `verified_against` record a check. They expire: past the window
+  in `config/model_identity.py` the entry reverts to *unconfirmed*, the same
+  state an entry that never declared a check is in. Unconfirmed is not an error —
+  `forge check-config` reports it under `upstream identifier not confirmed` so
+  you see it before a run spends against it.
+
+**Request-level modes.** `invocation.reasoning_mode` states a behavioural mode
+the provider expresses as a *request parameter* rather than as a distinct model
+name (DeepSeek's `thinking` block, for one). Where a provider works that way, an
+entry banded as a reasoning model has to declare it — otherwise the band
+describes a mode no invocation ever asks for.
 
 **Aliases and versions are both valid model strings.** A `model:` may name a
 vendor *family alias* (`opus`, `sonnet`, `haiku` — the Claude CLI shorthands) or

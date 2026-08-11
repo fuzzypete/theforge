@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from theforge.agent_types import AgentResult, ModelUsage
@@ -48,6 +49,66 @@ def _openai_client(profile: "ModelProfile", secrets: dict[str, str] | None = Non
     return openai.OpenAI(**kwargs)
 
 
+@dataclass(frozen=True)
+class _ChatUsage:
+    """Token counts read off an OpenAI-compatible ``usage`` object.
+
+    Normalized to forge's convention, which differs from the wire format in one
+    place that matters for billing: ``output_tokens`` here EXCLUDES reasoning,
+    because ``_estimate_cost`` bills ``output_tokens + thinking_tokens``. On the
+    wire ``completion_tokens`` already *includes* ``reasoning_tokens``, so
+    carrying both through unchanged would bill the reasoning twice.
+
+    ``cache_read_tokens`` needs no such adjustment: it is a subset of
+    ``input_tokens`` on this wire format, which is exactly what
+    ``_estimate_cost`` expects of ``cached_input_tokens``.
+    """
+
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cache_read_tokens: int = 0
+    thinking_tokens: int = 0
+
+
+def _read_chat_usage(usage: Any) -> _ChatUsage:
+    """Read a Chat Completions ``usage`` object, including its detail fields.
+
+    Two spellings have to be read for the cache tier because neither is
+    universal: ``prompt_cache_hit_tokens`` (DeepSeek) and
+    ``prompt_tokens_details.cached_tokens`` (OpenAI). Reasoning output arrives as
+    ``completion_tokens_details.reasoning_tokens`` on both.
+
+    Reading these is what makes a separately-billed cache tier and reasoning
+    spend accountable at all: discarding them, as this path did before #2352,
+    priced every input token at the uncached rate and reported thinking spend as
+    zero on a model routed *for* its reasoning.
+    """
+    if usage is None:
+        return _ChatUsage()
+
+    def _int(value: Any) -> int:
+        return int(value) if isinstance(value, (int, float)) and not isinstance(value, bool) else 0
+
+    input_tokens = _int(getattr(usage, "prompt_tokens", None)) or _int(
+        getattr(usage, "input_tokens", None)
+    )
+    completion_tokens = _int(getattr(usage, "completion_tokens", None)) or _int(
+        getattr(usage, "output_tokens", None)
+    )
+    cache_read = _int(getattr(usage, "prompt_cache_hit_tokens", None))
+    if not cache_read:
+        details = getattr(usage, "prompt_tokens_details", None)
+        cache_read = _int(getattr(details, "cached_tokens", None)) if details else 0
+    completion_details = getattr(usage, "completion_tokens_details", None)
+    reasoning = _int(getattr(completion_details, "reasoning_tokens", None))
+    return _ChatUsage(
+        input_tokens=input_tokens,
+        output_tokens=max(0, completion_tokens - reasoning),
+        cache_read_tokens=min(cache_read, input_tokens) if input_tokens else 0,
+        thinking_tokens=reasoning,
+    )
+
+
 def _openai_result(
     profile: "ModelProfile",
     output_text: str,
@@ -55,18 +116,29 @@ def _openai_result(
     output_tokens: int,
     raw: dict,
     provider: str = "openai",
+    *,
+    cache_read_tokens: int = 0,
+    thinking_tokens: int = 0,
 ) -> AgentResult:
     """Build AgentResult from parsed OpenAI-compatible response fields."""
-    cost = _estimate_cost(provider, profile.model, input_tokens, output_tokens)
+    cost = _estimate_cost(
+        provider,
+        profile.model,
+        input_tokens,
+        output_tokens,
+        thinking_tokens=thinking_tokens,
+        cached_input_tokens=cache_read_tokens,
+    )
     if _is_local_endpoint(profile.base_url):
         cost = 0.0
     model_usage = ModelUsage(
         model=profile.model,
         input_tokens=input_tokens,
         output_tokens=output_tokens,
-        cache_read_tokens=0,
+        cache_read_tokens=cache_read_tokens,
         cache_creation_tokens=0,
         cost_usd=cost,
+        thinking_tokens=thinking_tokens,
     )
     return AgentResult(
         success=True,
@@ -88,8 +160,15 @@ def _run_openai_chat(
     client: Any = None,
     provider: str = "openai",
     response_format: dict[str, Any] | None = None,
+    extra_kwargs: dict[str, Any] | None = None,
 ) -> AgentResult:
-    """Run via OpenAI Chat Completions (/v1/chat/completions)."""
+    """Run via OpenAI Chat Completions (/v1/chat/completions).
+
+    ``extra_kwargs`` carries provider-specific request controls the caller has
+    already resolved (DeepSeek's ``thinking`` block, for one). It is merged last
+    so a provider wrapper can state a control this generic path knows nothing of,
+    without that knowledge leaking back into the shared adapter.
+    """
     from theforge.schemas import review_json_schema
 
     if client is None:
@@ -106,17 +185,20 @@ def _run_openai_chat(
             "messages": [{"role": "user", "content": prompt}],
             "response_format": response_format,
             **sampling_control_kwargs(),
+            **(extra_kwargs or {}),
         }
         response = client.chat.completions.create(**create_kwargs)
         output_text = response.choices[0].message.content or ""
-        usage = response.usage
+        chat_usage = _read_chat_usage(response.usage)
         return _openai_result(
             profile,
             output_text,
-            usage.prompt_tokens if usage else 0,
-            usage.completion_tokens if usage else 0,
+            chat_usage.input_tokens,
+            chat_usage.output_tokens,
             response.model_dump(),
             provider=provider,
+            cache_read_tokens=chat_usage.cache_read_tokens,
+            thinking_tokens=chat_usage.thinking_tokens,
         )
     except Exception as e:
         return AgentResult(
@@ -184,13 +266,15 @@ def _run_openai(
 def _make_openai_usage(usage: Any, model: str) -> ModelUsage | None:
     if usage is None:
         return None
+    chat_usage = _read_chat_usage(usage)
     return ModelUsage(
         model=model,
-        input_tokens=getattr(usage, "prompt_tokens", getattr(usage, "input_tokens", 0)),
-        output_tokens=getattr(usage, "completion_tokens", getattr(usage, "output_tokens", 0)),
-        cache_read_tokens=0,
+        input_tokens=chat_usage.input_tokens,
+        output_tokens=chat_usage.output_tokens,
+        cache_read_tokens=chat_usage.cache_read_tokens,
         cache_creation_tokens=0,
         cost_usd=None,
+        thinking_tokens=chat_usage.thinking_tokens,
     )
 
 
@@ -231,8 +315,13 @@ def _make_openai_chat_adapter(
     secrets: dict[str, str] | None,
     client: Any = None,
     response_format: dict[str, Any] | None = None,
+    extra_kwargs: dict[str, Any] | None = None,
 ) -> ProviderAdapter:
-    """Build OpenAI Chat Completions adapter for AgentLoopManager."""
+    """Build OpenAI Chat Completions adapter for AgentLoopManager.
+
+    ``extra_kwargs`` carries provider-specific request controls resolved by the
+    caller — see :func:`_run_openai_chat` for why they arrive that way.
+    """
     if client is None:
         client = _openai_client(profile, secrets)
 
@@ -242,6 +331,7 @@ def _make_openai_chat_adapter(
             "model": profile.model,
             "messages": oai_messages,
             **sampling_control_kwargs(),
+            **(extra_kwargs or {}),
         }
         if tools:
             kwargs["tools"] = tools

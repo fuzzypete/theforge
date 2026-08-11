@@ -159,8 +159,13 @@ def test_axis_decision_reasoning_effort_without_score_records_fallback():
 def test_transport_support_metadata_classifies_every_known_runner():
     """Provider capability metadata lives in the routing SSOT, not in runners."""
     assert effort_knob_for("codex").kind == KNOB_EFFORT
+    # DeepSeek takes an effort string too: it expresses reasoning as a request
+    # parameter rather than as a distinct model name, and meters it back as
+    # reasoning tokens (#2352).
+    assert effort_knob_for("deepseek").kind == KNOB_EFFORT
+    assert effort_knob_for("deepseek").captures_thinking_spend is True
     assert effort_knob_for("google").kind == KNOB_BUDGET
-    for runner in ("claude", "gemini", "ghaw", "anthropic", "openai", "deepseek"):
+    for runner in ("claude", "gemini", "ghaw", "anthropic", "openai"):
         assert effort_knob_for(runner).kind == KNOB_NONE
     # An unknown or absent transport must opt in explicitly, never inherit a knob.
     assert effort_knob_for("brand-new-runner").kind == KNOB_NONE

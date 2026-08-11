@@ -19,10 +19,98 @@ library, so it stays importable from anywhere in the config package.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date, timedelta
 
 from .pricing import AttributablePricing
 
 TRANSPORT_KINDS: frozenset[str] = frozenset({"cli", "api"})
+
+
+# ── Upstream identifier status ───────────────────────────────────────────
+#
+# A model identifier is a claim about something outside this repository: that
+# the provider still serves that name, and that it still designates the model
+# whose capability, tier and price were recorded against it. Providers retire
+# and re-point identifiers, and — the dangerous case — a retired identifier
+# often keeps *resolving*, so a run against it completes with exit 0 and real
+# token counts while the declaration describes a model that is no longer there.
+#
+# So the claim is written down rather than assumed. Every catalog entry may
+# state when its identifier was last checked against the provider's published
+# model list, and an entry the provider has retired says so explicitly instead
+# of quietly staying selectable (#2352).
+
+IDENTITY_STATUS_SERVED = "served"
+IDENTITY_STATUS_RETIRED = "retired"
+IDENTITY_STATUSES: frozenset[str] = frozenset({IDENTITY_STATUS_SERVED, IDENTITY_STATUS_RETIRED})
+
+# How long a recorded verification stays load-bearing. A check made against the
+# provider's model list is evidence about the day it was made, not a permanent
+# property: past this window the entry reverts to *unconfirmed*, which is the
+# same state an entry that never declared a check is in. Deliberately not a
+# load error — an expired check is not bad configuration, it is configuration
+# whose supporting evidence has aged out, and the operator is the one who can
+# refresh it.
+IDENTITY_VERIFICATION_MAX_AGE_DAYS = 180
+
+
+@dataclass(frozen=True)
+class IdentityVerification:
+    """What is known about an entry's upstream identifier, and when.
+
+    ``status`` is what the provider is understood to do with the name today.
+    ``verified_against`` names the source the check was made against (a
+    published model list, a live probe) and ``verified_on`` the day it was made;
+    together they are what makes :meth:`confirmed_on` answerable rather than a
+    matter of belief. ``retired_reason`` is required of a retired entry — a name
+    withdrawn without a stated reason tells an operator nothing they can act on.
+    """
+
+    status: str = IDENTITY_STATUS_SERVED
+    verified_against: str | None = None
+    verified_on: date | None = None
+    retired_reason: str | None = None
+
+    @property
+    def retired(self) -> bool:
+        return self.status == IDENTITY_STATUS_RETIRED
+
+    def confirmed_on(self, today: date) -> bool:
+        """True when a check exists for this identifier and has not aged out."""
+        if self.retired or self.verified_on is None or not self.verified_against:
+            return False
+        return today - self.verified_on <= timedelta(days=IDENTITY_VERIFICATION_MAX_AGE_DAYS)
+
+    def describe(self, today: date) -> str:
+        """One-line statement of what is known, for operator-facing reports."""
+        if self.retired:
+            return f"retired upstream — {self.retired_reason or 'no reason recorded'}"
+        if self.verified_on is None or not self.verified_against:
+            return "never checked against the provider's published model list"
+        age = (today - self.verified_on).days
+        if age > IDENTITY_VERIFICATION_MAX_AGE_DAYS:
+            return (
+                f"last checked {self.verified_on.isoformat()} against {self.verified_against} "
+                f"({age}d ago, over the {IDENTITY_VERIFICATION_MAX_AGE_DAYS}d window)"
+            )
+        return f"checked {self.verified_on.isoformat()} against {self.verified_against}"
+
+
+# The state of an entry that says nothing about its identifier: the provider may
+# well still serve it, but nothing here establishes that.
+UNCONFIRMED_IDENTITY = IdentityVerification()
+
+
+# ── Provider invocation controls ─────────────────────────────────────────
+#
+# Where a provider expresses a behavioural mode as a *request parameter* rather
+# than as a distinct model name, banding an entry for that behaviour is only
+# meaningful if the request actually asks for it. ``reasoning_mode`` is that
+# declaration: it says what the entry's routing band was recorded about, in a
+# form the adapter can forward.
+REASONING_MODE_ENABLED = "enabled"
+REASONING_MODE_DISABLED = "disabled"
+REASONING_MODES: frozenset[str] = frozenset({REASONING_MODE_ENABLED, REASONING_MODE_DISABLED})
 
 
 @dataclass(frozen=True)
@@ -181,7 +269,7 @@ class AgentSpec(AttributablePricing):
     """
 
     provider: str  # "anthropic" | "openai" | "google" | "deepseek"
-    model: str  # model identifier (e.g. "sonnet", "gpt-5.4", "deepseek-reasoner")
+    model: str  # model identifier (e.g. "sonnet", "gpt-5.4", "deepseek-v4-pro")
     transport: TransportSpec
     routing: RoutingPolicy
     base_url: str | None = None  # endpoint metadata (local/OpenAI-compatible servers)
@@ -193,6 +281,16 @@ class AgentSpec(AttributablePricing):
     # PRICING_PROVENANCE_* marker). None = unattributed: routing treats the
     # figures as unknown. See _AttributablePricing.
     pricing_provenance: str | None = None
+    # A provider that bills prompt-cache hits at its own published rate rather
+    # than as a fixed fraction of the uncached rate states that rate here. None
+    # means "no separately-billed tier declared" and the generic cache discount
+    # in runners/schema_utils applies.
+    cached_input_cost_per_mtok: float | None = None
+    # What is known about the upstream identifier this entry names (#2352).
+    identity: IdentityVerification = UNCONFIRMED_IDENTITY
+    # Request-level behavioural mode to ask for at invocation, where the provider
+    # expresses one. None = send nothing and take the provider's default.
+    reasoning_mode: str | None = None
 
     @property
     def tier(self) -> str:

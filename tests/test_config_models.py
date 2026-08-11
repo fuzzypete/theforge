@@ -248,7 +248,7 @@ class TestModelsKeyConfig:
         """DeepSeek entries in models: derive API-backed profiles, not CLI profiles."""
         config_path = _write_config(
             {
-                "models": ["claude/sonnet", "deepseek/deepseek-reasoner"],
+                "models": ["claude/sonnet", "deepseek/deepseek-v4-pro"],
                 "budget_usd": 50.0,
             },
             tmp_path,
@@ -257,7 +257,7 @@ class TestModelsKeyConfig:
         deepseek_profiles = [
             p
             for p in [config.dev_profile, config.preflight_profile, *config.review_pool]
-            if p.model == "deepseek-reasoner"
+            if p.model == "deepseek-v4-pro"
         ]
         assert deepseek_profiles
         assert all(p.cli is None for p in deepseek_profiles)
@@ -801,10 +801,10 @@ class TestCurrentGenModelRegistry:
                 False,
             ),
             (
-                "deepseek/deepseek-reasoner/api",
+                "deepseek/deepseek-v4-pro/api",
                 None,
                 "deepseek",
-                "deepseek-reasoner",
+                "deepseek-v4-pro",
                 "strong",
                 9,
                 2,

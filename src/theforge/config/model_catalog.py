@@ -53,6 +53,7 @@ without the two modules importing each other.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import date
 from importlib import resources
 from typing import Any, Callable
 
@@ -62,10 +63,15 @@ from .model_identity import (
     _DEFAULT_PHASE_ELIGIBILITY,
     CAPABILITY_RANGE,
     COST_RANK_RANGE,
+    IDENTITY_STATUS_RETIRED,
+    IDENTITY_STATUSES,
     KNOWN_PHASES,
     MODEL_TIERS,
+    REASONING_MODES,
     TRANSPORT_KINDS,
+    UNCONFIRMED_IDENTITY,
     AgentSpec,
+    IdentityVerification,
     RoutingPolicy,
     TransportSpec,
     canonical_model_id,
@@ -88,7 +94,7 @@ SOURCE_BUILTIN = "builtin"
 SOURCE_PROJECT = "forge.yaml"
 
 DEFINITION_KEYS: frozenset[str] = frozenset(
-    {"provider", "model", "transport", "routing", "base_url", "cost"}
+    {"provider", "model", "transport", "routing", "base_url", "cost", "identity", "invocation"}
 )
 ROUTING_KEYS: frozenset[str] = frozenset(
     {
@@ -100,7 +106,18 @@ ROUTING_KEYS: frozenset[str] = frozenset(
         "cost_rank_basis",
     }
 )
-COST_KEYS: frozenset[str] = frozenset({"input_per_mtok", "output_per_mtok", "pricing_provenance"})
+COST_KEYS: frozenset[str] = frozenset(
+    {
+        "input_per_mtok",
+        "output_per_mtok",
+        "cached_input_per_mtok",
+        "pricing_provenance",
+    }
+)
+IDENTITY_KEYS: frozenset[str] = frozenset(
+    {"status", "verified_against", "verified_on", "retired_reason"}
+)
+INVOCATION_KEYS: frozenset[str] = frozenset({"reasoning_mode"})
 
 # The resolved fields provenance is reported for. Identity (provider, model,
 # transport) is deliberately absent: it is what the two sources *agree* on when
@@ -115,7 +132,10 @@ PROVENANCE_FIELDS: tuple[str, ...] = (
     "base_url",
     "input_cost_per_mtok",
     "output_cost_per_mtok",
+    "cached_input_cost_per_mtok",
     "pricing_provenance",
+    "identity",
+    "reasoning_mode",
 )
 
 _CATALOG_PACKAGE = "theforge.config"
@@ -139,6 +159,8 @@ class ParsedDefinition:
     cost: dict[str, Any]
     base_url: str | None
     declared: frozenset[str]
+    identity: IdentityVerification = UNCONFIRMED_IDENTITY
+    reasoning_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -229,6 +251,95 @@ def parse_transport_block(raw: Any, where: str) -> tuple[str, str | None]:
     return str(kind), runner
 
 
+def parse_identity_block(raw: Any, where: str) -> IdentityVerification:
+    """Read the bounded ``identity: {status, verified_against, verified_on, …}`` object.
+
+    Two rules are enforced here rather than left to the reader, because both
+    describe the failure this block exists to stop:
+
+    - a ``retired`` entry must state ``retired_reason``. A withdrawn name with no
+      stated reason gives an operator nothing to act on, which is the state the
+      catalog was already in before the block existed;
+    - ``verified_on`` must be a real date. A free-text "recently" cannot age out,
+      and a verification that cannot expire is a permanent claim about something
+      that is not permanent.
+    """
+    if raw is None:
+        return UNCONFIRMED_IDENTITY
+    if not isinstance(raw, dict):
+        raise ValueError(f"forge.yaml '{where}.identity' must be a mapping")
+    unknown = set(raw) - IDENTITY_KEYS
+    if unknown:
+        raise ValueError(
+            f"forge.yaml '{where}.identity' only supports {sorted(IDENTITY_KEYS)}; "
+            f"unknown key(s): {sorted(unknown)}"
+        )
+    status = raw.get("status", "served")
+    if status not in IDENTITY_STATUSES:
+        raise ValueError(
+            f"forge.yaml '{where}.identity.status' must be one of {sorted(IDENTITY_STATUSES)}, "
+            f"got {status!r}"
+        )
+    verified_against = raw.get("verified_against")
+    if verified_against is not None:
+        verified_against = _require_str(
+            verified_against, where=f"{where}.identity.verified_against"
+        )
+    verified_on_raw = raw.get("verified_on")
+    verified_on: date | None
+    if verified_on_raw is None:
+        verified_on = None
+    elif isinstance(verified_on_raw, date):
+        # PyYAML parses an unquoted ISO date into a `datetime.date` already.
+        verified_on = verified_on_raw
+    else:
+        try:
+            verified_on = date.fromisoformat(str(verified_on_raw))
+        except ValueError:
+            raise ValueError(
+                f"forge.yaml '{where}.identity.verified_on' must be an ISO date "
+                f"(YYYY-MM-DD), got {verified_on_raw!r}"
+            ) from None
+    retired_reason = raw.get("retired_reason")
+    if retired_reason is not None:
+        retired_reason = _require_str(retired_reason, where=f"{where}.identity.retired_reason")
+    if status == IDENTITY_STATUS_RETIRED and not retired_reason:
+        raise ValueError(
+            f"forge.yaml '{where}.identity' declares status 'retired' but no "
+            "'retired_reason'. State what the provider did with the identifier and "
+            "what replaces it, so an operator reading this can act on it."
+        )
+    return IdentityVerification(
+        status=str(status),
+        verified_against=verified_against,
+        verified_on=verified_on,
+        retired_reason=retired_reason,
+    )
+
+
+def parse_invocation_block(raw: Any, where: str) -> str | None:
+    """Read the bounded ``invocation: {reasoning_mode: …}`` object."""
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ValueError(f"forge.yaml '{where}.invocation' must be a mapping")
+    unknown = set(raw) - INVOCATION_KEYS
+    if unknown:
+        raise ValueError(
+            f"forge.yaml '{where}.invocation' only supports {sorted(INVOCATION_KEYS)}; "
+            f"unknown key(s): {sorted(unknown)}"
+        )
+    mode = raw.get("reasoning_mode")
+    if mode is None:
+        return None
+    if mode not in REASONING_MODES:
+        raise ValueError(
+            f"forge.yaml '{where}.invocation.reasoning_mode' must be one of "
+            f"{sorted(REASONING_MODES)}, got {mode!r}"
+        )
+    return str(mode)
+
+
 def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
     """Validate one canonical model definition's syntax.
 
@@ -276,6 +387,9 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
     if base_url is not None:
         base_url = _require_str(base_url, where=f"{where}.base_url")
 
+    identity = parse_identity_block(entry.get("identity"), where)
+    reasoning_mode = parse_invocation_block(entry.get("invocation"), where)
+
     routing: dict[str, Any] = {}
     if "tier" in routing_raw:
         routing["tier"] = _require_tier(routing_raw["tier"], where=f"{where}.routing.tier")
@@ -321,6 +435,10 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
         cost["output_cost_per_mtok"] = _require_price(
             cost_raw["output_per_mtok"], where=f"{where}.cost.output_per_mtok"
         )
+    if "cached_input_per_mtok" in cost_raw:
+        cost["cached_input_cost_per_mtok"] = _require_price(
+            cost_raw["cached_input_per_mtok"], where=f"{where}.cost.cached_input_per_mtok"
+        )
     if "pricing_provenance" in cost_raw:
         provenance = cost_raw["pricing_provenance"]
         # An explicit null is meaningful: it says "these figures are not
@@ -330,7 +448,13 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
             provenance = _require_str(provenance, where=f"{where}.cost.pricing_provenance")
         cost["pricing_provenance"] = provenance
 
-    declared = frozenset(routing) | frozenset(cost) | ({"base_url"} if base_url else set())
+    declared = (
+        frozenset(routing)
+        | frozenset(cost)
+        | ({"base_url"} if base_url else set())
+        | ({"identity"} if entry.get("identity") is not None else set())
+        | ({"reasoning_mode"} if reasoning_mode is not None else set())
+    )
     return ParsedDefinition(
         canonical_id=canonical_model_id(provider, model, transport.kind),
         provider=provider,
@@ -340,6 +464,8 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
         cost=cost,
         base_url=base_url,
         declared=declared,
+        identity=identity,
+        reasoning_mode=reasoning_mode,
     )
 
 
@@ -353,15 +479,49 @@ def resolve_packaged(defn: ParsedDefinition, *, where: str) -> ResolvedModel:
     and the cost band is held to the attribution rule in
     :func:`config.pricing.resolve_cost_band_basis`: a band that is not this
     entry's own attributable price band has to name its non-price basis.
+
+    A **retired** entry is exempt from both. It is not a routing candidate — it
+    exists only so that a reference to the identifier resolves to an explanation
+    instead of to "unknown model" — so demanding a capability score and a
+    defensible cost band for it would be asking the operator to keep declaring
+    properties of a model the provider no longer serves.
     """
+    input_cost = defn.cost.get("input_cost_per_mtok")
+    output_cost = defn.cost.get("output_cost_per_mtok")
+    cached_input_cost = defn.cost.get("cached_input_cost_per_mtok")
+    provenance = defn.cost.get("pricing_provenance")
+    if defn.identity.retired:
+        routing_policy = RoutingPolicy(
+            tier=defn.routing.get("tier", "cheap"),
+            capability=defn.routing.get("capability", CAPABILITY_RANGE[0]),
+            cost_rank=defn.routing.get("cost_rank", UNPRICED_COST_RANK),
+            dev_capable=False,
+            phase_eligibility=frozenset(),
+            cost_rank_basis=COST_BAND_BASIS_UNPRICED_DEFAULT,
+        )
+        # A retired identifier's recorded price describes a rate card the
+        # provider has replaced, so it is dropped rather than carried: leaving
+        # it attached would let it keep pricing anything that reached it.
+        spec = AgentSpec(
+            provider=defn.provider,
+            model=defn.model,
+            transport=defn.transport,
+            routing=routing_policy,
+            base_url=defn.base_url,
+            registry_source=SOURCE_BUILTIN,
+            identity=defn.identity,
+        )
+        return ResolvedModel(
+            canonical_id=defn.canonical_id,
+            spec=spec,
+            field_sources={field: SOURCE_BUILTIN for field in PROVENANCE_FIELDS},
+        )
+
     for required in ("tier", "capability", "cost_rank"):
         if required not in defn.routing:
             raise ValueError(
                 f"forge.yaml '{where}.routing' is missing required field {required!r}"
             )
-    input_cost = defn.cost.get("input_cost_per_mtok")
-    output_cost = defn.cost.get("output_cost_per_mtok")
-    provenance = defn.cost.get("pricing_provenance")
     basis = resolve_cost_band_basis(
         defn.routing["cost_rank"],
         input_cost_per_mtok=input_cost,
@@ -385,7 +545,10 @@ def resolve_packaged(defn: ParsedDefinition, *, where: str) -> ResolvedModel:
         registry_source=SOURCE_BUILTIN,
         input_cost_per_mtok=input_cost,
         output_cost_per_mtok=output_cost,
+        cached_input_cost_per_mtok=cached_input_cost,
         pricing_provenance=provenance,
+        identity=defn.identity,
+        reasoning_mode=defn.reasoning_mode,
     )
     return ResolvedModel(
         canonical_id=defn.canonical_id,
@@ -446,6 +609,26 @@ def resolve_project(
         "output_cost_per_mtok",
         defn.cost.get("output_cost_per_mtok"),
         builtin.output_cost_per_mtok if builtin is not None else None,
+    )
+    cached_input_cost = _pick(
+        "cached_input_cost_per_mtok",
+        defn.cost.get("cached_input_cost_per_mtok"),
+        builtin.cached_input_cost_per_mtok if builtin is not None else None,
+    )
+    # An overlay that says nothing about the identifier inherits what the
+    # built-in entry established about it. It may not *upgrade* that: a project
+    # declaration is not a check against the provider, so an entry with no
+    # built-in behind it stays unconfirmed until someone records a check.
+    identity = _pick(
+        "identity",
+        defn.identity,
+        builtin.identity if builtin is not None else None,
+        lambda: UNCONFIRMED_IDENTITY,
+    )
+    reasoning_mode = _pick(
+        "reasoning_mode",
+        defn.reasoning_mode,
+        builtin.reasoning_mode if builtin is not None else None,
     )
     # Declaring a `cost:` figure without saying what it is attributed to
     # attributes it to this identity — the operator asserted it here. An
@@ -556,7 +739,10 @@ def resolve_project(
         registry_source=SOURCE_PROJECT,
         input_cost_per_mtok=input_cost,
         output_cost_per_mtok=output_cost,
+        cached_input_cost_per_mtok=cached_input_cost,
         pricing_provenance=provenance,
+        identity=identity or UNCONFIRMED_IDENTITY,
+        reasoning_mode=reasoning_mode,
     )
     return ResolvedModel(
         canonical_id=defn.canonical_id,
@@ -573,11 +759,18 @@ def _read_catalog_document() -> Any:
     return yaml.safe_load(resource.read_text(encoding="utf-8"))
 
 
-def load_packaged_catalog() -> dict[str, AgentSpec]:
-    """Load the shipped default model set from ``config/data/models.yaml``.
+def load_packaged_catalog_split() -> tuple[dict[str, AgentSpec], dict[str, AgentSpec]]:
+    """Load the shipped model set, partitioned into served and retired entries.
 
-    Read through the same parser project declarations use, so both sources
-    produce identical structures and one schema governs them.
+    Retired entries are kept out of the routable registry entirely — nothing that
+    selects a model can reach one — but they are not discarded, because the whole
+    point of declaring a retirement is that a configuration still naming the
+    identifier gets told what happened to it rather than being told the name was
+    never known (see :func:`config.models.resolve_agent_spec`).
+
+    Uniqueness is checked across *both* partitions: an entry cannot be both
+    served and retired, and the retired half is where an identifier's replacement
+    is named, so a collision there is the same declaration error it is anywhere.
     """
     document = _read_catalog_document()
     if not isinstance(document, dict) or not isinstance(document.get("models"), list):
@@ -586,14 +779,46 @@ def load_packaged_catalog() -> dict[str, AgentSpec]:
             "'models' list"
         )
     registry: dict[str, AgentSpec] = {}
+    retired: dict[str, AgentSpec] = {}
     for index, entry in enumerate(document["models"]):
         where = f"models[{index}]"
         defn = parse_definition(entry, where=where)
         resolved = resolve_packaged(defn, where=where)
-        if resolved.canonical_id in registry:
+        if resolved.canonical_id in registry or resolved.canonical_id in retired:
             raise ValueError(
                 f"packaged model catalog declares {resolved.canonical_id!r} twice "
                 f"({where}); canonical identities must be unique"
             )
-        registry[resolved.canonical_id] = resolved.spec
-    return registry
+        target = retired if resolved.spec.identity.retired else registry
+        target[resolved.canonical_id] = resolved.spec
+    return registry, retired
+
+
+def load_packaged_catalog() -> dict[str, AgentSpec]:
+    """Load the routable half of the shipped default model set.
+
+    Read through the same parser project declarations use, so both sources
+    produce identical structures and one schema governs them.
+    """
+    return load_packaged_catalog_split()[0]
+
+
+def unconfirmed_identities(
+    registry: dict[str, AgentSpec],
+    *,
+    today: date,
+) -> list[tuple[str, AgentSpec]]:
+    """Return routable entries whose upstream identifier is not currently confirmed.
+
+    "Not confirmed" covers both never-checked and checked-too-long-ago; the two
+    are the same state as far as trusting the entry's declarations goes. This is
+    reported, never raised: an unconfirmed identifier is usually fine, and making
+    it a load error would mean the catalog stops loading on a date rather than on
+    a defect. What it must not do is stay invisible until a run's output looks
+    wrong — see ``forge check-config`` (#2352).
+    """
+    return [
+        (key, spec)
+        for key, spec in sorted(registry.items())
+        if not spec.identity.confirmed_on(today)
+    ]

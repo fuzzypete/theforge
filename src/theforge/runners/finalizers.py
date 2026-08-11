@@ -84,7 +84,7 @@ def _make_deepseek_finalizer(
     DeepSeek's Chat Completions API supports JSON mode (json_object) but not
     structured output (json_schema).  Using json_schema returns HTTP 400.
     """
-    from theforge.runners.adapters.deepseek import _deepseek_client
+    from theforge.runners.adapters.deepseek import _deepseek_client, deepseek_request_kwargs
     from theforge.runners.adapters.openai import (
         _make_openai_usage,
         _translate_messages_openai_chat,
@@ -92,6 +92,10 @@ def _make_deepseek_finalizer(
 
     if client is None:
         client = _deepseek_client(profile, secrets)
+    # Same request controls as the loop and single-shot paths. A finalization
+    # call is still an invocation of the model the role was filled with, so it
+    # asks for the same mode rather than falling back to the provider default.
+    request_kwargs = deepseek_request_kwargs(profile)
 
     # DeepSeek has no json_schema mode, so the phase's contract reaches the model
     # through the instruction text alone — it still must be the right one.
@@ -108,6 +112,7 @@ def _make_deepseek_finalizer(
             "messages": oai_messages,
             "response_format": {"type": "json_object"},
             **sampling_control_kwargs(),
+            **request_kwargs,
         }
 
         response = client.chat.completions.create(**kwargs)

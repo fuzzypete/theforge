@@ -34,10 +34,11 @@ from __future__ import annotations
 from dataclasses import dataclass, fields, replace
 from typing import Any, TypeVar, overload
 
-from .model_catalog import load_packaged_catalog
+from .model_catalog import load_packaged_catalog_split
 from .model_identity import (
     _DEFAULT_PHASE_ELIGIBILITY,
     _LEGACY_CLI_TO_PROVIDER,
+    UNCONFIRMED_IDENTITY,
 )
 
 # Re-exported: the canonical identity types and the raw-input alias boundary
@@ -45,6 +46,7 @@ from .model_identity import (
 # without importing this module back. Every caller still imports them here.
 from .model_identity import TRANSPORT_KINDS as TRANSPORT_KINDS
 from .model_identity import AgentSpec as AgentSpec
+from .model_identity import IdentityVerification as IdentityVerification  # noqa: PLC0414
 from .model_identity import RoutingPolicy as RoutingPolicy
 from .model_identity import TransportSpec as TransportSpec
 from .model_identity import canonical_id_for_spec as canonical_id_for_spec
@@ -115,6 +117,12 @@ class ModelInfo(AttributablePricing):
     # identity half of the (provider, model, transport.kind) tuple.
     provider_family: str | None = None
     base_url: str | None = None  # endpoint metadata carried from the registry entry
+    # Provider's own separately-billed prompt-cache rate, when it publishes one.
+    cached_input_cost_per_mtok: float | None = None
+    # Request-level behavioural mode the entry was banded for, forwarded to the
+    # adapter so the band describes an invocation forge actually makes (#2352).
+    reasoning_mode: str | None = None
+    identity: IdentityVerification = UNCONFIRMED_IDENTITY
 
 
 _CLI_TO_PROVIDER: dict[str, str] = dict(_LEGACY_CLI_TO_PROVIDER)
@@ -147,6 +155,10 @@ class AgentDef(AttributablePricing):
     input_cost_per_mtok: float | None = None
     output_cost_per_mtok: float | None = None
     pricing_provenance: str | None = None
+    cached_input_cost_per_mtok: float | None = None
+    # Carried so ``to_model_profile`` can hand the adapter the mode the entry was
+    # banded for — the pool is the only path a routed profile takes to a runner.
+    reasoning_mode: str | None = None
 
     @property
     def effective_provider(self) -> str | None:
@@ -180,6 +192,7 @@ class AgentDef(AttributablePricing):
             api_fallback=self.api_fallback,
             registry_id=self.registry_id,
             registry_source=self.registry_source,
+            reasoning_mode=self.reasoning_mode,
         )
 
 
@@ -196,7 +209,23 @@ class AgentDef(AttributablePricing):
 # release, and no role-derivation, profile, or runner-dispatch edits. Adding a
 # *provider* still requires code, because a provider needs a runner module (see
 # :func:`transport_for`).
-AGENT_REGISTRY: dict[str, AgentSpec] = load_packaged_catalog()
+#
+# The catalog is loaded in two halves. ``AGENT_REGISTRY`` is the routable one —
+# nothing that selects a model can see anything else. ``RETIRED_MODEL_REGISTRY``
+# holds identities the provider has withdrawn; they are unreachable by routing
+# but still *resolvable*, so a configuration naming one is told what happened to
+# it rather than being told the name was never known (#2352).
+AGENT_REGISTRY, RETIRED_MODEL_REGISTRY = load_packaged_catalog_split()
+
+
+def retired_identity_message(canonical_id: str, spec: AgentSpec) -> str:
+    """Render the operator-facing explanation for a retired identifier."""
+    reason = spec.identity.retired_reason or "no reason recorded"
+    return (
+        f"Model {canonical_id!r} names an upstream identifier the provider has "
+        f"retired: {reason} Remove it from your configuration and pick a served "
+        f"identifier — see config/data/models.yaml."
+    )
 
 
 # Raw-input aliases for the pre-transport key spellings. These are accepted only
@@ -213,8 +242,16 @@ _LEGACY_MODEL_KEY_ALIASES: dict[str, str] = {
     "openai-api/gpt-5.4": "openai/gpt-5.4/api",
     "openai-api/gpt-5.4-mini": "openai/gpt-5.4-mini/api",
     "openai-api/gpt-5.4-pro": "openai/gpt-5.4-pro/api",
+    # `deepseek/deepseek-reasoner` and `deepseek/deepseek-chat` are deliberately
+    # still listed: both name identifiers DeepSeek has retired, and the canonical
+    # ids they translate to now live in RETIRED_MODEL_REGISTRY, so resolving them
+    # produces the retirement message instead of silently routing to a name that
+    # designates a different model than the one recorded here (#2352). Dropping
+    # the aliases would have degraded that into "unknown model".
     "deepseek/deepseek-reasoner": "deepseek/deepseek-reasoner/api",
     "deepseek/deepseek-chat": "deepseek/deepseek-chat/api",
+    "deepseek/deepseek-v4-pro": "deepseek/deepseek-v4-pro/api",
+    "deepseek/deepseek-v4-flash": "deepseek/deepseek-v4-flash/api",
     "google/gemini-3-flash-preview": "google/gemini-3-flash-preview/api",
     "google/gemini-3.1-pro-preview": "google/gemini-3.1-pro-preview/api",
     "google/gemini-2.5-pro": "google/gemini-2.5-pro/api",
@@ -286,7 +323,10 @@ def _spec_to_model_info(
         registry_source=spec.registry_source,
         input_cost_per_mtok=spec.input_cost_per_mtok,
         output_cost_per_mtok=spec.output_cost_per_mtok,
+        cached_input_cost_per_mtok=spec.cached_input_cost_per_mtok,
         pricing_provenance=spec.pricing_provenance,
+        reasoning_mode=spec.reasoning_mode,
+        identity=spec.identity,
         transport=spec.transport,
     )
 
@@ -354,6 +394,11 @@ def apply_model_info(profile: _ProfileT, info: ModelInfo) -> _ProfileT:
         updates["transport"] = info.transport
     if "base_url" in profile_fields:
         updates["base_url"] = info.base_url
+    if "reasoning_mode" in profile_fields:
+        # Travels with the identity for the same reason transport does: the mode
+        # is a property of the model being swapped *to*, so leaving the old one
+        # behind would request a behaviour the new entry never declared.
+        updates["reasoning_mode"] = info.reasoning_mode
     return replace(profile, **updates)
 
 
@@ -378,6 +423,13 @@ def resolve_agent_spec(
     effective_registry = AGENT_REGISTRY if registry is None else registry
     lookup = model_key if model_key in effective_registry else normalize_model_key(model_key)
     if lookup not in effective_registry:
+        # A retired identity resolves to an *explanation*, not to a model. This
+        # is the whole reason retirements are declared rather than deleted: the
+        # dangerous case is a name that still resolves upstream, and the only
+        # place that can be caught before spend is here, at configuration load.
+        retired = RETIRED_MODEL_REGISTRY.get(lookup)
+        if retired is not None:
+            raise ValueError(retired_identity_message(lookup, retired))
         known = sorted(effective_registry)
         raise ValueError(
             f"Unknown model {model_key!r}: not in AGENT_REGISTRY. "

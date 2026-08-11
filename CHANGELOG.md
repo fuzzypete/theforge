@@ -17,6 +17,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A retired upstream identifier can no longer be routed to, or priced from a
+  replaced rate card (#2352):** model definitions gain an `identity` block
+  (`status: served|retired`, `verified_against`, `verified_on`,
+  `retired_reason`). A retired entry is excluded from routing but kept
+  resolvable, so a configuration still naming it fails at load with the
+  retirement and its replacement named rather than with "unknown model"; an
+  identifier whose recorded check has aged out is reported by `forge
+  check-config` under `upstream identifier not confirmed`. DeepSeek's
+  `deepseek-chat`/`deepseek-reasoner` are declared retired and replaced by
+  `deepseek-v4-flash`/`deepseek-v4-pro` at the published rates. `cost` gains
+  `cached_input_per_mtok` for providers that bill prompt-cache hits at their own
+  rate, the OpenAI-compatible adapters now read the cache and reasoning token
+  counts the provider reports (instead of recording zero for both), and the cost
+  estimator prices from the catalog entry rather than a separate table — the
+  DeepSeek rows are gone from `PRICING_TABLE`. `invocation.reasoning_mode` plus a
+  real reasoning-effort knob for the DeepSeek transport mean a model banded as a
+  reasoning model is invoked with `thinking` actually requested, on the
+  single-shot, tool-loop and finalizer paths alike.
+
+  **Operator action:** if your `forge.yaml` names `deepseek/deepseek-chat` or
+  `deepseek/deepseek-reasoner` under `models.enabled` or `models.custom`, replace
+  it with `deepseek/deepseek-v4-flash` or `deepseek/deepseek-v4-pro`. Config load
+  fails until you do.
+
 - **Patient gates run under the project's pinned Python, not the orchestrator's
   (#1934):** `{forge_python}` now expands to a new required
   `workspace.python_interpreter` setting instead of TheForge's own

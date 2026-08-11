@@ -25,6 +25,7 @@ from theforge.runners.adapters.anthropic import (
 from theforge.runners.adapters.deepseek import (
     _deepseek_client,
     _run_deepseek,
+    deepseek_request_kwargs,
 )
 from theforge.runners.adapters.google import (
     _make_google_adapter,
@@ -57,6 +58,7 @@ from theforge.runners.schema_utils import (
     _build_submit_tools_google,
     _build_submit_tools_openai,
     _estimate_cost,
+    cache_reads_are_subset_of_input,
     noop_finalizer,
     uses_openai_responses_api,
 )
@@ -157,12 +159,23 @@ class _UsageAccumulator:
         self.cache_creation_tokens += usage.cache_creation_tokens
 
     def to_model_usage(self, model: str, provider: str) -> ModelUsage:
+        # The accumulated cache-read count is passed through, not just recorded:
+        # a provider that bills prompt-cache hits at a distinct rate only gets
+        # that rate applied if the estimator is told how many hits there were.
+        # Withholding it priced every cached token at the uncached rate (#2352).
+        # Only for providers whose input count *contains* the cache reads —
+        # ``_estimate_cost`` subtracts them, which would delete real uncached
+        # input for a provider that reports the two side by side.
+        cached_input_tokens = (
+            self.cache_read_tokens if cache_reads_are_subset_of_input(provider) else 0
+        )
         cost = _estimate_cost(
             provider,
             model,
             self.input_tokens,
             self.output_tokens,
             thinking_tokens=self.thinking_tokens,
+            cached_input_tokens=cached_input_tokens,
         )
         return ModelUsage(
             model=model,
@@ -860,7 +873,16 @@ def _run_loop_deepseek(
     tool_schemas = [t.to_openai_function() for t in tools] + (
         _build_submit_tools_openai(responses_api=False) if is_review else []
     )
-    adapter = _make_openai_chat_adapter(profile, secrets, client=client)
+    # The loop's request-level controls are built by the same helper the
+    # single-shot and finalizer paths use, so the reasoning mode a DeepSeek entry
+    # is banded for is requested on every call the run makes rather than on
+    # whichever entry point happened to be wired for it (#2352).
+    adapter = _make_openai_chat_adapter(
+        profile,
+        secrets,
+        client=client,
+        extra_kwargs=deepseek_request_kwargs(profile),
+    )
     finalizer = (
         _make_deepseek_finalizer(profile, secrets, client=client) if is_review else noop_finalizer
     )
