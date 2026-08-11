@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from ..config import ForgeConfig
-from ..coordinator.audit import has_review_approve
+from ..coordinator.audit import has_review_approve, latest_run_outcome
 from ..coordinator.gate import _run_gate
 from ..coordinator.state import GateLabel
 from ..log_util import _log_line
@@ -91,38 +91,114 @@ def _has_prior_review_approve(
     )
 
 
-def _has_base_commit_referencing_issue(
+#: Record separator used to split ``git log`` output into whole commit messages.
+#: ``\x1e`` cannot appear in a commit message produced by git's own tooling.
+_COMMIT_RECORD_SEP = "\x1e"
+
+#: Most base-branch commits whose message mentions the issue that are read back
+#: and checked for a closing reference.
+_MAX_COMMIT_SCAN = 200
+
+#: GitHub's closing keywords. Only these turn a ``#N`` reference into a claim
+#: that the issue was completed by the commit; every other mention is a
+#: cross-reference, which is what cross-references are for.
+_CLOSING_KEYWORDS = (
+    "close",
+    "closes",
+    "closed",
+    "fix",
+    "fixes",
+    "fixed",
+    "resolve",
+    "resolves",
+    "resolved",
+)
+
+
+def _closing_reference_pattern(issue_number: int) -> re.Pattern[str]:
+    """Return a matcher for an explicit closing reference to ``issue_number``.
+
+    Matches GitHub's own closing syntax — ``fixes #12``, ``Closes GH-12``,
+    ``resolved owner/repo#12`` — and nothing else. The trailing boundary keeps
+    ``#12`` from matching inside ``#123``.
+    """
+    keywords = "|".join(_CLOSING_KEYWORDS)
+    return re.compile(
+        rf"\b(?:{keywords})\b\s*:?\s*"
+        rf"(?:[\w.-]+/[\w.-]+)?(?:#|GH-)"
+        rf"{issue_number}(?![0-9])",
+        re.IGNORECASE,
+    )
+
+
+def _has_base_commit_closing_issue(
     project_root: Path,
     base_branch: str,
     issue_number: int,
 ) -> bool:
-    """Return True when base has a commit message that references the issue.
+    """Return True when a base commit message *asserts* the issue was closed.
 
-    GitHub squash commits commonly preserve PR or issue references in the final
-    base-branch commit even though the branch tip is not topologically merged.
-    This git-level check catches externally merged branches that never produced
-    a forge APPROVE audit record.
+    GitHub squash commits commonly preserve the closing reference from the PR
+    body in the final base-branch commit even though the branch tip is not
+    topologically merged. This git-level check catches externally merged
+    branches that never produced a forge APPROVE audit record.
+
+    A bare mention (``disabled model X, see #12``) is deliberately *not*
+    evidence: a reference to a unit of work is not a statement that the work
+    landed, and treating it as one skipped open stories with preserved work
+    on the strength of unrelated configuration commits (#2374).
     """
+    pattern = _closing_reference_pattern(issue_number)
     try:
         result = subprocess.run(
             [
                 "git",
                 "log",
-                "--format=%H",
-                "--max-count=1",
+                f"--format=%B{_COMMIT_RECORD_SEP}",
                 "--fixed-strings",
-                f"--grep=(#{issue_number})",
+                f"--grep=#{issue_number}",
+                # Bound the scan: ``--grep`` is a substring match, so a
+                # low-numbered issue can match a great many commits. Missing a
+                # closing reference older than this window costs a re-run of a
+                # landed story; the opposite error discards live work.
+                f"--max-count={_MAX_COMMIT_SCAN}",
                 base_branch,
             ],
             cwd=str(project_root),
             capture_output=True,
             timeout=30,
         )
-        return result.returncode == 0 and bool(
-            result.stdout.decode("utf-8", errors="replace").strip()
-        )
+        if result.returncode != 0:
+            return False
+        messages = result.stdout.decode("utf-8", errors="replace").split(_COMMIT_RECORD_SEP)
+        return any(pattern.search(message) for message in messages)
     except (subprocess.TimeoutExpired, OSError):
         return False
+
+
+def _audit_contradicts_merge(project_root: Path, slug: str) -> bool:
+    """Return True when the last recorded run for ``slug`` says it did not land.
+
+    A recorded outcome of unsuccessful — or a final review verdict of
+    REQUEST_CHANGES — with no landing status is the run's own account of having
+    finished without landing. It is stronger evidence than prose in someone
+    else's commit message, so it vetoes the textual fallback (#2374).
+
+    Any audit-read failure returns False: an unreadable audit has no opinion and
+    must not silently invert into a veto.
+    """
+    try:
+        record = latest_run_outcome(project_root, slug)
+    except Exception:
+        return False
+    if record is None:
+        return False
+    landing = str(record.get("landing_status") or "").strip().lower()
+    if landing == "landed":
+        return False
+    verdict = str(record.get("verdict") or "").strip().upper()
+    outcome = record.get("outcome_success")
+    return outcome == 0 or verdict == "REQUEST_CHANGES"
 
 
 def _lookup_merged_pr_for_branch(
@@ -221,9 +297,10 @@ def _branch_merge_evidence(
        branch. Owned evidence is consulted before any external signal.
     2. Git topology — a regular merge, provable locally.
     3. GitHub's own record of a merged PR for the branch.
-    4. A base commit whose message references the issue. This is the loosest
-       signal (any commit mentioning ``(#N)`` matches), so it runs last, only
-       once every stronger source has declined.
+    4. A base commit whose message *closes* the issue. This is the weakest
+       signal — prose about the code rather than the code — so it runs last,
+       only once every stronger source has declined, and only when neither git
+       topology nor the audit trail contradicts it (#2374).
     """
     no_merge = MergeEvidence(merged=False)
     issue_number = _issue_number_from_slug(slug) if slug is not None else None
@@ -245,7 +322,10 @@ def _branch_merge_evidence(
             # evidence sources below — fall through rather than claim no_merge.
             pass
 
-    # 2. Git topology.
+    # 2. Git topology. ``branch_has_unique_work`` is retained for the veto in
+    # step 4: it is only meaningful for a *non*-ancestor branch, where unique
+    # commits prove the branch's work is absent from base.
+    branch_has_unique_work: bool | None = None
     try:
         merge_result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, base_branch],
@@ -253,7 +333,18 @@ def _branch_merge_evidence(
             capture_output=True,
             timeout=30,
         )
-        if merge_result.returncode == 0:
+        if merge_result.returncode != 0:
+            unique_result = subprocess.run(
+                ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
+                cwd=str(project_root),
+                capture_output=True,
+                timeout=30,
+            )
+            if unique_result.returncode == 0:
+                branch_has_unique_work = (
+                    int(unique_result.stdout.decode("utf-8", errors="replace").strip() or "0") > 0
+                )
+        else:
             # Count commits in base_branch NOT reachable from branch.
             ahead_result = subprocess.run(
                 ["git", "rev-list", f"{branch}..{base_branch}", "--count"],
@@ -296,14 +387,24 @@ def _branch_merge_evidence(
     if merged_pr is not None:
         return merged_pr
 
-    # 4. Loosest signal last: a base commit message referencing the issue. The
+    # 4. Weakest signal last: a base commit message that closes the issue. The
     #    merged-PR lookup above already declined, so there is no PR metadata to
     #    attach here.
-    if issue_number is not None and _has_base_commit_referencing_issue(
-        project_root,
-        base_branch,
-        issue_number,
-    ):
+    #
+    #    Sources that describe the code beat sources that describe prose about
+    #    the code. A branch that is not an ancestor of base and still carries
+    #    unique commits has not landed, whatever a message says; and a last run
+    #    recorded as unsuccessful with nothing landed is not overridden by a
+    #    textual match (#2374). The ancestor case is left entirely to the
+    #    topology logic above — after a fast-forward merge the branch *is* an
+    #    ancestor with no unique work, which is a merge, not a veto.
+    if issue_number is None:
+        return no_merge
+    if branch_has_unique_work:
+        return no_merge
+    if slug is not None and _audit_contradicts_merge(project_root, slug):
+        return no_merge
+    if _has_base_commit_closing_issue(project_root, base_branch, issue_number):
         return MergeEvidence(merged=True, source="issue_commit")
 
     return no_merge
@@ -333,7 +434,7 @@ def _is_branch_merged(
        on base, but the squash commit on base is a new commit with no parent
        relationship to the branch. Git topology alone therefore cannot prove
        the merge, so the forge APPROVE audit trail (when slug is provided), a
-       merged PR for the branch, and finally a base commit referencing the
+       merged PR for the branch, and finally a base commit that *closes* the
        issue stand in for it.
 
     See :func:`_branch_merge_evidence` for the order these are consulted in and
@@ -550,6 +651,27 @@ def _branch_tip_sha(commits_ahead: list[str] | None) -> str | None:
     return head[0] if head else None
 
 
+def _merged_skip_reason(evidence: MergeEvidence, base_branch: str) -> str:
+    """Render a skip reason that names the evidence the skip rests on.
+
+    A skip discards preserved work, so it is reported as a skip and states what
+    produced it — an operator reading ``SKIP issue-N (...)`` can then contest
+    the specific claim instead of reading a bare "already merged" as completion
+    (#2374). Every source is named, including the weakest one.
+    """
+    if evidence.pr_number is not None:
+        detail = f"merged PR #{evidence.pr_number}"
+    elif evidence.source == "audit":
+        detail = "prior APPROVE in audit trail"
+    elif evidence.source == "topology":
+        detail = f"branch merged into {base_branch} history"
+    elif evidence.source == "issue_commit":
+        detail = f"closing reference in a {base_branch} commit message"
+    else:
+        detail = evidence.source or "unknown"
+    return f"already merged to {base_branch} (evidence: {detail})"
+
+
 def _triage_spec(
     story_path: str,
     config: ForgeConfig,
@@ -624,15 +746,10 @@ def _triage_spec(
     # for fast-forward merges where branch and base land on the same commit.
     merge_evidence = _branch_merge_evidence(branch, base_branch, project_root, slug=slug)
     if merge_evidence.merged:
-        merged_reason = f"already merged to {base_branch}"
-        if merge_evidence.pr_number is not None:
-            merged_reason = f"already merged in PR #{merge_evidence.pr_number}, skipping"
-        elif merge_evidence.source == "audit":
-            merged_reason = f"prior APPROVE in audit trail; already merged to {base_branch}"
         return StoryTriage(
             story_path=story_path,
             action="skip_merged",
-            reason=merged_reason,
+            reason=_merged_skip_reason(merge_evidence, base_branch),
             worktree_path=None,
             slug=slug,
         )

@@ -682,28 +682,200 @@ def test_is_branch_merged_not_ancestor_without_audit(tmp_path: Path) -> None:
     assert result is False
 
 
-def test_is_branch_merged_external_squash_merge_by_issue_commit(tmp_path: Path) -> None:
-    """A GitHub squash commit referencing the issue counts even without audit."""
+def _mock_base_commit(message: bytes, issue_number: int = 265):
+    """Git mock: branch is not an ancestor, base carries ``message`` for the issue."""
 
-    def _mock_external_squash(cmd: list[str], **kwargs: object) -> MagicMock:
+    def _run(cmd: list[str], **kwargs: object) -> MagicMock:
         m = MagicMock()
         if "--is-ancestor" in cmd:
             m.returncode = 1
             m.stdout = b""
-        elif cmd[:2] == ["git", "log"] and "--grep=(#265)" in cmd:
+        elif cmd[:2] == ["git", "log"] and f"--grep=#{issue_number}" in cmd:
             m.returncode = 0
-            m.stdout = b"abc123\n"
+            m.stdout = message
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    return _run
+
+
+def test_is_branch_merged_external_squash_merge_by_closing_reference(tmp_path: Path) -> None:
+    """A GitHub squash commit that *closes* the issue counts even without audit."""
+
+    with (
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(b"fix(sprint): tighten evidence\n\nCloses #265\n\x1e"),
+        ),
+        patch("theforge.sprint.dag._is_issue_closed", return_value=True),
+    ):
+        result = _is_branch_merged("feat/issue-265", "main", tmp_path)
+    assert result is True
+
+
+def test_is_branch_merged_bare_issue_mention_is_not_merge_evidence(tmp_path: Path) -> None:
+    """A commit that merely mentions the issue is not evidence its branch merged (#2374).
+
+    The commit below is the shape that caused the bug: a configuration change
+    citing an unrelated open issue as context for a separate decision.
+    """
+
+    with (
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(
+                b"config: raise timeout and disable model\n\nDisabled pending #265\n\x1e"
+            ),
+        ),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert evidence.merged is False
+    assert evidence.source is None
+
+
+def test_is_branch_merged_closing_reference_for_other_issue_does_not_match(
+    tmp_path: Path,
+) -> None:
+    """``Closes #2650`` must not satisfy issue 265 — the digits are a prefix."""
+
+    with (
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(b"fix: other thing\n\nCloses #2650\n\x1e"),
+        ),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert evidence.merged is False
+
+
+def test_branch_merge_evidence_unique_commits_veto_closing_reference(tmp_path: Path) -> None:
+    """A non-ancestor branch with unique work has not landed, whatever base says (#2374)."""
+
+    def _mock_ahead(cmd: list[str], **kwargs: object) -> MagicMock:
+        m = MagicMock()
+        if "--is-ancestor" in cmd:
+            m.returncode = 1
+            m.stdout = b""
+        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..feat/issue-265":
+            m.returncode = 0
+            m.stdout = b"5"  # five preserved development commits
+        elif cmd[:2] == ["git", "log"] and "--grep=#265" in cmd:
+            m.returncode = 0
+            m.stdout = b"chore: sweep\n\nCloses #265\n\x1e"
         else:
             m.returncode = 0
             m.stdout = b""
         return m
 
     with (
-        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_external_squash),
-        patch("theforge.sprint.dag._is_issue_closed", return_value=True),
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_ahead),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
     ):
-        result = _is_branch_merged("feat/issue-265", "main", tmp_path)
-    assert result is True
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert evidence.merged is False
+
+
+def test_branch_merge_evidence_unsuccessful_audit_vetoes_closing_reference(
+    tmp_path: Path,
+) -> None:
+    """An unsuccessful last run with nothing landed outranks a textual match (#2374)."""
+
+    with (
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(b"chore: sweep\n\nCloses #265\n\x1e"),
+        ),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        patch(
+            "theforge.sprint.dag.latest_run_outcome",
+            return_value={
+                "outcome_success": 0,
+                "verdict": "REQUEST_CHANGES",
+                "landing_status": "",
+            },
+        ),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert evidence.merged is False
+
+
+def test_branch_merge_evidence_landed_audit_does_not_veto_closing_reference(
+    tmp_path: Path,
+) -> None:
+    """A landed prior run is not a contradiction, so the closing reference stands."""
+
+    with (
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(b"chore: sweep\n\nCloses #265\n\x1e"),
+        ),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        patch(
+            "theforge.sprint.dag.latest_run_outcome",
+            return_value={
+                "outcome_success": 1,
+                "verdict": "APPROVE",
+                "landing_status": "landed",
+            },
+        ),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert evidence.merged is True
+    assert evidence.source == "issue_commit"
+
+
+def test_branch_merge_evidence_audit_veto_reads_real_substrate(tmp_path: Path) -> None:
+    """The audit veto works end-to-end against a seeded substrate, not just a mock.
+
+    Topology here is squash-merge-shaped (not an ancestor, no unique commits) so
+    it cannot veto on its own — the recorded unsuccessful outcome must.
+    """
+    from theforge.coordinator import audit_substrate
+
+    audit_substrate.seed_records(
+        tmp_path,
+        [
+            {
+                "task": {"slug": "issue-265"},
+                "run_id": "sr-265",
+                "landing_status": "",
+                "outcome": {"success": False},
+                "reviews": [{"verdict": "REQUEST_CHANGES"}],
+            }
+        ],
+    )
+
+    with (
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(b"chore: sweep\n\nCloses #265\n\x1e"),
+        ),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert evidence.merged is False
+
+
+def test_branch_merge_evidence_audit_read_failure_does_not_veto(tmp_path: Path) -> None:
+    """An unreadable audit has no opinion — it must not invert into a veto."""
+
+    with (
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(b"chore: sweep\n\nCloses #265\n\x1e"),
+        ),
+        patch("theforge.sprint.dag.has_review_approve", return_value=False),
+        patch(
+            "theforge.sprint.dag.latest_run_outcome",
+            side_effect=OSError("audit unreadable"),
+        ),
+    ):
+        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+    assert evidence.merged is True
 
 
 def test_is_branch_merged_external_squash_merge_by_merged_pr_lookup(tmp_path: Path) -> None:
@@ -768,21 +940,11 @@ def test_is_branch_merged_open_issue_does_not_block_merge_evidence(tmp_path: Pat
     lands, so issue state is not a precondition for detecting the merge.
     """
 
-    def _mock_external_squash(cmd: list[str], **kwargs: object) -> MagicMock:
-        m = MagicMock()
-        if "--is-ancestor" in cmd:
-            m.returncode = 1
-            m.stdout = b""
-        elif cmd[:2] == ["git", "log"] and "--grep=(#265)" in cmd:
-            m.returncode = 0
-            m.stdout = b"abc123\n"
-        else:
-            m.returncode = 0
-            m.stdout = b""
-        return m
-
     with (
-        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_external_squash),
+        patch(
+            "theforge.sprint.dag.subprocess.run",
+            side_effect=_mock_base_commit(b"fix: land it\n\nCloses #265\n\x1e"),
+        ),
         patch("theforge.sprint.dag._is_issue_closed", return_value=False),
         patch("theforge.sprint.dag.has_review_approve", return_value=False),
     ):
