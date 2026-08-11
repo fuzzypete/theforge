@@ -2209,15 +2209,17 @@ def _thinking_spend_captured(profile: ModelProfile, knob: EffortKnob) -> bool:
 
     Two independent facts, both required: the transport's accounting path must
     fold thinking tokens into the priced total (``knob.captures_thinking_spend``),
-    *and* the selected model must have a pricing entry — a model absent from
-    ``PRICING_TABLE`` records cost-unknown, which is precisely "spend not
-    captured". Imported lazily so this module stays import-time pure.
+    *and* the selected model must have a rate card — a model with none records
+    cost-unknown, which is precisely "spend not captured". Asked through
+    ``pricing_for`` rather than by indexing ``PRICING_TABLE``, so a model priced
+    from its catalog entry counts exactly like one priced from the table (#2352).
+    Imported lazily so this module stays import-time pure.
     """
     if not knob.captures_thinking_spend:
         return False
-    from .runners.schema_utils import PRICING_TABLE  # noqa: PLC0415
+    from .runners.schema_utils import pricing_for  # noqa: PLC0415
 
-    return (profile.provider_family, profile.model) in PRICING_TABLE
+    return pricing_for(profile.provider_family or "", profile.model) is not None
 
 
 def _apply_effort_to_profile(

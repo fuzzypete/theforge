@@ -39,7 +39,7 @@ from theforge.config.model_catalog import (
     resolve_packaged,
     resolve_project,
 )
-from theforge.config.models import AGENT_REGISTRY, transport_for
+from theforge.config.models import AGENT_REGISTRY, RETIRED_MODEL_REGISTRY, transport_for
 from theforge.config.pricing import (
     COST_BAND_BASIS_DECLARED_POLICY,
     COST_BAND_BASIS_VENDOR_TIER,
@@ -137,8 +137,8 @@ _ALL_PHASES = ("dev", "plan", "preflight", "review")
 _SHIPPED_ROUTING: dict[str, tuple[str, int, int, bool, tuple[str, ...]]] = {
     "anthropic/opus/cli": ("strong", 10, 3, True, _ALL_PHASES),
     "anthropic/sonnet/cli": ("fast", 7, 1, True, _ALL_PHASES),
-    "deepseek/deepseek-chat/api": ("fast", 7, 1, True, _ALL_PHASES),
-    "deepseek/deepseek-reasoner/api": ("strong", 9, 2, True, _ALL_PHASES),
+    "deepseek/deepseek-v4-flash/api": ("fast", 7, 1, True, _ALL_PHASES),
+    "deepseek/deepseek-v4-pro/api": ("strong", 9, 2, True, _ALL_PHASES),
     "google/gemini-2.5-pro/api": ("strong", 8, 2, True, _ALL_PHASES),
     "google/gemini-2.5-pro/cli": ("strong", 8, 2, False, _ALL_PHASES),
     "google/gemini-3-flash-preview/api": ("cheap", 7, 1, True, _ALL_PHASES),
@@ -177,7 +177,11 @@ class TestPackagedCatalog:
         resource = resources.files("theforge.config").joinpath("data/models.yaml")
         assert resource.is_file()
         document = yaml.safe_load(resource.read_text(encoding="utf-8"))
-        assert len(document["models"]) == len(AGENT_REGISTRY)
+        # The document holds both halves of the catalog: routable entries and the
+        # retired identifiers kept so a configuration naming one is told what the
+        # provider did with it (#2352). Every entry lands in exactly one.
+        assert len(document["models"]) == len(AGENT_REGISTRY) + len(RETIRED_MODEL_REGISTRY)
+        assert not (AGENT_REGISTRY.keys() & RETIRED_MODEL_REGISTRY.keys())
 
     def test_the_built_wheel_carries_the_catalog(self, tmp_path):
         """Build a real wheel and look inside it.
@@ -215,7 +219,7 @@ class TestPackagedCatalog:
         assert sonnet.pricing_provenance is None
         assert sonnet.routing.cost_rank_basis == COST_BAND_BASIS_VENDOR_TIER
         assert sonnet.cost_rank == 1
-        reasoner = AGENT_REGISTRY["deepseek/deepseek-reasoner/api"]
+        reasoner = AGENT_REGISTRY["deepseek/deepseek-v4-pro/api"]
         assert reasoner.routing.cost_rank_basis == COST_BAND_BASIS_DECLARED_POLICY
         assert AGENT_REGISTRY["openai/gpt-5.4/cli"].pricing_provenance == "gpt-5.4"
 

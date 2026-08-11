@@ -18,12 +18,33 @@ COST_PROVIDER_REPORTED = "provider_reported"
 """The provider returned this cost; forge did not compute it."""
 
 COST_ESTIMATED = "estimated"
-"""Derived by forge from observed token counts and a pricing table."""
+"""Derived by forge from observed token counts and a rate card whose model
+identity is currently confirmed against the provider."""
+
+COST_ESTIMATED_UNCONFIRMED = "estimated_unconfirmed"
+"""Derived by forge, but from a rate card that may no longer apply (#2352).
+
+The rate is real and the arithmetic is right; what is missing is any current
+evidence that the identifier it was recorded for still designates the model that
+was invoked. That is the state every DeepSeek estimate was in while the retired
+identifiers were still routable — indistinguishable, at the time, from an
+estimate off a rate card in force. A consumer deciding on price can tell how much
+the price is worth; see ``config/model_identity.IdentityVerification``.
+"""
 
 COST_UNKNOWN = "unknown"
 """No cost was observed. Always paired with ``cost_usd is None``."""
 
-COST_PROVENANCE_VALUES = (COST_PROVIDER_REPORTED, COST_ESTIMATED, COST_UNKNOWN)
+COST_PROVENANCE_VALUES = (
+    COST_PROVIDER_REPORTED,
+    COST_ESTIMATED,
+    COST_ESTIMATED_UNCONFIRMED,
+    COST_UNKNOWN,
+)
+
+# Every provenance that means "forge computed this", for consumers that care
+# about computed-vs-billed rather than about the confidence within computed.
+COST_ESTIMATED_VALUES = (COST_ESTIMATED, COST_ESTIMATED_UNCONFIRMED)
 
 
 @dataclass(frozen=True)

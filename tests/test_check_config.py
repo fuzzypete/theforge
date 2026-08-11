@@ -316,7 +316,7 @@ class TestCheckConfigHappyPath:
             models=[
                 "anthropic/sonnet/cli",
                 "openai/gpt-5.4/cli",
-                "deepseek/deepseek-reasoner/api",
+                "deepseek/deepseek-v4-pro/api",
                 "openai/gpt-5.4/api",
             ],
             models_budget_usd=10.0,
@@ -346,12 +346,12 @@ class TestCheckConfigHappyPath:
             models=[
                 "anthropic/sonnet/cli",
                 "openai/gpt-5.4/cli",
-                "deepseek/deepseek-reasoner/api",
+                "deepseek/deepseek-v4-pro/api",
                 "openai/gpt-5.4/api",
             ],
             models_budget_usd=10.0,
             review_pool=[
-                _api_profile("deepseek-reviewer", provider="deepseek", model="deepseek-reasoner")
+                _api_profile("deepseek-reviewer", provider="deepseek", model="deepseek-v4-pro")
             ],
         )
         with (
@@ -365,7 +365,7 @@ class TestCheckConfigHappyPath:
             cmd_check_config(_make_args())
         out = capsys.readouterr().out
         assert "DERIVED ROLES (complexity-aware)" in out
-        assert "deepseek  api       deepseek-reasoner" in out
+        assert "deepseek  api       deepseek-v4-pro" in out
         deepseek_review_line = next(
             line for line in out.splitlines() if "deepseek-reviewer" in line
         )
@@ -448,7 +448,7 @@ class TestCheckConfigWarnings:
     def test_exit_1_auth_failure(self, tmp_path: Path, capsys) -> None:
         review_pool = [
             _api_profile("claude-reviewer"),
-            _api_profile("deepseek-reviewer", provider="deepseek", model="deepseek-chat"),
+            _api_profile("deepseek-reviewer", provider="deepseek", model="deepseek-v4-flash"),
         ]
         config = _make_forge_config(tmp_path, review_pool=review_pool)
 
@@ -1090,7 +1090,7 @@ class TestComplexityAwareDisplay:
 
     def test_providers_header_reports_api_transport(self, tmp_path: Path, capsys) -> None:
         config = self._make_v08_forge_config(tmp_path)
-        config = replace(config, models=["openai/gpt-5.4/api", "deepseek/deepseek-reasoner/api"])
+        config = replace(config, models=["openai/gpt-5.4/api", "deepseek/deepseek-v4-pro/api"])
         with (
             patch("theforge.cli.check_config._find_config", return_value=tmp_path / "forge.yaml"),
             patch("theforge.cli.check_config.load_config", return_value=config),

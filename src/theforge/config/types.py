@@ -352,8 +352,14 @@ class ModelProfile:
     # Optional
     timeout_medium_seconds: int | None = None  # override for medium complexity
     timeout_large_seconds: int | None = None  # override for large complexity
-    reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex only
+    reasoning_effort: str | None = None  # "low" | "medium" | "high"; Codex/DeepSeek
     thinking_budget: int | None = None  # Google Gemini ThinkingConfig token budget
+    # Whether to ask the provider for reasoning at all, where it expresses that
+    # as a request parameter rather than as a distinct model name. Carried from
+    # the registry entry (``invocation.reasoning_mode``) so a model banded as a
+    # reasoning model is invoked in a way that actually requests reasoning
+    # (#2352). None = send nothing and take the provider's default.
+    reasoning_mode: str | None = None  # "enabled" | "disabled"
     review_role: str | None = None  # "correctness" | "patterns" | "edge-cases"
     phase: str | None = None  # "dev" | "preflight" | "review" | "plan_review" — set by coordinator
     base_url: str | None = None  # overrides provider's default API endpoint (Ollama etc.)

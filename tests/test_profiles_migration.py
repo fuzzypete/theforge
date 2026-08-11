@@ -116,8 +116,7 @@ def test_legacy_key_resolves_via_cli_suffix():
 
 def test_legacy_key_resolves_via_provider_model_concatenation():
     assert (
-        canonical_id_for_legacy_key("deepseek-deepseek-reasoner")
-        == "deepseek/deepseek-reasoner/api"
+        canonical_id_for_legacy_key("deepseek-deepseek-v4-pro") == "deepseek/deepseek-v4-pro/api"
     )
 
 
