@@ -275,6 +275,115 @@ class TestDispatchPathsAreEnumerated:
         assert "openai/gpt-5.4 (api)" in labels
         assert "openai/gpt-5.4-mini (api)" in labels
 
+    def test_a_cli_profiles_model_fallback_is_enumerated_on_the_api_transport(self):
+        """A CLI ``fallback_models`` entry dispatches on the API, so price it there.
+
+        ``runners/cli.py:_build_cli_fallback_api_profile`` sends a CLI profile's
+        fallback entries through the provider's API adapter — the failure that
+        triggers a model fallback is a quota or model-not-found refusal, which
+        the CLI would only reproduce. Enumerating the entry under the primary's
+        CLI transport named an identity that never runs and left the one that
+        does unchecked.
+        """
+        profile = ModelProfile(
+            name="dev",
+            model="gpt-5.4",
+            budget_usd=10.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+            cli="codex",
+            fallback_models=("gpt-5.4-mini",),
+        )
+        assert profile.mode == "cli"
+        config = type("_Cfg", (), {"dev_profile": profile})()
+        by_label = {reach.identity.label: reach for reach in reachable_identities(config)}
+
+        assert "openai/gpt-5.4 (cli)" in by_label, "the primary still dispatches on the CLI"
+        assert "openai/gpt-5.4-mini (api)" in by_label, (
+            "the fallback dispatches on the API and must be priced there"
+        )
+        assert "openai/gpt-5.4-mini (cli)" not in by_label, (
+            "no CLI identity for the fallback — nothing ever dispatches it there"
+        )
+        assert "model fallback" in " ".join(by_label["openai/gpt-5.4-mini (api)"].paths)
+
+    def test_the_enumerated_fallback_identity_is_the_one_the_runner_builds(self):
+        """Load-time enumeration and the runner read ONE definition of the rule.
+
+        Asserting against ``_build_cli_fallback_api_profile`` directly, rather
+        than against a second copy of the expectation, is what stops the two
+        drifting apart again: if the runner's transport choice changes, this
+        fails rather than silently mispricing.
+        """
+        from theforge.runners.cli import _build_cli_fallback_api_profile
+
+        profile = ModelProfile(
+            name="dev",
+            model="gpt-5.4",
+            budget_usd=10.0,
+            timeout_seconds=60,
+            allowed_tools=(),
+            cli="codex",
+            fallback_models=("gpt-5.4-mini",),
+        )
+        dispatched = _build_cli_fallback_api_profile(profile, "gpt-5.4-mini")
+        assert dispatched is not None
+        expected = identity_of(dispatched)
+
+        enumerated = {
+            reach.identity
+            for reach in reachable_identities(type("_Cfg", (), {"dev_profile": profile})())
+            if "model fallback" in " ".join(reach.paths)
+        }
+        assert enumerated == {expected}
+
+    def test_a_provider_with_no_api_adapter_yields_no_fallback_identity(self):
+        """No API adapter means the runner can never attempt it (rule b).
+
+        Both sides read :func:`model_fallback_transport`, so both answer None and
+        the entry names no reachable identity. Warning about a path that cannot
+        run is noise an operator cannot act on.
+        """
+        from theforge.config.model_identity import model_fallback_transport
+
+        assert model_fallback_transport("not-a-provider") is None
+        assert model_fallback_transport(None) is None
+        assert model_fallback_transport("openai") is not None
+
+    def test_an_unpriced_cli_model_fallback_is_reported_under_its_api_identity(
+        self, tmp_path, caplog
+    ):
+        """The finding, end to end: the API identity is named before it can run."""
+        with caplog.at_level(logging.WARNING, logger="theforge.config"):
+            _load(
+                tmp_path,
+                {
+                    "models": {
+                        "enabled": ["openai/zeta-9/cli"],
+                        "custom": {
+                            "openai/zeta-9/cli": _custom(
+                                "zeta-9",
+                                "cli",
+                                runner="codex",
+                                cost={"input_per_mtok": 7.0, "output_per_mtok": 21.0},
+                            )
+                        },
+                    },
+                    "overrides": {"dev": {"fallback_models": ["zeta-unpriced"]}},
+                    "budget_usd": 50.0,
+                },
+            )
+
+        named = [
+            record.getMessage()
+            for record in caplog.records
+            if "zeta-unpriced" in record.getMessage()
+        ]
+        assert named, "the unpriced model fallback must be named at load"
+        assert "(api)" in named[0], f"named under the wrong transport: {named[0]}"
+        assert "model fallback" in named[0]
+        assert _estimate_cost("openai", "zeta-unpriced", 1_000, 1_000, transport="api") is None
+
     def test_transport_fallback_is_reachable_with_the_identifier_unchanged(self):
         """CLI→API on the SAME model name is a distinct identity, not the same one."""
         profile = ModelProfile(

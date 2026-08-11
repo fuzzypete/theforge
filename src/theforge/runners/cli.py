@@ -24,7 +24,7 @@ from theforge.log_level import LogLevel
 from theforge.log_util import _log_line
 
 from ..config import ModelProfile
-from ..config.models import transport_for
+from ..config.models import model_fallback_transport
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -295,13 +295,14 @@ def _build_cli_fallback_api_profile(
     The provider is the profile's own provider family — a transport fallback
     never changes provider. Returns None when the profile has no provider
     identity or the provider has no API adapter.
+
+    The transport comes from :func:`model_fallback_transport`, which is the same
+    function the load-time pricing enumeration reads, so what gets dispatched
+    here and what gets priced and reported at load cannot disagree (#2335).
     """
     provider = profile.provider_family
-    if not provider:
-        return None
-    try:
-        transport = transport_for(provider, "api")
-    except ValueError:
+    transport = model_fallback_transport(provider)
+    if transport is None:
         return None
     return replace(
         profile,

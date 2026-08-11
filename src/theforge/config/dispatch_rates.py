@@ -46,7 +46,7 @@ from theforge.runners.rate_registry import (
     make_identity,
 )
 
-from .model_identity import AgentSpec, canonical_model_id
+from .model_identity import AgentSpec, canonical_model_id, model_fallback_transport
 
 log = logging.getLogger("theforge.config")
 
@@ -93,9 +93,17 @@ def _profile_identities(
 
     A profile can reach a runner as three different billed identities and each
     one is priced separately: its primary model, any ``fallback_models`` entry
-    tried on quota/not-found failure (same provider and transport, different
-    model), and its ``api_fallback`` target (same provider, API transport,
-    possibly a different model identifier).
+    tried on quota/not-found failure, and its ``api_fallback`` target (same
+    provider, API transport, possibly a different model identifier).
+
+    A ``fallback_models`` entry dispatches on the transport
+    :func:`model_fallback_transport` names, NOT on the primary's transport. For
+    an API profile those coincide; for a CLI profile they do not — the runner
+    sends the fallback through the provider's API adapter, because the failure
+    that triggered it (quota exhausted, model not found) is one the CLI would
+    just reproduce. Enumerating it under the CLI transport meant the identity
+    that could actually run unpriced was never the one named at load, and the
+    API identity it really dispatches was never checked at all.
     """
     if profile is None:
         return
@@ -104,30 +112,40 @@ def _profile_identities(
     transport = getattr(profile, "transport", None)
     runner = getattr(transport, "runner", None)
     _add(found, make_identity(provider, getattr(profile, "model", None), kind), runner, path)
-    for fallback_model in getattr(profile, "fallback_models", ()) or ():
-        _add(
-            found,
-            make_identity(provider, fallback_model, kind),
-            runner,
-            f"{path} (model fallback)",
-        )
+    fallback_models = getattr(profile, "fallback_models", ()) or ()
+    # None when the provider has no API adapter: no model fallback can be
+    # attempted at all, so those entries name no reachable identity and are not
+    # enumerated (target restriction, rule b).
+    model_fb_transport = model_fallback_transport(provider) if fallback_models else None
+    if model_fb_transport is not None:
+        for fallback_model in fallback_models:
+            _add(
+                found,
+                make_identity(provider, fallback_model, model_fb_transport.kind),
+                model_fb_transport.runner,
+                f"{path} (model fallback)",
+            )
     api_fallback = getattr(profile, "api_fallback", None)
     if api_fallback is not None:
-        fb_transport = None
+        # Read the transport off the same TransportFallbackConfig.transport()
+        # the runner dispatches through (runners/cli.py:_build_api_fallback_profile)
+        # rather than assuming "api" here — one definition of where it goes, for
+        # the same reason the model-fallback transport is not assumed above.
         try:
             fb_transport = api_fallback.transport()
         except Exception:  # pragma: no cover - defensive: malformed fallback
             fb_transport = None
-        _add(
-            found,
-            make_identity(
-                getattr(api_fallback, "provider", None),
-                getattr(api_fallback, "model", None),
-                "api",
-            ),
-            getattr(fb_transport, "runner", None),
-            f"{path} (transport fallback)",
-        )
+        if fb_transport is not None:
+            _add(
+                found,
+                make_identity(
+                    getattr(api_fallback, "provider", None),
+                    getattr(api_fallback, "model", None),
+                    fb_transport.kind,
+                ),
+                fb_transport.runner,
+                f"{path} (transport fallback)",
+            )
 
 
 def reachable_identities(config: object) -> tuple[ReachableIdentity, ...]:

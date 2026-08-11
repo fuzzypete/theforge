@@ -607,6 +607,12 @@ Two consequences worth knowing:
   loads, naming the paths it is reachable on. `forge check-config` shows these
   in its WARNINGS section. The load does not fail: an unpriced model still runs
   and records its cost as unknown.
+- **A `fallback_models` entry is checked as an API identity, even on a CLI
+  profile.** That is where it actually runs: the failures that trigger a model
+  fallback are quota exhaustion and model-not-found, which the CLI that just
+  refused would only reproduce, so forge retries through the provider's API
+  adapter. Price the fallback on `<provider>/<model>/api`, not on the CLI
+  identity the primary uses.
 
 Transports that report their own spend (the Claude CLI's billed total, gh-aw's
 AI-credit accounting) need no `cost:` block and are never warned about.
