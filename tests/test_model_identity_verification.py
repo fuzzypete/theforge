@@ -21,6 +21,7 @@ These tests pin the four properties that make that non-repeatable:
 
 from __future__ import annotations
 
+import inspect
 import json
 from datetime import date, timedelta
 from types import SimpleNamespace
@@ -29,6 +30,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from theforge.agent_types import (
+    COST_ESTIMATED,
+    COST_ESTIMATED_UNCONFIRMED,
+    COST_PROVENANCE_VALUES,
+    COST_UNKNOWN,
+    AgentResult,
+    ModelUsage,
+)
 from theforge.config import load_config
 from theforge.config.model_catalog import (
     parse_definition,
@@ -48,7 +57,14 @@ from theforge.config.models import (
 from theforge.config.types import ModelProfile
 from theforge.runners.adapters.deepseek import _run_deepseek, deepseek_request_kwargs
 from theforge.runners.adapters.openai import _read_chat_usage
-from theforge.runners.schema_utils import PRICING_TABLE, _estimate_cost, pricing_for
+from theforge.runners.api import _estimated_provenance
+from theforge.runners.schema_utils import (
+    PRICING_TABLE,
+    ToolCallRequest,
+    _estimate_cost,
+    pricing_for,
+    rate_card_confirmed,
+)
 
 RETIRED = ("deepseek/deepseek-reasoner/api", "deepseek/deepseek-chat/api")
 SERVED = ("deepseek/deepseek-v4-pro/api", "deepseek/deepseek-v4-flash/api")
@@ -389,8 +405,34 @@ class TestReasoningModeReachesTheProvider:
     def test_request_kwargs_carry_the_mode_and_the_routed_effort(self):
         profile = _deepseek_profile(reasoning_mode="enabled", reasoning_effort="high")
         assert deepseek_request_kwargs(profile) == {
-            "thinking": {"type": "enabled", "reasoning_effort": "max"}
+            "extra_body": {"thinking": {"type": "enabled", "reasoning_effort": "max"}}
         }
+
+    def test_the_control_is_shaped_as_a_kwarg_the_real_sdk_accepts(self):
+        """Bound against the installed SDK's actual signature, not a mock's.
+
+        ``thinking`` is DeepSeek's extension to the request body, not an OpenAI
+        SDK parameter, and ``create()`` declares an explicit parameter list with
+        no ``**kwargs``. Passing it top-level raises TypeError in the client
+        before any request is sent — so the mode is never requested and the call
+        never happens. A MagicMock accepts anything and cannot see that, which is
+        why this binds the kwargs to the real signature instead.
+        """
+        openai = pytest.importorskip("openai")
+        create = openai.resources.chat.completions.Completions.create
+        signature = inspect.signature(create)
+        assert not [p for p in signature.parameters.values() if p.kind is p.VAR_KEYWORD], (
+            "SDK grew **kwargs; this guard needs rethinking"
+        )
+
+        profile = _deepseek_profile(reasoning_mode="enabled", reasoning_effort="high")
+        request = {
+            "model": profile.model,
+            "messages": [{"role": "user", "content": "go"}],
+            **deepseek_request_kwargs(profile),
+        }
+        signature.bind_partial(None, **request)  # raises TypeError on an unknown kwarg
+        assert request["extra_body"]["thinking"]["type"] == "enabled"
 
     def test_forges_effort_vocabulary_is_mapped_not_passed_through(self):
         """DeepSeek has no "medium"; sending one is not a no-op.
@@ -399,7 +441,8 @@ class TestReasoningModeReachesTheProvider:
         recorded in the audit is not the effort that ran.
         """
         profile = _deepseek_profile(reasoning_mode="enabled", reasoning_effort="medium")
-        assert deepseek_request_kwargs(profile)["thinking"]["reasoning_effort"] == "high"
+        thinking = deepseek_request_kwargs(profile)["extra_body"]["thinking"]
+        assert thinking["reasoning_effort"] == "high"
 
     def test_a_profile_declaring_nothing_sends_nothing(self):
         """No mode is invented for a profile built outside the registry path."""
@@ -427,7 +470,7 @@ class TestReasoningModeReachesTheProvider:
 
         assert result.success
         kwargs = client.chat.completions.create.call_args[1]
-        assert kwargs["thinking"] == {"type": "enabled", "reasoning_effort": "low"}
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled", "reasoning_effort": "low"}}
 
     def test_the_tool_loop_path_forwards_the_thinking_block(self):
         """The loop is the path a routed reviewer actually takes.
@@ -452,7 +495,7 @@ class TestReasoningModeReachesTheProvider:
             _run_loop_deepseek("review this", profile, working_dir=None)
 
         kwargs = client.chat.completions.create.call_args[1]
-        assert kwargs["thinking"] == {"type": "enabled", "reasoning_effort": "max"}
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled", "reasoning_effort": "max"}}
 
     def test_the_finalizer_path_forwards_the_thinking_block(self):
         """Finalization is still an invocation of the model the role was filled with."""
@@ -471,7 +514,324 @@ class TestReasoningModeReachesTheProvider:
         finalizer([{"role": "user", "content": "go"}])
 
         kwargs = client.chat.completions.create.call_args[1]
-        assert kwargs["thinking"] == {"type": "enabled", "reasoning_effort": "low"}
+        assert kwargs["extra_body"] == {"thinking": {"type": "enabled", "reasoning_effort": "low"}}
+
+
+# ── A retirement cannot be undone from the project layer ──────────────────
+
+
+class TestRetiredIdentifiersCannotBeRedeclared:
+    """The retirement has to be a property of the *identifier*, not of one file.
+
+    Declaring it only on the shipped entry left the whole point defeatable by a
+    project: redeclare the same name with your own routing and cost, and it is
+    selectable again — now priced off figures an operator wrote for a model the
+    provider no longer serves, which is strictly worse than the original defect.
+    """
+
+    def test_an_inline_models_enabled_mapping_cannot_revive_a_retired_name(self, tmp_path):
+        path = tmp_path / "forge.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "models": {
+                        "enabled": [
+                            {
+                                "provider": "deepseek",
+                                "model": "deepseek-reasoner",
+                                "transport": {"kind": "api"},
+                                "routing": {
+                                    "tier": "strong",
+                                    "capability": 9,
+                                    "cost_rank": 2,
+                                    "cost_rank_basis": "declared-policy",
+                                },
+                                "cost": {"input_per_mtok": 0.55, "output_per_mtok": 2.19},
+                            }
+                        ]
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="retired"):
+            load_config(path)
+
+    def test_a_models_custom_declaration_cannot_revive_a_retired_name(self, tmp_path):
+        path = tmp_path / "forge.yaml"
+        path.write_text(
+            yaml.dump(
+                {
+                    "models": {
+                        "enabled": ["anthropic/sonnet/cli"],
+                        "custom": {
+                            "deepseek/deepseek-reasoner/api": {
+                                "provider": "deepseek",
+                                "model": "deepseek-reasoner",
+                                "tier": "strong",
+                                "input_cost_per_mtok": 0.55,
+                                "output_cost_per_mtok": 2.19,
+                            }
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        with pytest.raises(ValueError, match="retired"):
+            load_config(path)
+
+    def test_the_refusal_names_the_identifier_and_the_reason(self):
+        """Both project surfaces resolve through one guard, so both say the same thing."""
+        from theforge.config.model_catalog import resolve_project
+
+        defn = parse_definition(
+            _base_definition(model="deepseek-reasoner"), where="models.custom.x"
+        )
+        with pytest.raises(ValueError) as excinfo:
+            resolve_project(defn, where="models.custom.x", builtin=None)
+        message = str(excinfo.value)
+        assert "deepseek/deepseek-reasoner/api" in message
+        assert "deepseek-v4-pro" in message  # the replacement, from the retirement reason
+
+    def test_a_served_identifier_still_overlays_normally(self):
+        """The guard is scoped to retired identities and nothing else."""
+        from theforge.config.model_catalog import resolve_project
+
+        defn = parse_definition(
+            _base_definition(cost={"input_per_mtok": 9.0, "output_per_mtok": 9.0}),
+            where="models.custom.x",
+        )
+        resolved = resolve_project(
+            defn, where="models.custom.x", builtin=AGENT_REGISTRY["deepseek/deepseek-v4-pro/api"]
+        )
+        assert resolved.spec.input_cost_per_mtok == 9.0
+
+
+# ── Reasoning content survives the turn without being replayed ────────────
+
+
+class TestReasoningContentHandling:
+    def test_the_adapter_captures_reasoning_content(self):
+        """DeepSeek returns the chain of thought beside ``content``, not inside it."""
+        from theforge.runners.adapters.openai import _make_openai_chat_adapter
+
+        client = MagicMock()
+        response = MagicMock()
+        response.choices[0].message.content = "calling a tool"
+        response.choices[0].message.tool_calls = []
+        response.choices[0].message.reasoning_content = "let me check the file first"
+        response.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+        client.chat.completions.create.return_value = response
+
+        adapter = _make_openai_chat_adapter(
+            _deepseek_profile(reasoning_mode="enabled"), None, client=client
+        )
+        turn = adapter([{"role": "user", "content": "go"}], [])
+        assert turn.reasoning_content == "let me check the file first"
+
+    def test_a_provider_that_reports_no_reasoning_leaves_it_none(self):
+        from theforge.runners.adapters.openai import _make_openai_chat_adapter
+
+        client = MagicMock()
+        response = MagicMock()
+        response.choices[0].message.content = "done"
+        response.choices[0].message.tool_calls = []
+        response.choices[0].message.reasoning_content = None
+        response.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+        client.chat.completions.create.return_value = response
+
+        adapter = _make_openai_chat_adapter(_deepseek_profile(), None, client=client)
+        assert adapter([{"role": "user", "content": "go"}], []).reasoning_content is None
+
+    def test_the_assistant_turn_keeps_its_text_and_its_reasoning(self):
+        """The loop hardcoded ``content: None``, erasing what the model said.
+
+        A model that explains itself and then calls a tool had that sentence
+        dropped from its own history on the next turn, alongside the reasoning.
+        """
+        from theforge.runners.api import AgentLoopManager
+
+        manager = AgentLoopManager.__new__(AgentLoopManager)
+        messages = manager._append_tool_results(
+            [{"role": "user", "content": "go"}],
+            [ToolCallRequest(id="c1", name="read_file", arguments={"path": "a.py"})],
+            [{"id": "c1", "content": "ok"}],
+            content="I will read the file",
+            reasoning_content="the file is the likely source",
+        )
+        assistant = messages[1]
+        assert assistant["content"] == "I will read the file"
+        assert assistant["reasoning_content"] == "the file is the likely source"
+
+    def test_reasoning_content_is_not_replayed_into_the_next_request(self):
+        """Not an oversight — the provider defines that field for another feature.
+
+        DeepSeek's API reference scopes an input assistant ``reasoning_content``
+        to Chat Prefix Completion, where ``prefix`` must be true. Emitting it on
+        an ordinary tool-loop turn would opt every thinking-mode review into a
+        beta feature it never asked for, so the translator builds each outgoing
+        message from named keys and leaves it behind.
+        """
+        from theforge.runners.adapters.openai import _translate_messages_openai_chat
+
+        translated = _translate_messages_openai_chat(
+            [
+                {
+                    "role": "assistant",
+                    "content": "I will read the file",
+                    "reasoning_content": "the file is the likely source",
+                    "tool_calls": [
+                        ToolCallRequest(id="c1", name="read_file", arguments={"path": "a.py"})
+                    ],
+                }
+            ]
+        )
+        assert translated[0]["content"] == "I will read the file"
+        assert "reasoning_content" not in translated[0]
+        assert translated[0]["tool_calls"][0]["id"] == "c1"
+
+    def test_a_thinking_mode_tool_call_turn_round_trips_into_a_second_request(self):
+        """Two provider calls, so the second one's body is the thing under test.
+
+        The single-turn tests cannot see this: the failure they would miss is a
+        second request that either drops the assistant's text or carries a field
+        the provider rejects.
+        """
+        from theforge.runners.api import _run_loop_deepseek
+
+        profile = _deepseek_profile(
+            reasoning_mode="enabled", reasoning_effort="high", allowed_tools=("read_file",)
+        )
+        first = MagicMock()
+        first.choices[0].message.content = "I will read the file"
+        first.choices[0].message.reasoning_content = "the file is the likely source"
+        tool_call = MagicMock()
+        tool_call.id = "c1"
+        tool_call.function.name = "read_file"
+        tool_call.function.arguments = json.dumps({"path": "a.py"})
+        first.choices[0].message.tool_calls = [tool_call]
+        first.usage = SimpleNamespace(prompt_tokens=10, completion_tokens=5)
+
+        second = MagicMock()
+        second.choices[0].message.content = "done"
+        second.choices[0].message.tool_calls = []
+        second.choices[0].message.reasoning_content = None
+        second.usage = SimpleNamespace(prompt_tokens=20, completion_tokens=6)
+
+        client = MagicMock()
+        client.chat.completions.create.side_effect = [first, second]
+
+        with patch("theforge.runners.api._deepseek_client", return_value=client):
+            _run_loop_deepseek("review this", profile, working_dir=None)
+
+        assert client.chat.completions.create.call_count == 2
+        follow_up = client.chat.completions.create.call_args_list[1][1]
+        # The mode is still requested on the follow-up turn, in SDK-legal shape.
+        assert follow_up["extra_body"] == {
+            "thinking": {"type": "enabled", "reasoning_effort": "max"}
+        }
+        assistant = [m for m in follow_up["messages"] if m["role"] == "assistant"][0]
+        assert assistant["content"] == "I will read the file"
+        assert "reasoning_content" not in assistant
+        assert assistant["tool_calls"][0]["id"] == "c1"
+
+
+# ── An estimate says what rate card it rests on ───────────────────────────
+
+
+class TestCostProvenanceDistinguishesTheRateCard:
+    def test_provenance_values_include_the_unconfirmed_estimate(self):
+        assert COST_ESTIMATED_UNCONFIRMED in COST_PROVENANCE_VALUES
+
+    def test_a_confirmed_rate_card_yields_a_plain_estimate(self):
+        assert rate_card_confirmed("deepseek", "deepseek-v4-pro") is True
+        assert _estimated_provenance("deepseek", "deepseek-v4-pro") == COST_ESTIMATED
+
+    def test_a_pricing_table_rate_is_never_confirmed(self):
+        """That table records no identity and no date.
+
+        It is how the superseded DeepSeek rates survived two revisions of the
+        provider's published pricing without anything noticing.
+        """
+        assert rate_card_confirmed("openai", "gpt-4o") is False
+        assert _estimated_provenance("openai", "gpt-4o") == COST_ESTIMATED_UNCONFIRMED
+
+    def test_an_aged_out_check_stops_confirming_the_rate_card(self):
+        stale = date(2026, 8, 10) + timedelta(days=IDENTITY_VERIFICATION_MAX_AGE_DAYS + 1)
+        assert rate_card_confirmed("deepseek", "deepseek-v4-pro", today=stale) is False
+
+    def test_the_stamp_records_which_kind_of_estimate_each_component_is(self):
+        """A result can span models, so the claim is made per component."""
+        from theforge.runners.api import _stamp_api_cost_provenance
+
+        result = AgentResult(
+            success=True,
+            output="ok",
+            session_id=None,
+            cost_usd=0.5,
+            exit_code=0,
+            raw={},
+            model_used="deepseek-v4-pro",
+            model_usage=(
+                ModelUsage(
+                    model="deepseek-v4-pro",
+                    input_tokens=10,
+                    output_tokens=5,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=0.5,
+                ),
+            ),
+        )
+        stamped = _stamp_api_cost_provenance(result, "deepseek")
+        assert stamped.model_usage[0].cost_provenance == COST_ESTIMATED
+        assert stamped.cost_provenance == COST_ESTIMATED
+
+    def test_an_unconfirmed_component_makes_the_whole_invocation_unconfirmed(self):
+        """The invocation-level statement is the weakest of its components'."""
+        from theforge.runners.api import _stamp_api_cost_provenance
+
+        def _usage(model: str) -> ModelUsage:
+            return ModelUsage(
+                model=model,
+                input_tokens=10,
+                output_tokens=5,
+                cache_read_tokens=0,
+                cache_creation_tokens=0,
+                cost_usd=0.25,
+            )
+
+        result = AgentResult(
+            success=True,
+            output="ok",
+            session_id=None,
+            cost_usd=0.5,
+            exit_code=0,
+            raw={},
+            model_used="deepseek-v4-pro",
+            model_usage=(_usage("deepseek-v4-pro"), _usage("some-unlisted-model")),
+        )
+        stamped = _stamp_api_cost_provenance(result, "deepseek")
+        assert [u.cost_provenance for u in stamped.model_usage] == [
+            COST_ESTIMATED,
+            COST_ESTIMATED_UNCONFIRMED,
+        ]
+        assert stamped.cost_provenance == COST_ESTIMATED_UNCONFIRMED
+
+    def test_a_none_cost_still_records_unknown(self):
+        """Nothing observed means nothing to characterize — unchanged."""
+        from theforge.runners.api import _stamp_api_cost_provenance
+
+        result = AgentResult(
+            success=False,
+            output="boom",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+        )
+        assert _stamp_api_cost_provenance(result, "deepseek").cost_provenance == COST_UNKNOWN
 
 
 # ── The provider's own usage report is read, not discarded ────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import date
 from typing import TYPE_CHECKING, Any, Protocol
 
 from theforge.agent_types import ModelUsage
@@ -318,6 +319,31 @@ def pricing_for(provider: str, model: str) -> ModelRates | None:
     return ModelRates(input_per_mtok=price[0], output_per_mtok=price[1])
 
 
+def rate_card_confirmed(provider: str, model: str, *, today: date | None = None) -> bool:
+    """Is the rate card used for ``(provider, model)`` attached to a checked identity?
+
+    True only when the figures came from a catalog entry whose upstream
+    identifier has been checked against the provider inside the verification
+    window. A rate read from :data:`PRICING_TABLE` is never confirmed: that table
+    records no identity and no date, which is exactly how it carried DeepSeek's
+    superseded rates across two revisions of the provider's pricing without
+    anything noticing.
+
+    Consumed by the API cost-provenance stamp so an estimate off a rate card that
+    may no longer apply is distinguishable from one that is current (#2352).
+    """
+    from theforge.config.models import AGENT_REGISTRY  # noqa: PLC0415
+
+    if catalog_rates().get((provider, model)) is None:
+        return False
+    reference = today or date.today()
+    return any(
+        spec.identity.confirmed_on(reference)
+        for spec in AGENT_REGISTRY.values()
+        if (spec.provider, spec.model) == (provider, model)
+    )
+
+
 def _estimate_cost(
     provider: str,
     model: str,
@@ -388,6 +414,12 @@ class LoopTurn:
     text_output: str | None  # final text when no tool calls
     structured_data: dict | None  # final structured output when available
     usage: ModelUsage | None  # token usage for this turn
+    # Provider-reported chain of thought, where the provider returns one as a
+    # field separate from ``text_output`` (DeepSeek's ``reasoning_content``).
+    # Captured rather than discarded so a reasoning model's actual reasoning is
+    # observable; see ``AgentLoopManager._append_tool_results`` for why it is not
+    # replayed into the next request.
+    reasoning_content: str | None = None
 
 
 class ProviderAdapter(Protocol):

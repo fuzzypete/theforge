@@ -279,7 +279,15 @@ def _make_openai_usage(usage: Any, model: str) -> ModelUsage | None:
 
 
 def _translate_messages_openai_chat(messages: list[dict]) -> list[dict]:
-    """Translate loop-internal messages to OpenAI Chat Completions format."""
+    """Translate loop-internal messages to OpenAI Chat Completions format.
+
+    Each outgoing message is built from named keys rather than by copying the
+    loop-internal dict, which is what keeps ``reasoning_content`` — recorded on
+    the assistant turn for the audit trail — out of the request body. DeepSeek
+    accepts that field on an input assistant message only as part of Chat Prefix
+    Completion, which requires ``prefix: true``; emitting it here would opt every
+    thinking-mode tool loop into a beta feature it never asked for.
+    """
     result = []
     for msg in messages:
         role = msg["role"]
@@ -360,11 +368,18 @@ def _make_openai_chat_adapter(
                 )
 
         text = msg.content or None
+        # DeepSeek returns the chain of thought as its own field beside
+        # ``content``. Reading it here is what stops a reasoning model's
+        # reasoning from being invisible to everything downstream — the loop
+        # previously kept only ``content``, so a thinking-mode turn that made a
+        # tool call left no trace of the thinking at all.
+        reasoning = getattr(msg, "reasoning_content", None)
         return LoopTurn(
             tool_calls=tool_calls,
             text_output=text,
             structured_data=None,
             usage=usage,
+            reasoning_content=reasoning if isinstance(reasoning, str) and reasoning else None,
         )
 
     return adapter

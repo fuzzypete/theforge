@@ -56,6 +56,19 @@ def deepseek_request_kwargs(profile: "ModelProfile") -> dict[str, Any]:
     rather than having a mode invented for it. Every DeepSeek request — single
     shot, tool loop and finalizer — is built through here so the three cannot
     drift apart.
+
+    The control travels under ``extra_body``, not as a top-level keyword.
+    ``thinking`` is DeepSeek's own extension to the Chat Completions body; the
+    OpenAI SDK's ``create()`` declares an explicit parameter list with no
+    ``**kwargs``, so passing it directly raises ``TypeError`` in the client
+    before a request is ever sent — a mode that is never requested and an
+    invocation that never happens. ``extra_body`` is the SDK's supported channel
+    for exactly this: merged into the JSON body verbatim.
+
+    ``reasoning_effort`` deliberately goes inside the ``thinking`` object rather
+    than into the SDK's own top-level ``reasoning_effort`` parameter. They are
+    different fields with different vocabularies — DeepSeek nests its own and
+    accepts ``max``, which OpenAI's does not define.
     """
     thinking: dict[str, Any] = {}
     if profile.reasoning_mode is not None:
@@ -65,7 +78,7 @@ def deepseek_request_kwargs(profile: "ModelProfile") -> dict[str, Any]:
         thinking["reasoning_effort"] = effort
     if not thinking:
         return {}
-    return {"thinking": thinking}
+    return {"extra_body": {"thinking": thinking}}
 
 
 def _run_deepseek(

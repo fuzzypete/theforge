@@ -33,8 +33,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   estimator prices from the catalog entry rather than a separate table — the
   DeepSeek rows are gone from `PRICING_TABLE`. `invocation.reasoning_mode` plus a
   real reasoning-effort knob for the DeepSeek transport mean a model banded as a
-  reasoning model is invoked with `thinking` actually requested, on the
-  single-shot, tool-loop and finalizer paths alike.
+  reasoning model is invoked with `thinking` actually requested (via the SDK's
+  `extra_body`, since it is DeepSeek's own body extension), on the single-shot,
+  tool-loop and finalizer paths alike. A retired identity is reserved against
+  project redeclaration, so `models.custom` and inline `models.enabled` mappings
+  cannot put a retired name back into the selectable set. Cost provenance gains a
+  fourth value, `estimated_unconfirmed`: an estimate derived from a rate card
+  whose model identity is not currently confirmed is now distinguishable from one
+  that is, per component and for the invocation as a whole.
 
   **Operator action:** if your `forge.yaml` names `deepseek/deepseek-chat` or
   `deepseek/deepseek-reasoner` under `models.enabled` or `models.custom`, replace

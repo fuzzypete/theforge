@@ -504,6 +504,12 @@ that is no longer behind the name.
   state an entry that never declared a check is in. Unconfirmed is not an error —
   `forge check-config` reports it under `upstream identifier not confirmed` so
   you see it before a run spends against it.
+- A retired identity is **reserved**. `models.custom` and inline `models.enabled`
+  mappings cannot redeclare one with their own routing and cost: the retirement
+  is a property of the identifier, not of the file it was declared in.
+- An API cost derived from a rate card whose identity is unconfirmed is recorded
+  as `cost_provenance: estimated_unconfirmed` rather than `estimated`, so a
+  decision made on price can tell how much the price is worth.
 
 **Request-level modes.** `invocation.reasoning_mode` states a behavioural mode
 the provider expresses as a *request parameter* rather than as a distinct model

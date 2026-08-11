@@ -568,7 +568,27 @@ def resolve_project(
     Precedence per field: what the declaration states, then the built-in entry
     with the same canonical identity, then a value derived from ``tier`` and the
     transport. Every resolved field records which of the two sources supplied it.
+
+    A canonical identity the shipped catalog has declared **retired** is reserved
+    and cannot be resolved here at all. Without that, the retirement is only a
+    property of the *shipped* entry: a project could redeclare the same
+    identifier under ``models.custom`` or as an inline ``models.enabled``
+    mapping, supply its own routing and cost, and put the retired name straight
+    back into the selectable set — with a rate card the operator invented for a
+    model the provider no longer serves, which is the defect one layer down.
+    Both project surfaces resolve through this function, so the guard sits here
+    rather than at either call site.
     """
+    retired = packaged_retired_identities().get(defn.canonical_id)
+    if retired is not None:
+        raise ValueError(
+            f"forge.yaml '{where}' declares {defn.canonical_id!r}, an upstream identifier "
+            f"the provider has retired: {retired.identity.retired_reason or 'no reason recorded'} "
+            "A project declaration cannot un-retire an identifier — declaring routing or cost "
+            "for it would describe a model the provider no longer serves. Name a served "
+            "identifier instead."
+        )
+
     sources: dict[str, str] = {}
 
     def _pick(
@@ -759,6 +779,27 @@ def _read_catalog_document() -> Any:
     return yaml.safe_load(resource.read_text(encoding="utf-8"))
 
 
+_RETIRED_IDENTITIES_CACHE: dict[str, AgentSpec] | None = None
+
+
+def packaged_retired_identities() -> dict[str, AgentSpec]:
+    """Canonical identities the shipped catalog declares retired.
+
+    Read by :func:`resolve_project` to reserve those identities against project
+    redeclaration. Kept here rather than imported from
+    :mod:`theforge.config.models` because that module builds its registry *by
+    calling this one* — reaching back for it would be the import cycle the
+    identity/catalog/registry layering exists to prevent.
+
+    Populated as a side effect of :func:`load_packaged_catalog_split`, which
+    ``models.py`` calls at import, so the ordinary path costs no second parse.
+    """
+    global _RETIRED_IDENTITIES_CACHE
+    if _RETIRED_IDENTITIES_CACHE is None:
+        load_packaged_catalog_split()
+    return _RETIRED_IDENTITIES_CACHE or {}
+
+
 def load_packaged_catalog_split() -> tuple[dict[str, AgentSpec], dict[str, AgentSpec]]:
     """Load the shipped model set, partitioned into served and retired entries.
 
@@ -791,6 +832,8 @@ def load_packaged_catalog_split() -> tuple[dict[str, AgentSpec], dict[str, Agent
             )
         target = retired if resolved.spec.identity.retired else registry
         target[resolved.canonical_id] = resolved.spec
+    global _RETIRED_IDENTITIES_CACHE
+    _RETIRED_IDENTITIES_CACHE = retired
     return registry, retired
 
 
