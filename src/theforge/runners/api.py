@@ -160,7 +160,14 @@ class _UsageAccumulator:
         self.cache_read_tokens += usage.cache_read_tokens
         self.cache_creation_tokens += usage.cache_creation_tokens
 
-    def to_model_usage(self, model: str, provider: str) -> ModelUsage:
+    def to_model_usage(self, model: str, provider: str, transport: str = "api") -> ModelUsage:
+        """Price the accumulated usage for the identity that ran.
+
+        ``transport`` defaults to ``"api"`` because this accumulator only ever
+        runs inside the API agent loop; it is named rather than assumed so the
+        rate lookup identifies ``(provider, model, transport)`` and can never
+        borrow a CLI-declared price for the same model name (#2335).
+        """
         # The accumulated cache-read count is passed through, not just recorded:
         # a provider that bills prompt-cache hits at a distinct rate only gets
         # that rate applied if the estimator is told how many hits there were.
@@ -176,6 +183,7 @@ class _UsageAccumulator:
             model,
             self.input_tokens,
             self.output_tokens,
+            transport=transport,
             thinking_tokens=self.thinking_tokens,
             cached_input_tokens=cached_input_tokens,
         )

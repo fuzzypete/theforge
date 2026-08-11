@@ -56,6 +56,7 @@ from .model_identity import custom_model_dev_capable as custom_model_dev_capable
 from .model_identity import is_canonical_model_id as is_canonical_model_id
 from .model_identity import known_model_overlay_providers as known_model_overlay_providers
 from .model_identity import mirror_fields_for_transport as mirror_fields_for_transport
+from .model_identity import model_fallback_transport as model_fallback_transport
 from .model_identity import overlay_transport as overlay_transport
 from .model_identity import provider_for_cli_runner as provider_for_cli_runner
 from .model_identity import provider_for_transport as provider_for_transport

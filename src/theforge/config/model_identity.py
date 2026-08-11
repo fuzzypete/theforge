@@ -255,6 +255,36 @@ def transport_for(provider: str, kind: str, runner: str | None = None) -> Transp
     return TransportSpec(kind="api", runner=api_runner)
 
 
+def model_fallback_transport(provider: str | None) -> TransportSpec | None:
+    """The transport a ``fallback_models`` entry actually dispatches on.
+
+    Always the provider's API transport, whichever transport the *primary* uses,
+    and both dispatch paths agree on that:
+
+    - An API profile retries the next model on its own API transport
+      (``runners/api.py`` replaces only ``model``).
+    - A CLI profile's fallback entries are sent through the provider's API
+      adapter (``runners/cli.py:_build_cli_fallback_api_profile``). A CLI failure
+      that triggers a model fallback is a quota or model-not-found refusal, so
+      retrying on the CLI that just refused would reproduce it.
+
+    Returns ``None`` when the provider has no API adapter — no fallback can be
+    attempted at all, so that entry names no reachable identity.
+
+    This function exists so the runner that builds the fallback profile and the
+    load-time enumeration that prices it read ONE definition of the rule. They
+    disagreed before: load reported a CLI profile's fallback entries as CLI
+    identities while the runner dispatched them on the API, so the identity that
+    could actually run unpriced was never the one named (#2335).
+    """
+    if not provider:
+        return None
+    try:
+        return transport_for(provider, "api")
+    except ValueError:
+        return None
+
+
 @dataclass(frozen=True)
 class AgentSpec(AttributablePricing):
     """First-class description of an agent: canonical identity + routing policy.

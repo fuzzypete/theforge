@@ -626,6 +626,9 @@ def _price_codex_usage(
         profile.model,
         usage.input_tokens,
         usage.output_tokens,
+        # Codex is a CLI transport: its tokens are priced from the codex identity,
+        # never from the same model name reached over the OpenAI API (#2335).
+        transport="cli",
         cached_input_tokens=usage.cached_input_tokens,
     )
     model_usage = (
