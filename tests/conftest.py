@@ -298,6 +298,28 @@ def gemini_profile() -> ModelProfile:
 
 
 @pytest.fixture(autouse=True)
+def _isolate_rate_registry():
+    """Prevent a config load's compiled rate registry from leaking across tests.
+
+    ``load_config`` installs a process-level
+    :class:`~theforge.runners.rate_registry.RateRegistry` (#2335). That is right
+    in production — pricing is resolved once per configuration — but in a test
+    session it would mean whichever test loaded a config last decides how the
+    next one prices tokens. Each test starts from the no-registry baseline
+    unless it installs one itself.
+    """
+    import theforge.runners.rate_registry as _rr_mod
+
+    original = _rr_mod.active()
+    _rr_mod.reset()
+    yield
+    if original is None:
+        _rr_mod.reset()
+    else:
+        _rr_mod.install(original)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_log_level():
     """Prevent log-level mutations from leaking across tests.
 

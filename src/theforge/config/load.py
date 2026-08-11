@@ -1807,4 +1807,13 @@ def load_config(config_path: Path) -> ForgeConfig:
     # Configuration identity is derived here, once, from the fully-resolved
     # config (#2056) — consumers record what the run executed under instead of
     # each re-deriving it (or, as before, recording nothing at all).
-    return dataclasses.replace(config, provenance=build_provenance(config, config_path))
+    config = dataclasses.replace(config, provenance=build_provenance(config, config_path))
+    # Pricing is resolved ONCE, here, from the same merged registry routing reads
+    # its figures from, into a process-level registry every accounting site
+    # consults by the identity that actually dispatched (#2335). Installed only
+    # after the ForgeConfig is fully constructed, so a load that raises during
+    # validation never leaves partial rates active; last install wins.
+    from .dispatch_rates import install_rate_registry  # noqa: PLC0415
+
+    install_rate_registry(config)
+    return config

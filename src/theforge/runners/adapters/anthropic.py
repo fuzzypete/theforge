@@ -67,6 +67,7 @@ def _run_anthropic(
             profile.model,
             response.usage.input_tokens,
             response.usage.output_tokens,
+            transport="api",
         )
         model_usage = ModelUsage(
             model=profile.model,
