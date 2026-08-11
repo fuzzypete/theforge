@@ -116,6 +116,7 @@ def _make_google_usage(profile: "ModelProfile", usage: Any) -> ModelUsage | None
             profile.model,
             input_tokens,
             output_tokens,
+            transport="api",
             thinking_tokens=thinking_tokens,
         ),
         thinking_tokens=thinking_tokens,
@@ -149,6 +150,7 @@ def _merge_google_usage(
             profile.model,
             input_tokens,
             output_tokens,
+            transport="api",
             thinking_tokens=thinking_tokens,
         ),
         thinking_tokens=thinking_tokens,
@@ -246,6 +248,7 @@ def _run_google(
             profile.model,
             input_tokens,
             output_tokens,
+            transport="api",
             thinking_tokens=thinking_tokens,
         )
         model_usage: ModelUsage | None = None

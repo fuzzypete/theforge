@@ -160,23 +160,45 @@ _EXIT_GRACE_SECONDS = 10.0
 _COST_UNMEASURED_WARNED: set[str] = set()
 
 
-def _resolve_anthropic_pricing_key(raw_model: str) -> str | None:
-    """Map a stream-event model id to a PRICING_TABLE anthropic key.
+def _anthropic_cli_pricing_names() -> tuple[str, ...]:
+    """Anthropic model names priced for the *CLI* transport, most specific first.
 
-    Claude reports the fully-resolved model id (e.g. ``claude-sonnet-4-6`` or a
-    dated variant) in each message, while the pricing table is keyed on the
-    undated family id. Match exactly, then by prefix in either direction so a
-    dated id resolves to its family entry. Returns None when unknown.
+    Drawn from the installed rate registry, which is keyed by ``(provider, model,
+    transport)`` — so the prefix match below can never resolve a CLI stream event
+    onto a price declared for the same model name over the API (#2335). With no
+    registry installed (unit tests, non-config code paths) this falls back to the
+    packaged table, reproducing the previous behaviour exactly.
     """
+    from theforge.runners.rate_registry import known_models  # noqa: PLC0415
     from theforge.runners.schema_utils import PRICING_TABLE  # noqa: PLC0415
 
+    # The packaged table is unioned in rather than used only as a fallback: the
+    # names the CLI reports are concrete *billed* ids (``claude-sonnet-4-6``)
+    # that are never registry entries in their own right — the registry knows the
+    # shorthand (``sonnet``) the profile dispatches under. Both halves are
+    # packaged baseline, so nothing project-declared for another transport can
+    # enter here.
+    names = set(known_models("anthropic", "cli"))
+    names.update(model for provider, model in PRICING_TABLE if provider == "anthropic")
+    # Longest first so a dated id matches its most specific family entry rather
+    # than whichever shorter prefix happened to be enumerated first.
+    return tuple(sorted(names, key=len, reverse=True))
+
+
+def _resolve_anthropic_pricing_key(raw_model: str) -> str | None:
+    """Map a stream-event model id to a priced anthropic CLI model name.
+
+    Claude reports the fully-resolved model id (e.g. ``claude-sonnet-4-6`` or a
+    dated variant) in each message, while rate cards are keyed on the undated
+    family id. Match exactly, then by prefix in either direction so a dated id
+    resolves to its family entry. Returns None when unknown.
+    """
     if not raw_model:
         return None
-    if ("anthropic", raw_model) in PRICING_TABLE:
+    names = _anthropic_cli_pricing_names()
+    if raw_model in names:
         return raw_model
-    for provider, key in PRICING_TABLE:
-        if provider != "anthropic":
-            continue
+    for key in names:
         if raw_model.startswith(key) or key.startswith(raw_model):
             return key
     return None
@@ -189,17 +211,39 @@ def _estimate_anthropic_cost(
     cache_read_tokens: int,
     cache_creation_tokens: int,
 ) -> float | None:
-    """Price reconstructed Anthropic token usage; None when model is unpriced."""
-    from theforge.runners.schema_utils import PRICING_TABLE  # noqa: PLC0415
+    """Price reconstructed Anthropic token usage; None when model is unpriced.
+
+    Cache tiers are expressed as multiples of the base input rate, except where
+    the resolved rate card publishes its own cache-read figure — that is
+    preferred over the generic 0.1x multiplier when declared.
+    """
+    from theforge.runners.rate_registry import rates_for  # noqa: PLC0415
+    from theforge.runners.schema_utils import PRICING_TABLE, ModelRates  # noqa: PLC0415
 
     key = _resolve_anthropic_pricing_key(model)
     if key is None:
         return None
-    in_rate, out_rate = PRICING_TABLE[("anthropic", key)]
+    rates = rates_for("anthropic", key, "cli")
+    if rates is None:
+        # Packaged-baseline-only last resort, for the concrete billed ids above
+        # that no registry entry names. Deliberately reads PRICING_TABLE rather
+        # than pricing_for: a project-declared price for another transport must
+        # never reach this path.
+        packaged = PRICING_TABLE.get(("anthropic", key))
+        if packaged is None:
+            return None
+        rates = ModelRates(input_per_mtok=packaged[0], output_per_mtok=packaged[1])
+    in_rate = rates.input_per_mtok
+    out_rate = rates.output_per_mtok
+    cache_read_rate = (
+        rates.cached_input_per_mtok
+        if rates.cached_input_per_mtok is not None
+        else in_rate * _CACHE_READ_RATE_MULT
+    )
     return (
         (input_tokens / 1_000_000) * in_rate
         + (output_tokens / 1_000_000) * out_rate
-        + (cache_read_tokens / 1_000_000) * in_rate * _CACHE_READ_RATE_MULT
+        + (cache_read_tokens / 1_000_000) * cache_read_rate
         + (cache_creation_tokens / 1_000_000) * in_rate * _CACHE_WRITE_RATE_MULT
     )
 

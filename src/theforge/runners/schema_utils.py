@@ -54,7 +54,23 @@ def _sanitize_schema_for_google(schema: dict) -> dict:
 
 # ── Pricing table (per 1M tokens) ──────────────────────────────────────
 
-# Fallback for when API response doesn't include cost.
+# The PACKAGED BASELINE rate card. Since #2335 this is no longer a second,
+# competing source of truth that accounting reads while routing reads the model
+# registry — the two could disagree, and a model priced in configuration and
+# absent here routed as priced and recorded its spend as unknown.
+#
+# What it is now: transport-agnostic figures that config load MATERIALIZES onto
+# concrete (provider, model, transport) identities when compiling the rate
+# registry, and only onto identities the configuration can actually dispatch on
+# (theforge.config.dispatch_rates._materialize_legacy_rates). A row here can
+# therefore never widen onto a transport a project already priced separately,
+# and it is not consulted at all once a registry is installed.
+#
+# It remains authoritative for concrete billed identifiers that are not registry
+# entries in their own right — a vendor CLI reports ``claude-sonnet-4-6`` while
+# the profile dispatches under the ``sonnet`` shorthand — and it is the answer
+# for any process that never loads a configuration (unit tests).
+#
 # Key: (provider, model_name)
 # Value: (input_cost_per_mtok, output_cost_per_mtok)
 PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
@@ -67,10 +83,10 @@ PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
     ("openai", "gpt-5.4-mini"): (0.25, 2.00),
     ("openai", "gpt-5.4"): (1.25, 10.00),
     ("openai", "gpt-5.4-pro"): (15.00, 120.00),
-    # Mirrors the input/output_cost_per_mtok declared for this model in
-    # forge.yaml. Routing already reads those config values; accounting reads
-    # this table, so a model priced in one and absent from the other routes
-    # fine and then records cost-unknown, which fails the budget check closed.
+    # Was a hand-kept mirror of the forge.yaml figures, because routing read the
+    # config and accounting read this table. It no longer has to be: a project
+    # price now reaches accounting through the compiled registry (#2335). Kept as
+    # the packaged baseline for a project that does not declare this model.
     ("openai", "gpt-5.5"): (5.00, 30.00),
     ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
     ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
@@ -203,7 +219,7 @@ _MAX_MALFORMED = 3
 _DEFAULT_MAX_ITERATIONS = 75
 
 
-_MISSING_PRICING_WARNED: set[tuple[str, str]] = set()
+_MISSING_PRICING_WARNED: set[tuple[str, str, str | None]] = set()
 
 # Fraction of the uncached input rate charged for a cache HIT, for providers that
 # express their cache tier that way. OpenAI and Anthropic both bill cached input
@@ -302,6 +318,13 @@ def catalog_rates() -> dict[tuple[str, str], ModelRates]:
 def pricing_for(provider: str, model: str) -> ModelRates | None:
     """Return the rate card for ``(provider, model)``, or None if none is known.
 
+    **Transport-blind, and therefore the no-registry baseline only.** Accounting
+    resolves through :func:`theforge.runners.rate_registry.rates_for`, which is
+    keyed by ``(provider, model, transport)``; this function answers when no
+    registry is installed, which is the case for unit tests and for any process
+    that never loads a configuration. Its behaviour is deliberately unchanged so
+    that baseline is bit-for-bit what it was before #2335.
+
     Catalog first, :data:`PRICING_TABLE` second. The catalog is the surface where
     a rate is declared next to the identity it was recorded for and the date that
     identity was last checked against the provider, so it is the one that gets to
@@ -350,11 +373,19 @@ def _estimate_cost(
     input_tokens: int,
     output_tokens: int,
     *,
+    transport: str | None = None,
     thinking_tokens: int = 0,
     cached_input_tokens: int = 0,
     cached_input_rate_mult: float = CACHED_INPUT_RATE_MULT,
 ) -> float | None:
     """Estimate cost from the rate card in force; returns None if model unknown.
+
+    ``transport`` names the transport kind (``"cli"`` / ``"api"``) the tokens
+    being priced were actually spent on. It is what makes the lookup identify
+    the thing that *dispatched* rather than a model name two transports can
+    share (#2335). It defaults to None purely so an unconverted caller still
+    compiles; None takes the transport-blind :func:`pricing_for` baseline. Every
+    call site in this repository passes it.
 
     ``cached_input_tokens`` is the SUBSET of ``input_tokens`` that was served from
     the provider's prompt cache. It is billed at the provider's own published
@@ -362,16 +393,21 @@ def _estimate_cost(
     ``cached_input_rate_mult`` of the input rate. Callers that cannot distinguish
     the cache tier leave it at 0 and get the flat-rate behaviour unchanged.
     """
-    rates = pricing_for(provider, model)
+    from .rate_registry import rates_for  # noqa: PLC0415
+
+    rates = rates_for(provider, model, transport)
     if rates is None:
-        key = (provider, model)
+        # Keyed on the transport too, so the same model name unpriced over two
+        # transports warns about each rather than reporting one and hiding one.
+        key = (provider, model, transport)
         if key not in _MISSING_PRICING_WARNED:
             logger.warning(
-                "Missing pricing entry for provider=%s model=%s; cost cannot be estimated. "
-                "Declare a cost block on the model's catalog entry (or add it to "
-                "PRICING_TABLE) so audit and budget totals stay accurate.",
+                "Missing pricing entry for provider=%s model=%s transport=%s; cost cannot "
+                "be estimated. Declare a cost block on the model's catalog entry (or add "
+                "it to PRICING_TABLE) so audit and budget totals stay accurate.",
                 provider,
                 model,
+                transport or "unspecified",
             )
             _MISSING_PRICING_WARNED.add(key)
         return None

@@ -2209,17 +2209,22 @@ def _thinking_spend_captured(profile: ModelProfile, knob: EffortKnob) -> bool:
 
     Two independent facts, both required: the transport's accounting path must
     fold thinking tokens into the priced total (``knob.captures_thinking_spend``),
-    *and* the selected model must have a rate card — a model with none records
-    cost-unknown, which is precisely "spend not captured". Asked through
-    ``pricing_for`` rather than by indexing ``PRICING_TABLE``, so a model priced
-    from its catalog entry counts exactly like one priced from the table (#2352).
-    Imported lazily so this module stays import-time pure.
+    *and* the identity that will actually dispatch must be accountable.
+
+    "Accountable" is asked of the registry, not of pricing-table membership
+    (#2335). Membership was a proxy for something it does not measure in both
+    directions: a provider-reporting transport captures thinking spend with no
+    static rate card at all, and a transport that reports no usage does not
+    capture it even when a rate card exists. The lookup is keyed by
+    ``(provider, model, transport)``, so a model priced on one transport is not
+    read as accountable on another. Imported lazily so this module stays
+    import-time pure.
     """
     if not knob.captures_thinking_spend:
         return False
-    from .runners.schema_utils import pricing_for  # noqa: PLC0415
+    from .runners.rate_registry import entry_for_profile  # noqa: PLC0415
 
-    return pricing_for(profile.provider_family or "", profile.model) is not None
+    return entry_for_profile(profile).accountable
 
 
 def _apply_effort_to_profile(
