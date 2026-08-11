@@ -1,0 +1,4996 @@
+{
+  "schema_version": 26,
+  "run_id": "21c042885a9d",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc26",
+  "task": {
+    "name": "A commit that merely mentions an issue number is accepted as evidence its branch merged, so an open story with preserved work is skipped as complete",
+    "slug": "issue-2374",
+    "story_path": null,
+    "story_text": "## Observed\n\nA story is skipped as already landed because an unrelated commit on the base branch mentions its\nissue number in passing.\n\nA configuration commit changing a timeout and disabling a model referred to a separate open issue in\nits message, as context for why the model was being disabled. That reference was the only connection\nbetween the commit and the issue. The commit changed one configuration file and touched none of the\nstory's code.\n\nOn the next sprint the story was triaged as merged and skipped before any phase ran. The skip\ndiscarded five preserved development iterations and an operator decision that had been recorded at an\nescalate gate minutes earlier, and the run reported the story as complete rather than as blocked.\n\nBoth authoritative sources disagreed with the triage. Git reported the branch as not merged and five\ncommits ahead of base. The audit record for the story's last run carried an unsuccessful outcome and\na request-changes verdict, with no landing status. The merge evidence came from neither; it came from\nscanning base-branch commit messages for the issue number.\n\nThe failure is silent in the way that matters. A story refused for a precondition reports a reason an\noperator can act on. This one reports success, so nothing signals that work was dropped, and a\nresume repeats the skip indefinitely because the commit that triggered it is permanent history.\n\n## Expected\n\nA reference to a unit of work in a commit message is not evidence that the work landed. Evidence that\nsomething landed is a statement that it landed \u2014 a closing reference, an ancestry relationship\nbetween its branch and the base, or a recorded outcome saying so. A mention establishes that someone\nwrote the number down, which is what cross-references are for and what makes them safe to write.\n\nWhere sources of evidence disagree, the ones that describe the code win over the ones that describe\nprose about the code. A branch that is not an ancestor of the base has not landed, whatever any\nmessage says, and a recorded outcome of unsuccessful is not overridden by a textual match.\n\nWhere a unit of work is skipped, the skip is reported as a skip and names the evidence that produced\nit, so a decision to discard preserved work is visible and contestable rather than presented as\ncompletion.\n\n## Diagnosis\n\n**Observed symptom.** A sprint reports `SKIP issue-<n> (already merged to <base>)` for a story that\nis open, has no pull request, and whose changes are absent from the base branch.\n\n**Evidence.**\n\n- `sprint/dag.py` returns `MergeEvidence(merged=True, source=\"issue_commit\")` as one of four evidence\n  sources, alongside `github_pr`, `audit` and `topology`.\n- The reason string rendered was the bare `already merged to <base>`, which is the fallback used when\n  the source is neither a pull request nor the audit trail \u2014 so the evidence was the commit scan.\n- `git merge-base --is-ancestor <branch> <base>` reports not merged; the branch is five commits ahead.\n- The audit record for the story's most recent run carries `outcome_success = 0`,\n  `verdict = REQUEST_CHANGES`, and an empty landing status.\n- The only base-branch commit matching the issue number is a configuration change to an unrelated\n  timeout value, whose message referenced the issue as context for a separate decision.\n- The story's issue is open with no pull request, and the code it introduces is absent from the base\n  branch.\n\n**Ruled out.** Not a stale-branch misclassification: the same function's stale path requires zero\ncommits ahead, and this branch has five. Not the audit tiebreaker, which would have produced a\ndifferent reason string and whose stored outcome was unsuccessful. Not a genuine fast-forward\nlanding, since the branch's changes are not present on base.\n\n**Confirmed cause.** Commit-message text mentioning an issue number is accepted as evidence that the\nissue's branch merged, without requiring the reference to assert completion and without being\noverridden by ancestry or recorded outcome, both of which were available and both of which\ncontradicted it.\n\n**Affected code path.** Story triage merge-evidence resolution and its issue-commit source, and the\nskip reporting that presents the result as a completed story.\n\n**Fix-success criterion.** A story whose branch is not an ancestor of the base and whose recorded\noutcome is unsuccessful is not triaged as merged on the strength of a commit message; and a story\nskipped as merged names the evidence relied on, so a wrong skip is visible rather than reported as\ncompletion.\n",
+    "github_issue": 2374,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": null,
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'A commit that merely mentions an issue number is accepted as evidence its branch merged, so an open story with preserved work is skipped as complete' completed. Review approved after 4 cycle(s), 4 dev iteration(s). Branch: feat/issue-2374",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "108aab9dbd6ff71ca8e7bdcc5943c6e172bec9a19bfd50e57c53b7886021c8e0",
+    "resolved_sha256": "db3d6ad052b64c07e66c4a111eecb98e13c2674e15b40e989d2673f24f11a8a7",
+    "source_sha256_at_finish": "108aab9dbd6ff71ca8e7bdcc5943c6e172bec9a19bfd50e57c53b7886021c8e0",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-11T02:56:39.202199+00:00",
+    "finished_at": "2026-08-11T03:36:17.714645+00:00",
+    "duration_seconds": 2378.512446
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2374",
+    "branch": "feat/issue-2374",
+    "story_provenance": "fresh_worktree",
+    "inherited_superseded_work": false,
+    "inherited_work_surfaced_to_dev": false,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 4,
+    "dev_iterations_productive": 4,
+    "review_cycles_total": 4,
+    "review_cycles": 4,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 4,
+    "gate_decisions": [
+      "PASS",
+      "PASS",
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 4,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 3.8546165,
+        "duration_s": 526.28,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/coordinator/audit.py",
+          "src/theforge/coordinator/audit_substrate.py",
+          "src/theforge/sprint/dag.py",
+          "tests/test_sprint_resume.py",
+          "tests/test_sprint_runner.py"
+        ],
+        "files_changed_count": 5,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 2.9792385,
+        "duration_s": 261.85,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/dag.py",
+          "tests/test_sprint_resume.py",
+          "tests/test_sprint_runner.py"
+        ],
+        "files_changed_count": 3,
+        "tests_fixed_count": 1,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 2,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 3.3981179999999997,
+        "duration_s": 369.98,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/dag.py",
+          "tests/test_sprint_runner.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 3,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [
+          "tests/test_coord_preflight_escalation.py::TestDevModelEscalationIntegration::test_done_path_records_escalation_via_substrate_without_import_error"
+        ],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 4.053290499999999,
+        "duration_s": 331.03,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/sprint/dag.py",
+          "tests/test_sprint_runner.py"
+        ],
+        "files_changed_count": 2,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_process_teardowns": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 0.777535,
+        "duration_s": 108.59
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 1.102796,
+        "duration_s": 103.63
+      },
+      {
+        "iteration": 3,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 1,
+        "restated_findings": 0,
+        "cost_usd": 1.675842,
+        "duration_s": 129.88
+      },
+      {
+        "iteration": 4,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 1.446942,
+        "duration_s": 69.8
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 4,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 6,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 6.6302,
+      "static_dev_max": 3,
+      "estimate_headroom_factor": 1.25,
+      "complexity_score_used": 6,
+      "base_review": 5,
+      "profile_history_runs": 212,
+      "profile_avg_iterations": 1.5613,
+      "profile_avg_cost_usd": 4.91111,
+      "score_cost_history_runs": 33,
+      "score_cost_avg_usd": 7.059753,
+      "profile_raw_dev_max": 2.3419,
+      "dev_cost_estimate_basis": {
+        "source": "profile_observed_score",
+        "band": "medium",
+        "complexity_score": 6,
+        "statistic": "avg_cost_usd",
+        "scope": "dev_phase",
+        "sample_count": 33,
+        "headroom_multiplier": 1.25,
+        "headroom_basis": "allocation_headroom",
+        "allocation_comparable": true,
+        "reason": "profile_score_history"
+      },
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3472.0,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 5208,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 5208,
+      "chosen_dev_cost_estimate_usd": 8.8247,
+      "review_history_sample_size": 14,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 212 medium-band profile runs with 1.5x iteration headroom and 2.0x budget headroom; timeout floored on observed run duration+headroom (5208s). Dev cost estimate from 33 score-6 run(s) across all models (avg $7.06 x 1.25x allocation headroom) \u2014 the population the story allocation is drawn from. review history stayed within the complexity-derived review base.",
+      "review_cycle_planning": {
+        "planned_cost_usd": 2.3079,
+        "basis": "observed_complexity_score",
+        "fallback_configured_usd": 13.2604,
+        "sample_count": 9,
+        "median_usd": 1.8463,
+        "p90_usd": 3.6648,
+        "max_usd": 3.6648,
+        "headroom_multiplier": 1.25,
+        "reason": "derived from median observed review-cycle spend $1.85 x 1.25 headroom over 9 cycle(s) on stories at complexity score 6",
+        "excluded_for_taint": 1,
+        "composition": [
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ],
+        "complexity_score": 6,
+        "requested_complexity_score": 6
+      },
+      "review_cycle_reconciliation": {
+        "requested_review_max": 5,
+        "reconciled_review_max": 5,
+        "affordable_review_cycles": null,
+        "allocation_usd": 41.77,
+        "spent_so_far_usd": null,
+        "dev_cost_estimate_usd": null,
+        "review_cycle_cost_usd": null,
+        "review_cycle_cost_basis": null,
+        "review_cycle_cost_sample_count": null,
+        "review_cycle_cost_median_usd": null,
+        "review_cycle_cost_p90_usd": null,
+        "review_cycle_cost_max_usd": null,
+        "review_cycle_cost_headroom_multiplier": null,
+        "review_cycle_cost_reason": null,
+        "review_cycle_cost_composition": null,
+        "review_cycle_cost_complexity_score": null,
+        "review_cycle_cost_requested_complexity_score": null,
+        "review_cycle_cost_comparable": null,
+        "dev_cost_estimate_basis": null,
+        "dev_cost_estimate_basis_reason": null,
+        "dev_cost_estimate_statistic": null,
+        "dev_cost_estimate_scope": null,
+        "dev_cost_estimate_band": null,
+        "dev_cost_estimate_complexity_score": null,
+        "dev_cost_estimate_sample_count": null,
+        "dev_cost_estimate_headroom_multiplier": null,
+        "dev_cost_estimate_headroom_basis": null,
+        "dev_cost_estimate_comparable": null,
+        "remaining_after_dev_usd": null,
+        "reserved_review_cycles": 0,
+        "reserved_review_usd": 0.0,
+        "action": "cost_unknown",
+        "basis": "substrate_band",
+        "complexity_score": 6
+      },
+      "review_funding_reservation": {
+        "allocation_usd": 41.77,
+        "reserved_review_usd": 0.0,
+        "reserved_review_cycles": 0,
+        "review_cycle_cost_usd": null,
+        "action": "cost_unknown"
+      },
+      "story_ceiling_cap": {
+        "raw_timeout_seconds": 5208,
+        "story_ceiling_seconds": 13500,
+        "max_invocations": 3,
+        "share": 0.8,
+        "capped": true,
+        "cap_seconds": 3600,
+        "floor_seconds": 900,
+        "floor_applied": false,
+        "dev_share_seconds": 10800,
+        "floor_capped_by_share": false,
+        "final_timeout_seconds": 3600,
+        "rationale": "per-invocation timeout capped 5208s \u2192 3600s to fit 3 invocation(s) inside the 13500s story ceiling (share 0.8)"
+      }
+    },
+    "dev_timeout_clamps": [],
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-11T02:58:34.641833+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-08-11T03:10:35.941841+00:00"
+      },
+      {
+        "cycle": 2,
+        "cycle_count": 1,
+        "total_count": 3,
+        "timestamp": "2026-08-11T03:18:14.049083+00:00"
+      },
+      {
+        "cycle": 3,
+        "cycle_count": 1,
+        "total_count": 4,
+        "timestamp": "2026-08-11T03:27:55.663911+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": null,
+    "dev_usd": 14.2852635,
+    "review_usd": 5.0031165,
+    "dev_invocations": 4,
+    "review_invocations": 8,
+    "agents": [
+      {
+        "role": "preflight",
+        "profile": "preflight",
+        "cost_usd": 0.5112516,
+        "duration_seconds": 82.1948700840585,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 0.5112516,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6121,
+            "output_tokens": 6315,
+            "cache_read_tokens": 561732,
+            "cache_creation_tokens": 40332,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 6099,
+              "output_tokens": 15,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.006174000000000001,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 22,
+              "output_tokens": 6300,
+              "cache_read_tokens": 561732,
+              "cache_creation_tokens": 40332,
+              "thinking_tokens": 0,
+              "cost_usd": 0.5050776,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 6099,
+            "output_tokens": 15,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.006174000000000001
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": 22,
+            "output_tokens": 6300,
+            "cache_read_tokens": 561732,
+            "cache_creation_tokens": 40332,
+            "cost_usd": 0.5050776
+          }
+        ],
+        "model_used": "sonnet",
+        "transport_used": "cli"
+      },
+      {
+        "role": "plan",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.136749,
+        "duration_seconds": 32.478230624925345,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "plan",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": "high",
+          "cost_usd": 0.136749,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 20349,
+            "output_tokens": 1378,
+            "cache_read_tokens": 1408,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 516
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 20349,
+              "output_tokens": 1378,
+              "cache_read_tokens": 1408,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 516,
+              "cost_usd": 0.136749,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 20349,
+            "output_tokens": 1378,
+            "cache_read_tokens": 1408,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.136749
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "plan_review",
+        "profile": "openai-gpt-5.6-sol-cli",
+        "cost_usd": null,
+        "duration_seconds": 55.96870724996552,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "plan_review",
+          "profile": "openai-gpt-5.6-sol-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": "medium",
+          "cost_usd": null,
+          "cost_provenance": "unknown",
+          "configured_identity": {
+            "raw": "gpt-5.6-sol",
+            "transport": "cli",
+            "identity": "gpt-5.6-sol",
+            "resolution": "unresolved"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.6-sol",
+            "transport": "cli",
+            "identity": "gpt-5.6-sol",
+            "resolution": "unresolved"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 117009,
+            "output_tokens": 1500,
+            "cache_read_tokens": 87040,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 732
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.6-sol",
+                "transport": "cli",
+                "identity": "gpt-5.6-sol",
+                "resolution": "unresolved"
+              },
+              "input_tokens": 117009,
+              "output_tokens": 1500,
+              "cache_read_tokens": 87040,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 732,
+              "cost_usd": null,
+              "cost_provenance": "unknown"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.6-sol",
+            "input_tokens": 117009,
+            "output_tokens": 1500,
+            "cache_read_tokens": 87040,
+            "cache_creation_tokens": 0,
+            "cost_usd": null
+          }
+        ],
+        "model_used": "gpt-5.6-sol",
+        "transport_used": "cli"
+      },
+      {
+        "role": "plan_review",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 0.5949545,
+        "duration_seconds": null,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "plan_review",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 0.5949545,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 9,
+            "output_tokens": 3549,
+            "cache_read_tokens": 239589,
+            "cache_creation_tokens": 38639,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 9,
+              "output_tokens": 3549,
+              "cache_read_tokens": 239589,
+              "cache_creation_tokens": 38639,
+              "thinking_tokens": 0,
+              "cost_usd": 0.5949545,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 9,
+            "output_tokens": 3549,
+            "cache_read_tokens": 239589,
+            "cache_creation_tokens": 38639,
+            "cost_usd": 0.5949545
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 3.8546165,
+        "duration_seconds": 526.275357583072,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 3.8546165,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 97,
+            "output_tokens": 30472,
+            "cache_read_tokens": 4377063,
+            "cache_creation_tokens": 90380,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 97,
+              "output_tokens": 30472,
+              "cache_read_tokens": 4377063,
+              "cache_creation_tokens": 90380,
+              "thinking_tokens": 0,
+              "cost_usd": 3.8546165,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 97,
+            "output_tokens": 30472,
+            "cache_read_tokens": 4377063,
+            "cache_creation_tokens": 90380,
+            "cost_usd": 3.8546165
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 2.9792385,
+        "duration_seconds": 261.848782250192,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 2.9792385,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 44,
+            "output_tokens": 13635,
+            "cache_read_tokens": 2920587,
+            "cache_creation_tokens": 117785,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 44,
+              "output_tokens": 13635,
+              "cache_read_tokens": 2920587,
+              "cache_creation_tokens": 117785,
+              "thinking_tokens": 0,
+              "cost_usd": 2.9792385,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 44,
+            "output_tokens": 13635,
+            "cache_read_tokens": 2920587,
+            "cache_creation_tokens": 117785,
+            "cost_usd": 2.9792385
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 3.3981179999999997,
+        "duration_seconds": 369.97666312521324,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 3.3981179999999997,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 32,
+            "output_tokens": 21780,
+            "cache_read_tokens": 2673216,
+            "cache_creation_tokens": 151685,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 32,
+              "output_tokens": 21780,
+              "cache_read_tokens": 2673216,
+              "cache_creation_tokens": 151685,
+              "thinking_tokens": 0,
+              "cost_usd": 3.3981179999999997,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 32,
+            "output_tokens": 21780,
+            "cache_read_tokens": 2673216,
+            "cache_creation_tokens": 151685,
+            "cost_usd": 3.3981179999999997
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 4.053290499999999,
+        "duration_seconds": 331.0280530829914,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 4.053290499999999,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 38,
+            "output_tokens": 15188,
+            "cache_read_tokens": 3739561,
+            "cache_creation_tokens": 180362,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 38,
+              "output_tokens": 15188,
+              "cache_read_tokens": 3739561,
+              "cache_creation_tokens": 180362,
+              "thinking_tokens": 0,
+              "cost_usd": 4.053290499999999,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 38,
+            "output_tokens": 15188,
+            "cache_read_tokens": 3739561,
+            "cache_creation_tokens": 180362,
+            "cost_usd": 4.053290499999999
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.530463,
+        "duration_seconds": 54.19287574989721,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": "medium",
+          "cost_usd": 0.530463,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 263085,
+            "output_tokens": 4689,
+            "cache_read_tokens": 205696,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 2219
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 263085,
+              "output_tokens": 4689,
+              "cache_read_tokens": 205696,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 2219,
+              "cost_usd": 0.530463,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 263085,
+            "output_tokens": 4689,
+            "cache_read_tokens": 205696,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.530463
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 0.24707249999999997,
+        "duration_seconds": 54.19287574989721,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 0.24707249999999997,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 118041,
+            "output_tokens": 1628,
+            "cache_read_tokens": 49026,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 6151
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 118041,
+              "output_tokens": 1628,
+              "cache_read_tokens": 49026,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 6151,
+              "cost_usd": 0.24707249999999997,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 118041,
+            "output_tokens": 1628,
+            "cache_read_tokens": 49026,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.24707249999999997
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.587029,
+        "duration_seconds": 51.68692952115089,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": "medium",
+          "cost_usd": 0.587029,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 341897,
+            "output_tokens": 4556,
+            "cache_read_tokens": 279808,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 2029
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 341897,
+              "output_tokens": 4556,
+              "cache_read_tokens": 279808,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 2029,
+              "cost_usd": 0.587029,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 341897,
+            "output_tokens": 4556,
+            "cache_read_tokens": 279808,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.587029
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 0.5157674999999999,
+        "duration_seconds": 51.68692952115089,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 0.5157674999999999,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 307911,
+            "output_tokens": 647,
+            "cache_read_tokens": 228788,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 5342
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 307911,
+              "output_tokens": 647,
+              "cache_read_tokens": 228788,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 5342,
+              "cost_usd": 0.5157674999999999,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 307911,
+            "output_tokens": 647,
+            "cache_read_tokens": 228788,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.5157674999999999
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.5573089999999999,
+        "duration_seconds": 64.81202539545484,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": "medium",
+          "cost_usd": 0.5573089999999999,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 299083,
+            "output_tokens": 3885,
+            "cache_read_tokens": 234368,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 1721
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 299083,
+              "output_tokens": 3885,
+              "cache_read_tokens": 234368,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 1721,
+              "cost_usd": 0.5573089999999999,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 299083,
+            "output_tokens": 3885,
+            "cache_read_tokens": 234368,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.5573089999999999
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.1185334999999998,
+        "duration_seconds": 64.81202539545484,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 1.1185334999999998,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 680955,
+            "output_tokens": 2051,
+            "cache_read_tokens": 506792,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 8738
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 680955,
+              "output_tokens": 2051,
+              "cache_read_tokens": 506792,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 8738,
+              "cost_usd": 1.1185334999999998,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 680955,
+            "output_tokens": 2051,
+            "cache_read_tokens": 506792,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.1185334999999998
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.440199,
+        "duration_seconds": 34.76120633329265,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": "medium",
+          "cost_usd": 0.440199,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 260841,
+            "output_tokens": 1843,
+            "cache_read_tokens": 204288,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 867
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 260841,
+              "output_tokens": 1843,
+              "cache_read_tokens": 204288,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 867,
+              "cost_usd": 0.440199,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 260841,
+            "output_tokens": 1843,
+            "cache_read_tokens": 204288,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.440199
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.0067430000000002,
+        "duration_seconds": 34.76120633329265,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "complexity_score": 6,
+          "reasoning_effort": null,
+          "cost_usd": 1.0067430000000002,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 619604,
+            "output_tokens": 1619,
+            "cache_read_tokens": 449552,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 6974
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 619604,
+              "output_tokens": 1619,
+              "cache_read_tokens": 449552,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 6974,
+              "cost_usd": 1.0067430000000002,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 619604,
+            "output_tokens": 1619,
+            "cache_read_tokens": 449552,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.0067430000000002
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      }
+    ],
+    "story_allocation": {
+      "allocation_usd": 41.77,
+      "basis": "substrate_band",
+      "complexity_score": 6,
+      "sample_count": 47,
+      "median_usd": 5.4588,
+      "p90_usd": 17.2453,
+      "max_usd": 33.4135,
+      "fallback_configured_usd": 50.0,
+      "reason": "derived from 47 admissible run(s) at complexity score 6 (max $33.41 x 1.25)",
+      "excluded_for_taint": 2,
+      "scaled_profiles": {
+        "preflight": 6.6302,
+        "plan": 0.663,
+        "dev": 6.6302,
+        "review_pool[0]": 6.6302,
+        "review_pool[1]": 6.6302,
+        "plan_agent_review[0]": 6.6302,
+        "plan_agent_review[1]": 6.6302,
+        "synthesis": 1.326
+      },
+      "observed_usd": null,
+      "status": "cost_unknown",
+      "exceeded": null
+    },
+    "allocation_exhausted": null,
+    "reviewer_budget_overruns": []
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "The issue-commit merge-evidence fallback in src/theforge/sprint/dag.py still treats any commit message mentioning `(#N)` as merge evidence, and skip_merged triage still maps directly to StoryOutcome.ALREADY_DONE with a generic reason string that does not name the evidence source, exactly matching the described defect.",
+    "complexity": "medium",
+    "complexity_score": 6,
+    "implementation_complexity_score": 6,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 6",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.5112516,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "7122e46f12f0",
+    "cache_snapshot": {
+      "worktree_head": "a6b41ece41017222ab6d464e6107a25ce848f781",
+      "evaluation_base_branch": "release/v0.13",
+      "evaluation_base_branch_head": "a6b41ece41017222ab6d464e6107a25ce848f781",
+      "story_content_hash": "dc6c078343b05ad7d71d6ef3a618e21d4abfb34089e2192938eb4f48d5974871"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "a6b41ece41017222ab6d464e6107a25ce848f781",
+      "current_worktree_head": "a6b41ece41017222ab6d464e6107a25ce848f781",
+      "cached_evaluation_base_branch": "release/v0.13",
+      "current_evaluation_base_branch": "release/v0.13",
+      "cached_evaluation_base_branch_head": "a6b41ece41017222ab6d464e6107a25ce848f781",
+      "current_evaluation_base_branch_head": "a6b41ece41017222ab6d464e6107a25ce848f781",
+      "cached_story_content_hash": "dc6c078343b05ad7d71d6ef3a618e21d4abfb34089e2192938eb4f48d5974871",
+      "current_story_content_hash": "dc6c078343b05ad7d71d6ef3a618e21d4abfb34089e2192938eb4f48d5974871",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "complexity_source": "preflight",
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.5112516,
+        "duration_s": 82.19,
+        "success": true,
+        "exit_code": 0,
+        "completed": true,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": null,
+          "complexity_score": null,
+          "reasoning_effort": null,
+          "cost_usd": 0.5112516,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6121,
+            "output_tokens": 6315,
+            "cache_read_tokens": 561732,
+            "cache_creation_tokens": 40332,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 6099,
+              "output_tokens": 15,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.006174000000000001,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 22,
+              "output_tokens": 6300,
+              "cache_read_tokens": 561732,
+              "cache_creation_tokens": 40332,
+              "thinking_tokens": 0,
+              "cost_usd": 0.5050776,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        }
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 6,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "gpt-5.6-sol",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.6-sol/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "builtin",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.77 \u2265 threshold 0.60 over 64 admissible runs \u2014 pre-promotion held) (profile success_rate=0.77 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend (promotion/dethrone off the static-tier pick); per-story routing cost target: unset",
+        "preflight": "tier cheap ($5.00)",
+        "planner": "complexity score 6 \u2192 tier strong ($5.00); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 6; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 35.0,
+        "final_total_usd": 35.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 5.0
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 5.0
+          },
+          "plan_reviewers": [
+            {
+              "model": "gpt-5.6-sol",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "opus",
+              "budget_usd": 5.0
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 5.0
+            }
+          ],
+          "total_usd": 35.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 6,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "gemini-3.5-flash",
+        "derived_review_pool": [
+          "gpt-5.4",
+          "gemini-3.1-pro-preview",
+          "gpt-5.6-terra",
+          "opus",
+          "gpt-5.5",
+          "gpt-5.6-sol"
+        ],
+        "source": "complexity_adaptive"
+      },
+      "story_allocation": {
+        "allocation_usd": 41.77,
+        "basis": "substrate_band",
+        "complexity_score": 6,
+        "sample_count": 47,
+        "median_usd": 5.4588,
+        "p90_usd": 17.2453,
+        "max_usd": 33.4135,
+        "fallback_configured_usd": 50.0,
+        "reason": "derived from 47 admissible run(s) at complexity score 6 (max $33.41 x 1.25)",
+        "excluded_for_taint": 2,
+        "scaled_profiles": {
+          "preflight": 6.6302,
+          "plan": 0.663,
+          "dev": 6.6302,
+          "review_pool[0]": 6.6302,
+          "review_pool[1]": 6.6302,
+          "plan_agent_review[0]": 6.6302,
+          "plan_agent_review[1]": 6.6302,
+          "synthesis": 1.326
+        }
+      },
+      "complexity_source": "preflight",
+      "preflight_degraded": {
+        "degraded": false,
+        "degraded_reason": null,
+        "failure_action": null,
+        "risk_signals": [],
+        "complexity_source": "preflight"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "plan",
+      "context_budget": 120,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/sprint",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/sprint/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/sprint",
+          "lines": 17
+        }
+      ],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2374/iter_1.yaml",
+      "handoff": {
+        "summary": "Constrained sprint merge-evidence resolution so commit-message text can no longer override code-level evidence. Replaced _has_base_commit_referencing_issue with _has_base_commit_closing_issue, which reads full commit bodies (git log --format=%B with a \\x1e record separator, bounded to 200 matches) and requires an explicit GitHub closing reference for the exact issue number; a bare (#N) or contextual mention no longer matches. Added two vetoes ahead of the issue_commit fallback in _branch_merge_evidence: a branch that is a non-ancestor of base with unique commits, and an audit record whose latest run for the slug is unsuccessful or REQUEST_CHANGES with no landing status. The topology veto is deliberately scoped to the non-ancestor case so fast-forward merges (ancestor, zero unique work) still resolve through the existing topology logic. Added a read-only latest_run_outcome_in_substrate query in audit_substrate.py with a latest_run_outcome wrapper in audit.py following the require_substrate open-then-close pattern; audit-read failures return no-opinion rather than inverting into a veto. Extracted _merged_skip_reason so every skip_merged path renders 'already merged to <base> (evidence: <source>)'. Verified against real repository history that forge's own squash merges still detect (they carry 'Closes #N' from the PR body per completion.py:369): issues 2340 and 2346 return True, open issue 2374 returns False.",
+        "commits": [
+          {
+            "sha": "e82b1478",
+            "message": "fix(sprint): require a closing reference for commit-message merge evidence"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+            "status": "MET",
+            "notes": "_has_base_commit_closing_issue requires closes/closed/fixes/fixed/resolves/resolved followed by #N, GH-N, or owner/repo#N, case-insensitive, with a trailing digit-boundary so #265 does not match inside #2650. Covered by test_is_branch_merged_bare_issue_mention_is_not_merge_evidence (the exact config-commit shape from the report) and test_is_branch_merged_closing_reference_for_other_issue_does_not_match."
+          },
+          {
+            "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+            "status": "MET",
+            "notes": "Two vetoes precede the issue_commit fallback. Covered by test_branch_merge_evidence_unique_commits_veto_closing_reference (five preserved commits), test_branch_merge_evidence_unsuccessful_audit_vetoes_closing_reference, and test_branch_merge_evidence_audit_veto_reads_real_substrate, which seeds a genuine substrate record rather than mocking so the veto is not masked by the topology veto. Negative cases pinned by test_branch_merge_evidence_landed_audit_does_not_veto_closing_reference and test_branch_merge_evidence_audit_read_failure_does_not_veto."
+          },
+          {
+            "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+            "status": "MET",
+            "notes": "_merged_skip_reason names all four sources. The runner already logs this as 'SKIP <slug> (<reason>)' at runner.py:4840, so the scheduler action was already a skip; the change is that the reason is no longer the bare 'already merged to <base>'. Step 5's audit path already named its evidence and was left as-is."
+          },
+          {
+            "criterion": "Fix-success criterion: a story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+            "status": "MET",
+            "notes": "End-to-end triage regression test_triage_bare_issue_mention_with_preserved_work_does_not_skip reproduces the full reported shape \u2014 base commit mentioning the issue as context, branch non-ancestor with five commits ahead, seeded audit record with outcome_success 0 / REQUEST_CHANGES / empty landing \u2014 and asserts triage.action != 'skip_merged'."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "Full-suite run showed 17 pre-existing failures in tests/test_sprint_lock.py, tests/test_cut_rc_isolation.py and tests/test_sprint_reexec_collision.py, all failing with 'PermissionError: Operation not permitted' on multiprocessing semaphores and /var/folders temp files. These are sandbox-environmental and touch no code path in this change. I could not confirm them against a stashed baseline because git stash failed in this worktree; runner.py was briefly dirtied by an unrelated stash pop and was restored to HEAD (verified byte-identical, stash entry preserved). The coordinator's out-of-sandbox gate run should not hit these.",
+          "The commit-message scan is bounded to the 200 most recent commits whose message contains the literal '#N', since --grep is a substring match and low issue numbers can match many commits. A closing reference older than that window would be missed, which costs a re-run of a landed story rather than discarding live work."
+        ]
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2374/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 1 fixes the cycle-1 P1: a base commit reading 'Closes GH-265' was unreachable because the git prefilter was `--fixed-strings --grep=#N`, which only retrieves messages containing a literal '#N'. The GH-N spelling the Python matcher advertised was dropped by git before the matcher ever ran. The root cause was that the supported reference spellings were declared twice \u2014 once in _closing_reference_pattern and once in the subprocess argv \u2014 in two patterns free to drift. Both are now derived from a single _REFERENCE_SIGILS = ('#', 'GH-') tuple through _reference_alternation(), and the prefilter runs as a case-insensitive extended regex via --extended-regexp --regexp-ignore-case --grep=(#|GH-)N. A new _reference_grep_pattern helper documents the binding invariant: the prefilter must remain at least as permissive as the matcher, because anything it drops the matcher never sees. Coverage gap addressed with a real-git test rather than another mock, since a mocked subprocess.run cannot observe the prefilter and matcher disagreeing \u2014 which is precisely how this escaped cycle 1. Also swept src/ and scripts/ for other commit-message greps; this is the only one.",
+        "commits": [
+          {
+            "sha": "e82b1478",
+            "message": "fix(sprint): require a closing reference for commit-message merge evidence"
+          },
+          {
+            "sha": "d31e7f1e",
+            "message": "fix(sprint): address review findings (iter 1)"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+            "status": "MET",
+            "notes": "_has_base_commit_closing_issue requires a closing keyword followed by #N, GH-N, or owner/repo#N. As of this iteration every advertised spelling is actually reachable at runtime: test_has_base_commit_closing_issue_against_real_git parametrizes over Closes #N, Closes GH-N, lowercase closes gh-N, Resolves owner/repo#N and 'Fixes: #N' against a real git repository, alongside bare-mention and adjacent-number negatives."
+          },
+          {
+            "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+            "status": "MET",
+            "notes": "Unchanged this iteration. Two vetoes precede the issue_commit fallback, covered by test_branch_merge_evidence_unique_commits_veto_closing_reference, test_branch_merge_evidence_unsuccessful_audit_vetoes_closing_reference, and test_branch_merge_evidence_audit_veto_reads_real_substrate (seeded substrate, not a mock). Negative cases pinned by the landed-audit and audit-read-failure tests."
+          },
+          {
+            "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+            "status": "MET",
+            "notes": "Unchanged this iteration. _merged_skip_reason names all four sources; runner.py:4840 already logs the action as 'SKIP <slug> (<reason>)'."
+          },
+          {
+            "criterion": "Fix-success criterion: a story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+            "status": "MET",
+            "notes": "Unchanged this iteration. test_triage_bare_issue_mention_with_preserved_work_does_not_skip reproduces the full reported shape end-to-end and asserts triage.action != 'skip_merged'."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": [
+          "Full-suite run shows the same 17 pre-existing failures as before this change, in tests/test_sprint_lock.py, tests/test_cut_rc_isolation.py and tests/test_sprint_reexec_collision.py, all 'PermissionError: Operation not permitted' on multiprocessing semaphores and /var/folders temp files. Sandbox-environmental and unrelated to merge evidence; pass count rose by exactly the 9 new parametrized cases (8124 to 8133). The coordinator's out-of-sandbox gate should not hit these.",
+          "The commit-message scan remains bounded to the 200 most recent commits matching the prefilter. A closing reference older than that window is missed, which costs a re-run of a landed story rather than discarding live work.",
+          "Note for the reviewer, carried from iteration 0: an unrelated pre-existing stash entry (stash@{0}, 'WIP on feat/issue-2234') exists in this worktree. It was briefly popped into runner.py by a failed `git stash` and then reverted; runner.py is byte-identical to HEAD and the stash entry is preserved, but it may warrant a look outside this story."
+        ]
+      }
+    },
+    {
+      "iteration": 3,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2374/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 2 fixes the cycle-2 P1: my previous veto keyed on non-ancestor-plus-unique-commits, which measurement against real git shows is exactly the squash-merge shape (--is-ancestor returns non-zero and rev-list base..branch returns >0 for a squash-merged branch whose source branch survives). That veto therefore suppressed every genuine squash merge, i.e. the whole case the issue_commit source exists to detect. Replaced it with _branch_adds_content_to_base, which uses `git merge-tree --write-tree` to test whether merging the branch would change base's tree \u2014 a content question rather than a topology one, and one that stays correct after base advances with unrelated commits (verified; a plain tree diff gets that case wrong). The veto requires positive proof: a conflict, a git older than 2.38 lacking --write-tree, an unparseable oid, or a timeout all decline to veto and leave the closing reference standing, because failing that direction cannot recreate this regression while the reported bug remains independently shut by the closing-reference requirement and the audit veto. Also removed the now-dead rev-list probe that existed only to feed the old veto. Test work: the old veto's unit test was passing vacuously because its inline mock still pinned the pre-fix `--grep=#N` literal, so the mock never matched and no closing reference was ever returned; it asserted the correct outcome for the wrong reason. Replaced it with four real-git tests that build actual repositories and mock only gh and the audit substrate, and swept the file for the two remaining stale --grep= literals.",
+        "commits": [
+          {
+            "sha": "e82b1478",
+            "message": "fix(sprint): require a closing reference for commit-message merge evidence"
+          },
+          {
+            "sha": "d31e7f1e",
+            "message": "fix(sprint): address review findings (iter 1)"
+          },
+          {
+            "sha": "76cf65cc",
+            "message": "fix(sprint): veto closing-reference evidence on content, not topology"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+            "status": "MET",
+            "notes": "Unchanged this iteration. _has_base_commit_closing_issue requires a closing keyword plus #N, GH-N or owner/repo#N, with prefilter and matcher derived from one _REFERENCE_SIGILS tuple. Covered by the nine-case real-git parametrization test_has_base_commit_closing_issue_against_real_git, plus the new end-to-end test_real_unmerged_branch_with_bare_mention_is_not_merged."
+          },
+          {
+            "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+            "status": "MET",
+            "notes": "Implemented as content-presence rather than ancestry, which is the substantive reading; see story_deviations for why the literal ancestry reading is unimplementable. test_real_unmerged_branch_with_closing_reference_is_not_merged pins the content veto and test_real_squash_merge_vetoed_by_unsuccessful_audit pins the audit veto in isolation (content alone would accept that repo, since the work genuinely is on base)."
+          },
+          {
+            "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+            "status": "MET",
+            "notes": "Unchanged this iteration. _merged_skip_reason names all four sources; runner.py:4840 already logs the action as 'SKIP <slug> (<reason>)'."
+          },
+          {
+            "criterion": "Fix-success criterion: a story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+            "status": "MET",
+            "notes": "The criterion is a conjunction and the audit half is what discriminates, since ancestry alone cannot. test_triage_bare_issue_mention_with_preserved_work_does_not_skip reproduces the full reported shape end-to-end (bare mention on base, five preserved commits, seeded record with outcome_success 0 / REQUEST_CHANGES / empty landing) and asserts triage.action != 'skip_merged'. That story is now protected by three independent mechanisms: the closing-reference requirement, the content veto, and the audit veto."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "The spec's Expected section states 'A branch that is not an ancestor of the base has not landed, whatever any message says.' Taken literally that is false for squash merges \u2014 I measured a real squash-merged branch as a non-ancestor with unique commits \u2014 and implementing it literally is what produced the cycle-2 P1. I implemented the spec's own Diagnosis wording instead ('the code it introduces is absent from the base branch'), i.e. content-presence rather than ancestry. Flagging for reviewer confirmation."
+        ],
+        "deferred_items": [
+          "Full-suite run shows the same 17 pre-existing failures as before any commit on this branch, in tests/test_sprint_lock.py, tests/test_cut_rc_isolation.py and tests/test_sprint_reexec_collision.py, all 'PermissionError: Operation not permitted' on multiprocessing semaphores and /var/folders temp files. Sandbox-environmental and unrelated to merge evidence; 8136 passed. The coordinator's out-of-sandbox gate should not hit these.",
+          "_branch_adds_content_to_base declines to veto on git older than 2.38, which lacks `git merge-tree --write-tree`. On such a git the closing-reference path reverts to cycle-1 behavior (closing reference plus audit veto, no content veto). No minimum git version is declared in the repo; worth pinning if one is ever added.",
+          "The commit-message scan remains bounded to the 200 most recent commits matching the prefilter. A closing reference older than that window is missed, which costs a re-run of a landed story rather than discarding live work.",
+          "Carried from iteration 0 and still unresolved outside this story: an unrelated pre-existing stash entry (stash@{0}, 'WIP on feat/issue-2234') exists in this worktree. runner.py is byte-identical to HEAD and the stash entry is preserved, but it may warrant a look."
+        ]
+      }
+    },
+    {
+      "iteration": 4,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2374/iter_1.yaml",
+      "handoff": {
+        "summary": "Iteration 3 fixes the cycle-3 P1: _branch_adds_content_to_base returned False on every non-zero `git merge-tree --write-tree` exit, so a conflict was filed alongside 'could not run' and declined to veto. That let a conflicting, definitively unmerged branch be reported merged whenever base carried a closing reference. Git's documented contract is exit 0 clean / exit 1 conflicted / anything else an error, and a conflict is positive content evidence \u2014 base and branch changed the same lines differently, so the branch's work as written is not what base carries. The veto now fires on exit 1. While fixing it I found that git also rejects an unknown ref with exit 1 rather than the documented 'something other than 0 or 1', so the exit code alone cannot separate a conflict from a missing branch; measured behavior is that a refusal writes to stderr with empty stdout while a real conflict writes the conflicted tree oid to stdout, so the code keys on that oid via a new _OID_RE. This preserves the externally-merged-then-deleted-branch case, whose only remaining evidence is the closing reference. Also corrected a docstring claim of my own: I had written that the oid check separates conflict from bad ref, but mutation testing showed the empty-stdout check was doing that work today; the docstring now states what is actually true and the oid guard has a test that reaches it.",
+        "commits": [
+          {
+            "sha": "e82b1478",
+            "message": "fix(sprint): require a closing reference for commit-message merge evidence"
+          },
+          {
+            "sha": "d31e7f1e",
+            "message": "fix(sprint): address review findings (iter 1)"
+          },
+          {
+            "sha": "76cf65cc",
+            "message": "fix(sprint): veto closing-reference evidence on content, not topology"
+          },
+          {
+            "sha": "2c67da01",
+            "message": "fix(sprint): treat a merge-tree conflict as content evidence, not uncertainty"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+            "status": "MET",
+            "notes": "Unchanged this iteration. _has_base_commit_closing_issue requires a closing keyword plus #N, GH-N or owner/repo#N, with prefilter and matcher derived from one _REFERENCE_SIGILS tuple. Covered by the nine-case real-git parametrization plus test_real_unmerged_branch_with_bare_mention_is_not_merged."
+          },
+          {
+            "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+            "status": "MET",
+            "notes": "Now holds for the conflicting branch too, which was the cycle-3 gap. Content evidence vetoes in two shapes: a clean replay that changes base's tree (test_real_unmerged_branch_with_closing_reference_is_not_merged) and a conflicted replay (test_real_conflicting_unmerged_branch_is_not_merged). Audit evidence vetoes independently via test_real_squash_merge_vetoed_by_unsuccessful_audit, which uses a repo where content alone would accept."
+          },
+          {
+            "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+            "status": "MET",
+            "notes": "Unchanged this iteration. _merged_skip_reason names all four sources; runner.py:4840 already logs the action as 'SKIP <slug> (<reason>)'."
+          },
+          {
+            "criterion": "Fix-success criterion: a story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+            "status": "MET",
+            "notes": "Unchanged this iteration. test_triage_bare_issue_mention_with_preserved_work_does_not_skip reproduces the reported shape end-to-end and asserts triage.action != 'skip_merged'. That story is protected by three independent mechanisms: the closing-reference requirement, the content veto, and the audit veto."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Carried from iteration 2 and still standing: the spec's Expected section says 'A branch that is not an ancestor of the base has not landed, whatever any message says.' Measured against real git that is false for squash merges (a squash-merged branch is a non-ancestor with unique commits), and implementing it literally produced the cycle-2 P1. I implemented the spec's own Diagnosis wording instead \u2014 'the code it introduces is absent from the base branch' \u2014 i.e. content-presence rather than ancestry. Flagging again for reviewer confirmation."
+        ],
+        "deferred_items": [
+          "Accepted and documented false negative: a branch squash-merged long ago whose files base has since rewritten will conflict on replay and be vetoed, re-running a landed story. That is the safe direction relative to discarding live work, which is the failure this change exists to prevent.",
+          "_branch_adds_content_to_base declines to veto on git older than 2.38, which lacks `git merge-tree --write-tree` (exit 129). On such a git the path reverts to closing-reference plus audit veto, with no content veto. No minimum git version is declared in the repo; worth pinning if one is ever added.",
+          "The commit-message scan remains bounded to the 200 most recent commits matching the prefilter. A closing reference older than that window is missed, which costs a re-run of a landed story rather than discarding live work.",
+          "Full-suite run shows the same 17 pre-existing failures as before any commit on this branch, in tests/test_sprint_lock.py, tests/test_cut_rc_isolation.py and tests/test_sprint_reexec_collision.py, all 'PermissionError: Operation not permitted' on multiprocessing semaphores and /var/folders temp files. Sandbox-environmental and unrelated to merge evidence; 8139 passed.",
+          "Carried from iteration 0, outside this story: an unrelated pre-existing stash entry (stash@{0}, 'WIP on feat/issue-2234') exists in this worktree. runner.py is byte-identical to HEAD and the stash entry is preserved, but it may warrant a look."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "0aa5b756fd92578d"
+      ]
+    },
+    {
+      "iteration": 3,
+      "finding_ids": [
+        "c3664f1f8effa5d1"
+      ]
+    },
+    {
+      "iteration": 4,
+      "finding_ids": [
+        "efca1011c49182a6"
+      ]
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "e82b1478144d8899f45b7c1e7933ad18321ad00a",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "e82b1478144d8899f45b7c1e7933ad18321ad00a",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": "PASS"
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5-cli] The reported bare-mention skip is fixed, but one advertised closing-reference form is unreachable at runtime because the git prefilter excludes it. | [google-gemini-3.5-flash-api] The implementation securely restricts commit-message merge evidence to explicit closing references and introduces strong code-level vetoes to prevent false-positive skips.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/dag.py",
+          "line": 159,
+          "description": "A base commit whose message says Closes GH-265 is ignored by merge-evidence triage because the git scan only retrieves messages containing #265.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/sprint/dag.py:118-174 adds an exact closing-reference matcher and rejects bare mentions, with tests at tests/test_sprint_runner.py:718-752 and tests/test_sprint_resume.py:632-688 covering the reported bare mention and digit-boundary case. The same matcher advertises GH-N support at src/theforge/sprint/dag.py:127-129, but src/theforge/sprint/dag.py:159 only asks git for messages containing #N, so Closes GH-N is never examined.; src/theforge/sprint/dag.py:94-159 (implements _closing_reference_pattern and _has_base_commit_closing_issue). Verified by tests/test_sprint_runner.py:716-749 (test_is_branch_merged_bare_issue_mention_is_not_merge_evidence and test_is_branch_merged_closing_reference_for_other_issue_does_not_match)."
+        },
+        {
+          "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:336-405 records unique work for non-ancestor branches and vetoes issue_commit evidence before the textual fallback, while src/theforge/sprint/dag.py:179-201 reads the latest audit outcome and treats unsuccessful or REQUEST_CHANGES records without landed status as contradictory evidence. tests/test_sprint_runner.py:755-803 covers the unique-commit and unsuccessful-audit vetoes, and tests/test_sprint_runner.py:831-860 verifies the audit veto against a seeded substrate.; src/theforge/sprint/dag.py:322-348 (computes branch_has_unique_work and applies vetoes). Verified by tests/test_sprint_runner.py:752-823 (test_branch_merge_evidence_unique_commits_veto_closing_reference, test_branch_merge_evidence_unsuccessful_audit_vetoes_closing_reference, and test_branch_merge_evidence_audit_veto_reads_real_substrate)."
+        },
+        {
+          "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:654-672 renders skip_merged reasons with evidence detail, and src/theforge/sprint/dag.py:747-752 uses that reason in triage. tests/test_sprint_resume.py:461-464 verifies PR evidence wording, tests/test_sprint_resume.py:593-630 verifies issue_commit evidence wording, and tests/test_sprint_resume.py:690-724 verifies topology evidence wording.; src/theforge/sprint/dag.py:654-672 (implements _merged_skip_reason returning granular evidence-backed details). Verified by tests/test_sprint_resume.py:612-629 (test_triage_open_issue_with_base_commit_closing_reference_skips_merged checks full string format)."
+        },
+        {
+          "criterion": "Fix-success criterion: a story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:401-407 returns no merge before commit-message evidence when the branch has unique work or the audit trail contradicts landing. tests/test_sprint_resume.py:632-688 reproduces the reported shape with a contextual base commit mention, five commits ahead, outcome_success 0, REQUEST_CHANGES, and empty landing_status, and asserts triage.action is not skip_merged.; src/theforge/sprint/dag.py:387-408 (vetoes the textual search using recorded audit and branch topology). Verified by tests/test_sprint_resume.py:631-686 (test_triage_bare_issue_mention_with_preserved_work_does_not_skip)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "d31e7f1e307c5a09839b9831f213849312b9d2b1",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "d31e7f1e307c5a09839b9831f213849312b9d2b1",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": "PASS"
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5-cli] The cycle-1 GH-N prefilter bug is fixed, but the current fix regresses real squash-merge detection when the source branch still exists with unique commits. | [google-gemini-3.5-flash-api] The commit-message merge evidence now requires explicit closing references, and code topology and unsuccessful runs properly veto weaker textual evidence.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/dag.py",
+          "line": 432,
+          "description": "A branch whose changes were squash-merged into base by a commit that says Closes #N is reported as not merged when the feature branch still has commits not reachable from base.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/sprint/dag.py:131-203 requires a closing keyword plus #N, GH-N, or owner/repo#N, and tests/test_sprint_runner.py:857-886 verifies the real git prefilter accepts the advertised spellings while rejecting bare mentions; however src/theforge/sprint/dag.py:432 suppresses closing-reference evidence for real squash-merge branches that still have unique commits."
+        },
+        {
+          "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:354-435 checks topology and unsuccessful audit state before the issue_commit fallback, with tests/test_sprint_runner.py:769-817 and tests/test_sprint_runner.py:889-923 covering unique-commit and unsuccessful-audit vetoes."
+        },
+        {
+          "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:683-701 renders source-specific evidence details and src/theforge/sprint/dag.py:776-781 consumes that reason for skip_merged triage, with tests/test_sprint_resume.py:605-642 and tests/test_sprint_resume.py:719-722 asserting evidence-bearing skip reasons."
+        },
+        {
+          "criterion": "Fix-success criterion: a story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:432-435 vetoes issue_commit evidence for unique branch work and unsuccessful audit outcomes, and tests/test_sprint_resume.py:644-699 reproduces the preserved-work plus REQUEST_CHANGES plus bare-mention shape and asserts triage.action is not skip_merged."
+        },
+        {
+          "criterion": "Symptom resolution: A story is skipped as already landed because an unrelated commit on the base branch mentions its issue number in passing.",
+          "status": "VERIFIED",
+          "evidence": "Implemented in src/theforge/sprint/dag.py (lines 131-144, _closing_reference_pattern) and validated in _has_base_commit_closing_issue (lines 158-205). Vetoed by unique commits on the branch (lines 432-433) and unsuccessful runs via _audit_contradicts_merge (lines 208-230, 434-435). Coverage in tests/test_sprint_resume.py (test_triage_bare_issue_mention_with_preserved_work_does_not_skip) and tests/test_sprint_runner.py (test_is_branch_merged_bare_issue_mention_is_not_merge_evidence, test_branch_merge_evidence_unique_commits_veto_closing_reference, and test_branch_merge_evidence_unsuccessful_audit_vetoes_closing_reference)."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 3,
+      "commit": "76cf65ccf18fb8581732f25bdbf980bf80854541",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "76cf65ccf18fb8581732f25bdbf980bf80854541",
+        "gate_runs": 3,
+        "validate_blocks": 0,
+        "story_validation_verdict": "PASS"
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5-cli] The prior P1s are addressed, but the latest content-veto change introduces a new skip_merged path for conflicting unmerged branches that still have a base commit closing reference. | [google-gemini-3.5-flash-api] Verified cycle-2 squash-merge and cycle-1 sigil prefilter resolutions. The code uses content comparison and audit checks to accurately determine merge states with no regressions.",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 0,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/sprint/dag.py",
+          "line": 243,
+          "description": "When an unmerged issue branch conflicts with the base branch and the base branch contains a closing reference for that issue, merge-evidence resolution reports the branch as merged from issue_commit.",
+          "reviewers": [
+            "openai-gpt-5.5-cli"
+          ],
+          "reporter": "openai-gpt-5.5-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py lines 131-203 require a closing keyword plus a supported issue sigil before issue_commit evidence is accepted, and tests/test_sprint_runner.py lines 732-750 plus lines 854-863 cover the bare-mention failure mode against both mocked and real git paths.; src/theforge/sprint/dag.py:94-205 restricts commit-message evidence to closing references (Closes, Fixes, Resolves, etc.) via _closing_reference_pattern and matches against the git log. Tests in tests/test_sprint_runner.py (test_is_branch_merged_bare_issue_mention_is_not_merge_evidence and test_real_unmerged_branch_with_bare_mention_is_not_merged) verify that bare mentions do not satisfy the criteria."
+        },
+        {
+          "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/sprint/dag.py lines 208-259 add a content-presence veto and lines 264-286 add an audit veto, with clean unmerged and unsuccessful audit coverage in tests/test_sprint_runner.py lines 841-890; however, src/theforge/sprint/dag.py lines 237-244 treat merge-tree conflicts as no veto, so a conflicting unmerged branch can still be accepted by lines 476-480.; src/theforge/sprint/dag.py:208-287 introduces _branch_adds_content_to_base to compare content trees using git merge-tree --write-tree, and _audit_contradicts_merge to evaluate audit outcomes. Under _branch_merge_evidence, these content and audit checks veto any textual closing reference matches. Verified by tests/test_sprint_runner.py (test_real_squash_merge_vetoed_by_unsuccessful_audit and test_real_unmerged_branch_with_closing_reference_is_not_merged)."
+        },
+        {
+          "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py lines 727-745 renders evidence-specific skip reasons and src/theforge/sprint/dag.py lines 820-825 consumes that reason in skip_merged triage; tests/test_sprint_resume.py lines 639-642 and lines 702-731 assert the new evidence-bearing messages for issue_commit and topology skips.; src/theforge/sprint/dag.py:651-671 defines _merged_skip_reason, which explicitly specifies which source of evidence (merged PR, prior APPROVE in audit, topology, or closing reference) caused the skip. This reason is embedded in the StoryTriage response and logged at runner.py:4840. Checked by tests/test_sprint_resume.py."
+        },
+        {
+          "criterion": "Fix-success criterion: a story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py lines 476-480 invoke the content and audit vetoes before accepting a closing-reference commit, and tests/test_sprint_resume.py lines 644-700 reproduces the reported shape with a bare base mention, five preserved commits, unsuccessful outcome, REQUEST_CHANGES verdict, and no landing status while asserting the story is not skip_merged.; src/theforge/sprint/dag.py:476-481 evaluates _branch_adds_content_to_base and _audit_contradicts_merge before evaluating the closing issue match. Verified by end-to-end integration test tests/test_sprint_resume.py:test_triage_bare_issue_mention_with_preserved_work_does_not_skip."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 4,
+      "commit": "2c67da01c5c4ed0ad23ed431395196fb0f02091b",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "2c67da01c5c4ed0ad23ed431395196fb0f02091b",
+        "gate_runs": 4,
+        "validate_blocks": 0,
+        "story_validation_verdict": "PASS"
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] Prior P1s are resolved; the latest iteration adds the conflict veto without introducing a blocking regression. | [google-gemini-3.5-flash-api] Verified all previous cycle P1 findings resolved with no new regressions or defects introduced.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: An unrelated base-branch commit that merely mentions an issue number must not cause an open story with preserved work to be triaged as already merged and skipped as complete.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/sprint/dag.py:180-208 implements closing-reference-only commit-message evidence, src/theforge/sprint/dag.py:501-505 invokes content and audit vetoes before accepting the issue_commit source, src/theforge/sprint/dag.py:752-770 and src/theforge/sprint/dag.py:845-850 consume the structured evidence in the skip reason, src/theforge/coordinator/audit.py:132-154 and src/theforge/coordinator/audit_substrate.py:2091-2120 expose the latest unsuccessful audit outcome, tests/test_sprint_resume.py:644-700 reproduces the reported preserved-work bare-mention triage path, and tests/test_sprint_runner.py:826-961 covers the prior GH-N, squash-merge, unmerged-content, bare-mention, conflict, deleted-branch, and audit-veto cases against real git."
+        },
+        {
+          "criterion": "A reference to a unit of work in a commit message is not evidence that the work landed; evidence is a statement that it landed (closing reference, ancestry, or recorded outcome).",
+          "status": "VERIFIED",
+          "evidence": "In src/theforge/sprint/dag.py (lines 107-210), _has_base_commit_closing_issue checks for specific closing keywords in base commit messages. This is tested against real git with parametrized cases in tests/test_sprint_runner.py (lines 845-885)."
+        },
+        {
+          "criterion": "Where sources disagree, sources describing the code win over sources describing prose about the code \u2014 a non-ancestor branch has not landed, and a recorded unsuccessful outcome is not overridden by a textual match.",
+          "status": "VERIFIED",
+          "evidence": "In src/theforge/sprint/dag.py (lines 213-311), content checks and latest run outcome audits veto weaker textual matches. Real-git tests in tests/test_sprint_runner.py (lines 797-843) verify unmerged, conflicting, and squash-merged branch behavior."
+        },
+        {
+          "criterion": "A skip is reported as a skip and names the evidence that produced it, so discarding preserved work is visible and contestable rather than presented as completion.",
+          "status": "VERIFIED",
+          "evidence": "In src/theforge/sprint/dag.py (lines 749-769), _merged_skip_reason renders a descriptive string specifying the evidence source, which is returned in triage specs near lines 844-850."
+        },
+        {
+          "criterion": "Symptom resolution: A story whose branch is not an ancestor of base and whose recorded outcome is unsuccessful is not triaged as merged on the strength of a commit message.",
+          "status": "VERIFIED",
+          "evidence": "An end-to-end integration test is implemented in tests/test_sprint_resume.py (lines 642-700), confirming that passing mentions on base do not skip unmerged stories with preserved work."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 4
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 4
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [anthropic-opus-cli] Step 4 lists only tests/test_sprint_runner.py, but tests encoding the old behavior also live in tests/test_sprint_resume.py \u2014 e.g. the loose-mention triage test mocking --grep=(#1072) that asserts triage.action == 'skip_merged' and triage.reason == 'already merged to main', and the adjacent topology test (issue-1073) that asserts the same bare reason string Step 3 changes. Several tests/test_sprint_run_id_rollover.py cases also construct StoryTriage with reason='already merged to main', though those pass the reason in rather than asserting the producer.\n  Suggestion: Include tests/test_sprint_resume.py in the Step 4 scope: retire or invert the issue-commit loose-match triage test, and update reason-string assertions on the topology/PR/audit paths to match the new evidence-naming format. Sweep for other producers-of-reason assertions before running the gate.\n- [P2] [anthropic-opus-cli] Step 2 names src/theforge/coordinator/audit.py and audit_substrate.py as files to modify, but no existing helper returns 'most recent recorded outcome/verdict for slug' \u2014 has_review_approve (audit.py:73) is a positive-only boolean and has_review_approve_in_substrate filters to APPROVE records. A new query helper is required, not a modification of the existing path.\n  Suggestion: Add a small read-only helper (e.g. latest run record's outcome_success / verdict / landing status for a slug) in audit_substrate.py with a thin wrapper in audit.py, following the require_substrate/open-then-close pattern at audit.py:102-129, rather than widening has_review_approve's semantics.\n- [P2] [anthropic-opus-cli] Step 2's topology veto must not regress the fast-forward case _branch_merge_evidence explicitly serves: after an FF merge branch and base share a tip, so --is-ancestor succeeds with 0 commits ahead \u2014 that is a merged branch, not a veto condition. The veto is only sound for the non-ancestor-with-unique-commits shape described in the diagnosis.\n  Suggestion: Scope the veto narrowly to --is-ancestor returning non-zero AND base..branch count > 0 (branch has unique work not on base), leaving every ancestor case to the existing topology logic at dag.py:248-288.",
+    "cost_usd": null,
+    "per_reviewer": [
+      {
+        "attempt": 0,
+        "profile": "openai-gpt-5.6-sol-cli",
+        "verdict": "APPROVE",
+        "cost_usd": null
+      },
+      {
+        "attempt": 0,
+        "profile": "anthropic-opus-cli",
+        "verdict": "APPROVE",
+        "cost_usd": 0.594955
+      }
+    ],
+    "per_reviewer_value": [
+      {
+        "attempt": 0,
+        "reviewer": "openai-gpt-5.6-sol-cli",
+        "complexity": "medium",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 55.87,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      },
+      {
+        "attempt": 0,
+        "reviewer": "anthropic-opus-cli",
+        "complexity": "medium",
+        "unique_p1_count": 0,
+        "total_p1_count": 0,
+        "latency_s": 53.96,
+        "latency_per_p1_s": null,
+        "parse_error_count": 0
+      }
+    ],
+    "plan_finding_registry": [
+      {
+        "description": "Step 4 lists only tests/test_sprint_runner.py, but tests encoding the old behavior also live in tests/test_sprint_resume.py \u2014 e.g. the loose-mention triage test mocking --grep=(#1072) that asserts triage.action == 'skip_merged' and triage.reason == 'already merged to main', and the adjacent topology test (issue-1073) that asserts the same bare reason string Step 3 changes. Several tests/test_sprint_run_id_rollover.py cases also construct StoryTriage with reason='already merged to main', though those pass the reason in rather than asserting the producer.",
+        "severity": "P1-impl",
+        "original_severity": null,
+        "effective_severity": "P1-impl",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2 names src/theforge/coordinator/audit.py and audit_substrate.py as files to modify, but no existing helper returns 'most recent recorded outcome/verdict for slug' \u2014 has_review_approve (audit.py:73) is a positive-only boolean and has_review_approve_in_substrate filters to APPROVE records. A new query helper is required, not a modification of the existing path.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      },
+      {
+        "description": "Step 2's topology veto must not regress the fast-forward case _branch_merge_evidence explicitly serves: after an FF merge branch and base share a tip, so --is-ancestor succeeds with 0 commits ahead \u2014 that is a merged branch, not a veto condition. The veto is only sound for the non-ancestor-with-unique-commits shape described in the diagnosis.",
+        "severity": "P2",
+        "original_severity": null,
+        "effective_severity": "P2",
+        "cycle_first_seen": 0,
+        "cycle_last_seen": 0,
+        "disposition": "new"
+      }
+    ],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2383",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2374",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2383",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2383",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_review": {
+    "source": "merged_cycle_review",
+    "verdict": "APPROVE"
+  },
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-11T03:36:17.714645+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": {
+    "verdict": "PASS",
+    "cost_usd": 0.1186986,
+    "duration_s": 10.874066082760692,
+    "findings": []
+  },
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_runner.py",
+      "detail": "tests/test_sprint_runner.py has 1368 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "0aa5b756fd92578d",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/sprint/dag.py",
+      "line": 159,
+      "severity": "P1",
+      "description": "A base commit whose message says Closes GH-265 is ignored by merge-evidence triage because the git scan only retrieves messages containing #265.",
+      "reporter": "openai-gpt-5.5-cli",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "c3664f1f8effa5d1",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/sprint/dag.py",
+      "line": 432,
+      "severity": "P1",
+      "description": "A branch whose changes were squash-merged into base by a commit that says Closes #N is reported as not merged when the feature branch still has commits not reachable from base.",
+      "reporter": "openai-gpt-5.5-cli",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "efca1011c49182a6",
+      "cycle_first_seen": 3,
+      "cycle_last_seen": 3,
+      "file": "src/theforge/sprint/dag.py",
+      "line": 243,
+      "severity": "P1",
+      "description": "When an unmerged issue branch conflicts with the base branch and the base branch contains a closing reference for that issue, merge-evidence resolution reports the branch as merged from issue_commit.",
+      "reporter": "openai-gpt-5.5-cli",
+      "disposition": "fixed"
+    }
+  ],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose. Extract when a responsibility separates from its neighbours \u2014 never to satisfy a line count. Putting a change in an already-large module is correct if that is where it belongs; a module carved at whatever line got the count down is worse than the large module it came from.",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 7,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 6,
+      "score_controlled": true,
+      "enabled": true,
+      "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+      "phases": {
+        "plan": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "plan",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            4,
+            6
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                4,
+                6
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            }
+          ],
+          "provider_support": "supported_metered",
+          "varies_by_provider": false
+        },
+        "dev": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "dev",
+          "applied": false,
+          "bucket": "medium",
+          "range": [
+            4,
+            6
+          ],
+          "output": "medium",
+          "models": [
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "medium",
+              "range": [
+                4,
+                6
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "medium",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        },
+        "review": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "review",
+          "applied": true,
+          "bucket": "medium",
+          "range": [
+            4,
+            6
+          ],
+          "output": "medium",
+          "models": [
+            {
+              "name": "openai-gpt-5.6-sol-cli",
+              "model": "gpt-5.6-sol",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "medium",
+              "range": [
+                4,
+                6
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "medium",
+              "provider_support": "supported_unmetered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "medium"
+            },
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "medium",
+              "range": [
+                4,
+                6
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "medium",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "medium",
+              "range": [
+                4,
+                6
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "medium",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "medium"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "medium",
+              "range": [
+                4,
+                6
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "medium",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 8192
+            }
+          ],
+          "provider_support": "mixed",
+          "varies_by_provider": false
+        }
+      },
+      "applied": true
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 7,
+            "selected": true
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 6,
+            "completed": 5,
+            "raw": 0.8333,
+            "weighted": 0.8345,
+            "rate": 0.8345,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($5.00)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 20,
+            "completed": 20,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 1,
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 \u2192 tier strong ($5.00); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 6,
+      "base_tier_from_score": "mid",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            4,
+            6
+          ],
+          "output": "mid"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend"
+        ],
+        "influenced": false,
+        "complexity_only_head": "openai-gpt-5.4-cli",
+        "domain_head": "openai-gpt-5.4-cli",
+        "selected_model_slice": null,
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "openai-gpt-5.4-cli",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.8125,
+        "weighted_success_rate": 0.7733,
+        "sample_size": 64,
+        "tainted_runs": 5,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "mid"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.7733,
+          "threshold": 0.6,
+          "sample_size": 64,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "preserve",
+        "baseline_tier": "strong",
+        "final_tier": "strong",
+        "plan_present": true,
+        "rationale": "plan_review_p2_exceeded"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "openai-gpt-5.6-sol-cli",
+          "openai-gpt-5.6-terra-cli",
+          "anthropic-claude-haiku-4-5-cli",
+          "google-gemini-3.5-flash-api",
+          "google-gemini-3.1-pro-preview-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 6 (MEDIUM) \u2192 tier mid (recency recovery: weighted success_rate 0.77 \u2265 threshold 0.60 over 64 admissible runs \u2014 pre-promotion held) (profile success_rate=0.77 @ MEDIUM); EXPLORATION empirical winner opus (tier strong) routed for key dev:medium:backend (promotion/dethrone off the static-tier pick); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 197,
+            "completed": 186,
+            "raw": 0.9442,
+            "weighted": 0.9544,
+            "rate": 0.9544,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 26,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 9,
+            "completed": 8,
+            "raw": 0.8889,
+            "weighted": 0.8858,
+            "rate": 0.8858,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 2,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 26,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 2,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "plan_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "runs": 3,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 69.2125,
+              "weighted": 69.2125,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-opus-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 3,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.6-sol",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 6; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 6,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 227,
+            "completed": 224,
+            "raw": 0.9868,
+            "weighted": 0.9835,
+            "rate": 0.9835,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 49,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 197,
+            "completed": 186,
+            "raw": 0.9442,
+            "weighted": 0.9544,
+            "rate": 0.9544,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 26,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 9,
+            "completed": 8,
+            "raw": 0.8889,
+            "weighted": 0.8858,
+            "rate": 0.8858,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 2,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 49,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-sol-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 26,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 2,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "code_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "runs": 6,
+            "tainted_runs": 1,
+            "uniqueness_rate": {
+              "raw": 0.8333,
+              "weighted": 0.8275,
+              "rate": 0.8275,
+              "floor": "pass"
+            },
+            "latency_per_p1": {
+              "raw": 198.4117,
+              "weighted": 200.1067,
+              "rate": 200.1067,
+              "floor": "pass"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "raw": 0.8333,
+              "weighted": 0.8275,
+              "runs": 6,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-sol-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'google'], complexity score 6 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.511252,
+      "duration_s": 82.19,
+      "outcome": "proceed"
+    },
+    "plan": {
+      "cost_usd": 0.136749,
+      "duration_s": 32.48,
+      "outcome": "success",
+      "plan_structured": {
+        "approach": "Constrain merge evidence so commit-message scans only count explicit closing references and cannot override contradictory code/audit evidence. Keep the change localized to sprint triage and add regression coverage for the loose mention, precedence veto, and operator-visible skip reason.",
+        "steps": [
+          {
+            "id": 1,
+            "description": "Tighten commit-message merge evidence",
+            "files": [
+              "src/theforge/sprint/dag.py"
+            ],
+            "action": "modify",
+            "details": "Update existing `_has_base_commit_referencing_issue` behavior so a base-branch commit only produces issue-commit merge evidence when the message contains an explicit GitHub-style closing reference for the issue, not a bare `(#N)` mention. Preserve the existing `MergeEvidence` flow, but ensure contextual mentions return no merge evidence."
+          },
+          {
+            "id": 2,
+            "description": "Make contradictory topology and audit evidence veto textual evidence",
+            "files": [
+              "src/theforge/sprint/dag.py",
+              "src/theforge/coordinator/audit.py",
+              "src/theforge/coordinator/audit_substrate.py"
+            ],
+            "action": "modify",
+            "details": "In `_branch_merge_evidence`, use the existing topology check and audit query path before accepting the issue-commit fallback. If the branch is known not to be an ancestor of base with commits still ahead, or the latest relevant audit record has unsuccessful outcome/request-changes verdict with no landing status, do not return `MergeEvidence(merged=True, source=\"issue_commit\")`.",
+            "depends_on": [
+              1
+            ]
+          },
+          {
+            "id": 3,
+            "description": "Expose the evidence source in skip reporting",
+            "files": [
+              "src/theforge/sprint/dag.py",
+              "src/theforge/sprint/runner.py"
+            ],
+            "action": "modify",
+            "details": "Adjust the skip reason built in `_triage_spec` so every skip-merged path names the evidence source, including issue-commit evidence. Ensure runner reporting still treats the scheduler action as a skip, with wording that makes the evidence contestable rather than a bare `already merged to <base>` completion message.",
+            "depends_on": [
+              2
+            ]
+          },
+          {
+            "id": 4,
+            "description": "Replace loose-mention expectations with regressions for the fixed behavior",
+            "files": [
+              "tests/test_sprint_runner.py"
+            ],
+            "action": "modify",
+            "details": "Update existing tests that assert bare `(#N)` commit-message matches as merged. Add focused coverage that a contextual issue mention on base does not skip a branch with commits ahead and unsuccessful/request-changes audit state, while an explicit closing reference or true topology/audit landing evidence still skips and reports the evidence source.",
+            "depends_on": [
+              1,
+              2,
+              3
+            ]
+          }
+        ],
+        "criteria_mapping": [
+          {
+            "criterion": "A reference to a unit of work in a commit message is not accepted as evidence that the work landed unless it asserts completion (a closing reference, ancestry, or recorded outcome).",
+            "steps": [
+              1,
+              4
+            ]
+          },
+          {
+            "criterion": "Ancestry and recorded audit outcome take precedence over a textual commit-message match when they disagree with it.",
+            "steps": [
+              2,
+              4
+            ]
+          },
+          {
+            "criterion": "A story skipped as merged reports the skip and names the evidence relied on, rather than presenting it as completion.",
+            "steps": [
+              3,
+              4
+            ]
+          }
+        ],
+        "risks": [
+          {
+            "description": "The exact audit helper for retrieving the latest unsuccessful/request-changes state may not already expose all needed fields at the sprint boundary.",
+            "mitigation": "Prefer existing query helpers in `coordinator/audit.py` and `audit_substrate.py`; if a small adapter is needed, keep it read-only and return only the recorded outcome, verdict, and landing status needed for triage."
+          },
+          {
+            "description": "Closing-reference parsing can accidentally become broader than GitHub semantics.",
+            "mitigation": "Use a narrow case-insensitive keyword pattern for explicit closing verbs such as close/closes/closed, fix/fixes/fixed, and resolve/resolves/resolved against the exact issue number, and keep bare references non-matching."
+          }
+        ]
+      },
+      "attempt_plans": []
+    },
+    "plan_review": {
+      "cost_usd": null,
+      "duration_s": 55.97,
+      "iterations": 2,
+      "outcome": "approve",
+      "per_reviewer": [
+        {
+          "attempt": 0,
+          "profile": "openai-gpt-5.6-sol-cli",
+          "verdict": "APPROVE",
+          "cost_usd": null
+        },
+        {
+          "attempt": 0,
+          "profile": "anthropic-opus-cli",
+          "verdict": "APPROVE",
+          "cost_usd": 0.594955
+        }
+      ]
+    },
+    "dev": {
+      "cost_usd": 14.285263,
+      "duration_s": 1489.13,
+      "iterations": 4,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 349.83,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 5.003116,
+      "duration_s": 410.91,
+      "cycles": 4,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 2.115,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 2.888116,
+          "verdict": "APPROVE"
+        }
+      },
+      "per_reviewer_value": [
+        {
+          "cycle": 1,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "unique_p1_count": 1,
+          "total_p1_count": 1,
+          "latency_s": 54.19,
+          "latency_per_p1_s": 54.19,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 54.19,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "unique_p1_count": 1,
+          "total_p1_count": 1,
+          "latency_s": 51.69,
+          "latency_per_p1_s": 51.69,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 51.69,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 3,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "unique_p1_count": 1,
+          "total_p1_count": 1,
+          "latency_s": 64.81,
+          "latency_per_p1_s": 64.81,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 3,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 64.81,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 4,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 34.76,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 4,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 34.76,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        }
+      ]
+    }
+  },
+  "totals": {
+    "cost_usd": null,
+    "duration_s": 2420.51,
+    "dev_attempts_total": 4,
+    "dev_iterations_productive": 4,
+    "review_cycles_total": 4,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 4,
+    "review_cycles": 4
+  },
+  "sprint_id": "75f46cb8b7b2",
+  "sprint_name": "issues-2374"
+}
