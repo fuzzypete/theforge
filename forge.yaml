@@ -19,9 +19,23 @@ models:
     #                                 regardless of order. Reverted same day; real fix is #1617.
     - openai/gpt-5.5/cli          # OpenAI's recommended coding model; overlay entry below
     # GPT-5.6 (2026-08-05, #2207). Identifiers verified against the live /v1/models list for this
-    # key: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna. Declared api rather than cli because the
-    # family ships no -codex variant (5.1/5.2/5.3 do), so Codex CLI support is unconfirmed; the
-    # api transport is the one the identifiers were verified on and check-providers can probe it.
+    # key: gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna.
+    #
+    # TRANSPORT CORRECTED 2026-08-10: these were declared api on the belief that the family ships no
+    # -codex variant so Codex CLI support was unconfirmed. That belief was wrong and never tested. A
+    # model needs no -codex suffix to run under Codex CLI; `codex exec -m` passes the identifier
+    # through. Live-probed the pinned @openai/codex@0.147.0 (which is also npm's current release):
+    # `codex exec --json -m gpt-5.6-sol` completes cleanly. The api declaration was the sole cause of
+    # 22 tool-call 400s ("Function tools with reasoning_effort are not supported for gpt-5.6-sol in
+    # /v1/chat/completions"), which broke plan review, code review and the escalation advisor, since
+    # all three need tools and the api adapter sends them on /v1/chat/completions against a model
+    # carrying a server-side default reasoning_effort. Codex does its own tool calling, so cli avoids
+    # the whole path. This also removes the only OpenAI api profiles from this project.
+    #
+    # NOT fixed by this change: cost. runners/runner_codex.py:624 prices codex usage through
+    # schema_utils._estimate_cost, the same PRICING_TABLE lookup the api path uses, so these models
+    # still record cost-unknown on either transport until #2335 lands. Expect $?.??? and do not read
+    # it as this change having failed.
     # UNBLOCKED 2026-08-08 (#2207). The BLOCKED gate here was the temperature bug: check-providers
     # live-probe returned 400 on both ("'temperature' does not support 0 with this model. Only the
     # default (1) value") because _is_reasoning_model in runners/schema_utils.py matched only ^o\d
@@ -35,12 +49,12 @@ models:
     # observed cost once these models have run history.
     - provider: openai
       model: gpt-5.6-sol
-      transport: {kind: api}
+      transport: {kind: cli}
       routing: {tier: strong, capability: 9, cost_rank: 3}
       cost: {input_per_mtok: 5.00, output_per_mtok: 30.00, pricing_provenance: gpt-5.6-sol}
     - provider: openai
       model: gpt-5.6-terra
-      transport: {kind: api}
+      transport: {kind: cli}
       routing: {tier: fast, capability: 8, cost_rank: 2}
       cost: {input_per_mtok: 2.00, output_per_mtok: 12.00, pricing_provenance: gpt-5.6-terra}
     # Luna was omitted on 2026-08-05 for "no published price found". A price is published: $0.20/
