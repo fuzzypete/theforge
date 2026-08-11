@@ -23,10 +23,17 @@ from, so it is inspectable rather than implicit at query time. That is what stop
 a model priced by the operator on the CLI from silently lending its price to the
 same model reached over the API.
 
-Deliberately stdlib-only at module scope. :class:`ModelRates` and
-:func:`pricing_for` live in ``schema_utils`` and are imported lazily where the
-no-registry baseline needs them, so ``schema_utils`` may import this module but
-never the reverse at import time.
+**This module is an import leaf.** It has no ``theforge`` imports at all — not
+at module scope, not inside a function. That is deliberate and load-bearing:
+configuration load compiles the registry, so ``theforge.config.dispatch_rates``
+imports this module, and anything this module reached would become reachable
+from ``theforge.config`` — which is how a pricing key ends up in an import cycle
+with half the runners package. So the pure rate *data* (:class:`ModelRates`,
+:data:`PRICING_TABLE`) lives here, while the catalog-backed resolution that
+needs ``theforge.config.models`` stays in :mod:`theforge.runners.schema_utils`,
+which imports this module one way and re-exports these names for compatibility.
+:func:`resolve` returns None when no registry is installed rather than falling
+back to ``pricing_for``; ``schema_utils.rates_for`` owns that baseline.
 """
 
 from __future__ import annotations
@@ -37,14 +44,113 @@ from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from theforge.config.types import ModelProfile
-
-    from .schema_utils import ModelRates
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
+
+
+class PricedProfile(Protocol):
+    """The three attributes a profile needs to become a pricing key.
+
+    Structural rather than an import of ``ModelProfile``: importing
+    ``theforge.config.types`` here — even under ``TYPE_CHECKING`` — would put a
+    ``theforge`` edge on this module, and the whole point of the module is that
+    it has none (see the module docstring). ``ModelProfile`` satisfies this
+    shape; nothing else has to.
+    """
+
+    @property
+    def provider_family(self) -> str | None: ...
+
+    @property
+    def model(self) -> str: ...
+
+    @property
+    def mode(self) -> str: ...
+
+
+# ── Rate data (pure, packaged) ────────────────────────────────────────
+
+
+@dataclass(frozen=True)
+class ModelRates:
+    """The rate card in force for one billed identity.
+
+    ``cached_input_per_mtok`` is ``None`` for a provider that has no separately
+    published cache tier; the generic :data:`CACHED_INPUT_RATE_MULT` discount
+    applies in that case. Zero is a real rate and is honoured as one.
+    """
+
+    input_per_mtok: float
+    output_per_mtok: float
+    cached_input_per_mtok: float | None = None
+
+
+# Fraction of the uncached input rate charged for a cache HIT, for providers that
+# express their cache tier that way. OpenAI and Anthropic both bill cached input
+# at 10% of the normal input rate. A provider that publishes an independent
+# cache-hit rate instead (DeepSeek bills roughly 2%, which no fixed fraction of
+# the uncached rate approximates) states it on its catalog entry and is priced
+# from that figure rather than from this multiplier — see :class:`ModelRates`.
+CACHED_INPUT_RATE_MULT = 0.1
+
+
+# The PACKAGED BASELINE rate card (per 1M tokens). Since #2335 this is no longer
+# a second, competing source of truth that accounting reads while routing reads
+# the model registry — the two could disagree, and a model priced in
+# configuration and absent here routed as priced and recorded its spend as
+# unknown.
+#
+# What it is now: transport-agnostic figures that config load MATERIALIZES onto
+# concrete (provider, model, transport) identities when compiling the rate
+# registry, and only onto identities the configuration can actually dispatch on
+# (theforge.config.dispatch_rates._materialize_legacy_rates). A row here can
+# therefore never widen onto a transport a project already priced separately,
+# and it is not consulted at all once a registry is installed.
+#
+# It remains authoritative for concrete billed identifiers that are not registry
+# entries in their own right — a vendor CLI reports ``claude-sonnet-4-6`` while
+# the profile dispatches under the ``sonnet`` shorthand — and it is the answer
+# for any process that never loads a configuration (unit tests).
+#
+# Key: (provider, model_name)
+# Value: (input_cost_per_mtok, output_cost_per_mtok)
+PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
+    ("openai", "o4-mini"): (1.10, 4.40),
+    ("openai", "gpt-4o"): (2.50, 10.00),
+    ("openai", "gpt-4o-mini"): (0.15, 0.60),
+    ("openai", "gpt-5.1-codex-mini"): (1.50, 6.00),
+    ("openai", "gpt-5.1-codex"): (3.00, 12.00),
+    ("openai", "gpt-5.1-codex-max"): (6.00, 24.00),
+    ("openai", "gpt-5.4-mini"): (0.25, 2.00),
+    ("openai", "gpt-5.4"): (1.25, 10.00),
+    ("openai", "gpt-5.4-pro"): (15.00, 120.00),
+    # Was a hand-kept mirror of the forge.yaml figures, because routing read the
+    # config and accounting read this table. It no longer has to be: a project
+    # price now reaches accounting through the compiled registry (#2335). Kept as
+    # the packaged baseline for a project that does not declare this model.
+    ("openai", "gpt-5.5"): (5.00, 30.00),
+    ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
+    ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
+    # Mirrors the figures the `haiku` shorthand carries and the pinned
+    # `anthropic/claude-haiku-4-5/cli` catalog entry attributes to this name.
+    ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),
+    ("google", "gemini-3.5-flash"): (1.50, 9.00),  # mirrors forge.yaml overlay
+    ("google", "gemini-3.1-pro-preview"): (2.00, 12.00),  # ≤200k tokens
+    ("google", "gemini-3.1-pro-preview-customtools"): (2.00, 12.00),
+    ("google", "gemini-2.5-pro"): (1.25, 10.00),  # ≤200k tokens
+    ("google", "gemini-2.5-flash"): (0.30, 2.50),
+    ("google", "gemini-2.5-flash-lite"): (0.10, 0.40),
+    ("google", "gemini-2.0-flash"): (0.10, 0.40),
+    ("google", "gemini-2.0-flash-lite"): (0.075, 0.30),
+    # DeepSeek is deliberately absent. Its rates — including the cache-hit tier
+    # it bills separately, which this table has no column for — are declared on
+    # the catalog entries in config/data/models.yaml and read through
+    # :func:`theforge.runners.schema_utils.pricing_for`. The rows that used to
+    # sit here were the third hand-maintained copy of a rate card and outlived
+    # two of its revisions (#2352); the retired identifiers they priced now
+    # record no price at all.
+}
 
 
 class AccountingMode(str, Enum):
@@ -139,7 +245,7 @@ def make_identity(
     )
 
 
-def identity_of(profile: "ModelProfile") -> DispatchIdentity | None:
+def identity_of(profile: PricedProfile) -> DispatchIdentity | None:
     """The one place a :class:`ModelProfile` becomes a pricing key.
 
     Reads ``provider_family`` (the provider identity for *both* transports) and
@@ -190,7 +296,7 @@ class RateEntry:
     """The resolved accounting answer for one identity."""
 
     identity: DispatchIdentity | None
-    rates: "ModelRates | None" = None
+    rates: ModelRates | None = None
     mode: AccountingMode = AccountingMode.UNKNOWN
     source: RateSource = RateSource.NONE
     #: For LEGACY_COMPAT, the transport-agnostic key this was materialized from;
@@ -316,53 +422,25 @@ def scoped_registry(registry: RateRegistry | None) -> Iterator[RateRegistry | No
 # ── Resolution ────────────────────────────────────────────────────────
 
 
-def resolve(identity: DispatchIdentity | None) -> RateEntry:
-    """Resolve one identity to its accounting entry.
+def resolve(identity: DispatchIdentity | None) -> RateEntry | None:
+    """Exact, transport-respecting lookup — or None when nothing is installed.
 
-    With a registry installed this is an exact, transport-respecting lookup.
-    With nothing installed — unit tests, and any code path that never loads a
-    configuration — it delegates to :func:`pricing_for`, reproducing today's
-    transport-blind behaviour bit for bit. That baseline is the ONLY place
-    transport-blind pricing survives.
+    Returning None rather than falling back to :func:`pricing_for` here is what
+    keeps this module a leaf. The transport-blind baseline lives with the
+    catalog resolution it reads, in ``schema_utils.rates_for`` / ``entry_for``;
+    this module never imports it, so the pricing key type cannot end up in an
+    import cycle with the pricing table.
+
+    A ``None`` *identity* (a profile with no resolvable provider or transport)
+    is answered with an explicitly unpriced entry: there is no key to look up,
+    and inventing a partial one would produce a key that can never match.
     """
     if identity is None:
         return RateEntry(identity=None)
     registry = active()
     if registry is None:
-        from .schema_utils import pricing_for  # noqa: PLC0415
-
-        rates = pricing_for(identity.provider, identity.model)
-        return RateEntry(
-            identity=identity,
-            rates=rates,
-            mode=AccountingMode.UNKNOWN,
-            source=RateSource.BASELINE if rates is not None else RateSource.NONE,
-            origin="no-registry-baseline",
-        )
+        return None
     return registry.lookup(identity)
-
-
-def rates_for(
-    provider: str | None,
-    model: str | None,
-    transport: str | None,
-) -> "ModelRates | None":
-    """Rate card for the identity that ran, or None when it is not priced."""
-    identity = make_identity(provider, model, transport)
-    if identity is None:
-        # A caller that cannot name the transport takes the baseline rather than
-        # a key that could never match — see make_identity.
-        from .schema_utils import pricing_for  # noqa: PLC0415
-
-        if not provider or not model:
-            return None
-        return pricing_for(provider, model)
-    return resolve(identity).rates
-
-
-def entry_for_profile(profile: "ModelProfile") -> RateEntry:
-    """Resolve the entry for the identity ``profile`` would dispatch on."""
-    return resolve(identity_of(profile))
 
 
 def known_models(provider: str, transport: str) -> tuple[str, ...]:

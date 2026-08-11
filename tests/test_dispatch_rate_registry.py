@@ -31,6 +31,7 @@ from theforge.config.dispatch_rates import (
 )
 from theforge.config.types import ModelProfile, TransportFallbackConfig
 from theforge.runners import rate_registry as rr
+from theforge.runners import schema_utils as su
 from theforge.runners.rate_registry import (
     AccountingMode,
     DispatchIdentity,
@@ -466,8 +467,8 @@ class TestReplacedProfilesPriceWhatTheyBecame:
         )
         swapped = dataclasses.replace(profile, cli=None, provider="openai")
         with rr.scoped_registry(self._registry()):
-            assert rr.entry_for_profile(profile).rates == ModelRates(1.0, 1.0)
-            assert rr.entry_for_profile(swapped).rates == ModelRates(2.0, 2.0)
+            assert su.entry_for_profile(profile).rates == ModelRates(1.0, 1.0)
+            assert su.entry_for_profile(swapped).rates == ModelRates(2.0, 2.0)
 
     def test_a_model_swap_prices_the_new_model(self):
         import dataclasses
@@ -482,8 +483,8 @@ class TestReplacedProfilesPriceWhatTheyBecame:
         )
         swapped = dataclasses.replace(profile, model="zeta-10")
         with rr.scoped_registry(self._registry()):
-            assert rr.entry_for_profile(profile).rates == ModelRates(2.0, 2.0)
-            assert rr.entry_for_profile(swapped).rates == ModelRates(3.0, 3.0)
+            assert su.entry_for_profile(profile).rates == ModelRates(2.0, 2.0)
+            assert su.entry_for_profile(swapped).rates == ModelRates(3.0, 3.0)
 
     def test_apply_model_info_result_prices_the_model_it_applied(self):
         from theforge.config.model_identity import AgentSpec, RoutingPolicy, TransportSpec
@@ -506,7 +507,7 @@ class TestReplacedProfilesPriceWhatTheyBecame:
         applied = apply_model_info(profile, _spec_to_model_info(spec))
         with rr.scoped_registry(self._registry()):
             assert identity_of(applied) == DispatchIdentity("openai", "zeta-10", "api")
-            assert rr.entry_for_profile(applied).rates == ModelRates(3.0, 3.0)
+            assert su.entry_for_profile(applied).rates == ModelRates(3.0, 3.0)
 
 
 # ── Partial identities, and the no-registry baseline ──────────────────
@@ -553,7 +554,7 @@ class TestNoRegistryBaseline:
                 ("openai", "codestral"),
             ):
                 for transport in ("cli", "api", None):
-                    assert rr.rates_for(provider, model, transport) == pricing_for(provider, model)
+                    assert su.rates_for(provider, model, transport) == pricing_for(provider, model)
 
     def test_estimate_cost_without_a_transport_takes_the_baseline(self):
         with rr.scoped_registry(None):
@@ -785,3 +786,48 @@ class TestGeminiCliAccounting:
         assert cost is None
         assert usage[0].input_tokens == 10
         assert usage[0].cost_provenance == "unknown"
+
+
+class TestRateRegistryIsAnImportLeaf:
+    """The registry module must not reach back into ``theforge`` at all.
+
+    Configuration load compiles the registry, so ``theforge.config`` imports
+    this module. Anything it imported — even lazily, inside a function — would
+    become reachable from ``theforge.config`` and put the pricing key type in a
+    cycle with half the runners package, which is exactly what the first
+    iteration of this change did. The catalog-backed resolution that genuinely
+    needs ``theforge.config.models`` lives in ``schema_utils`` instead, one
+    direction only.
+    """
+
+    def test_no_theforge_import_anywhere_in_the_module(self):
+        import ast
+        from pathlib import Path
+
+        from theforge.runners import rate_registry
+
+        source = Path(rate_registry.__file__).read_text(encoding="utf-8")
+        tree = ast.parse(source)
+        offenders: list[str] = []
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                offenders.extend(
+                    alias.name for alias in node.names if alias.name.startswith("theforge")
+                )
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    # A relative import is a theforge import by definition.
+                    offenders.append(f".{node.module or ''}")
+                elif node.module and node.module.startswith("theforge"):
+                    offenders.append(node.module)
+        # TYPE_CHECKING-only imports are erased at runtime and create no edge,
+        # but the convention checker walks the AST, so they count too.
+        assert offenders == [], f"rate_registry must stay an import leaf; found {offenders}"
+
+    def test_schema_utils_re_exports_the_moved_names(self):
+        """Existing imports keep working after the pricing data moved."""
+        from theforge.runners import rate_registry, schema_utils
+
+        assert schema_utils.PRICING_TABLE is rate_registry.PRICING_TABLE
+        assert schema_utils.ModelRates is rate_registry.ModelRates
+        assert schema_utils.CACHED_INPUT_RATE_MULT == rate_registry.CACHED_INPUT_RATE_MULT

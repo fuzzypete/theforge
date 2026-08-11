@@ -169,8 +169,7 @@ def _anthropic_cli_pricing_names() -> tuple[str, ...]:
     registry installed (unit tests, non-config code paths) this falls back to the
     packaged table, reproducing the previous behaviour exactly.
     """
-    from theforge.runners.rate_registry import known_models  # noqa: PLC0415
-    from theforge.runners.schema_utils import PRICING_TABLE  # noqa: PLC0415
+    from theforge.runners.rate_registry import PRICING_TABLE, known_models  # noqa: PLC0415
 
     # The packaged table is unioned in rather than used only as a fallback: the
     # names the CLI reports are concrete *billed* ids (``claude-sonnet-4-6``)
@@ -217,8 +216,8 @@ def _estimate_anthropic_cost(
     the resolved rate card publishes its own cache-read figure — that is
     preferred over the generic 0.1x multiplier when declared.
     """
-    from theforge.runners.rate_registry import rates_for  # noqa: PLC0415
-    from theforge.runners.schema_utils import PRICING_TABLE, ModelRates  # noqa: PLC0415
+    from theforge.runners.rate_registry import PRICING_TABLE, ModelRates  # noqa: PLC0415
+    from theforge.runners.schema_utils import rates_for  # noqa: PLC0415
 
     key = _resolve_anthropic_pricing_key(model)
     if key is None:

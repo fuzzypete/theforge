@@ -34,12 +34,15 @@ import logging
 from dataclasses import dataclass, field
 
 from theforge.runners.rate_registry import (
+    PRICING_TABLE,
     AccountingMode,
     DispatchIdentity,
+    ModelRates,
     RateEntry,
     RateRegistry,
     RateSource,
     accounting_mode_for,
+    install,
     make_identity,
 )
 
@@ -176,10 +179,8 @@ def reachable_identities(config: object) -> tuple[ReachableIdentity, ...]:
 # ── Compilation ───────────────────────────────────────────────────────
 
 
-def _spec_rates(spec: AgentSpec):  # -> ModelRates | None
+def _spec_rates(spec: AgentSpec) -> ModelRates | None:
     """The rate card an ``AgentSpec`` declares, honouring attribution rules."""
-    from theforge.runners.schema_utils import ModelRates  # noqa: PLC0415
-
     from .pricing import PRICING_PROVENANCE_LOCAL_ENDPOINT  # noqa: PLC0415
 
     if spec.input_cost_per_mtok is None or spec.output_cost_per_mtok is None:
@@ -224,8 +225,6 @@ def _materialize_legacy_rates(
     Returns the identities whose widening rule (c) suppressed, so the load-time
     report can name the conflict as the operator-actionable case it is.
     """
-    from theforge.runners.schema_utils import PRICING_TABLE, ModelRates  # noqa: PLC0415
-
     conflicted: set[DispatchIdentity] = set()
     for reach in reachable:
         identity = reach.identity
@@ -370,12 +369,10 @@ def install_rate_registry(config: object) -> RateRegistry:
     Called once, after the ``ForgeConfig`` is fully constructed and validated,
     so a load that raises never leaves its partial rates installed.
     """
-    from theforge.runners import rate_registry as _rate_registry  # noqa: PLC0415
-
     reachable = reachable_identities(config)
     registry, conflicted = compile_rate_registry(
         getattr(config, "model_registry", None) or {}, reachable
     )
-    _rate_registry.install(registry)
+    install(registry)
     report_unaccountable_identities(registry, reachable, conflicted)
     return registry

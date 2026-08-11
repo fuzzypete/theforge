@@ -8,7 +8,19 @@ from datetime import date
 from typing import TYPE_CHECKING, Any, Protocol
 
 from theforge.agent_types import ModelUsage
+from theforge.runners.rate_registry import (
+    CACHED_INPUT_RATE_MULT,
+    PRICING_TABLE,
+    AccountingMode,
+    ModelRates,
+    RateEntry,
+    RateSource,
+    identity_of,
+    make_identity,
+)
 from theforge.schemas import plan_review_json_schema, review_json_schema
+
+from . import rate_registry as _rate_registry
 
 logger = logging.getLogger(__name__)
 
@@ -51,63 +63,6 @@ def _sanitize_schema_for_google(schema: dict) -> dict:
             cleaned[key] = value
     return cleaned
 
-
-# ── Pricing table (per 1M tokens) ──────────────────────────────────────
-
-# The PACKAGED BASELINE rate card. Since #2335 this is no longer a second,
-# competing source of truth that accounting reads while routing reads the model
-# registry — the two could disagree, and a model priced in configuration and
-# absent here routed as priced and recorded its spend as unknown.
-#
-# What it is now: transport-agnostic figures that config load MATERIALIZES onto
-# concrete (provider, model, transport) identities when compiling the rate
-# registry, and only onto identities the configuration can actually dispatch on
-# (theforge.config.dispatch_rates._materialize_legacy_rates). A row here can
-# therefore never widen onto a transport a project already priced separately,
-# and it is not consulted at all once a registry is installed.
-#
-# It remains authoritative for concrete billed identifiers that are not registry
-# entries in their own right — a vendor CLI reports ``claude-sonnet-4-6`` while
-# the profile dispatches under the ``sonnet`` shorthand — and it is the answer
-# for any process that never loads a configuration (unit tests).
-#
-# Key: (provider, model_name)
-# Value: (input_cost_per_mtok, output_cost_per_mtok)
-PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
-    ("openai", "o4-mini"): (1.10, 4.40),
-    ("openai", "gpt-4o"): (2.50, 10.00),
-    ("openai", "gpt-4o-mini"): (0.15, 0.60),
-    ("openai", "gpt-5.1-codex-mini"): (1.50, 6.00),
-    ("openai", "gpt-5.1-codex"): (3.00, 12.00),
-    ("openai", "gpt-5.1-codex-max"): (6.00, 24.00),
-    ("openai", "gpt-5.4-mini"): (0.25, 2.00),
-    ("openai", "gpt-5.4"): (1.25, 10.00),
-    ("openai", "gpt-5.4-pro"): (15.00, 120.00),
-    # Was a hand-kept mirror of the forge.yaml figures, because routing read the
-    # config and accounting read this table. It no longer has to be: a project
-    # price now reaches accounting through the compiled registry (#2335). Kept as
-    # the packaged baseline for a project that does not declare this model.
-    ("openai", "gpt-5.5"): (5.00, 30.00),
-    ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
-    ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
-    # Mirrors the figures the `haiku` shorthand carries and the pinned
-    # `anthropic/claude-haiku-4-5/cli` catalog entry attributes to this name.
-    ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),
-    ("google", "gemini-3.5-flash"): (1.50, 9.00),  # mirrors forge.yaml overlay
-    ("google", "gemini-3.1-pro-preview"): (2.00, 12.00),  # ≤200k tokens
-    ("google", "gemini-3.1-pro-preview-customtools"): (2.00, 12.00),
-    ("google", "gemini-2.5-pro"): (1.25, 10.00),  # ≤200k tokens
-    ("google", "gemini-2.5-flash"): (0.30, 2.50),
-    ("google", "gemini-2.5-flash-lite"): (0.10, 0.40),
-    ("google", "gemini-2.0-flash"): (0.10, 0.40),
-    ("google", "gemini-2.0-flash-lite"): (0.075, 0.30),
-    # DeepSeek is deliberately absent. Its rates — including the cache-hit tier
-    # it bills separately, which this table has no column for — are declared on
-    # the catalog entries in config/data/models.yaml and read through
-    # :func:`pricing_for`. The rows that used to sit here were the third
-    # hand-maintained copy of a rate card and outlived two of its revisions
-    # (#2352); the retired identifiers they priced now record no price at all.
-}
 
 # Models we intentionally route to the Responses API (/v1/responses).
 # Some current OpenAI models (for example gpt-5.4 and o4-mini) accept both
@@ -221,14 +176,6 @@ _DEFAULT_MAX_ITERATIONS = 75
 
 _MISSING_PRICING_WARNED: set[tuple[str, str, str | None]] = set()
 
-# Fraction of the uncached input rate charged for a cache HIT, for providers that
-# express their cache tier that way. OpenAI and Anthropic both bill cached input
-# at 10% of the normal input rate. A provider that publishes an independent
-# cache-hit rate instead (DeepSeek bills roughly 2%, which no fixed fraction of
-# the uncached rate approximates) states it on its catalog entry and is priced
-# from that figure rather than from this multiplier — see :class:`ModelRates`.
-CACHED_INPUT_RATE_MULT = 0.1
-
 
 # Providers whose reported prompt-token count INCLUDES the tokens served from
 # cache. ``_estimate_cost`` documents ``cached_input_tokens`` as a subset of
@@ -242,20 +189,6 @@ _CACHE_READS_INSIDE_INPUT: frozenset[str] = frozenset({"openai", "deepseek"})
 def cache_reads_are_subset_of_input(provider: str) -> bool:
     """Is this provider's cache-read count part of its reported input count?"""
     return provider in _CACHE_READS_INSIDE_INPUT
-
-
-@dataclass(frozen=True)
-class ModelRates:
-    """The rate card in force for one ``(provider, model)``.
-
-    ``cached_input_per_mtok`` is ``None`` for a provider that has no separately
-    published cache tier; the generic :data:`CACHED_INPUT_RATE_MULT` discount
-    applies in that case. Zero is a real rate and is honoured as one.
-    """
-
-    input_per_mtok: float
-    output_per_mtok: float
-    cached_input_per_mtok: float | None = None
 
 
 def _catalog_rates() -> dict[tuple[str, str], ModelRates]:
@@ -319,11 +252,11 @@ def pricing_for(provider: str, model: str) -> ModelRates | None:
     """Return the rate card for ``(provider, model)``, or None if none is known.
 
     **Transport-blind, and therefore the no-registry baseline only.** Accounting
-    resolves through :func:`theforge.runners.rate_registry.rates_for`, which is
-    keyed by ``(provider, model, transport)``; this function answers when no
-    registry is installed, which is the case for unit tests and for any process
-    that never loads a configuration. Its behaviour is deliberately unchanged so
-    that baseline is bit-for-bit what it was before #2335.
+    resolves through :func:`rates_for`, which is keyed by
+    ``(provider, model, transport)``; this function answers when no registry is
+    installed, which is the case for unit tests and for any process that never
+    loads a configuration. Its behaviour is deliberately unchanged so that
+    baseline is bit-for-bit what it was before #2335.
 
     Catalog first, :data:`PRICING_TABLE` second. The catalog is the surface where
     a rate is declared next to the identity it was recorded for and the date that
@@ -367,6 +300,67 @@ def rate_card_confirmed(provider: str, model: str, *, today: date | None = None)
     )
 
 
+def entry_for(
+    provider: str | None,
+    model: str | None,
+    transport: str | None,
+) -> RateEntry:
+    """Resolve one dispatched identity to its accounting entry.
+
+    This is the seam between the two halves of the fix, and it lives here rather
+    than in :mod:`rate_registry` because it is the only function that needs
+    both: the strict, transport-respecting registry lookup, and the
+    transport-blind :func:`pricing_for` baseline that answers when no
+    configuration has been loaded. Keeping the baseline on this side is what lets
+    ``rate_registry`` stay an import leaf that configuration load can consume.
+
+    With a registry installed the answer is an exact ``(provider, model,
+    transport)`` match and nothing else — a miss is unpriced, and no other
+    transport's rate is borrowed. With nothing installed the answer is exactly
+    what ``pricing_for`` returned before #2335.
+    """
+    identity = make_identity(provider, model, transport)
+    if identity is not None:
+        entry = _rate_registry.resolve(identity)
+        if entry is not None:
+            return entry
+    # Either nothing is installed, or the caller could not name a transport and
+    # so has no concrete key to look up. Both take today's transport-blind
+    # baseline, unchanged.
+    if not provider or not model:
+        return RateEntry(identity=identity)
+    rates = pricing_for(provider, model)
+    return RateEntry(
+        identity=identity,
+        rates=rates,
+        mode=AccountingMode.UNKNOWN,
+        source=RateSource.BASELINE if rates is not None else RateSource.NONE,
+        origin="no-registry-baseline",
+    )
+
+
+def rates_for(
+    provider: str | None,
+    model: str | None,
+    transport: str | None,
+) -> ModelRates | None:
+    """Rate card for the identity that ran, or None when it is not priced."""
+    return entry_for(provider, model, transport).rates
+
+
+def entry_for_profile(profile: Any) -> RateEntry:
+    """Resolve the entry for the identity ``profile`` would dispatch on.
+
+    ``identity_of`` returns None for a profile carrying neither a provider nor a
+    transport; that resolves to an explicitly unpriced entry rather than a
+    partial key that could never match.
+    """
+    identity = identity_of(profile)
+    if identity is None:
+        return RateEntry(identity=None)
+    return entry_for(identity.provider, identity.model, identity.transport)
+
+
 def _estimate_cost(
     provider: str,
     model: str,
@@ -393,8 +387,6 @@ def _estimate_cost(
     ``cached_input_rate_mult`` of the input rate. Callers that cannot distinguish
     the cache tier leave it at 0 and get the flat-rate behaviour unchanged.
     """
-    from .rate_registry import rates_for  # noqa: PLC0415
-
     rates = rates_for(provider, model, transport)
     if rates is None:
         # Keyed on the transport too, so the same model name unpriced over two

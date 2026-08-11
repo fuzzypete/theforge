@@ -2222,7 +2222,7 @@ def _thinking_spend_captured(profile: ModelProfile, knob: EffortKnob) -> bool:
     """
     if not knob.captures_thinking_spend:
         return False
-    from .runners.rate_registry import entry_for_profile  # noqa: PLC0415
+    from .runners.schema_utils import entry_for_profile  # noqa: PLC0415
 
     return entry_for_profile(profile).accountable
 

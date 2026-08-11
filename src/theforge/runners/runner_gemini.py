@@ -19,8 +19,8 @@ from theforge.workspace_env import build_workspace_env
 
 from ..config import ModelProfile
 from .cli import _handle_exception, _run_with_heartbeat
+from .rate_registry import CACHED_INPUT_RATE_MULT as _CACHED_INPUT_RATE_MULT
 from .sandbox import SandboxCapabilityError, workspace_effect_sandbox_command
-from .schema_utils import CACHED_INPUT_RATE_MULT as _CACHED_INPUT_RATE_MULT
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -58,7 +58,7 @@ def _parse_gemini_usage(
     ``(None, ())`` and the caller records cost-unknown: an estimate is never
     fabricated from an absent measurement.
     """
-    from .rate_registry import rates_for  # noqa: PLC0415
+    from .schema_utils import rates_for  # noqa: PLC0415
 
     stats = result_json.get("stats")
     models = stats.get("models") if isinstance(stats, dict) else None
