@@ -766,30 +766,127 @@ def test_is_branch_merged_closing_reference_for_other_issue_does_not_match(
     assert evidence.merged is False
 
 
-def test_branch_merge_evidence_unique_commits_veto_closing_reference(tmp_path: Path) -> None:
-    """A non-ancestor branch with unique work has not landed, whatever base says (#2374)."""
+def _git(path: Path, *args: str) -> None:
+    import subprocess
 
-    def _mock_ahead(cmd: list[str], **kwargs: object) -> MagicMock:
-        m = MagicMock()
-        if "--is-ancestor" in cmd:
-            m.returncode = 1
-            m.stdout = b""
-        elif cmd[:2] == ["git", "rev-list"] and cmd[2] == "main..feat/issue-265":
-            m.returncode = 0
-            m.stdout = b"5"  # five preserved development commits
-        elif cmd[:2] == ["git", "log"] and "--grep=#265" in cmd:
-            m.returncode = 0
-            m.stdout = b"chore: sweep\n\nCloses #265\n\x1e"
-        else:
-            m.returncode = 0
-            m.stdout = b""
-        return m
+    subprocess.run(["git", *args], cwd=path, check=True, capture_output=True)
 
+
+def _seed_repo(path: Path) -> None:
+    _git(path, "init", "-q", "-b", "main")
+    _git(path, "config", "user.email", "test@example.com")
+    _git(path, "config", "user.name", "Test")
+    (path / "README.md").write_text("seed\n")
+    _git(path, "add", ".")
+    _git(path, "commit", "-q", "-m", "seed")
+
+
+def _squash_merged_repo(path: Path, base_message: str) -> None:
+    """Real squash merge: branch survives with unique commits, work is on base.
+
+    This is the shape ``git merge-base --is-ancestor`` fails on while
+    ``git rev-list main..branch`` is non-zero — topologically indistinguishable
+    from an unmerged branch, which is why this evidence source exists.
+    """
+    _seed_repo(path)
+    _git(path, "checkout", "-q", "-b", "feat/issue-265")
+    for i in (1, 2):
+        (path / f"w{i}.txt").write_text(f"work {i}\n")
+        _git(path, "add", ".")
+        _git(path, "commit", "-q", "-m", f"wip {i}")
+    _git(path, "checkout", "-q", "main")
+    _git(path, "merge", "-q", "--squash", "feat/issue-265")
+    _git(path, "commit", "-q", "-m", base_message)
+
+
+def _unmerged_repo(path: Path, base_message: str) -> None:
+    """The reported shape: five preserved commits, none of that work on base."""
+    _seed_repo(path)
+    _git(path, "checkout", "-q", "-b", "feat/issue-265")
+    for i in range(1, 6):
+        (path / f"w{i}.txt").write_text(f"work {i}\n")
+        _git(path, "add", ".")
+        _git(path, "commit", "-q", "-m", f"wip {i}")
+    _git(path, "checkout", "-q", "main")
+    (path / "config.yml").write_text("timeout: 30\n")
+    _git(path, "add", ".")
+    _git(path, "commit", "-q", "-m", base_message)
+
+
+def _real_git_evidence(tmp_path: Path):
+    """Resolve merge evidence against real git, with only external deps mocked."""
     with (
-        patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_ahead),
+        patch("theforge.sprint.dag._lookup_merged_pr_for_branch", return_value=None),
         patch("theforge.sprint.dag.has_review_approve", return_value=False),
     ):
-        evidence = _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+        return _branch_merge_evidence("feat/issue-265", "main", tmp_path, slug="issue-265")
+
+
+def test_real_squash_merge_with_closing_reference_is_merged(tmp_path: Path) -> None:
+    """A real squash merge is detected even though the branch still has unique commits.
+
+    Regression for the cycle-2 P1: vetoing on non-ancestor-plus-unique-commits
+    suppressed every genuine squash merge whose source branch still existed,
+    which is exactly what the issue-commit source is for. Topology cannot tell
+    this repo from the unmerged one below; only content can.
+    """
+    _squash_merged_repo(tmp_path, "feat: the thing (#900)\n\nCloses #265")
+
+    evidence = _real_git_evidence(tmp_path)
+
+    assert evidence.merged is True
+    assert evidence.source == "issue_commit"
+
+
+def test_real_unmerged_branch_with_closing_reference_is_not_merged(tmp_path: Path) -> None:
+    """A closing reference does not land work that is absent from base.
+
+    Same topology as the squash repo above — non-ancestor, unique commits — but
+    the branch's files are genuinely not on base, so the content veto fires.
+    """
+    _unmerged_repo(tmp_path, "chore: sweep\n\nCloses #265")
+
+    evidence = _real_git_evidence(tmp_path)
+
+    assert evidence.merged is False
+
+
+def test_real_unmerged_branch_with_bare_mention_is_not_merged(tmp_path: Path) -> None:
+    """The reported incident, end to end against real git (#2374)."""
+    _unmerged_repo(
+        tmp_path,
+        "config: raise timeout, disable model\n\nDisabled pending #265",
+    )
+
+    evidence = _real_git_evidence(tmp_path)
+
+    assert evidence.merged is False
+
+
+def test_real_squash_merge_vetoed_by_unsuccessful_audit(tmp_path: Path) -> None:
+    """A recorded unsuccessful run with nothing landed still outranks the text.
+
+    Content alone would accept this repo — the work *is* on base — so this pins
+    the audit veto specifically, not the content check.
+    """
+    _squash_merged_repo(tmp_path, "feat: the thing (#900)\n\nCloses #265")
+    from theforge.coordinator import audit_substrate
+
+    audit_substrate.seed_records(
+        tmp_path,
+        [
+            {
+                "task": {"slug": "issue-265"},
+                "run_id": "sr-265",
+                "landing_status": "",
+                "outcome": {"success": False},
+                "reviews": [{"verdict": "REQUEST_CHANGES"}],
+            }
+        ],
+    )
+
+    evidence = _real_git_evidence(tmp_path)
+
     assert evidence.merged is False
 
 
@@ -944,7 +1041,7 @@ def test_is_branch_merged_external_squash_merge_by_merged_pr_lookup(tmp_path: Pa
         if "--is-ancestor" in cmd:
             m.returncode = 1
             m.stdout = b""
-        elif cmd[:2] == ["git", "log"] and "--grep=(#1102)" in cmd:
+        elif _is_issue_grep(cmd, 1102):
             m.returncode = 0
             m.stdout = b""
         elif cmd[:3] == ["gh", "pr", "list"]:
@@ -975,7 +1072,7 @@ def test_is_branch_merged_issue_branch_without_base_commit_or_audit(tmp_path: Pa
         if "--is-ancestor" in cmd:
             m.returncode = 1
             m.stdout = b""
-        elif cmd[:2] == ["git", "log"] and "--grep=(#265)" in cmd:
+        elif _is_issue_grep(cmd, 265):
             m.returncode = 0
             m.stdout = b""
         else:

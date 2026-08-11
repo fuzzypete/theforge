@@ -205,6 +205,62 @@ def _has_base_commit_closing_issue(
         return False
 
 
+def _branch_adds_content_to_base(
+    project_root: Path,
+    base_branch: str,
+    branch: str,
+) -> bool:
+    """Return True when ``branch`` provably contributes content base does not have.
+
+    Git *topology* cannot tell a squash-merged branch from an unmerged one: both
+    leave the branch a non-ancestor of base with unique commits of its own. That
+    is the whole reason the issue-commit source exists, so topology must never
+    veto it — an earlier revision of this fix vetoed on non-ancestor-plus-unique-
+    commits and thereby suppressed every genuine squash merge whose branch still
+    existed (#2374).
+
+    Content does distinguish them. Merging ``branch`` into ``base_branch`` is a
+    no-op exactly when the branch's work is already present in base, whether it
+    got there by squash, rebase, or cherry-pick, and that holds even after base
+    advances with unrelated commits. ``git merge-tree --write-tree`` computes
+    that merge without touching the worktree.
+
+    Only a *positive* proof vetoes: this returns True solely when the merge
+    succeeds and yields a tree different from base's. Any inconclusive outcome —
+    a conflict, a git too old for ``--write-tree``, an unparseable oid, a
+    timeout — returns False, leaving the closing reference to stand. Failing the
+    other way would resurrect the regression this function exists to prevent,
+    and the reported bug is independently held shut by the closing-reference
+    requirement and :func:`_audit_contradicts_merge`.
+    """
+    try:
+        merged = subprocess.run(
+            ["git", "merge-tree", "--write-tree", base_branch, branch],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+        if merged.returncode != 0:
+            return False
+        merged_tree = merged.stdout.decode("utf-8", errors="replace").strip().splitlines()
+        if not merged_tree:
+            return False
+        base_tree = subprocess.run(
+            ["git", "rev-parse", f"{base_branch}^{{tree}}"],
+            cwd=str(project_root),
+            capture_output=True,
+            timeout=30,
+        )
+        if base_tree.returncode != 0:
+            return False
+        base_oid = base_tree.stdout.decode("utf-8", errors="replace").strip()
+        if not base_oid:
+            return False
+        return merged_tree[0].strip() != base_oid
+    except (subprocess.TimeoutExpired, OSError):
+        return False
+
+
 def _audit_contradicts_merge(project_root: Path, slug: str) -> bool:
     """Return True when the last recorded run for ``slug`` says it did not land.
 
@@ -351,10 +407,7 @@ def _branch_merge_evidence(
             # evidence sources below — fall through rather than claim no_merge.
             pass
 
-    # 2. Git topology. ``branch_has_unique_work`` is retained for the veto in
-    # step 4: it is only meaningful for a *non*-ancestor branch, where unique
-    # commits prove the branch's work is absent from base.
-    branch_has_unique_work: bool | None = None
+    # 2. Git topology.
     try:
         merge_result = subprocess.run(
             ["git", "merge-base", "--is-ancestor", branch, base_branch],
@@ -362,18 +415,7 @@ def _branch_merge_evidence(
             capture_output=True,
             timeout=30,
         )
-        if merge_result.returncode != 0:
-            unique_result = subprocess.run(
-                ["git", "rev-list", f"{base_branch}..{branch}", "--count"],
-                cwd=str(project_root),
-                capture_output=True,
-                timeout=30,
-            )
-            if unique_result.returncode == 0:
-                branch_has_unique_work = (
-                    int(unique_result.stdout.decode("utf-8", errors="replace").strip() or "0") > 0
-                )
-        else:
+        if merge_result.returncode == 0:
             # Count commits in base_branch NOT reachable from branch.
             ahead_result = subprocess.run(
                 ["git", "rev-list", f"{branch}..{base_branch}", "--count"],
@@ -421,15 +463,17 @@ def _branch_merge_evidence(
     #    attach here.
     #
     #    Sources that describe the code beat sources that describe prose about
-    #    the code. A branch that is not an ancestor of base and still carries
-    #    unique commits has not landed, whatever a message says; and a last run
-    #    recorded as unsuccessful with nothing landed is not overridden by a
-    #    textual match (#2374). The ancestor case is left entirely to the
-    #    topology logic above — after a fast-forward merge the branch *is* an
-    #    ancestor with no unique work, which is a merge, not a veto.
+    #    the code: a branch whose work is provably absent from base has not
+    #    landed whatever a message says, and a last run recorded as unsuccessful
+    #    with nothing landed is not overridden by a textual match (#2374).
+    #
+    #    The absence test is deliberately about *content*, not topology. A
+    #    squash-merged branch and an unmerged one are topologically identical
+    #    (non-ancestor, unique commits), so vetoing on that shape suppressed
+    #    exactly the squash merges this source exists to detect.
     if issue_number is None:
         return no_merge
-    if branch_has_unique_work:
+    if _branch_adds_content_to_base(project_root, base_branch, branch):
         return no_merge
     if slug is not None and _audit_contradicts_merge(project_root, slug):
         return no_merge
