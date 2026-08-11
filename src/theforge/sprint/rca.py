@@ -50,7 +50,7 @@ SCHEMA_VERSION = 1
 # (schema_version stays 1) rather than a silent rewrite of historical judgement:
 # an operator can tell whether two RCA files for one sprint were produced by the
 # same rule set by comparing this field.
-RULESET_VERSION = 11
+RULESET_VERSION = 12
 RCA_FILENAME = "sprint-rca.yaml"
 
 # Outcomes that mean the story landed / succeeded. These stay accounted for in
@@ -71,6 +71,27 @@ UNKNOWN_CLASS = "unknown_needs_rca"
 # sentence, so an operator reads what the run said instead of acting on a class
 # assembled from somewhere else.
 TAXONOMY_GAP_CLASS = "taxonomy_gap"
+
+# Class assigned when the sprint recorded that it *skipped* a story but recorded
+# no reason on the row (#2373). The story's end state is not unknown — the run
+# stated it — so it must not fall to ``unknown_needs_rca``, whose attached
+# recommendation buys an LLM investigation to establish something the run already
+# recorded. What is missing is the sentence saying why, and that is read from the
+# run log, not from a paid diagnosis.
+SKIP_REASON_UNRECORDED_CLASS = "skip_reason_unrecorded"
+
+# Summary ``outcome`` values that mean the sprint recorded the story as skipped
+# rather than failed. Keep in sync with ``StoryOutcome.is_skipped`` in
+# ``sprint.story_state`` — this module is a pure function over on-disk artifacts
+# and deliberately imports no coordinator/sprint runtime modules.
+SKIPPED_OUTCOMES = frozenset({"SKIPPED", "PRESERVED", "OPERATOR_ACTION"})
+
+# Per-story accounting status the coordinator records when a story's spend could
+# not be measured. Keep in sync with ``coordinator.story_budget.STATUS_UNKNOWN``.
+# It is accounting metadata reported *beside* the outcome and is never an input
+# to classification: how a story ended and how well its cost was measured are
+# separate facts (#2373).
+COST_UNKNOWN_STATUS = "cost_unknown"
 
 # ``error_type`` the coordinator stamps when a story's monetary allocation (or the
 # non-review part of it a review reservation leaves) can no longer fund the work.
@@ -878,6 +899,24 @@ def _classify_story(
                 }
             )
             primary = TAXONOMY_GAP_CLASS
+        elif outcome in SKIPPED_OUTCOMES:
+            # The sprint recorded that it skipped this story. That IS its end
+            # state, recorded by the run itself, so the residual class — and the
+            # paid investigation attached to it — must not claim the end state is
+            # unknown (#2373). Only the reason is missing, and the run log is
+            # where it is read from.
+            evidence.append(
+                {
+                    "source": summary_source,
+                    "rule_id": "skip_reason_unrecorded",
+                    "excerpt": _truncate(
+                        f"the sprint recorded outcome={outcome} for this story but recorded "
+                        "no reason on its row; the story's end state is known and only the "
+                        "reason is missing"
+                    ),
+                }
+            )
+            primary = SKIP_REASON_UNRECORDED_CLASS
         else:
             primary = UNKNOWN_CLASS
 
@@ -907,12 +946,14 @@ def _classify_story(
     # trust than declining to guess. Field-derived (structured) factors are the
     # run's own recorded facts, not an inference, so they still stand. A taxonomy
     # gap is the same state of knowledge — no rule classified the story — so it
-    # withholds text-derived amplifiers on the same grounds.
+    # withholds text-derived amplifiers on the same grounds, as does an
+    # unrecorded skip reason (#2373).
     contributing = _dedupe_ordered(
         [
             failure_class
             for failure_class, source_kind in contributing_hits
-            if primary not in {UNKNOWN_CLASS, TAXONOMY_GAP_CLASS} or source_kind == "structured"
+            if primary not in {UNKNOWN_CLASS, TAXONOMY_GAP_CLASS, SKIP_REASON_UNRECORDED_CLASS}
+            or source_kind == "structured"
         ]
     )
 
@@ -928,12 +969,77 @@ def _classify_story(
         unclassified_skip_reason=unclassified_skip_reason,
     )
 
-    return {
+    entry = {
         "primary_failure_class": primary,
         "contributing_factors": contributing,
         "evidence": evidence,
         "partial_value": partial_value,
+        # How well the story's spend was measured, recorded beside the outcome
+        # and never folded into it (#2373).
+        "cost_accounting": _cost_accounting(story),
         "recommended_next_actions": actions,
+    }
+    # Only present when the surfaces describing this one story disagree; an
+    # operator reading one of them otherwise has no way to know (#2373).
+    consistency = _outcome_consistency(story, audit, outcome, summary_source, audit_source)
+    if consistency is not None:
+        entry["outcome_consistency"] = consistency
+    return entry
+
+
+def _cost_accounting(story: dict) -> dict:
+    """Report whether the story's spend was measured — accounting, not outcome.
+
+    Unmeasured spend is a condition of the run's accounting, not a statement
+    about how the story ended, so it is reported here rather than allowed to
+    consume the outcome or the recommendation derived from it (#2373).
+    """
+    # Same default as ``status_reader._story_cost_usd``: an explicit ``None`` is
+    # unmeasured spend, an absent key is a legacy row and not a claim either way.
+    cost = story.get("cost_usd", 0.0)
+    measured = isinstance(cost, (int, float)) and not isinstance(cost, bool)
+    accounting: dict = {"measured": measured}
+    if not measured:
+        accounting["status"] = COST_UNKNOWN_STATUS
+    return accounting
+
+
+def _outcome_consistency(
+    story: dict,
+    audit: dict,
+    outcome: str,
+    summary_source: str,
+    audit_source: str,
+) -> dict | None:
+    """Report disagreement between the summary row and the per-story audit.
+
+    The sprint's recorded outcome is authoritative — it is the run's statement
+    about how the story ended — while the audit's ``final_phase``/``success``
+    describe how far the story got and whether the phase it reached succeeded. A
+    story approved at PLAN_REVIEW and then skipped for a failed dependency
+    carries both, and they read as a contradiction to an operator holding only
+    one of them (#2373). Returns ``None`` when there is nothing to report.
+    """
+    outcome_block = audit.get("outcome") if isinstance(audit, dict) else None
+    if not isinstance(outcome_block, dict) or not outcome:
+        return None
+    success = outcome_block.get("success")
+    final_phase = _nonempty(outcome_block.get("final_phase"))
+    if success is not True or outcome in DONE_OUTCOMES:
+        return None
+    return {
+        "agrees": False,
+        "summary_outcome": outcome,
+        "summary_source": summary_source,
+        "audit_final_phase": final_phase,
+        "audit_success": True,
+        "audit_source": audit_source,
+        "authoritative": "summary_outcome",
+        "note": _truncate(
+            f"the per-story audit records a successful {final_phase or 'phase'} while the "
+            f"sprint recorded outcome={outcome}; the sprint's recorded outcome is how the "
+            "story ended and the audit names the phase it reached"
+        ),
     }
 
 
@@ -2184,6 +2290,12 @@ def _recommend_actions(
         "allocation_exhaustion": _allocation_exhaustion_action(ref, allocation_shortfall),
         TAXONOMY_GAP_CLASS: _taxonomy_gap_action(
             ref, unclassified_code, skip_reason=unclassified_skip_reason
+        ),
+        SKIP_REASON_UNRECORDED_CLASS: (
+            f"read the sprint log for the line recording the skip of {ref}: the sprint "
+            "skipped the story and recorded no reason on its row, so the reason — not the "
+            "outcome — is what is missing. Nothing about the story's work failed and there "
+            "is nothing to diagnose"
         ),
         UNKNOWN_CLASS: (
             f"run 'forge diagnose --issue {diagnose_ref}' for LLM-assisted root cause"
