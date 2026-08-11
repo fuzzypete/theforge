@@ -599,7 +599,7 @@ def test_unknown_needs_rca_residual(tmp_path: Path) -> None:
     d = _sprint_dir(tmp_path)
     _write(
         d / "sprint-summary.yaml",
-        _summary([{"slug": "issue-77", "outcome": "SKIPPED"}]),
+        _summary([{"slug": "issue-77", "outcome": "FAILED"}]),
     )
     entry = _build(d)["stories"]["issue-77"]
     assert entry["primary_failure_class"] == UNKNOWN_CLASS
@@ -607,6 +607,23 @@ def test_unknown_needs_rca_residual(tmp_path: Path) -> None:
     assert entry["evidence"]
     assert entry["evidence"][-1]["rule_id"] == "captured_outcome"
     assert any("diagnose" in a for a in entry["recommended_next_actions"])
+
+
+def test_reasonless_skip_is_not_the_unknown_residual(tmp_path: Path) -> None:
+    """A recorded skip has a recorded end state; only its reason is missing.
+
+    The residual class carries "buy an investigation", which on a story the
+    sprint recorded as skipped spends money to establish the skip (#2373).
+    """
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary([{"slug": "issue-77", "outcome": "SKIPPED"}]),
+    )
+    entry = _build(d)["stories"]["issue-77"]
+    assert entry["primary_failure_class"] == "skip_reason_unrecorded"
+    assert entry["evidence"][-1]["rule_id"] == "captured_outcome"
+    assert not any("forge diagnose" in a for a in entry["recommended_next_actions"])
 
 
 # ── Engine: monetary allocation exhaustion (#2292) ────────────────────────────
@@ -1303,7 +1320,7 @@ def test_ruleset_version_stamped(tmp_path: Path) -> None:
     payload = _build(d)
     assert payload["schema_version"] == rca_mod.SCHEMA_VERSION
     assert payload["ruleset_version"] == rca_mod.RULESET_VERSION
-    assert payload["ruleset_version"] == 11
+    assert payload["ruleset_version"] == 12
 
 
 def test_improved_ruleset_regenerates_versioned(tmp_path: Path, monkeypatch) -> None:
