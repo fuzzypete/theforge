@@ -6,7 +6,8 @@ main (not present in the current sprint manifest).
 
 from __future__ import annotations
 
-from dataclasses import replace
+import threading
+from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -36,6 +37,12 @@ from theforge.sprint.dag import (
 )
 from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.runner import (
+    SprintCostLedger,
+    SprintCostSnapshot,
+    SprintExecutionState,
+    SprintRunContext,
+    SprintStop,
+    SprintStopCondition,
     _build_intake_agent_caller,
     _make_worker_phase_fn,
     _refresh_external_satisfied,
@@ -1366,3 +1373,264 @@ def test_is_branch_merged_squash_merge_ignores_failed_landing_audit(tmp_path: Pa
     with patch("theforge.sprint.dag.subprocess.run", side_effect=_mock_squash):
         result = _is_branch_merged("forge/story-a", "main", tmp_path, slug="story-a")
     assert result is False
+
+
+# ── Sprint execution state (#2325) ────────────────────────────────────
+#
+# ``run_sprint`` used to hold its execution state in a stack frame nothing
+# could name: no caller could construct it, no test could assert against it
+# without running a whole sprint, and three closures advanced it through
+# ``nonlocal``. These cover the named replacement — that it is constructible
+# and assertable on its own, and that cost and stop each have exactly one
+# owner that no shared-variable assignment can go around.
+
+
+def _run_context(**overrides) -> SprintRunContext:
+    """A context for a sprint that is never dispatched."""
+    resolved = ResolvedSprint(name="state-unit", budget_usd=25.0, max_parallel=1, stories=[])
+    kwargs = {
+        "config": SimpleNamespace(project_root=Path("/nonexistent")),
+        "resolved": resolved,
+        "sprint_id": "sprint-abc",
+        "run_id": "run-abc",
+    }
+    kwargs.update(overrides)
+    return SprintRunContext(**kwargs)  # type: ignore[arg-type]
+
+
+class TestSprintExecutionStateConstructability:
+    """The state a sprint holds is reachable by name, without a sprint."""
+
+    def test_state_constructs_from_a_context_alone(self) -> None:
+        state = SprintExecutionState(context=_run_context())
+
+        assert state.context.sprint_id == "sprint-abc"
+        assert state.context.budget_usd == 25.0
+        assert state.context.name == "state-unit"
+        assert state.cost.snapshot() == SprintCostSnapshot(
+            accumulated=0.0, prior=0.0, unmeasured=(), current_generation_unmeasured=frozenset()
+        )
+        assert state.stop.record is None
+        assert state.merged_slugs == set()
+        assert state.results == []
+        assert state.batch_number == 0
+        assert state.stories.counts() == {
+            "total": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "skipped": 0,
+        }
+
+    def test_two_states_do_not_share_their_owners(self) -> None:
+        """Defaults are per-instance, so one sprint cannot spend another's."""
+        first = SprintExecutionState(context=_run_context())
+        second = SprintExecutionState(context=_run_context())
+
+        first.cost.add(3.0)
+        first.stop.stop("first stopped")
+        first.merged_slugs.add("story-a")
+
+        assert second.cost.accumulated == 0.0
+        assert second.stop.record is None
+        assert second.merged_slugs == set()
+
+    def test_context_is_read_only(self) -> None:
+        """What the sprint consults cannot be rebound by anything reading it."""
+        ctx = _run_context()
+
+        with pytest.raises(FrozenInstanceError):
+            ctx.auto_merge = True  # type: ignore[misc]
+        with pytest.raises(FrozenInstanceError):
+            ctx.run_id = "somewhere-else"  # type: ignore[misc]
+
+    def test_cost_snapshot_is_read_only(self) -> None:
+        snapshot = SprintExecutionState(context=_run_context()).cost.snapshot()
+
+        with pytest.raises(FrozenInstanceError):
+            snapshot.accumulated = 99.0  # type: ignore[misc]
+
+
+class TestSprintCostLedgerOwnership:
+    """Cost accumulation has exactly one owner."""
+
+    def test_only_the_ledger_advances_the_total(self) -> None:
+        ledger = SprintCostLedger()
+
+        # Reading the figure out and reassigning the name is what the old
+        # ``nonlocal accumulated_cost`` allowed. Here it cannot reach the total.
+        accumulated_cost = ledger.accumulated
+        accumulated_cost += 12.5
+
+        assert ledger.accumulated == 0.0
+        assert ledger.add(2.5) == 2.5
+        assert ledger.accumulated == 2.5
+
+    def test_the_total_is_not_settable(self) -> None:
+        ledger = SprintCostLedger()
+        ledger.add(4.0)
+
+        with pytest.raises(AttributeError):
+            ledger.accumulated = 100.0  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            ledger.spent = 100.0  # type: ignore[misc]
+
+        assert ledger.accumulated == 4.0
+
+    def test_add_returns_the_accumulated_figure(self) -> None:
+        ledger = SprintCostLedger()
+
+        assert ledger.add(1.25) == 1.25
+        assert ledger.add(0.75) == 2.0
+        assert ledger.snapshot().accumulated == 2.0
+
+    def test_prior_spend_is_carried_but_kept_distinct(self) -> None:
+        ledger = SprintCostLedger()
+        ledger.set_prior(6.0)
+        ledger.add(1.5)
+
+        snapshot = ledger.snapshot()
+        assert snapshot.prior == 6.0
+        assert snapshot.accumulated == 1.5
+        assert snapshot.spent == 7.5
+        assert ledger.spent == 7.5
+
+    def test_unmeasured_story_cost_lands_with_its_flag(self) -> None:
+        """The total and the fact that it is a lower bound move together."""
+        ledger = SprintCostLedger()
+
+        ledger.record_story_cost("story-a", 3.0, measured=3.0)
+        assert ledger.measured is True
+
+        ledger.record_story_cost("story-b", 2.0, measured=None)
+        snapshot = ledger.snapshot()
+        assert snapshot.accumulated == 5.0
+        assert snapshot.measured is False
+        assert snapshot.unmeasured == ("story-b",)
+        assert snapshot.current_generation_unmeasured == frozenset({"story-b"})
+
+    def test_carried_unmeasured_is_not_this_generation(self) -> None:
+        """An inherited unknown must not be absorbed by a local acceptance."""
+        ledger = SprintCostLedger()
+        ledger.note_carried_unmeasured("carried:story-a")
+        ledger.flag_unmeasured_here("intake:story-b")
+
+        snapshot = ledger.snapshot()
+        assert snapshot.unmeasured == ("carried:story-a", "intake:story-b")
+        assert snapshot.current_generation_unmeasured == frozenset({"intake:story-b"})
+
+    def test_snapshot_does_not_track_later_writes(self) -> None:
+        ledger = SprintCostLedger()
+        ledger.record_story_cost("story-a", 1.0, measured=None)
+        snapshot = ledger.snapshot()
+
+        ledger.record_story_cost("story-b", 4.0, measured=None)
+
+        assert snapshot.accumulated == 1.0
+        assert snapshot.unmeasured == ("story-a",)
+        assert ledger.snapshot().accumulated == 5.0
+
+    def test_concurrent_workers_cannot_lose_spend(self) -> None:
+        """Workers land in parallel; the ledger serialises what they add."""
+        ledger = SprintCostLedger()
+        barrier = threading.Barrier(8)
+
+        def _land(index: int) -> None:
+            barrier.wait()
+            ledger.record_story_cost(f"story-{index}", 0.5, measured=None if index % 2 else 0.5)
+
+        threads = [threading.Thread(target=_land, args=(i,)) for i in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        snapshot = ledger.snapshot()
+        assert snapshot.accumulated == pytest.approx(4.0)
+        assert len(snapshot.unmeasured) == 4
+        assert snapshot.current_generation_unmeasured == frozenset(
+            f"story-{i}" for i in range(8) if i % 2
+        )
+
+
+class TestSprintStopConditionOwnership:
+    """The sprint stop condition has exactly one owner."""
+
+    def test_stop_records_reason_and_halt_slug_together(self) -> None:
+        stop = SprintStopCondition()
+        assert stop.stopped is False
+        assert stop.reason is None
+        assert stop.halt_slug is None
+
+        stop.stop("Required CI checks fail after merging story-a", halt_slug="story-a")
+
+        assert stop.stopped is True
+        assert stop.record == SprintStop(
+            reason="Required CI checks fail after merging story-a", halt_slug="story-a"
+        )
+        assert stop.reason == "Required CI checks fail after merging story-a"
+        assert stop.halt_slug == "story-a"
+
+    def test_a_stop_without_a_halt_slug_records_none(self) -> None:
+        stop = SprintStopCondition()
+        stop.stop("budget exhausted")
+
+        assert stop.record == SprintStop(reason="budget exhausted", halt_slug=None)
+
+    def test_the_stop_is_not_settable(self) -> None:
+        stop = SprintStopCondition()
+        stop.stop("budget exhausted")
+
+        with pytest.raises(AttributeError):
+            stop.reason = "something else"  # type: ignore[misc]
+        with pytest.raises(AttributeError):
+            stop.halt_slug = "story-z"  # type: ignore[misc]
+
+        assert stop.reason == "budget exhausted"
+
+    def test_stop_if_unset_is_first_writer_wins(self) -> None:
+        """A downstream consequence must not overwrite the original cause."""
+        stop = SprintStopCondition()
+
+        assert stop.stop_if_unset("agent authentication failed") is True
+        assert stop.stop_if_unset("budget exhausted") is False
+        assert stop.reason == "agent authentication failed"
+
+    def test_stop_replaces_an_earlier_reason(self) -> None:
+        """The CI halt is authoritative and names its own story."""
+        stop = SprintStopCondition()
+        stop.stop_if_unset("budget exhausted")
+
+        stop.stop("Required CI checks fail after merging story-a", halt_slug="story-a")
+
+        assert stop.reason == "Required CI checks fail after merging story-a"
+        assert stop.halt_slug == "story-a"
+
+    def test_the_stop_record_is_read_only(self) -> None:
+        stop = SprintStopCondition()
+        record = stop.stop("budget exhausted", halt_slug="story-a")
+
+        with pytest.raises(FrozenInstanceError):
+            record.reason = "rewritten"  # type: ignore[misc]
+
+    def test_only_one_concurrent_caller_owns_the_stop(self) -> None:
+        stop = SprintStopCondition()
+        barrier = threading.Barrier(8)
+        winners: list[int] = []
+        lock = threading.Lock()
+
+        def _halt(index: int) -> None:
+            barrier.wait()
+            if stop.stop_if_unset(f"halted by {index}", halt_slug=f"story-{index}"):
+                with lock:
+                    winners.append(index)
+
+        threads = [threading.Thread(target=_halt, args=(i,)) for i in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()
+
+        assert len(winners) == 1
+        assert stop.record == SprintStop(
+            reason=f"halted by {winners[0]}", halt_slug=f"story-{winners[0]}"
+        )

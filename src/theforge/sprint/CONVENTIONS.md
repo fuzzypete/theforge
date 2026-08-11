@@ -19,6 +19,18 @@ and sprint-level audit/display behavior.
   missing or inconsistent.
 - Be careful with lock-related tests: avoid patterns that combine real
   `fcntl.flock` usage with threaded tests under xdist.
+- Sprint execution state has one home: `SprintExecutionState` in `runner.py`.
+  What a sprint *mutates* lives there; what it merely *consults* lives on the
+  frozen `SprintRunContext` it holds. New sprint-wide state goes on one of the
+  two — never back into `run_sprint`'s frame, and never into a `nonlocal`.
+- Cost and the stop condition each have exactly one owner. Spend is advanced
+  only through `SprintExecutionState.cost` (`SprintCostLedger`), and a sprint
+  is stopped only through `SprintExecutionState.stop` (`SprintStopCondition`,
+  which records the reason and any halt slug together). Do not reintroduce a
+  shared total or a bare `stopped_reason` variable alongside them.
+- Extracting anything out of `run_sprint` is a move, not a re-decision: the new
+  home takes `SprintRunContext` and/or `SprintExecutionState` rather than a
+  fresh set of threaded parameters.
 
 ## Context
 
