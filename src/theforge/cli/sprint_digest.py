@@ -81,11 +81,17 @@ from theforge.sprint.status_reader import (
 # resume/reconcile (not reshaping/scheduling), so it must render under its own
 # FAILED heading via ``_print_failed_by_class`` — the generic recovery path for
 # any primary class not routed to SKIPPED / INTAKE.
+#
+# ``skip_reason_unrecorded`` belongs here for the plainest reason of all: the
+# sprint recorded that it skipped the story, so it is a skip — the missing
+# reason does not make it a failure, and rendering it under FAILED is how a
+# dependency skip reached the operator as work needing investigation (#2373).
 _SKIPPED_INTAKE_CLASSES = frozenset(
     {
         "intake_shape",
         "dependency_skip",
         "launch_collision",
+        "skip_reason_unrecorded",
     }
 )
 
@@ -423,6 +429,7 @@ def _print_failed_by_class(non_done: list[dict], rca_stories: dict) -> None:
             for index, line in enumerate(evidence_lines):
                 label = "evidence:    " if index == 0 else "             "
                 print(f"       {label} {line}")
+            _print_entry_notes(entry)
 
 
 def _print_skipped_intake(non_done: list[dict], rca_stories: dict) -> None:
@@ -444,6 +451,26 @@ def _print_skipped_intake(non_done: list[dict], rca_stories: dict) -> None:
             print(f"       {primary} — {detail}")
         else:
             print(f"       {primary}")
+        _print_entry_notes(entry)
+
+
+def _print_entry_notes(entry: dict) -> None:
+    """Print the accounting and cross-surface notes an RCA entry carries.
+
+    Both are reported *beside* the story's classification, never as it: an
+    unmeasured cost is a condition of the run's accounting, and a disagreement
+    between the audit and the summary is a fact about the surfaces rather than
+    about the work (#2373). Absent on RCA artifacts written by an older ruleset,
+    in which case nothing is printed.
+    """
+    accounting = entry.get("cost_accounting")
+    if isinstance(accounting, dict) and accounting.get("measured") is False:
+        print("       accounting:   cost unmeasured for this story (not a failure)")
+    consistency = entry.get("outcome_consistency")
+    if isinstance(consistency, dict) and consistency.get("agrees") is False:
+        note = str(consistency.get("note") or "").strip()
+        if note:
+            print(f"       inconsistent: {note}")
 
 
 def _print_partial_value(non_done: list[dict], rca_stories: dict) -> None:

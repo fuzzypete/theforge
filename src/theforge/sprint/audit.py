@@ -1300,6 +1300,22 @@ def _write_sprint_summary(
             outcome_lower = canonical_entry.outcome.name.lower()
             entry["outcome_code"] = entry.get("error_type") or outcome_lower
             entry["cost_usd"] = canonical_entry.cost_usd
+            # The canonical outcome arrives with the sentence the sprint recorded
+            # when it set it. Projecting the outcome without that sentence leaves
+            # a row saying SKIPPED and nothing else, which every downstream
+            # reader has to explain from something other than the run's own
+            # words: an approved-then-dependency-skipped story reached the
+            # operator as unclassifiable work needing a paid investigation
+            # (#2373). Only filled when the row carries no error of its own — a
+            # cause the story itself recorded is never overwritten.
+            if (
+                canonical_entry.outcome.is_skipped
+                and canonical_entry.reason
+                and not entry.get("error")
+            ):
+                entry["error"] = canonical_entry.reason
+                if accumulated_by_slug.get(slug) is not None:
+                    accumulated_by_slug[slug]["error"] = canonical_entry.reason
             accumulated = accumulated_by_slug.get(slug)
             if accumulated is not None:
                 accumulated["cost_usd"] = canonical_entry.cost_usd
