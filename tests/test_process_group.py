@@ -400,6 +400,27 @@ class TestReapVerifiesGroupIdentity(_SidecarWriter):
 class TestGroupMembers:
     """Membership enumeration is the identity a leaderless group still has."""
 
+    def test_transient_unreadable_result_is_retried_before_reporting_no_members(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = iter(
+            [
+                ({}, False),
+                ({1234: "sysctl:1.000001", 5678: "sysctl:1.000002"}, True),
+            ]
+        )
+
+        monkeypatch.setattr(
+            process_group,
+            "group_members_checked",
+            lambda _pgid: next(calls),
+        )
+
+        assert process_group.group_members(4321) == {
+            1234: "sysctl:1.000001",
+            5678: "sysctl:1.000002",
+        }
+
     def test_lists_every_live_process_in_the_group(self, tmp_path: Path) -> None:
         pidfile = tmp_path / "gc.pid"
         script = (
