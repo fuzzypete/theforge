@@ -987,9 +987,12 @@ def _prior_sprint_cost_incomplete(
 
 def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
     """Parse timestamps persisted in accumulated sprint story state."""
-    from .query import _parse_accumulated_story_timestamp as _query_parse  # noqa: PLC0415
-
-    return _query_parse(value)
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
 
 
 def _read_prior_sprint_accounting(
