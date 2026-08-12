@@ -22,6 +22,7 @@ from theforge.assignment import (
     assign_models,
 )
 from theforge.config import AgentDef
+from theforge.routing_evidence import RoutingEvidence, RoutingInputs
 
 
 @pytest.fixture()
@@ -242,32 +243,32 @@ def test_block_building_does_not_re_read_profiles(monkeypatch):
     rebuilt = _build_routing_decision(
         decision,
         agents,
-        origin="preflight",
-        score=9,
-        dev_base_tier="strong",
-        dev_effective_tier="strong",
-        preflight_tier="cheap",
-        planner_tier="strong",
-        dev_signals=dev_signals,
-        promotion_block={
-            "mechanism": "_check_promotion",
-            "fired": False,
-            "outcome": "recovered_at_or_above_threshold",
-            "model": "opus",
-            "complexity": "HIGH",
-            "raw_success_rate": 0.30,
-            "weighted_success_rate": 0.72,
-            "sample_size": 12,
-            "tainted_runs": 0,
-            "threshold": 0.60,
-            "min_runs": 5,
-            "floor": "pass",
-            "resulting_tier": "strong",
-        },
-        planner_model=decision.planner.model,
-        dev_model=decision.dev.model,
-        explicit_roles=set(),
-        secrets=None,
+        RoutingInputs(
+            origin="preflight",
+            score=9,
+            dev_base_tier="strong",
+            preflight_tier="cheap",
+            planner_tier="strong",
+        ),
+        RoutingEvidence(
+            dev_effective_tier="strong",
+            dev_signals=dev_signals,
+            promotion_block={
+                "mechanism": "_check_promotion",
+                "fired": False,
+                "outcome": "recovered_at_or_above_threshold",
+                "model": "opus",
+                "complexity": "HIGH",
+                "raw_success_rate": 0.30,
+                "weighted_success_rate": 0.72,
+                "sample_size": 12,
+                "tainted_runs": 0,
+                "threshold": 0.60,
+                "min_runs": 5,
+                "floor": "pass",
+                "resulting_tier": "strong",
+            },
+        ),
     )
     assert calls["n"] == 0, "block building must not perform profile lookups"
     assert calls_during_assign > 0  # sanity: routing did consult profiles

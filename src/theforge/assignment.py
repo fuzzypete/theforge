@@ -42,6 +42,7 @@ from .routing import (
     score_to_plan_tier,
     score_to_reviewer_target,
 )
+from .routing_evidence import RoutingEvidence, RoutingInputs
 
 log = logging.getLogger(__name__)
 
@@ -2414,50 +2415,39 @@ def resolve_reasoning_effort(
 def _build_routing_decision(
     decision: AssignmentDecision,
     agents: list[AgentDef],
-    *,
-    origin: str,
-    score: int | None,
-    dev_base_tier: str,
-    dev_effective_tier: str,
-    preflight_tier: str | None,
-    planner_tier: str | None,
-    dev_signals: dict[str, dict],
-    promotion_block: dict[str, object],
-    planner_model: str,
-    dev_model: str,
-    explicit_roles: set[str],
-    secrets: dict[str, str] | None,
-    unhealthy_models: set[str] | None = None,
-    domains: list[str] | None = None,
-    dev_domain_signals: dict[str, dict] | None = None,
-    dev_cost_signals: dict[str, dict] | None = None,
-    dev_domain_match: dict[str, object] | None = None,
-    excluded_for_taint: int = 0,
-    dev_exploration: dict[str, object] | None = None,
-    pr_completion_signals: dict[str, dict] | None = None,
-    pr_completion_audit: dict[str, object] | None = None,
-    cr_completion_signals: dict[str, dict] | None = None,
-    cr_completion_audit: dict[str, object] | None = None,
-    pr_value_signals: dict[str, dict] | None = None,
-    pr_value_audit: dict[str, object] | None = None,
-    cr_value_signals: dict[str, dict] | None = None,
-    cr_value_audit: dict[str, object] | None = None,
-    preflight_reliability_signals: dict[str, dict] | None = None,
-    preflight_reliability_audit: dict[str, object] | None = None,
-    planner_reliability_signals: dict[str, dict] | None = None,
-    planner_reliability_audit: dict[str, object] | None = None,
-    min_reviewers: int = 1,
-    max_reviewers: int = 1,
-    reasoning_effort_block: dict[str, object] | None = None,
+    inputs: RoutingInputs,
+    evidence: RoutingEvidence,
 ) -> dict[str, object]:
     """Assemble the per-role routing_decision explainability block (#1391).
 
     Built at the end of :func:`assign_models` from the FINAL decision (after any
     budget-driven downgrades) so the recorded models/tiers match what runs. Pure
-    assembly: no LLM calls, no profile re-reads — profile signals come from the
-    ``dev_signals`` already collected during routing.
+    assembly: no LLM calls, no profile re-reads — every profile signal is read
+    from the :class:`~theforge.routing_evidence.RoutingEvidence` the routing pass
+    already accumulated (#2349), never looked up again here.
+
+    ``inputs`` carries what was fixed before candidate scoring; ``evidence``
+    carries what the routing and budget passes produced. Both are read-only to
+    this function: it renders the audit block, it does not decide anything.
     """
     rationale = decision.rationale
+    origin = inputs.origin
+    score = inputs.score
+    explicit_roles = inputs.explicit_roles
+    secrets = inputs.secrets
+    unhealthy_models = inputs.unhealthy_models
+    min_reviewers = inputs.min_reviewers
+    max_reviewers = inputs.max_reviewers
+    dev_base_tier = inputs.dev_base_tier
+    preflight_tier = inputs.preflight_tier
+    planner_tier = inputs.planner_tier
+    dev_effective_tier = evidence.dev_effective_tier
+    dev_signals = evidence.dev_signals
+    promotion_block = evidence.promotion_block
+    # The seated models double as the reviewer self-exclusion targets; read from
+    # the final decision so a budget downgrade can never leave them stale.
+    planner_model = decision.planner.model
+    dev_model = decision.dev.model
 
     def _rat(role: str) -> str:
         # Origin-labeled so future post-assignment checkpoints (#1387) can write
@@ -2470,9 +2460,9 @@ def _build_routing_decision(
     dev_pool = _single_model_pool(
         agents, dev_effective_tier, decision.dev.name, "dev" in explicit_roles, secrets
     )
-    dev_domain_signals = dev_domain_signals or {}
-    dev_cost_signals = dev_cost_signals or {}
-    requested_domains = [d for d in (domains or []) if isinstance(d, str) and d]
+    dev_domain_signals = evidence.dev_domain_signals
+    dev_cost_signals = evidence.dev_cost_signals
+    requested_domains = inputs.requested_domains
     for entry in dev_pool:
         if entry.get("included") and entry["name"] in dev_signals:
             signals: dict[str, object] = {"success_rate": dev_signals[entry["name"]]}
@@ -2500,7 +2490,7 @@ def _build_routing_decision(
     # Domain-match block (#155 / ADR-0006 clause 7). Present but explicitly
     # non-influential when domains exist yet did not move the selection; omitted
     # entirely when the story carried no domains (nothing to explain).
-    dev_domain_match = dev_domain_match or {}
+    dev_domain_match = evidence.dev_domain_match
     domain_block: dict[str, object] | None = None
     if requested_domains:
         influenced = bool(dev_domain_match.get("domain_influenced"))
@@ -2537,26 +2527,38 @@ def _build_routing_decision(
 
     # Reviewer completion-rate rerank (#1388) explanation per reviewer role.
     pr_completion_block = _reviewer_completion_check(
-        pr_completion_signals, pr_completion_audit, pr_selected
+        evidence.plan_review.completion.signals,
+        evidence.plan_review.completion.audit,
+        pr_selected,
     )
     cr_completion_block = _reviewer_completion_check(
-        cr_completion_signals, cr_completion_audit, cr_selected
+        evidence.code_review.completion.signals,
+        evidence.code_review.completion.audit,
+        cr_selected,
     )
     # Reviewer value rerank explanation, per reviewer role: plan review (#1443)
     # and code review (#2156). Each reads its own persisted value section, so the
     # two blocks are independently populated and independently omitted when their
     # phase's mechanism was not consulted.
-    pr_value_block = _reviewer_value_check(pr_value_signals, pr_value_audit, pr_selected)
-    cr_value_block = _reviewer_value_check(cr_value_signals, cr_value_audit, cr_selected)
+    pr_value_block = _reviewer_value_check(
+        evidence.plan_review.value.signals, evidence.plan_review.value.audit, pr_selected
+    )
+    cr_value_block = _reviewer_value_check(
+        evidence.code_review.value.signals, evidence.code_review.value.audit, cr_selected
+    )
 
     # Non-dev single-model reliability rerank (#1489) explanation for the preflight
     # and planner roles. Empty (and omitted) when the mechanism was not consulted
     # (static routing / cold-start with no profile), keeping the block additive.
     preflight_reliability_block = _role_reliability_check(
-        preflight_reliability_signals, preflight_reliability_audit, decision.preflight.name
+        evidence.preflight_reliability.signals,
+        evidence.preflight_reliability.audit,
+        decision.preflight.name,
     )
     planner_reliability_block = _role_reliability_check(
-        planner_reliability_signals, planner_reliability_audit, decision.planner.name
+        evidence.planner_reliability.signals,
+        evidence.planner_reliability.audit,
+        decision.planner.name,
     )
 
     return {
@@ -2567,15 +2569,15 @@ def _build_routing_decision(
         # Surfaced at the top level so operators see how much history was
         # discounted for taint before any per-role explanation. The runs remain in
         # the substrate (ADR-0002 refusal-to-forget); this is a read-time count.
-        "excluded_for_taint": int(excluded_for_taint),
+        "excluded_for_taint": int(inputs.excluded_for_taint),
         # Score-to-routing policy axis resolved per PHASE rather than per role
         # (#1108): plan/dev/review each get their own bucket, and each seated
         # model records how (or whether) its transport took the value. Recorded
         # top-level because it spans phases; the per-role score_policy blocks
         # below cover the role-scoped axes (dev tier, plan tier, reviewer count).
         "reasoning_effort": (
-            reasoning_effort_block
-            if reasoning_effort_block is not None
+            evidence.reasoning_effort_block
+            if evidence.reasoning_effort_block is not None
             else axis_decision("reasoning_effort", score, phase="dev")
         ),
         "preflight": {
@@ -2663,7 +2665,11 @@ def _build_routing_decision(
             # decision for the dev slot (mode + routing_key + pool + selection).
             # Falls back to the on-policy winner marker when the router did not
             # produce an exploration decision (static/explicit dev).
-            "exploration": dev_exploration if dev_exploration is not None else dict(exploration),
+            "exploration": (
+                evidence.dev_exploration
+                if evidence.dev_exploration is not None
+                else dict(exploration)
+            ),
             "final": {
                 "model": decision.dev.model,
                 "tier": _selected_tier(agents, decision.dev.name, dev_effective_tier),
@@ -3185,70 +3191,41 @@ def assign_models(
 
     norm_complexity = _normalize_complexity(complexity)
     rationale: dict[str, str] = {}
-    # ── Routing explainability accumulators (#1391) ────────────────────
-    # Populated during the routing pass and consumed by _build_routing_decision
-    # at the end so the block reflects the final (post-budget) decision.
-    _dev_signals: dict[str, dict] = {}
-    # Per-domain dev signals (#155), keyed by agent name, collected in the same
-    # rerank pass as _dev_signals. _dev_domain_match records whether the domain
-    # tiebreak actually moved the selection so the routing_decision block can mark
-    # the decision influential or explicitly non-influential.
-    _dev_domain_signals: dict[str, dict] = {}
-    _dev_cost_signals: dict[str, dict] = {}
-    _dev_domain_match: dict[str, object] = {}
-    # Reviewer completion-rate rerank accumulators (#1388), per reviewer role.
-    # Populated by _select_reviewers and consumed by _build_routing_decision so
-    # the routing_decision block records the consulted signal and ranking effect
-    # only when reviewer completion actually shaped selection.
-    _pr_completion_signals: dict[str, dict] = {}
-    _pr_completion_audit: dict[str, object] = {}
-    _cr_completion_signals: dict[str, dict] = {}
-    _cr_completion_audit: dict[str, object] = {}
-    # Plan-reviewer value rerank accumulators (#1443). Populated by
-    # _select_reviewers when reviewer_value_enabled and consumed by
-    # _build_routing_decision so the routing_decision records the consulted
-    # uniqueness / latency-per-P1 signals and the ranking effect.
-    _pr_value_signals: dict[str, dict] = {}
-    _pr_value_audit: dict[str, object] = {}
-    # Code-review counterparts (#2156), read from the separate code_review_value
-    # profile section so the two phases' value histories never mix.
-    _cr_value_signals: dict[str, dict] = {}
-    _cr_value_audit: dict[str, object] = {}
-    # Non-dev single-model reliability rerank accumulators (#1489), per role.
-    # Populated by _pick_agent when preflight/planner selection consults role
-    # reliability history and consumed by _build_routing_decision so the block
-    # records the consulted signal, sample/floor status, and ranking effect.
-    _preflight_reliability_signals: dict[str, dict] = {}
-    _preflight_reliability_audit: dict[str, object] = {}
-    _planner_reliability_signals: dict[str, dict] = {}
-    _planner_reliability_audit: dict[str, object] = {}
+    # ── Routing evidence (#1391, named in #2349) ───────────────────────
+    # ``assign_models`` owns this value: it is the sole writer. The selection
+    # helpers below receive its sub-objects as out-params, each mechanism
+    # overwrites its own block as it resolves, and _build_routing_decision reads
+    # the finished value at the end so the block reflects the final (post-budget)
+    # decision. Anything fixed before candidate scoring lives in RoutingInputs
+    # instead, built at the point of use below.
+    evidence = RoutingEvidence(
+        # Default dev promotion_check block: overwritten by _promotion_check_block
+        # once the profile-backed pre-promotion (#158) runs. The "not_checked"
+        # outcome stands for explicit-override / static-mode dev where the check
+        # never fires.
+        promotion_block={
+            "mechanism": MECHANISM_DEV_PROMOTION,
+            "fired": False,
+            "outcome": "not_checked",
+            "model": "",
+            "complexity": None,
+            "raw_success_rate": None,
+            "weighted_success_rate": None,
+            "sample_size": 0,
+            "tainted_runs": 0,
+            "threshold": assignment_config.dev_promotion_threshold,
+            "min_runs": assignment_config.dev_promotion_min_runs,
+            "floor": "not_checked",
+            "resulting_tier": None,
+        },
+    )
+    # Tier the preflight candidate pool was drawn from — a routing input, held
+    # here until RoutingInputs is assembled at the end of the pass.
     _preflight_tier: str | None = None
-    _dev_effective_tier: str = "cheap"
-    # Challenger-sampling exploration block for the dev role (#325). None until
-    # the dev pick is finalized; then set to the recorded exploration decision
-    # (labeled winner/challenger with routing_key + pool). ``_dev_budget_floor``
-    # holds the tier the budget enforcer must respect — the challenger's tier in
-    # challenger mode so the run spends from the challenger's envelope (clause 8).
-    _dev_exploration: dict[str, object] | None = None
+    # ``_dev_budget_floor`` holds the tier the budget enforcer must respect — the
+    # challenger's tier in challenger mode so the run spends from the
+    # challenger's envelope (#325, ADR-0006 clause 8).
     _dev_budget_floor: str | None = None
-    # Default dev promotion_check block: overwritten by _promotion_check_block once
-    # the profile-backed pre-promotion (#158) runs. The "not_checked" outcome
-    # stands for explicit-override / static-mode dev where the check never fires.
-    _promotion_block: dict[str, object] = {
-        "mechanism": MECHANISM_DEV_PROMOTION,
-        "fired": False,
-        "outcome": "not_checked",
-        "model": "",
-        "complexity": None,
-        "raw_success_rate": None,
-        "weighted_success_rate": None,
-        "sample_size": 0,
-        "tainted_runs": 0,
-        "threshold": assignment_config.dev_promotion_threshold,
-        "min_runs": assignment_config.dev_promotion_min_runs,
-        "floor": "not_checked",
-        "resulting_tier": None,
-    }
     adaptive_enabled = assignment_config.adaptive_enabled
     # In static mode, ignore the numeric score, capability profiles, and
     # escalation/promotion learning — fall through to PHASE_TIER + min_reviewers.
@@ -3314,7 +3291,7 @@ def assign_models(
             # outcome is PROMOTION_OUTCOME_PROMOTED, which requires the sample floor
             # met AND a non-None weighted rate below threshold.
             effective_dev_tier = _promote_tier(dev_base_tier)
-            _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
+            evidence.promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
             rationale["dev"] = (
                 f"{norm_complexity} dev pre-promoted {dev_model_name} "
                 f"(tier {dev_base_tier} → {effective_dev_tier}) — "
@@ -3323,7 +3300,7 @@ def assign_models(
                 f"admissible {norm_complexity} runs"
             )
         else:
-            _promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
+            evidence.promotion_block = _promotion_check_block(promo_signal, effective_dev_tier)
             if score is not None:
                 rationale["dev"] = (
                     f"complexity score {score} ({norm_complexity}) → tier {effective_dev_tier}"
@@ -3337,7 +3314,7 @@ def assign_models(
                     f"over {promo_signal.runs} admissible runs — pre-promotion held)"
                 )
 
-        _dev_effective_tier = effective_dev_tier
+        evidence.dev_effective_tier = effective_dev_tier
         dev_agent = _pick_agent(
             agents,
             effective_dev_tier,
@@ -3345,11 +3322,11 @@ def assign_models(
             model_profiles=effective_profiles,
             role="dev",
             complexity=norm_complexity,
-            signals_out=_dev_signals,
+            signals_out=evidence.dev_signals,
             domains=effective_domains,
-            domain_signals_out=_dev_domain_signals,
-            cost_signals_out=_dev_cost_signals,
-            rerank_audit=_dev_domain_match,
+            domain_signals_out=evidence.dev_domain_signals,
+            cost_signals_out=evidence.dev_cost_signals,
+            rerank_audit=evidence.dev_domain_match,
             recency=effective_recency,
             observed_costs=effective_observed_costs,
             reasoning_effort=dev_requested_reasoning_effort,
@@ -3371,8 +3348,8 @@ def assign_models(
             # Domain match note (#155): only surfaced when the horizontal tiebreak
             # actually moved the selection — the selected model's admissible
             # per-domain rate over the story's domains.
-            if _dev_domain_match.get("domain_influenced") and dev_agent is not None:
-                _dsig = _dev_domain_signals.get(dev_agent.name)
+            if evidence.dev_domain_match.get("domain_influenced") and dev_agent is not None:
+                _dsig = evidence.dev_domain_signals.get(dev_agent.name)
                 if _dsig and _dsig.get("rate") is not None:
                     rationale["dev"] += (
                         f" (domain match {effective_domains}: "
@@ -3442,15 +3419,15 @@ def assign_models(
                 secrets=secrets,
                 rng=explore_rng,
             )
-            _dev_exploration = _exp.block
+            evidence.dev_exploration = _exp.block
             if _exp.route_agent is not None:
                 dev_agent = _exp.route_agent
                 dev_selected_tier = dev_agent.tier
                 dev_profile = _agent_to_profile(
                     dev_agent, role="dev", transport_fallbacks=transport_fallbacks
                 )
-                _dev_effective_tier = dev_agent.tier
-                if _dev_exploration.get("mode") == "challenger":
+                evidence.dev_effective_tier = dev_agent.tier
+                if _exp.block.get("mode") == "challenger":
                     # Challenger-tier budget envelope (clause 8): the run spends
                     # from the challenger's tier, so the enforcer must not
                     # downgrade below it.
@@ -3487,8 +3464,8 @@ def assign_models(
             reliability_role="preflight",
             reliability_threshold=assignment_config.reviewer_completion_threshold,
             reliability_min_runs=assignment_config.reviewer_completion_min_runs,
-            reliability_signals_out=_preflight_reliability_signals,
-            reliability_audit=_preflight_reliability_audit,
+            reliability_signals_out=evidence.preflight_reliability.signals,
+            reliability_audit=evidence.preflight_reliability.audit,
         )
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
@@ -3522,8 +3499,8 @@ def assign_models(
             reliability_role="planner",
             reliability_threshold=assignment_config.reviewer_completion_threshold,
             reliability_min_runs=assignment_config.reviewer_completion_min_runs,
-            reliability_signals_out=_planner_reliability_signals,
-            reliability_audit=_planner_reliability_audit,
+            reliability_signals_out=evidence.planner_reliability.signals,
+            reliability_audit=evidence.planner_reliability.audit,
         )
         if agent is None:
             authed = [a for a in agents if _has_auth(a, secrets)]
@@ -3575,14 +3552,14 @@ def assign_models(
             completion_threshold=assignment_config.reviewer_completion_threshold,
             completion_min_runs=assignment_config.reviewer_completion_min_runs,
             recency=effective_recency,
-            completion_signals_out=_pr_completion_signals,
-            completion_audit=_pr_completion_audit,
+            completion_signals_out=evidence.plan_review.completion.signals,
+            completion_audit=evidence.plan_review.completion.audit,
             value_enabled=assignment_config.reviewer_value_enabled,
             value_uniqueness_threshold=assignment_config.reviewer_value_uniqueness_threshold,
             value_min_runs=assignment_config.reviewer_value_min_runs,
             value_complexity=norm_complexity,
-            value_signals_out=_pr_value_signals,
-            value_audit=_pr_value_audit,
+            value_signals_out=evidence.plan_review.value.signals,
+            value_audit=evidence.plan_review.value.audit,
         )
         plan_reviewers = [
             _agent_to_profile(a, role="review", transport_fallbacks=transport_fallbacks)
@@ -3641,14 +3618,14 @@ def assign_models(
             completion_threshold=assignment_config.reviewer_completion_threshold,
             completion_min_runs=assignment_config.reviewer_completion_min_runs,
             recency=effective_recency,
-            completion_signals_out=_cr_completion_signals,
-            completion_audit=_cr_completion_audit,
+            completion_signals_out=evidence.code_review.completion.signals,
+            completion_audit=evidence.code_review.completion.audit,
             value_enabled=assignment_config.code_review_value_enabled,
             value_uniqueness_threshold=(assignment_config.code_review_value_uniqueness_threshold),
             value_min_runs=assignment_config.code_review_value_min_runs,
             value_complexity=norm_complexity,
-            value_signals_out=_cr_value_signals,
-            value_audit=_cr_value_audit,
+            value_signals_out=evidence.code_review.value.signals,
+            value_audit=evidence.code_review.value.audit,
             value_phase="code_review",
         )
         code_reviewers = [
@@ -3667,7 +3644,9 @@ def assign_models(
             agents, selected, tier, exclude_model=dev_model, unhealthy_models=unhealthy_models
         )
         value_note = _reviewer_value_rationale(
-            assignment_config.code_review_value_enabled, _cr_value_signals, _cr_value_audit
+            assignment_config.code_review_value_enabled,
+            evidence.code_review.value.signals,
+            evidence.code_review.value.audit,
         )
         rationale["code_review"] = (
             f"{len(code_reviewers)} reviewer(s), tier {tier}, "
@@ -3696,44 +3675,25 @@ def assign_models(
         dec, _effort_block = resolve_reasoning_effort(
             dec, score=score, cfg=assignment_config.reasoning_effort
         )
-        block = _build_routing_decision(
-            dec,
-            agents,
+        # The reasoning-effort axis is the one block produced after the routing
+        # pass proper; it is still this pass's evidence, so it lands on the same
+        # value rather than being spliced in at the call site.
+        evidence.reasoning_effort_block = _effort_block
+        inputs = RoutingInputs(
             origin=routing_origin,
             score=score,
             dev_base_tier=dev_base_tier,
-            dev_effective_tier=_dev_effective_tier,
             preflight_tier=_preflight_tier,
             planner_tier=planner_target_tier,
-            min_reviewers=assignment_config.min_reviewers,
-            max_reviewers=assignment_config.max_reviewers,
-            dev_signals=_dev_signals,
-            promotion_block=_promotion_block,
-            planner_model=dec.planner.model,
-            dev_model=dec.dev.model,
-            explicit_roles=set(explicit_profiles),
+            explicit_roles=frozenset(explicit_profiles),
             secrets=secrets,
             unhealthy_models=unhealthy_models,
-            domains=effective_domains,
-            dev_domain_signals=_dev_domain_signals,
-            dev_cost_signals=_dev_cost_signals,
-            dev_domain_match=_dev_domain_match,
+            domains=tuple(effective_domains or ()),
+            min_reviewers=assignment_config.min_reviewers,
+            max_reviewers=assignment_config.max_reviewers,
             excluded_for_taint=excluded_for_taint,
-            dev_exploration=_dev_exploration,
-            pr_completion_signals=_pr_completion_signals,
-            pr_completion_audit=_pr_completion_audit,
-            cr_completion_signals=_cr_completion_signals,
-            cr_completion_audit=_cr_completion_audit,
-            pr_value_signals=_pr_value_signals,
-            pr_value_audit=_pr_value_audit,
-            cr_value_signals=_cr_value_signals,
-            cr_value_audit=_cr_value_audit,
-            preflight_reliability_signals=_preflight_reliability_signals,
-            preflight_reliability_audit=_preflight_reliability_audit,
-            planner_reliability_signals=_planner_reliability_signals,
-            planner_reliability_audit=_planner_reliability_audit,
-            reasoning_effort_block=_effort_block,
         )
+        block = _build_routing_decision(dec, agents, inputs, evidence)
         return _dc_replace(dec, routing_decision=block)
 
     # Enforce per-story routing cost target — pass dev floor so the enforcer never
