@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -23,7 +24,7 @@ from theforge.config import (
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.review import ReviewResult
-from theforge.sprint import load_sprint_manifest, run_sprint
+from theforge.sprint import load_sprint_manifest
 from theforge.sprint.ci_checks import PrCheckState
 from theforge.sprint.dag import StoryDAG, build_dag
 from theforge.sprint.lock import integration_lock
@@ -216,7 +217,7 @@ class TestMaxParallelPrecedence:
 
         with patch("theforge.sprint.runner.run_task") as mock_run:
             mock_run.return_value = _make_coordinator_result(success=True)
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         manifest = load_sprint_manifest(manifest_path)
         assert manifest.max_parallel == 2  # unchanged after load (not None)
@@ -229,7 +230,7 @@ class TestMaxParallelPrecedence:
 
         with patch("theforge.sprint.runner.run_task") as mock_run:
             mock_run.return_value = _make_coordinator_result(success=True)
-            result = run_sprint(config, manifest_path)
+            result = run_sprint_ctx(config, manifest_path)
 
         assert result.specs_succeeded == 1
 
@@ -241,7 +242,7 @@ class TestMaxParallelPrecedence:
 
         with patch("theforge.sprint.runner.run_task") as mock_run:
             mock_run.return_value = _make_coordinator_result(success=True)
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert config.sprint.max_parallel == 1
 
@@ -365,7 +366,7 @@ class TestParallelIndependentStories:
         ]
 
         with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 3
         assert sprint.specs_succeeded == 3
@@ -395,7 +396,7 @@ class TestParallelIndependentStories:
         ]
 
         with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 3
         assert sprint.specs_succeeded == 2
@@ -421,7 +422,7 @@ class TestParallelIndependentStories:
         ]
 
         with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
-            run_sprint(config, manifest_path, auto_merge=True)
+            run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         # In parallel mode, workers get auto_merge=False; merging is done in main thread
         for call in mock_run.call_args_list:
@@ -445,7 +446,7 @@ class TestParallelDependencyGating:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 1  # only A ran
         assert sprint.specs_succeeded == 0
@@ -470,7 +471,7 @@ class TestParallelDependencyGating:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 2
         assert sprint.specs_succeeded == 2
@@ -490,7 +491,7 @@ class TestParallelDependencyGating:
         result_a = _make_coordinator_result(success=False, cost=1.0, phase=Phase.ESCALATE)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 1
         assert sprint.specs_failed == 1
@@ -560,7 +561,7 @@ class TestParallelDependencyGating:
             patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
             patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # The queued-PR poll gated the dependent: it dispatched only after the
         # parent's merge became reachable.
@@ -601,7 +602,7 @@ class TestParallelDependencyGating:
                 return_value={"story-b": ["story-a"]},
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # story-a failed (never queued); the soft edge still releases story-b.
         assert sprint.specs_failed == 1
@@ -669,7 +670,7 @@ class TestParallelDependencyGating:
             patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
             patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # The parent's queued PR timed out (MERGE_FAILED); the dependent was still
         # dispatched onto the current base and ran to success — not skipped.
@@ -730,7 +731,7 @@ class TestParallelDependencyGating:
             patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
             patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # The hard dependent never ran; its parent's failure propagated as a skip.
         assert "story-h" not in run_order
@@ -826,7 +827,7 @@ class TestParallelDependencyGating:
             patch("theforge.coordinator.completion.land_story", side_effect=_fake_land_story),
             patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
         ):
-            sprint = run_sprint(config, manifest_path, resume=True)
+            sprint = run_sprint_ctx(config, manifest_path, resume=True)
 
         # story-a re-entered review and queued; the queued-PR poll gated story-b;
         # only after the poll reported the parent merge reachable did story-b
@@ -865,7 +866,7 @@ class TestParallelBudgetPooling:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # C was budget-skipped; A and B both ran (both submitted before cost accumulated)
         assert mock_run.call_count == 2
@@ -888,7 +889,7 @@ class TestParallelBudgetPooling:
         result_a = _make_coordinator_result(success=True, cost=1.5)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 1
         assert sprint.specs_skipped == 1
@@ -1132,7 +1133,7 @@ class TestMergeOrdering:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 2
         assert sprint.specs_succeeded == 2
@@ -1159,7 +1160,7 @@ class TestMaxParallel1Fallback:
         ]
 
         with patch("theforge.sprint.runner.run_task", side_effect=results) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 3
         assert sprint.specs_succeeded == 2
@@ -1184,7 +1185,7 @@ class TestMaxParallel1Fallback:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 1
         assert sprint.specs_succeeded == 1
@@ -1255,7 +1256,7 @@ class TestWorkerExceptionHandling:
             "theforge.sprint.runner.run_task",
             side_effect=[RuntimeError("agent crashed"), result_b],
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # A failed via exception → counted as failed; B still ran
         assert sprint.specs_failed == 1
@@ -1297,7 +1298,7 @@ class TestWorkerExceptionHandling:
             "theforge.sprint.runner.run_task",
             side_effect=[RuntimeError("agent crashed")],
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # A raises → failed; B dep-skipped (A never completed)
         assert sprint.specs_failed == 1
@@ -1335,7 +1336,7 @@ class TestParallelDependencySafety:
             patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]) as mock_run,
             patch("theforge.coordinator.completion._merge_branch", side_effect=_fake_merge),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=False)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=False)
 
         assert sprint.specs_succeeded == 2
         assert sprint.specs_failed == 0
@@ -1381,7 +1382,7 @@ class TestParallelMergeOrderingParallelMode:
             patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]),
             patch("theforge.coordinator.completion._merge_branch", side_effect=_fake_merge),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 2
         # A must be merged before B (dependency order)
@@ -1461,7 +1462,7 @@ class TestParallelMergeOrderingParallelMode:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
         audit = yaml.safe_load(
@@ -1543,7 +1544,7 @@ class TestParallelMergeOrderingParallelMode:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         audit_path = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
@@ -1627,7 +1628,7 @@ class TestParallelMergeOrderingParallelMode:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         audit_path = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
@@ -1677,7 +1678,7 @@ class TestParallelMergeOrderingParallelMode:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         audit_path = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "story-a" / "audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8")) or {}
@@ -1695,7 +1696,7 @@ class TestParallelMergeOrderingParallelMode:
 
 
 class TestSprintPrePull:
-    """run_sprint() propagates no_pull to per-story workers without a shared pre-pull."""
+    """run_sprint_ctx() propagates no_pull to per-story workers without a shared pre-pull."""
 
     def _make_manifest(self, tmp_path: Path) -> Path:
         (tmp_path / "story-a.md").write_text("---\nname: Story A\nslug: story-a\n---\n# Story A\n")
@@ -1719,7 +1720,7 @@ class TestSprintPrePull:
             return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
 
         with patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert all(v is False for v in worker_no_pull_values), (
             "Expected all workers no_pull=False so each workspace pulls a fresh base, "
@@ -1740,7 +1741,7 @@ class TestSprintPrePull:
             return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="Done.")
 
         with patch("theforge.sprint.runner.run_task", side_effect=capture_no_pull):
-            run_sprint(config, manifest_path, no_pull=True)
+            run_sprint_ctx(config, manifest_path, no_pull=True)
 
         assert all(v is True for v in worker_no_pull_values), (
             "Expected all workers no_pull=True when caller passes no_pull=True, "
@@ -2224,7 +2225,7 @@ class TestQueuedMergePolling:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert mock_poll.call_args.args == (
             "https://github.com/x/y/pull/7",
@@ -2317,7 +2318,7 @@ class TestQueuedMergePolling:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert result.landing_status == "failed"
         assert result.state.error == (
@@ -2429,7 +2430,7 @@ class TestQueuedMergePolling:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert sprint.specs_succeeded == 2
         assert sprint.specs_failed == 0
@@ -2511,7 +2512,7 @@ class TestQueuedMergePolling:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert result.landing_status == "failed"
         assert result.success is False
@@ -2604,7 +2605,7 @@ class TestQueuedMergePolling:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         # Dependent story-b must never be dispatched when story-a times out
         assert "story-b" not in dispatched
@@ -2707,7 +2708,7 @@ class TestQueuedMergePolling:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert "story-b" in dispatched, "story-b was skipped due to premature deadlock"
         assert queued_result.landing_status == "landed"
@@ -2749,7 +2750,7 @@ class TestImmediateIntegrationLanding:
             patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
             patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 2
         assert "merge:story-a" in events
@@ -2797,7 +2798,7 @@ class TestImmediateIntegrationLanding:
             patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
             patch("theforge.coordinator.completion._merge_branch", side_effect=fake_merge),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 2
         assert result_b.success is True
@@ -2858,7 +2859,7 @@ class TestImmediateIntegrationLanding:
                 },
             ),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         assert sprint.specs_succeeded == 0
         assert sprint.specs_failed == 1
@@ -2978,7 +2979,7 @@ class TestCollisionGatePreservedWork:
             patch("theforge.sprint.runner.run_from_dev", side_effect=_fake_run_from_dev),
             patch("theforge.sprint.runner._extract_plan_footprint", side_effect=_fake_footprint),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         return sprint, dev_calls
 
@@ -3090,7 +3091,7 @@ class TestCollisionGateQueuedParent:
             patch("theforge.coordinator.completion.land_story", side_effect=self._queued_land),
             patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         err = capsys.readouterr().err
         # The gate opened on the merge, not on a timeout, and not by dropping
@@ -3174,7 +3175,7 @@ class TestCollisionGateQueuedParent:
             patch("theforge.coordinator.completion.land_story", side_effect=self._queued_land),
             patch("theforge.sprint.runner._poll_queued_pr", side_effect=_fake_poll),
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         err = capsys.readouterr().err
         assert "queued PR merged (before dependent dispatch)" in err
@@ -3236,7 +3237,7 @@ class TestCollisionClaimWrapUpDrain:
                 return_value={"status": pr_status},
             ) as mock_poll,
         ):
-            sprint = run_sprint(config, manifest_path)
+            sprint = run_sprint_ctx(config, manifest_path)
 
         return sprint, mock_poll
 
@@ -3281,7 +3282,7 @@ class TestSprintLandsLocallyResolution:
             patch("theforge.coordinator.workspace.pull_base_branch", side_effect=fake_pull),
             pytest.raises(RuntimeError, match="stop after base sync"),
         ):
-            run_sprint(config, manifest_path, auto_merge=auto_merge)
+            run_sprint_ctx(config, manifest_path, auto_merge=auto_merge)
         return seen["lands_locally"]
 
     def test_sequential_auto_merge_lands_locally(self, tmp_path: Path) -> None:
@@ -3352,7 +3353,7 @@ class TestSprintRunAuditCommit:
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
         # Slice from the audit status probe: the publish sequence is the tail of
@@ -3398,7 +3399,7 @@ class TestSprintRunAuditCommit:
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
         audit_shell_calls = [
@@ -3450,7 +3451,7 @@ class TestSprintRunAuditCommit:
             patch("theforge.sprint.runner._log", side_effect=warnings.append),
             pytest.raises(RuntimeError, match="Failed to push story run audits"),
         ):
-            run_sprint(config, manifest_path, auto_merge=True)
+            run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         # Cleanup still ran before the raise, but the sprint does not report success.
         assert not any((tmp_path / ".forge" / "runs").glob("*.state"))
@@ -3491,7 +3492,7 @@ class TestSprintRunAuditCommit:
             patch("theforge.sprint.runner._log", side_effect=warnings.append),
             pytest.raises(RuntimeError, match="still 1 commit"),
         ):
-            run_sprint(config, manifest_path, auto_merge=True)
+            run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert any("canonical story run audit publish failed" in warning for warning in warnings)
 
@@ -3534,7 +3535,7 @@ class TestSprintRunAuditCommit:
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
             patch("theforge.sprint.runner._log", side_effect=logs.append),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert commit_cmd in shell_calls
         assert "git push origin main" in shell_calls
@@ -3579,7 +3580,7 @@ class TestSprintRunAuditCommit:
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
             patch("theforge.sprint.runner._log", side_effect=logs.append),
         ):
-            sprint = run_sprint(config, manifest_path, auto_merge=True)
+            sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert sprint.specs_succeeded == 1
         assert commit_cmd in shell_calls

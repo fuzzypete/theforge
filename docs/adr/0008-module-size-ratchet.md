@@ -313,6 +313,8 @@ withdrawal: 48 advisory findings, 0 blocking.
 - #2325 — first reduction unit (naming `run_sprint`'s execution context)
 - #2349 — the same unit for `assignment.py`: naming the routing evidence its
   routing pass accumulates (`theforge/routing_evidence.py`)
+- #2399 — the same unit finished: the state carries what the frame held, the five
+  named closures are module-scope, and `run_sprint` takes the context
 - #1617 — cold-start starvation, closed v0.12.0; ruled out as a cause of the model-mix shift
 - Amendment figures: `.forge/audits/index.sqlite` (`audit_records`, `invocation_identities`,
   `reviews`); `git log --merges --shortstat` for the per-merge columns

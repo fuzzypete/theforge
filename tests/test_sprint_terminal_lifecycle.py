@@ -434,8 +434,9 @@ def test_timed_out_sprint_writes_terminal_state_before_teardown(tmp_path: Path) 
     """The .state file a crash or a stop would find must already read terminal."""
     import threading
 
+    from sprint_test_helpers import run_sprint_ctx
+
     from tests.test_sprint_resume import _make_config, _make_manifest, _make_spec_file
-    from theforge.sprint import run_sprint
 
     config = _make_config(tmp_path)
     spec = _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -484,7 +485,7 @@ def test_timed_out_sprint_writes_terminal_state_before_teardown(tmp_path: Path) 
         patch.object(SprintStateWriter, "remove", lambda self: None),
     ):
         try:
-            run_sprint(config, manifest, run_id="terminalrun01")
+            run_sprint_ctx(config, manifest, run_id="terminalrun01")
         finally:
             release_live_state("feature-a", live)
 

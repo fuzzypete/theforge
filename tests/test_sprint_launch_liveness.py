@@ -22,6 +22,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -33,7 +34,6 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import run_sprint
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.dropped_work import describe_worktree_work, inspect_worktree_work
 from theforge.sprint.launch_guard import (
@@ -497,7 +497,7 @@ def test_dropped_story_with_commits_is_unmeasured_and_evidenced(tmp_path: Path) 
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             run_id="run-2079",
@@ -547,7 +547,7 @@ def test_dropped_story_without_a_worktree_stays_a_free_drop(tmp_path: Path) -> N
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             run_id="run-2079",
@@ -591,7 +591,7 @@ def test_dropped_story_inherited_group_is_settled_by_this_sprint(tmp_path: Path)
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(
+        run_sprint_ctx(
             config,
             manifest_path,
             run_id="run-2079",
@@ -625,7 +625,7 @@ def test_reexec_with_unresolved_liveness_defers_and_resumes(tmp_path: Path) -> N
             "theforge.sprint.runner.run_task", return_value=_make_coordinator_result()
         ) as mock_run_task,
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -669,7 +669,7 @@ def test_reexec_state_names_unresolved_deferral_distinctly(tmp_path: Path) -> No
         patch("theforge.sprint.runner.run_task", return_value=_make_coordinator_result()),
         patch.object(SprintStateWriter, "init", _capture_init),
     ):
-        run_sprint(
+        run_sprint_ctx(
             config,
             manifest_path,
             run_id="run-2079",

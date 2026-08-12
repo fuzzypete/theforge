@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from tests.test_sprint_launch_liveness import (
     _make_config,
@@ -27,7 +28,6 @@ from tests.test_sprint_launch_liveness import (
     _triage_full,
 )
 from theforge.coordinator import audit_substrate
-from theforge.sprint import run_sprint
 from theforge.sprint.abnormal import (
     ABNORMAL_LAUNCH_GUARD_DROP,
     ABNORMAL_WORKER_EXCEPTION,
@@ -69,7 +69,7 @@ def _run_sprint_landing(tmp_path: Path, manifest_path: Path, *, run_id: str) -> 
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(config, manifest_path, run_id=run_id)
+        run_sprint_ctx(config, manifest_path, run_id=run_id)
 
 
 def _run_sprint_with_drop(tmp_path: Path, *, reason: str, run_id: str = "run-2030"):
@@ -85,7 +85,7 @@ def _run_sprint_with_drop(tmp_path: Path, *, reason: str, run_id: str = "run-203
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        return run_sprint(
+        return run_sprint_ctx(
             config,
             manifest_path,
             run_id=run_id,
@@ -193,7 +193,7 @@ def test_worker_exception_audit_names_the_exception(tmp_path: Path) -> None:
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(config, manifest_path, run_id="run-2107")
+        run_sprint_ctx(config, manifest_path, run_id="run-2107")
 
     record = _story_audits(tmp_path)["issue-2054"]
     assert "advisory artifact missing" in record["error"]
@@ -233,7 +233,7 @@ def test_worker_exception_cause_survives_a_later_successful_generation(tmp_path:
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(config, manifest_path, run_id="run-first")
+        run_sprint_ctx(config, manifest_path, run_id="run-first")
 
     _run_sprint_landing(tmp_path, manifest_path, run_id="run-second")
 
@@ -280,7 +280,7 @@ def _run_sprint_to_worker_timeout(tmp_path: Path, manifest_path: Path) -> None:
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),
         patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 4000.0, 4000.0]),
     ):
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
 
 def test_worker_timeout_audit_names_the_timeout(tmp_path: Path) -> None:
@@ -441,7 +441,7 @@ def test_second_generation_does_not_erase_the_first_generations_cause(tmp_path: 
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(config, manifest_path, run_id="run-second")
+        run_sprint_ctx(config, manifest_path, run_id="run-second")
 
     after = _state()
     assert after["outcome"] in {"DONE", "ALREADY_DONE"}

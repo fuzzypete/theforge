@@ -13,6 +13,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.agent_types import AgentResult, ModelUsage
 from theforge.config import (
@@ -49,7 +50,6 @@ from theforge.sprint.runner import (
     _run_baseline_gate,
     _run_intake_remediation_pass,
     _terminal_story_model,
-    run_sprint,
 )
 from theforge.task import TaskStory
 
@@ -363,7 +363,7 @@ def test_run_sprint_pulls_base_branch_before_baseline_by_default(tmp_path: Path)
         ),
     ):
         with pytest.raises(RuntimeError, match="stop after baseline"):
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
     assert call_order == ["pull", "baseline"]
     mock_pull.assert_called_once_with(config, lands_locally=False)
@@ -397,7 +397,7 @@ def test_run_sprint_no_pull_skips_prebaseline_pull(tmp_path: Path) -> None:
         ),
     ):
         with pytest.raises(RuntimeError, match="stop after baseline"):
-            run_sprint(config, resolved, no_pull=True)
+            run_sprint_ctx(config, resolved, no_pull=True)
 
     assert call_order == ["baseline"]
     mock_pull.assert_not_called()
@@ -419,7 +419,7 @@ def test_run_sprint_pull_base_branch_failure_aborts_before_baseline(tmp_path: Pa
         patch("theforge.sprint.runner._run_baseline_gate") as mock_baseline,
     ):
         with pytest.raises(RuntimeError, match="WORKSPACE abort: pull failed"):
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
     mock_baseline.assert_not_called()
 

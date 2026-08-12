@@ -22,6 +22,7 @@ import dataclasses
 from unittest.mock import MagicMock, patch
 
 from coord_test_helpers import _make_config, _make_task
+from sprint_test_helpers import stub_resolved
 
 from theforge.coordinator.workspace import (
     _FORGE_ARTIFACTS,
@@ -718,6 +719,7 @@ class TestDaemonNoPull:
             patch("theforge.sprint.lock.release_story_locks"),
             # `from .sprint import run_sprint` binds to theforge.sprint.run_sprint
             patch("theforge.sprint.run_sprint") as mock_rs,
+            patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         ):
             mock_rs.return_value = MagicMock(specs_failed=0)
 
@@ -727,8 +729,8 @@ class TestDaemonNoPull:
             DaemonServer._execute_sprint(daemon, str(manifest_path), args, state_update_fn=None)
 
         mock_rs.assert_called_once()
-        _, kwargs = mock_rs.call_args
-        assert kwargs.get("no_pull") is True
+        (run_context,), _ = mock_rs.call_args
+        assert run_context.no_pull is True
 
 
 class TestDaemonForce:
@@ -800,6 +802,7 @@ class TestDaemonForce:
             patch("theforge.sprint.lock.acquire_story_locks", return_value=([], [])),
             patch("theforge.sprint.lock.release_story_locks"),
             patch("theforge.sprint.run_sprint") as mock_rs,
+            patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         ):
             mock_rs.return_value = MagicMock(specs_failed=0)
 
@@ -809,8 +812,8 @@ class TestDaemonForce:
             DaemonServer._execute_sprint(daemon, str(manifest_path), args, state_update_fn=None)
 
         mock_rs.assert_called_once()
-        _, kwargs = mock_rs.call_args
-        assert kwargs.get("force") is True
+        (run_context,), _ = mock_rs.call_args
+        assert run_context.force is True
 
     def test_daemon_execute_sprint_defaults_force_false(self, tmp_path):
         """Args without 'force' key must default to False (no implicit bypass)."""
@@ -829,6 +832,7 @@ class TestDaemonForce:
             patch("theforge.sprint.lock.acquire_story_locks", return_value=([], [])),
             patch("theforge.sprint.lock.release_story_locks"),
             patch("theforge.sprint.run_sprint") as mock_rs,
+            patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         ):
             mock_rs.return_value = MagicMock(specs_failed=0)
 
@@ -837,8 +841,8 @@ class TestDaemonForce:
 
             DaemonServer._execute_sprint(daemon, str(manifest_path), args, state_update_fn=None)
 
-        _, kwargs = mock_rs.call_args
-        assert kwargs.get("force") is False
+        (run_context,), _ = mock_rs.call_args
+        assert run_context.force is False
 
 
 # ── Deindex forge artifacts tests ─────────────────────────────────────

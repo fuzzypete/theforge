@@ -19,6 +19,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from tests.test_sprint_abnormal_evidence import _story_audits
 from tests.test_sprint_launch_liveness import (
@@ -29,7 +30,6 @@ from tests.test_sprint_launch_liveness import (
     _triage_full,
 )
 from theforge.coordinator import audit_substrate
-from theforge.sprint import run_sprint
 from theforge.sprint.audit import (
     PriorGeneration,
     carry_prior_generation_work,
@@ -119,7 +119,7 @@ def _run_sprint_with_drop(
         work_patch,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        return run_sprint(
+        return run_sprint_ctx(
             config,
             manifest_path,
             run_id="run-2214",

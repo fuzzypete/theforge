@@ -2,6 +2,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from tests.test_sprint_resume import (
     _make_config,
@@ -11,7 +12,6 @@ from tests.test_sprint_resume import (
 )
 from theforge.coordinator.state import CoordinatorState
 from theforge.sprint.dag import StoryTriage
-from theforge.sprint.runner import run_sprint
 
 
 def _set_snapshot(state: CoordinatorState) -> CoordinatorState:
@@ -92,7 +92,7 @@ class TestSprintResumeCachedPreflight:
                     with patch(
                         "theforge.sprint.runner.run_from_dev", return_value=coord_result
                     ) as mock_dev:
-                        result = run_sprint(config, manifest_path, resume=True)
+                        result = run_sprint_ctx(config, manifest_path, resume=True)
 
         assert result.specs_succeeded == 2
         assert mock_rev.call_args.kwargs["cached_preflight_state"] is review_cached
@@ -170,7 +170,7 @@ class TestSprintResumeCachedPreflight:
             ):
                 with patch("theforge.sprint.runner.run_from_review", return_value=review_result):
                     with patch("theforge.sprint.runner.run_from_dev", return_value=dev_result):
-                        result = run_sprint(config, manifest_path, resume=True)
+                        result = run_sprint_ctx(config, manifest_path, resume=True)
 
         assert result.specs_succeeded == 2
         summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"

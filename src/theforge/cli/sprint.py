@@ -11,7 +11,7 @@ from theforge.config import load_config
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
-from theforge.sprint import run_sprint
+from theforge.sprint import SprintRunContext, run_sprint
 from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
@@ -372,21 +372,23 @@ def _cmd_sprint(args: object) -> int:
     cause: str | None = _UNKNOWN_END_CAUSE
     try:
         result = run_sprint(
-            config,
-            manifest_path,
-            auto_merge=auto_merge,
-            interactive=interactive,
-            notify=not args.no_notify,
-            resume=resume,
-            reexec=reexec,
-            no_pull=no_pull,
-            run_id=run_id,
-            dropped_slugs=dropped_slugs,
-            force=force,
-            live_story_slugs=set(liveness.live_slugs),
-            unresolved_live_slugs=set(liveness.unresolved_slugs),
-            accept_unmeasured_spend=accept_unmeasured_spend,
-            accept_unmeasured_reason=accept_unmeasured_reason,
+            SprintRunContext.for_sprint(
+                config,
+                manifest_path,
+                auto_merge=auto_merge,
+                interactive=interactive,
+                notify=not args.no_notify,
+                resume=resume,
+                reexec=reexec,
+                no_pull=no_pull,
+                run_id=run_id,
+                dropped_slugs=dropped_slugs,
+                force=force,
+                live_story_slugs=set(liveness.live_slugs),
+                unresolved_live_slugs=set(liveness.unresolved_slugs),
+                accept_unmeasured_spend=accept_unmeasured_spend,
+                accept_unmeasured_reason=accept_unmeasured_reason,
+            )
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such
@@ -1274,23 +1276,25 @@ def _run_query_mode(
     cause: str | None = _UNKNOWN_END_CAUSE
     try:
         result = run_sprint(
-            config,
-            resolved,
-            auto_merge=auto_merge,
-            interactive=interactive,
-            notify=not args.no_notify,
-            resume=resume,
-            reexec=reexec,
-            no_pull=no_pull,
-            run_id=run_id,
-            dropped_slugs=dropped_slugs,
-            skipped_issues=skipped_issues,
-            entry_intake_outcomes=entry_intake_outcomes,
-            force=force,
-            live_story_slugs=set(liveness.live_slugs),
-            unresolved_live_slugs=set(liveness.unresolved_slugs),
-            accept_unmeasured_spend=accept_unmeasured_spend or [],
-            accept_unmeasured_reason=accept_unmeasured_reason,
+            SprintRunContext.for_sprint(
+                config,
+                resolved,
+                auto_merge=auto_merge,
+                interactive=interactive,
+                notify=not args.no_notify,
+                resume=resume,
+                reexec=reexec,
+                no_pull=no_pull,
+                run_id=run_id,
+                dropped_slugs=dropped_slugs,
+                skipped_issues=skipped_issues,
+                entry_intake_outcomes=entry_intake_outcomes,
+                force=force,
+                live_story_slugs=set(liveness.live_slugs),
+                unresolved_live_slugs=set(liveness.unresolved_slugs),
+                accept_unmeasured_spend=accept_unmeasured_spend or [],
+                accept_unmeasured_reason=accept_unmeasured_reason,
+            )
         )
     except KeyboardInterrupt:
         # Ctrl-C is a deliberate termination, not a crash — record it as such

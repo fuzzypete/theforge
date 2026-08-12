@@ -15,6 +15,7 @@ from pathlib import Path
 
 import yaml
 from coord_test_helpers import _make_config, _make_task
+from sprint_test_helpers import stub_resolved
 
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.hooks import build_post_run_payload, build_post_sprint_payload
@@ -641,9 +642,9 @@ class TestBudgetEnforcementSeam:
     def test_second_story_is_not_dispatched_after_unmeasured_spend(self, tmp_path: Path) -> None:
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.dag import StoryTriage
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -664,7 +665,7 @@ class TestBudgetEnforcementSeam:
                 "theforge.sprint.runner.run_task",
                 return_value=self._unmeasured_dev_result(),
             ) as mock_run:
-                result = run_sprint(config, manifest_path)
+                result = run_sprint_ctx(config, manifest_path)
 
         # The budget is nowhere near exhausted at the measured lower bound —
         # the sprint stops because that bound is not the spend.
@@ -678,9 +679,9 @@ class TestBudgetEnforcementSeam:
         """Convention 6: the refusal must be traceable to the work that caused it."""
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.dag import StoryTriage
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -701,7 +702,7 @@ class TestBudgetEnforcementSeam:
                 "theforge.sprint.runner.run_task",
                 return_value=self._unmeasured_dev_result(),
             ):
-                result = run_sprint(config, manifest_path)
+                result = run_sprint_ctx(config, manifest_path)
 
         assert result.unmeasured_spend_sources  # names the story that ran unpriced
         audit = yaml.safe_load(
@@ -718,6 +719,7 @@ class TestBudgetEnforcementSeam:
         """The fail-closed path must not fire when every story reports cost."""
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import (
             _make_config,
             _make_coordinator_result,
@@ -725,7 +727,6 @@ class TestBudgetEnforcementSeam:
             _make_spec_file,
         )
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.dag import StoryTriage
 
         _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -746,7 +747,7 @@ class TestBudgetEnforcementSeam:
                 "theforge.sprint.runner.run_task",
                 side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
             ) as mock_run:
-                result = run_sprint(config, manifest_path)
+                result = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 2
         assert result.stopped_reason is None
@@ -1125,9 +1126,9 @@ class TestUnmeasuredResolutionSeam:
     def _run(config, manifest_path, **kwargs):
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_coordinator_result
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.dag import StoryTriage
 
         def _triage(spec_path, *args, **kw):
@@ -1143,7 +1144,7 @@ class TestUnmeasuredResolutionSeam:
                 "theforge.sprint.runner.run_task",
                 side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
             ) as mock_run:
-                result = run_sprint(config, manifest_path, **kwargs)
+                result = run_sprint_ctx(config, manifest_path, **kwargs)
         return result, mock_run
 
     def test_carried_unmeasured_story_is_refused_with_its_amount_and_origin(
@@ -1344,12 +1345,13 @@ class TestAcceptanceReachesTheRunner:
             patch("theforge.cli.sprint._acquire_launch_locks", return_value=([], None, {})),
             patch("theforge.cli.sprint.release_story_locks"),
             patch("theforge.cli.sprint.run_sprint", return_value=fake_result) as mock_run_sprint,
+            patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         ):
             sprint_cli.cmd_sprint(args)
 
-        kwargs = mock_run_sprint.call_args.kwargs
-        assert kwargs["accept_unmeasured_spend"] == ["carried:issue-2206"]
-        assert kwargs["accept_unmeasured_reason"] == "quota failure"
+        run_context = mock_run_sprint.call_args.args[0]
+        assert run_context.accept_unmeasured_spend == ["carried:issue-2206"]
+        assert run_context.accept_unmeasured_reason == "quota failure"
 
     def test_daemon_submission_forwards_the_acceptance(self, tmp_path: Path) -> None:
         """--detach enumerates run_sprint kwargs by hand; the flag must be there."""
@@ -1367,6 +1369,7 @@ class TestAcceptanceReachesTheRunner:
             patch("theforge.sprint.lock.acquire_story_locks", return_value=([], [])),
             patch("theforge.sprint.lock.release_story_locks"),
             patch("theforge.sprint.run_sprint") as mock_run_sprint,
+            patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         ):
             daemon._execute_sprint(
                 str(tmp_path / "sprint.yaml"),
@@ -1377,9 +1380,9 @@ class TestAcceptanceReachesTheRunner:
                 lambda _state: None,
             )
 
-        kwargs = mock_run_sprint.call_args.kwargs
-        assert kwargs["accept_unmeasured_spend"] == ["issue-2206"]
-        assert kwargs["accept_unmeasured_reason"] == "quota failure"
+        run_context = mock_run_sprint.call_args.args[0]
+        assert run_context.accept_unmeasured_spend == ["issue-2206"]
+        assert run_context.accept_unmeasured_reason == "quota failure"
 
 
 class TestAcceptanceCoversOneOccurrence:
@@ -1446,9 +1449,9 @@ class TestAcceptanceCoversOneOccurrence:
         """Seam: the guard closes again on the second unknown, unprompted."""
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.audit import persist_accumulated_story_state
         from theforge.sprint.dag import StoryTriage
 
@@ -1491,7 +1494,7 @@ class TestAcceptanceCoversOneOccurrence:
                 "theforge.sprint.runner.run_task",
                 return_value=TestBudgetEnforcementSeam._unmeasured_dev_result(),
             ) as mock_run:
-                result = run_sprint(
+                result = run_sprint_ctx(
                     config,
                     manifest_path,
                     accept_unmeasured_spend=["feature-a"],
@@ -1558,9 +1561,9 @@ class TestAcceptedPriorAuditSourceIsCharged:
     def _run(config, manifest_path, **kwargs):
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_coordinator_result
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.dag import StoryTriage
 
         def _triage(spec_path, *args, **kw):
@@ -1576,7 +1579,7 @@ class TestAcceptedPriorAuditSourceIsCharged:
                 "theforge.sprint.runner.run_task",
                 side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
             ) as mock_run:
-                result = run_sprint(config, manifest_path, resume=True, **kwargs)
+                result = run_sprint_ctx(config, manifest_path, resume=True, **kwargs)
         return result, mock_run
 
     def test_the_ceiling_is_charged_and_can_exhaust_the_cap(self, tmp_path: Path) -> None:
@@ -1750,9 +1753,9 @@ class TestReportedShapeIsResolvable:
     def _run(config, manifest_path, **kwargs):
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_coordinator_result
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.dag import StoryTriage
 
         def _triage(spec_path, *args, **kw):
@@ -1768,7 +1771,7 @@ class TestReportedShapeIsResolvable:
                 "theforge.sprint.runner.run_task",
                 side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
             ) as mock_run:
-                result = run_sprint(config, manifest_path, resume=True, **kwargs)
+                result = run_sprint_ctx(config, manifest_path, resume=True, **kwargs)
         return result, mock_run
 
     def test_resume_without_acceptance_is_still_refused(self, tmp_path: Path) -> None:
@@ -1877,9 +1880,9 @@ class TestOccurrenceIdentitySurvivesAResume:
     def _run(config, manifest_path):
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_coordinator_result
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.dag import StoryTriage
 
         def _triage(spec_path, *args, **kw):
@@ -1895,7 +1898,7 @@ class TestOccurrenceIdentitySurvivesAResume:
                 "theforge.sprint.runner.run_task",
                 side_effect=lambda *a, **k: _make_coordinator_result(success=True, cost=1.0),
             ) as mock_run:
-                result = run_sprint(config, manifest_path, resume=True)
+                result = run_sprint_ctx(config, manifest_path, resume=True)
         return result, mock_run
 
     def test_a_second_occurrence_is_not_cleared_by_the_first_acceptance(
@@ -1956,9 +1959,9 @@ class TestSecondOccurrenceIsReportedAsItself:
     ) -> None:
         from unittest.mock import patch
 
+        from sprint_test_helpers import run_sprint_ctx
         from test_sprint_resume import _make_config, _make_manifest, _make_spec_file
 
-        from theforge.sprint import run_sprint
         from theforge.sprint.audit import persist_accumulated_story_state
         from theforge.sprint.dag import StoryTriage
 
@@ -2009,7 +2012,7 @@ class TestSecondOccurrenceIsReportedAsItself:
                     "theforge.sprint.runner.run_task",
                     return_value=TestBudgetEnforcementSeam._unmeasured_dev_result(),
                 ) as mock_run:
-                    result = run_sprint(
+                    result = run_sprint_ctx(
                         config,
                         manifest_path,
                         accept_unmeasured_spend=["feature-a"],

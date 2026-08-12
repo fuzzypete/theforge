@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -27,7 +28,6 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import run_sprint
 from theforge.sprint.gate_timeout_resolver import resolve_effective_gate_timeout
 
 # ── Pure resolver tests ───────────────────────────────────────────────────────
@@ -165,7 +165,7 @@ def test_sprint_propagates_scaled_gate_timeout_to_run_task(tmp_path: Path) -> No
         patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
         patch("os.cpu_count", return_value=10),
     ):
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
     # Resolver math at parallel=3, gate_cpu=7, host=10 → factor=2.1 → 45*2.1 = 94.5 → ceil=95
     assert captured["gate_timeout"] == 95
@@ -189,7 +189,7 @@ def test_sprint_fixed_mode_keeps_baseline(tmp_path: Path) -> None:
         patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
         patch("os.cpu_count", return_value=10),
     ):
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
     assert captured["gate_timeout"] == 45
 
@@ -204,7 +204,7 @@ def test_sprint_emits_overcommit_warning(tmp_path: Path, capsys) -> None:
         patch("theforge.sprint.runner.run_task", return_value=_ok_result()),
         patch("os.cpu_count", return_value=10),
     ):
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
     err = capsys.readouterr().err
     assert "WARNING" in err
@@ -231,4 +231,4 @@ def test_sprint_invalid_gate_timeout_scale_fails_fast(tmp_path: Path) -> None:
         patch("os.cpu_count", return_value=10),
     ):
         with pytest.raises(ValueError, match="gate_timeout_scale must be 'adaptive' or 'fixed'"):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)

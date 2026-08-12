@@ -30,7 +30,14 @@ and sprint-level audit/display behavior.
   shared total or a bare `stopped_reason` variable alongside them.
 - Extracting anything out of `run_sprint` is a move, not a re-decision: the new
   home takes `SprintRunContext` and/or `SprintExecutionState` rather than a
-  fresh set of threaded parameters.
+  fresh set of threaded parameters. Passing *members* of the state is the same
+  parameter threading under another name and does not count as an extraction.
+- `run_sprint` takes the run context and nothing else; build one with
+  `SprintRunContext.for_sprint`, which is also where a manifest path is
+  resolved. A new sprint-wide input becomes a context field, not a parameter.
+- `tests/test_sprint_runner_structure.py` asserts both of the above against the
+  parsed module, so re-introducing frame capture fails a test rather than
+  passing review.
 
 ## Context
 

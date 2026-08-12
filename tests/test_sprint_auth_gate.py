@@ -23,6 +23,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -58,7 +59,6 @@ from theforge.sprint.auth_gate import (
     enforce_sprint_auth_readiness,
 )
 from theforge.sprint.manifest import ResolvedSprint
-from theforge.sprint.runner import run_sprint
 from theforge.sprint.sources import FileSource
 
 # The exact shape the CLI leaves behind after repeated 401s: both tokens
@@ -408,7 +408,7 @@ def test_claude_planner_aborts_the_sprint_before_dispatch(tmp_path: Path) -> Non
         patch("theforge.sprint.runner.run_task") as mock_run_task,
     ):
         with pytest.raises(SprintAuthUnavailable) as exc_info:
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
     assert "plan" in str(exc_info.value)
     assert not mock_run_task.called
@@ -442,7 +442,7 @@ def test_revoked_credential_aborts_sprint_before_story_dispatch(tmp_path: Path) 
         patch("theforge.sprint.runner._write_story_audit") as mock_story_audit,
     ):
         with pytest.raises(SprintAuthUnavailable) as exc_info:
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
     elapsed = time.monotonic() - started
 
     message = str(exc_info.value)
@@ -489,7 +489,7 @@ def test_healthy_credential_lets_the_sprint_run(tmp_path: Path) -> None:
         patch("theforge.sprint.runner._write_sprint_audit"),
         patch("theforge.sprint.runner._write_sprint_summary"),
     ):
-        result = run_sprint(config, resolved)
+        result = run_sprint_ctx(config, resolved)
 
     assert mock_run_task.called
     assert result.specs_succeeded == 1
@@ -553,7 +553,7 @@ def _run_two_story_sprint(
         patch("theforge.sprint.runner._write_sprint_summary"),
         patch("theforge.sprint.runner._write_story_audit"),
     ):
-        result = run_sprint(config, resolved)
+        result = run_sprint_ctx(config, resolved)
     return result, dispatched
 
 
@@ -667,7 +667,7 @@ def test_inflight_sibling_cancelled_by_breaker_is_not_a_story_failure(
         patch("theforge.sprint.runner._write_sprint_summary"),
         patch("theforge.sprint.runner._write_story_audit"),
     ):
-        result = run_sprint(config, resolved)
+        result = run_sprint_ctx(config, resolved)
 
     # The sibling really was in flight and really was cancelled by us.
     assert a_may_finish.is_set()

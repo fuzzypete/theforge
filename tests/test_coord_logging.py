@@ -366,9 +366,9 @@ class TestProjectLocalLogDir:
     def test_sprint_nesting(self, tmp_path):
         """Sprint passes sprint_name and creates sprint-level log dir + sprint-summary.yaml."""
         import yaml as _yaml
+        from sprint_test_helpers import run_sprint_ctx
 
         from theforge.coordinator.state import Phase
-        from theforge.sprint import run_sprint
 
         spec = tmp_path / "story.md"
         spec.write_text("---\nslug: my-story\n---\n# Story", encoding="utf-8")
@@ -403,7 +403,7 @@ class TestProjectLocalLogDir:
             patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
             patch("theforge.coordinator.audit.generate_audit_log", return_value={"task": {}}),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         # run_task called with sprint_name="my-sprint"
         assert captured_kwargs.get("sprint_name") == "my-sprint"
@@ -421,6 +421,7 @@ class TestProjectLocalLogDir:
     def test_parallel_sprint_story_log_dir_still_accepts_artifacts(self, tmp_path):
         """Parallel sprint workers still get per-story log dirs for structured artifacts."""
         import yaml as _yaml
+        from sprint_test_helpers import run_sprint_ctx
 
         from theforge.coordinator.log_tee import (
             _begin_run_log_tee,
@@ -428,7 +429,6 @@ class TestProjectLocalLogDir:
             _write_log_artifact,
         )
         from theforge.coordinator.logging import StructuredLogger
-        from theforge.sprint import run_sprint
 
         spec_a = tmp_path / "story-a.md"
         spec_a.write_text("---\nslug: story-a\n---\n# Story A", encoding="utf-8")
@@ -485,7 +485,7 @@ class TestProjectLocalLogDir:
             patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
             patch("theforge.coordinator.audit.generate_audit_log", return_value={"task": {}}),
         ):
-            result = run_sprint(config, manifest_path)
+            result = run_sprint_ctx(config, manifest_path)
 
         assert result.specs_succeeded == 2
         assert tee_results == {"story-a": None, "story-b": None}

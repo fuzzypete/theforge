@@ -380,7 +380,7 @@ class TestAssignDependencyBatches:
 
 
 class TestRunSprintAcceptsResolvedSprint:
-    """run_sprint() must work when given a ResolvedSprint directly (not a Path)."""
+    """run_sprint_ctx() must work when given a ResolvedSprint directly (not a Path)."""
 
     def _make_config(self, tmp_path: Path):
         from theforge.config import (
@@ -424,8 +424,9 @@ class TestRunSprintAcceptsResolvedSprint:
         )
 
     def test_accepts_resolved_sprint_and_runs(self, tmp_path: Path) -> None:
+        from sprint_test_helpers import run_sprint_ctx
+
         from theforge.sprint.manifest import ResolvedSprint
-        from theforge.sprint.runner import run_sprint
         from theforge.sprint.sources import FileSource
 
         story_file = tmp_path / "story.md"
@@ -450,7 +451,7 @@ class TestRunSprintAcceptsResolvedSprint:
             ):
                 with patch("theforge.sprint.runner._write_sprint_audit"):
                     with patch("theforge.sprint.runner._write_sprint_summary"):
-                        result = run_sprint(config, resolved)
+                        result = run_sprint_ctx(config, resolved)
 
         assert result.specs_total == 1
         assert result.specs_succeeded == 1
@@ -458,8 +459,9 @@ class TestRunSprintAcceptsResolvedSprint:
 
     def test_no_path_assumption_in_run_sprint(self, tmp_path: Path) -> None:
         """run_sprint with a ResolvedSprint must not touch the filesystem for manifest."""
+        from sprint_test_helpers import run_sprint_ctx
+
         from theforge.sprint.manifest import ResolvedSprint
-        from theforge.sprint.runner import run_sprint
         from theforge.sprint.sources import GitHubIssueSource
         from theforge.task import TaskStory
 
@@ -482,7 +484,7 @@ class TestRunSprintAcceptsResolvedSprint:
             ):
                 with patch("theforge.sprint.runner._write_sprint_audit"):
                     with patch("theforge.sprint.runner._write_sprint_summary"):
-                        result = run_sprint(config, resolved)
+                        result = run_sprint_ctx(config, resolved)
 
         assert result.specs_total == 1
         assert result.name == "GitHub Sprint"
@@ -490,8 +492,9 @@ class TestRunSprintAcceptsResolvedSprint:
     def test_unresolved_external_blocker_is_skipped_at_runtime(self, tmp_path: Path) -> None:
         from dataclasses import replace
 
+        from sprint_test_helpers import run_sprint_ctx
+
         from theforge.sprint.manifest import ResolvedSprint
-        from theforge.sprint.runner import run_sprint
         from theforge.sprint.sources import GitHubIssueSource
 
         blocked = TaskStory(name="Blocked", slug="issue-2", github_issue=2, depends_on=["issue-1"])
@@ -517,7 +520,7 @@ class TestRunSprintAcceptsResolvedSprint:
                 return_value=self._make_coordinator_result(),
             ) as mock_run_task,
         ):
-            result = run_sprint(config, resolved)
+            result = run_sprint_ctx(config, resolved)
 
         assert result.specs_total == 2
         assert result.specs_succeeded == 1

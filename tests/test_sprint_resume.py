@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 import theforge.pending as pending
 from theforge.config import (
@@ -22,7 +23,6 @@ from theforge.config import (
 )
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import run_sprint
 from theforge.sprint.audit import persist_accumulated_story_state
 from theforge.sprint.dag import StoryTriage, _triage_spec
 from theforge.sprint.lock import acquire_story_locks, release_story_locks
@@ -828,7 +828,7 @@ class TestResumeSprintSkipApproved:
 
         with patch("theforge.sprint.runner._triage_spec", return_value=skip_triage):
             with patch("theforge.sprint.runner.run_task") as mock_run_task:
-                result = run_sprint(config, manifest_path, resume=True)
+                result = run_sprint_ctx(config, manifest_path, resume=True)
 
         mock_run_task.assert_not_called()
         assert result.specs_succeeded == 0
@@ -851,7 +851,7 @@ class TestResumeSprintIntegration:
 
         with patch("theforge.sprint.runner._triage_spec", return_value=merged_triage):
             with patch("theforge.sprint.runner.run_task") as mock_run:
-                result = run_sprint(config, manifest_path, resume=True)
+                result = run_sprint_ctx(config, manifest_path, resume=True)
 
         mock_run.assert_not_called()
         assert result.specs_succeeded == 0
@@ -879,7 +879,7 @@ class TestResumeSprintIntegration:
                 "theforge.sprint.runner.run_from_dev", return_value=coord_result
             ) as mock_dev:
                 with patch("theforge.sprint.runner.run_task") as mock_task:
-                    result = run_sprint(config, manifest_path, resume=True)
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
 
         mock_dev.assert_called_once()
         mock_task.assert_not_called()
@@ -917,7 +917,7 @@ class TestResumeSprintIntegration:
         with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
             with patch("theforge.sprint.runner.run_task") as mock_run:
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
-                    result = run_sprint(config, manifest_path, resume=True)
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
 
         # Merged spec should remain already-done/skipped, not budget-skipped.
         assert result.specs_succeeded == 0
@@ -946,7 +946,7 @@ class TestResumeSprintIntegration:
                 "theforge.sprint.runner.run_from_review", return_value=coord_result
             ) as mock_rev:
                 with patch("theforge.sprint.runner.run_task") as mock_task:
-                    result = run_sprint(config, manifest_path, resume=True)
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
 
         mock_rev.assert_called_once()
         mock_task.assert_not_called()
@@ -972,7 +972,7 @@ class TestResumeSprintIntegration:
         with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
             with patch("theforge.sprint.runner.run_task", return_value=coord_result):
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
-                    result = run_sprint(config, manifest_path, resume=True)
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
 
         # total should be prior (3.50) + new (1.00)
         assert result.total_cost_usd == pytest.approx(4.50)
@@ -996,7 +996,7 @@ class TestResumeSprintIntegration:
         with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
             with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_run:
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
-                    result = run_sprint(config, manifest_path, resume=True)
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
 
         mock_run.assert_called_once()
         assert result.specs_succeeded == 1
@@ -1023,7 +1023,7 @@ class TestResumeSprintIntegration:
         with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
             with patch("theforge.sprint.runner.run_task") as mock_run:
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
-                    result = run_sprint(config, manifest_path, resume=True)
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
 
         # Spec should be skipped — prior cost alone exceeds budget
         mock_run.assert_not_called()
@@ -1075,7 +1075,7 @@ class TestResumeSprintIntegration:
         with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
             with patch("theforge.sprint.runner.run_task") as mock_run:
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
-                    result = run_sprint(config, manifest_path, resume=True)
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
 
         mock_run.assert_not_called()
         assert result.specs_skipped == 1
@@ -1144,7 +1144,7 @@ class TestResumeSprintIntegration:
         with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
             with patch("theforge.sprint.runner.run_task", return_value=coord_result):
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
-                    result = run_sprint(config, manifest_path, reexec=True)
+                    result = run_sprint_ctx(config, manifest_path, reexec=True)
 
         assert result.total_cost_usd == pytest.approx(4.75)
 
@@ -1183,7 +1183,7 @@ class TestResumeSprintIntegration:
         coord_result = _make_coordinator_result(success=True, cost=3.5, landing_status="landed")
 
         with patch("theforge.sprint.runner.run_task", return_value=coord_result):
-            run_sprint(config, manifest_path, resume=False)
+            run_sprint_ctx(config, manifest_path, resume=False)
 
         state_path = tmp_path / ".forge" / "sprints" / sprint_id / "state.yaml"
         assert state_path.exists(), "fresh run must persist progressive story state"
@@ -1214,7 +1214,7 @@ class TestResumeSprintIntegration:
             "theforge.sprint.runner.run_task",
             return_value=_make_coordinator_result(success=True, cost=6.0, landing_status="landed"),
         ):
-            run_sprint(config, gen1_manifest, resume=False)
+            run_sprint_ctx(config, gen1_manifest, resume=False)
 
         merged_triage = StoryTriage(
             story_path="feature-a.md",
@@ -1242,7 +1242,7 @@ class TestResumeSprintIntegration:
                     success=True, cost=1.5, landing_status="landed"
                 ),
             ):
-                result = run_sprint(config, manifest_path, reexec=True)
+                result = run_sprint_ctx(config, manifest_path, reexec=True)
 
         # $6.00 from before the re-exec is still counted, not dropped.
         assert result.total_cost_usd == pytest.approx(7.5)
@@ -1302,7 +1302,7 @@ class TestResumeSprintIntegration:
                     success=True, cost=1.5, landing_status="landed"
                 ),
             ):
-                result = run_sprint(config, manifest_path, reexec=True)
+                result = run_sprint_ctx(config, manifest_path, reexec=True)
 
         summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
         summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
@@ -1369,7 +1369,7 @@ class TestResumeSprintIntegration:
                     success=True, cost=1.5, landing_status="landed"
                 ),
             ):
-                result = run_sprint(config, manifest_path, reexec=True)
+                result = run_sprint_ctx(config, manifest_path, reexec=True)
 
         summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
         summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))
@@ -1422,7 +1422,7 @@ class TestResumeSprintIntegration:
 
         with patch("theforge.sprint.runner._triage_spec", return_value=merged_triage):
             with patch("theforge.sprint.runner.run_task") as mock_run:
-                result = run_sprint(config, manifest_path, reexec=True)
+                result = run_sprint_ctx(config, manifest_path, reexec=True)
 
         mock_run.assert_not_called()
         summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
@@ -1447,7 +1447,7 @@ class TestResumeSprintIntegration:
             "theforge.sprint.runner.run_task",
             return_value=_make_coordinator_result(success=True, cost=6.0, landing_status="landed"),
         ):
-            run_sprint(config, gen1_manifest, resume=False)
+            run_sprint_ctx(config, gen1_manifest, resume=False)
 
         merged_triage = StoryTriage(
             story_path="feature-a.md",
@@ -1469,7 +1469,7 @@ class TestResumeSprintIntegration:
 
         with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
             with patch("theforge.sprint.runner.run_task") as mock_run:
-                result = run_sprint(config, manifest_path, reexec=True)
+                result = run_sprint_ctx(config, manifest_path, reexec=True)
 
         # feature-b must not dispatch: $0.00 + carried $6.00 already exceeds $5.
         mock_run.assert_not_called()
@@ -1486,7 +1486,7 @@ class TestResumeSprintIntegration:
 
         with patch("theforge.sprint.runner._triage_spec") as mock_triage:
             with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_task:
-                result = run_sprint(config, manifest_path, resume=False)
+                result = run_sprint_ctx(config, manifest_path, resume=False)
 
         mock_triage.assert_not_called()
         mock_task.assert_called_once()
@@ -1531,7 +1531,7 @@ class TestSprintDependencies:
         result_a = _make_coordinator_result(success=True, cost=1.0, merged=False)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
-            result = run_sprint(config, manifest_path, auto_merge=True)
+            result = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 1  # only spec-a ran (spec-b skipped, no more specs)
         assert result.specs_succeeded == 1
@@ -1551,7 +1551,7 @@ class TestSprintDependencies:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            result = run_sprint(config, manifest_path, auto_merge=True)
+            result = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         assert mock_run.call_count == 2
         assert result.specs_succeeded == 2
@@ -1570,7 +1570,7 @@ class TestSprintDependencies:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            result = run_sprint(config, manifest_path)
+            result = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 2
         assert result.specs_failed == 1
@@ -1607,7 +1607,7 @@ class TestSprintDependencies:
 
         with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
             with patch("theforge.sprint.runner.run_task", return_value=result_b) as mock_run:
-                result = run_sprint(config, manifest_path, resume=True)
+                result = run_sprint_ctx(config, manifest_path, resume=True)
 
         # spec-a was skip_merged (already done), spec-b ran successfully
         mock_run.assert_called_once()
@@ -1645,7 +1645,7 @@ class TestSprintDependencies:
 
         with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
             with patch("theforge.sprint.runner.run_task", return_value=result_b) as mock_run:
-                result = run_sprint(config, manifest_path, resume=True)
+                result = run_sprint_ctx(config, manifest_path, resume=True)
 
         # spec-a was skip_merged (already done) — should satisfy dep so spec-b runs
         mock_run.assert_called_once()
@@ -1669,7 +1669,7 @@ class TestSprintDependencies:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_c]
         ) as mock_run:
-            result = run_sprint(config, manifest_path)
+            result = run_sprint_ctx(config, manifest_path)
 
         # A ran, B was skipped (dependency failed), C still ran
         assert mock_run.call_count == 2
@@ -1690,7 +1690,7 @@ class TestSprintDependencies:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            run_sprint(config, manifest_path, auto_merge=False)
+            run_sprint_ctx(config, manifest_path, auto_merge=False)
 
         # First call (spec-a) must have auto_merge=True due to eager merge
         first_call_kwargs = mock_run.call_args_list[0].kwargs
@@ -1711,7 +1711,7 @@ class TestSprintDependencies:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            run_sprint(config, manifest_path, auto_merge=False)
+            run_sprint_ctx(config, manifest_path, auto_merge=False)
 
         # Neither call should override auto_merge
         for call in mock_run.call_args_list:
@@ -1735,7 +1735,7 @@ class TestSprintDependencies:
             with patch("theforge.sprint.runner.run_task") as mock_run_task:
                 with patch("theforge.sprint.runner.run_from_review") as mock_review:
                     with patch("theforge.sprint.runner.run_from_dev") as mock_dev:
-                        result = run_sprint(config, manifest_path, resume=True)
+                        result = run_sprint_ctx(config, manifest_path, resume=True)
 
         mock_run_task.assert_not_called()
         mock_review.assert_not_called()
@@ -1759,7 +1759,7 @@ class TestSprintDependencies:
         with patch(
             "theforge.sprint.runner.run_task", side_effect=[result_a, result_b]
         ) as mock_run:
-            result = run_sprint(config, manifest_path)
+            result = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 2  # both specs ran
         # ALREADY_DONE is a terminal succeeded outcome under the canonical
@@ -1814,7 +1814,7 @@ class TestSprintDependencies:
             with patch("theforge.sprint.runner.run_from_review", return_value=coord_result):
                 with patch("theforge.coordinator.workspace.pull_base_branch", return_value=True):
                     with patch("theforge.sprint.runner.run_batch_preflight", return_value={}):
-                        result = run_sprint(config, manifest_path, resume=True)
+                        result = run_sprint_ctx(config, manifest_path, resume=True)
 
         assert result.specs_succeeded == 1
 
@@ -1861,7 +1861,7 @@ def test_issue_backed_stories_are_batch_preflighted_before_fresh_run(tmp_path: P
         return_value={task.slug: cached_preflight},
     ) as mock_batch_preflight:
         with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_run_task:
-            result = run_sprint(config, resolved)
+            result = run_sprint_ctx(config, resolved)
 
     assert result.specs_succeeded == 1
     batch_tasks = mock_batch_preflight.call_args.args[0]

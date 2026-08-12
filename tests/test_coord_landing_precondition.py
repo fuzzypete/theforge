@@ -26,6 +26,7 @@ from unittest.mock import patch
 
 import pytest
 from coord_test_helpers import _make_config, _make_task
+from sprint_test_helpers import run_sprint_ctx
 from test_sprint_runner import _make_empty_resolved, _make_runner_config
 
 from theforge.config import ForgeConfig
@@ -38,7 +39,6 @@ from theforge.coordinator.workspace import (
     project_root_dirty_status,
     story_lands_in_project_root,
 )
-from theforge.sprint.runner import run_sprint
 
 DIRTY = " M forge.yaml"
 
@@ -282,7 +282,7 @@ def test_run_sprint_dirty_root_aborts_before_pull_and_baseline(tmp_path: Path) -
         patch("theforge.sprint.runner._run_baseline_gate") as mock_baseline,
     ):
         with pytest.raises(RuntimeError, match="forge.yaml"):
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
     mock_pull.assert_not_called()
     mock_baseline.assert_not_called()
@@ -315,7 +315,7 @@ def test_run_sprint_clean_root_proceeds(tmp_path: Path) -> None:
         ),
     ):
         with pytest.raises(RuntimeError, match="stop after baseline"):
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
     mock_pull.assert_called_once()
 
@@ -386,7 +386,7 @@ def test_parallel_dependency_parent_dispatched_with_landing_obligation(tmp_path:
         patch("theforge.sprint.runner.ThreadPoolExecutor", _capturing_executor(captured)),
     ):
         with pytest.raises(_StopDispatch):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
     parent_kwargs = captured.get("parent")
     assert parent_kwargs is not None, "dependency parent was never dispatched"
@@ -468,7 +468,7 @@ def test_external_satisfied_dependency_does_not_impose_a_landing_obligation(
             stack.enter_context(cm)
         # Reaching the baseline gate proves the entry check did not refuse.
         with pytest.raises(RuntimeError, match="stop after baseline"):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
 
 def test_in_manifest_dependency_parent_still_imposes_a_landing_obligation(
@@ -488,7 +488,7 @@ def test_in_manifest_dependency_parent_still_imposes_a_landing_obligation(
         mocks = [stack.enter_context(cm) for cm in _entry_patches(set())]
         mock_preflight = mocks[-1]
         with pytest.raises(RuntimeError, match="forge.yaml"):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
     mock_preflight.assert_not_called()
 
@@ -512,7 +512,7 @@ def test_satisfied_in_manifest_parent_imposes_no_landing_obligation(tmp_path: Pa
             stack.enter_context(cm)
         # Reaching batch preflight proves neither pass refused.
         with pytest.raises(RuntimeError, match="stop after baseline"):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
 
 def test_parallel_merge_pr_dependency_parent_imposes_no_landing_obligation(
@@ -536,7 +536,7 @@ def test_parallel_merge_pr_dependency_parent_imposes_no_landing_obligation(
             stack.enter_context(cm)
         # Reaching batch preflight proves neither pass refused.
         with pytest.raises(RuntimeError, match="stop after baseline"):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
 
 def test_sequential_merge_pr_dependency_parent_still_imposes_a_landing_obligation(
@@ -555,7 +555,7 @@ def test_sequential_merge_pr_dependency_parent_still_imposes_a_landing_obligatio
     with ExitStack() as stack:
         mocks = [stack.enter_context(cm) for cm in _entry_patches(set())]
         with pytest.raises(RuntimeError, match="forge.yaml"):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
     mocks[-1].assert_not_called()
 
@@ -575,7 +575,7 @@ def test_parallel_pr_dependency_parent_still_imposes_a_landing_obligation(
     with ExitStack() as stack:
         mocks = [stack.enter_context(cm) for cm in _entry_patches(set())]
         with pytest.raises(RuntimeError, match="forge.yaml"):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
     mocks[-1].assert_not_called()
 
@@ -615,7 +615,7 @@ def test_parallel_merge_pr_parent_dispatched_without_landing_obligation(tmp_path
         patch("theforge.sprint.runner.ThreadPoolExecutor", _capturing_executor(captured)),
     ):
         with pytest.raises(_StopDispatch):
-            run_sprint(config, manifest)
+            run_sprint_ctx(config, manifest)
 
     parent_kwargs = captured.get("parent")
     assert parent_kwargs is not None, "dependency parent was never dispatched"
@@ -638,7 +638,7 @@ def test_auto_merge_refuses_in_sequential_mode(tmp_path: Path) -> None:
     with ExitStack() as stack:
         mocks = [stack.enter_context(cm) for cm in _entry_patches({"external-issue"})]
         with pytest.raises(RuntimeError, match="forge.yaml"):
-            run_sprint(config, manifest, auto_merge=True)
+            run_sprint_ctx(config, manifest, auto_merge=True)
 
     mocks[-1].assert_not_called()
 
@@ -662,4 +662,4 @@ def test_auto_merge_in_parallel_mode_imposes_no_landing_obligation(tmp_path: Pat
         for cm in _entry_patches({"external-issue"}):
             stack.enter_context(cm)
         with pytest.raises(RuntimeError, match="stop after baseline"):
-            run_sprint(config, manifest, auto_merge=True)
+            run_sprint_ctx(config, manifest, auto_merge=True)

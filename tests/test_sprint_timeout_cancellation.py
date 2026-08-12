@@ -8,8 +8,9 @@ import threading
 from pathlib import Path
 from unittest.mock import patch
 
+from sprint_test_helpers import run_sprint_ctx
+
 from tests.test_sprint_resume import _make_config, _make_manifest, _make_spec_file
-from theforge.sprint import run_sprint
 
 
 def test_sprint_timeout_sets_stop_event_for_worker(tmp_path: Path) -> None:
@@ -53,7 +54,7 @@ def test_sprint_timeout_sets_stop_event_for_worker(tmp_path: Path) -> None:
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),
         patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 4000.0, 4000.0]),
     ):
-        run_sprint(config, manifest)
+        run_sprint_ctx(config, manifest)
 
     # The scheduler must have passed a stop_event into the worker AND set it
     # when the timeout fired. Without this, the worker keeps running after

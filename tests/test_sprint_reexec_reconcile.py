@@ -19,6 +19,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx, stub_resolved
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -31,7 +32,6 @@ from theforge.config import (
 )
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import run_sprint
 from theforge.sprint.audit import persist_accumulated_story_state
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.story_state import SprintStoryState, StoryOutcome, coerce_outcome
@@ -172,7 +172,7 @@ def test_reexec_excludes_merged_story_from_preflight_and_dag_dispatch(
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
         # reexec=True, resume defaults to False — the re-exec case.
-        result = run_sprint(config, manifest_path, reexec=True)
+        result = run_sprint_ctx(config, manifest_path, reexec=True)
 
     # (a) The merged story was excluded from the batch preflight input list.
     preflight_tasks = mock_batch_preflight.call_args.args[0]
@@ -251,7 +251,7 @@ def test_reexec_reconcile_prior_done_drop_ends_succeeded_and_preserves_cost(
         patch("theforge.sprint.runner.run_task", return_value=fresh_result) as mock_run_task,
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -345,7 +345,7 @@ def test_reexec_reconcile_prior_done_renders_done_in_live_status(
         patch("theforge.sprint.runner.run_task", side_effect=run_task_side_effect),
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        run_sprint(
+        run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -416,7 +416,7 @@ def test_reexec_reconcile_preserves_prior_already_done_as_noop(
         patch("theforge.sprint.runner.run_task", return_value=fresh_result),
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -483,7 +483,7 @@ def test_reexec_reconcile_prior_done_satisfies_dependent_story(
         patch("theforge.sprint.runner.run_task", return_value=fresh_result) as mock_run_task,
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -533,7 +533,7 @@ def test_reexec_stranded_drop_does_not_rerun_and_keeps_distinct_reason(
         ) as mock_batch_preflight,
         patch("theforge.sprint.runner.run_task", return_value=fresh_result) as mock_run_task,
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -576,7 +576,7 @@ def test_reexec_without_prev_run_id_does_not_reconcile(
         ) as mock_batch_preflight,
         patch("theforge.sprint.runner.run_task", return_value=fresh_result),
     ):
-        run_sprint(config, manifest_path, reexec=False, resume=False)
+        run_sprint_ctx(config, manifest_path, reexec=False, resume=False)
 
     mock_triage.assert_not_called()
     preflight_slugs = [t.slug for t in mock_batch_preflight.call_args.args[0]]
@@ -630,7 +630,7 @@ def test_queued_pr_poll_records_landed_done_and_blocks_later_failed(
         ),
         patch.object(SprintStoryState, "transition", _spy_transition),
     ):
-        result = run_sprint(config, manifest_path)
+        result = run_sprint_ctx(config, manifest_path)
 
     # The queued-PR poll recorded a landed DONE for feature-a.
     assert captured.get("landed") is True
@@ -702,7 +702,7 @@ def test_mid_loop_queued_pr_poll_records_landed_done_immutable(
         ),
         patch.object(SprintStoryState, "transition", _spy_transition),
     ):
-        result = run_sprint(config, manifest_path)
+        result = run_sprint_ctx(config, manifest_path)
 
     # The mid-loop poll recorded a landed DONE for feature-a...
     assert captured.get("landed") is True
@@ -784,6 +784,7 @@ def test_cmd_sprint_detached_child_reexec_passes_reexec_true(
         patch("theforge.cli.sprint.reacquire_story_locks_in_daemon", return_value=[]),
         patch("theforge.cli.sprint.release_story_locks"),
         patch("theforge.cli.sprint.run_sprint", return_value=fake_result) as mock_run_sprint,
+        patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         # Let the REAL setup_detached_child run so it actually pops
         # FORGE_PREV_RUN_ID — the exact behavior that used to zero the signal.
         patch.object(_detach_mod, "install_cleanup_handler"),
@@ -797,7 +798,7 @@ def test_cmd_sprint_detached_child_reexec_passes_reexec_true(
     assert os.environ.get("FORGE_PREV_RUN_ID") is None
     # ...but cmd_sprint captured the signal first, so reexec reached run_sprint.
     mock_run_sprint.assert_called_once()
-    assert mock_run_sprint.call_args.kwargs["reexec"] is True
+    assert mock_run_sprint.call_args.args[0].reexec is True
 
 
 def test_reexec_landed_story_with_open_issue_is_not_redispatched(
@@ -887,7 +888,7 @@ def test_reexec_landed_story_with_open_issue_is_not_redispatched(
         patch("theforge.sprint.runner.run_task", return_value=fresh_result) as mock_run_task,
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        result = run_sprint(config, manifest_path, reexec=True)
+        result = run_sprint_ctx(config, manifest_path, reexec=True)
 
     preflight_slugs = [t.slug for t in mock_batch_preflight.call_args.args[0]]
     assert preflight_slugs == ["feature-b"]
@@ -981,7 +982,7 @@ def test_reexec_skip_merged_keeps_prior_done_in_accumulated_state(
         patch("theforge.sprint.runner.run_task", return_value=fresh_result),
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        result = run_sprint(config, manifest_path, reexec=True)
+        result = run_sprint_ctx(config, manifest_path, reexec=True)
 
     accumulated = _accumulated_by_slug(tmp_path, sprint_id)["feature-a"]
     assert accumulated["outcome"] == "DONE"
@@ -1037,7 +1038,7 @@ def test_reexec_skip_merged_renders_done_in_live_status(tmp_path: Path) -> None:
         patch("theforge.sprint.runner.run_task", side_effect=run_task_side_effect),
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        run_sprint(config, manifest_path, reexec=True, run_id="run-live")
+        run_sprint_ctx(config, manifest_path, reexec=True, run_id="run-live")
 
     assert observed, "run_task never ran; live status was not sampled mid-sprint"
     assert observed["status"] == "done"
@@ -1081,7 +1082,7 @@ def test_reexec_skip_merged_preserves_prior_already_done_as_noop(
         patch("theforge.sprint.runner.run_task", return_value=fresh_result),
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        result = run_sprint(config, manifest_path, reexec=True)
+        result = run_sprint_ctx(config, manifest_path, reexec=True)
 
     accumulated = _accumulated_by_slug(tmp_path, sprint_id)["feature-a"]
     assert accumulated["outcome"] == "ALREADY_DONE"
@@ -1115,7 +1116,7 @@ def test_resume_skip_merged_keeps_prior_done_in_accumulated_state(
         patch("theforge.sprint.runner.run_task", return_value=fresh_result),
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        run_sprint(config, manifest_path, resume=True)
+        run_sprint_ctx(config, manifest_path, resume=True)
 
     accumulated = _accumulated_by_slug(tmp_path, sprint_id)["feature-a"]
     assert accumulated["outcome"] == "DONE"

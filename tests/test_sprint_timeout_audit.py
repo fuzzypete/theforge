@@ -1,8 +1,9 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from sprint_test_helpers import run_sprint_ctx
+
 from tests.test_sprint_resume import _make_config, _make_manifest, _make_spec_file
-from theforge.sprint import run_sprint
 
 
 def test_run_sprint_timeout_writes_story_audit(tmp_path: Path) -> None:
@@ -41,7 +42,7 @@ def test_run_sprint_timeout_writes_story_audit(tmp_path: Path) -> None:
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),
         patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 4000.0, 4000.0]),
     ):
-        run_sprint(config, manifest)
+        run_sprint_ctx(config, manifest)
 
     # The substrate must record the timed-out story as an audit row.
     from theforge.coordinator import audit_substrate

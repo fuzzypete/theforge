@@ -25,6 +25,8 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from sprint_test_helpers import run_sprint_ctx  # noqa: E402
+
 from tests.test_sprint_parallel import (  # noqa: E402
     _make_config,
     _make_config_with_sprint,
@@ -38,7 +40,6 @@ from theforge.coordinator.util import (  # noqa: E402
     clamp_timeout_to_remaining,
 )
 from theforge.log_util import set_worker_slug  # noqa: E402
-from theforge.sprint import run_sprint  # noqa: E402
 from theforge.sprint.abnormal import ABNORMAL_WORKER_TIMEOUT  # noqa: E402
 
 
@@ -364,7 +365,7 @@ def test_batch_members_share_one_window_and_one_operator_wait_credit(tmp_path: P
         patch("theforge.sprint.runner.run_task", side_effect=_leader_run),
         patch("theforge.sprint.runner.run_review_only", return_value=member_result),
     ):
-        result = run_sprint(config, manifest_path)
+        result = run_sprint_ctx(config, manifest_path)
 
     assert observed["same_group"] is True
     assert observed["same_window"] is True
@@ -452,7 +453,7 @@ def test_pending_wait_does_not_expire_the_story_but_working_time_still_does(
         patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
         patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
     ):
-        result = run_sprint(config, manifest)
+        result = run_sprint_ctx(config, manifest)
 
     assert survived_the_wait["yes"] is True, (
         "the story was expired while blocked on an operator decision"
@@ -512,7 +513,7 @@ def test_elapsed_deadline_records_a_timeout_cause_distinct_from_quality_failure(
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),
         patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 50.0, 50.0]),
     ):
-        result = run_sprint(config, manifest)
+        result = run_sprint_ctx(config, manifest)
 
     assert result.results
     _, story_result = result.results[0]

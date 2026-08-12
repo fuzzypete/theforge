@@ -22,6 +22,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx, stub_resolved
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -34,7 +35,6 @@ from theforge.config import (
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.coordinator.workspace import sweep_orphan_worktrees
-from theforge.sprint import run_sprint
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.launch_guard import (
     REASON_ACTIVE_WORKTREE,
@@ -357,7 +357,7 @@ def test_runner_passes_live_slugs_to_orphan_sweep(tmp_path: Path) -> None:
         patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(
+        run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -402,7 +402,7 @@ def test_reexec_with_live_story_skips_baseline_gate_and_resumes_it(tmp_path: Pat
             "theforge.sprint.runner.run_task", return_value=_make_coordinator_result()
         ) as mock_run_task,
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -464,7 +464,7 @@ def test_reexec_before_any_work_still_runs_baseline_gate(tmp_path: Path) -> None
         patch("theforge.sprint.runner.run_task", return_value=_make_coordinator_result()),
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(config, manifest_path, reexec=True)
+        run_sprint_ctx(config, manifest_path, reexec=True)
 
     mock_gate.assert_called_once()
 
@@ -481,7 +481,7 @@ def test_fresh_start_still_runs_baseline_gate(tmp_path: Path) -> None:
         patch("theforge.sprint.runner.run_task", return_value=_make_coordinator_result()),
     ):
         mock_gate.return_value = {"passed": True, "message": "ok"}
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
     mock_gate.assert_called_once()
 
@@ -560,6 +560,7 @@ def test_cli_threads_live_story_slugs_into_launch_and_runner(
         patch("theforge.cli.sprint.reacquire_story_locks_in_daemon", return_value=[]),
         patch("theforge.cli.sprint.release_story_locks"),
         patch("theforge.cli.sprint.run_sprint", return_value=fake_result) as mock_run_sprint,
+        patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         patch.object(_detach_mod, "install_cleanup_handler"),
         patch.object(_detach_mod, "write_run_ended"),
         patch.object(_detach_mod, "remove_pid"),
@@ -568,4 +569,4 @@ def test_cli_threads_live_story_slugs_into_launch_and_runner(
 
     assert rc == 0
     assert mock_locks.call_args.kwargs["live_slugs"] == {"issue-1945"}
-    assert mock_run_sprint.call_args.kwargs["live_story_slugs"] == {"issue-1945"}
+    assert mock_run_sprint.call_args.args[0].live_story_slugs == frozenset({"issue-1945"})

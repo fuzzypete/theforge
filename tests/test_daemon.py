@@ -10,6 +10,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sprint_test_helpers import stub_resolved
 
 from theforge.daemon import (
     DaemonServer,
@@ -230,8 +231,11 @@ def test_fallback_no_daemon(tmp_path: Path) -> None:
     with patch("theforge.cli.sprint.load_config", return_value=mock_config):
         with patch("theforge.daemon.is_daemon_running", return_value=False):
             with patch("theforge.cli.sprint.run_sprint", return_value=mock_result) as mock_run:
-                with patch("theforge.daemon.submit_sprint") as mock_submit:
-                    exit_code = cli.cmd_sprint(args)
+                with patch(
+                    "theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()
+                ):
+                    with patch("theforge.daemon.submit_sprint") as mock_submit:
+                        exit_code = cli.cmd_sprint(args)
 
     mock_run.assert_called_once()
     mock_submit.assert_not_called()
@@ -311,7 +315,7 @@ def test_launchd_install_creates_plist(forge_root: Path) -> None:
 
 def test_state_update_fn_called_in_run_sprint(tmp_path: Path) -> None:
     """state_update_fn is called at least once when passed to run_sprint."""
-    from theforge.sprint import run_sprint
+    from sprint_test_helpers import run_sprint_ctx
 
     manifest_path = tmp_path / "sprint.yaml"
     manifest_path.write_text(
@@ -358,7 +362,7 @@ def test_state_update_fn_called_in_run_sprint(tmp_path: Path) -> None:
                     with patch(
                         "theforge.sprint.runner._validate_story_paths", return_value=[story_path]
                     ):
-                        run_sprint(
+                        run_sprint_ctx(
                             mock_config,
                             manifest_path,
                             state_update_fn=recording_fn,

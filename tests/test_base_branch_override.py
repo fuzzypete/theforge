@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from coord_test_helpers import _make_config, _make_task
+from sprint_test_helpers import stub_resolved
 
 from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.run import cmd_run
@@ -152,11 +153,12 @@ def test_cmd_sprint_base_branch_override_updates_config(tmp_path: Path) -> None:
         patch("theforge.cli.sprint.load_config", return_value=config),
         patch("theforge.cli.sprint.parse_manifest_slugs", return_value=[]),
         patch("theforge.cli.sprint.run_sprint") as mock_run_sprint,
+        patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         patch("theforge.cli.sprint.release_story_locks"),
     ):
         mock_run_sprint.return_value = type("Result", (), {"specs_failed": 0})()
         rc = cmd_sprint(args)
 
     assert rc == 0
-    passed_config = mock_run_sprint.call_args.args[0]
+    passed_config = mock_run_sprint.call_args.args[0].config
     assert passed_config.workspace.base_branch == "release/v0.4"

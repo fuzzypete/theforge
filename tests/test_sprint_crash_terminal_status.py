@@ -15,6 +15,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import stub_resolved
 
 from theforge import detach
 from theforge.config import (
@@ -268,6 +269,7 @@ def test_manifest_mode_records_failed_outcome_with_cause(tmp_path: Path) -> None
     with (
         patch("theforge.cli.sprint.load_config", return_value=config),
         patch("theforge.cli.sprint.run_sprint", side_effect=RuntimeError("sprint crash")),
+        patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
         patch("theforge.cli.sprint.release_story_locks"),
         patch("theforge.cli.sprint._acquire_launch_locks", return_value=([], None, {})),
         patch("theforge.detach.remove_pid"),

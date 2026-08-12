@@ -16,11 +16,11 @@ from unittest.mock import patch
 
 import pytest
 from coord_test_helpers import _make_agent_result
+from sprint_test_helpers import run_sprint_ctx
 
 from tests.test_sprint_resume import _make_config, _make_manifest, _make_spec_file
 from theforge.config.types import IntakeConfig
 from theforge.intake.remediation import IntakeOutcome, IntakeOutcomeKind
-from theforge.sprint.runner import run_sprint
 
 ALREADY_DONE_OUTPUT = """\
 ```yaml
@@ -152,7 +152,7 @@ class TestSprintIntakeRemediationCost:
                 return_value=False,
             ),
         ):
-            result = run_sprint(config, manifest_path, no_pull=True)
+            result = run_sprint_ctx(config, manifest_path, no_pull=True)
 
         expected_total = PREFLIGHT_COST_USD + INTAKE_REMEDIATION_COST_USD
         assert result.total_cost_usd == pytest.approx(expected_total, abs=1e-6), (
@@ -236,7 +236,7 @@ class TestSprintIntakeRemediationCost:
                 return_value=False,
             ),
         ):
-            result = run_sprint(
+            result = run_sprint_ctx(
                 config,
                 manifest_path,
                 no_pull=True,
@@ -259,6 +259,7 @@ class TestResumeReloadsIntakeCost:
 
     def test_resume_includes_prior_run_intake_remediation_cost(self, tmp_path: Path) -> None:
         import yaml
+        from sprint_test_helpers import run_sprint_ctx as _run_sprint
 
         from tests.test_sprint_run_id_rollover import (
             _make_coordinator_result,
@@ -274,7 +275,6 @@ class TestResumeReloadsIntakeCost:
             _save_accumulated_stories,
         )
         from theforge.sprint.dag import StoryTriage
-        from theforge.sprint.runner import run_sprint as _run_sprint
 
         _spec(tmp_path, "Feature A", "feature-a")
         _spec(tmp_path, "Feature B", "feature-b")
