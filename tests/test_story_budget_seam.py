@@ -61,6 +61,20 @@ def _seed_band(project_root: Path, score: int, costs: list[float]) -> None:
         conn.close()
 
 
+def _seed_story_runs(project_root: Path, records: list[dict]) -> None:
+    runs = sub.runs_dir(project_root)
+    runs.mkdir(parents=True, exist_ok=True)
+    for rec in records:
+        (runs / f"{rec['run_id']}.json").write_text(json.dumps(rec), encoding="utf-8")
+    conn = sub.create_or_open(project_root)
+    try:
+        for rec in records:
+            sub.upsert_run_record(conn, rec, provenance="native")
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _seed_review_cycle_history(
     project_root: Path, cycle_costs: list[float], *, complexity_score: int = 5
 ) -> None:
@@ -219,6 +233,93 @@ class TestPreflightInstallsTheAllocation:
 
         assert state.story_allocation["allocation_usd"] == round(40.64 * 1.25, 2)
         assert state.story_allocation["allocation_usd"] > 20.0
+
+    def test_unsuccessful_reentries_do_not_raise_the_installed_allocation(
+        self, tmp_path: Path
+    ) -> None:
+        started_at = "2026-03-01T10:00:00+00:00"
+        _seed_story_runs(
+            tmp_path,
+            [
+                {
+                    "run_id": f"seed-8-{index}",
+                    "task": {"slug": f"seed-8-{index}", "name": "seed"},
+                    "outcome": {"success": True, "final_phase": "DONE"},
+                    "timing": {
+                        "started_at": started_at,
+                        "duration_seconds": 60.0,
+                    },
+                    "cost": {"total_usd": cost},
+                    "totals": {"cost_usd": cost, "duration_s": 60.0},
+                    "preflight": {"complexity": "large", "complexity_score": 8},
+                    "reviews": [],
+                }
+                for index, cost in enumerate([10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 30.0])
+            ]
+            + [
+                {
+                    "run_id": "failed-reentry-1",
+                    "task": {"slug": "issue-2309", "name": "issue-2309"},
+                    "outcome": {
+                        "success": False,
+                        "final_phase": "ESCALATE",
+                        "error_type": "allocation_exhausted",
+                    },
+                    "timing": {
+                        "started_at": started_at,
+                        "duration_seconds": 60.0,
+                    },
+                    "cost": {"total_usd": 64.56},
+                    "totals": {"cost_usd": 64.56, "duration_s": 60.0},
+                    "preflight": {"complexity": "large", "complexity_score": 8},
+                    "reviews": [],
+                },
+                {
+                    "run_id": "failed-reentry-2",
+                    "task": {"slug": "issue-2309", "name": "issue-2309"},
+                    "outcome": {
+                        "success": False,
+                        "final_phase": "ESCALATE",
+                        "error_type": "allocation_exhausted",
+                    },
+                    "timing": {
+                        "started_at": started_at,
+                        "duration_seconds": 60.0,
+                    },
+                    "cost": {"total_usd": 105.38},
+                    "totals": {"cost_usd": 105.38, "duration_s": 60.0},
+                    "preflight": {"complexity": "large", "complexity_score": 8},
+                    "reviews": [],
+                },
+            ],
+        )
+        config = _config(tmp_path)
+        state = CoordinatorState()
+        state.preflight_complexity = "large"
+        state.preflight_complexity_score = 8
+
+        _apply_preflight_config(config, state)
+
+        assert state.story_allocation["allocation_usd"] == round(30.0 * sb.BAND_HEADROOM, 2)
+        assert state.story_allocation["max_usd"] == 30.0
+        assert state.story_allocation["excluded_for_unsuccessful_outcome"] == 2
+
+    def test_explicit_override_budgets_stay_locked_when_allocation_is_derived(
+        self, tmp_path: Path
+    ) -> None:
+        _seed_band(tmp_path, 2, _SCORE_2_COSTS)
+        config = _config(tmp_path)
+        original_dev_budget = config.dev_profile.budget_usd
+        state = CoordinatorState()
+        state.preflight_complexity = "small"
+        state.preflight_complexity_score = 2
+        state._explicit_roles = {"dev"}
+
+        updated = _apply_preflight_config(config, state)
+
+        assert updated.dev_profile.budget_usd == original_dev_budget
+        assert state.story_allocation["allocation_usd"] == 1.69
+        assert state.story_allocation["scaled_profiles"]["dev"] == original_dev_budget
 
 
 class TestAllocationExhaustionIsReported:
