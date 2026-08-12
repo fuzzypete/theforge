@@ -18,6 +18,8 @@ def test_defaults():
     assert cfg.explore_every_n == 5
     assert cfg.min_sample_size == 3
     assert cfg.per_sprint_cap == 1
+    assert cfg.reliability_floor == 0.7
+    assert cfg.challenger_rotation == "least_sampled"
     assert cfg.performance_cache_path == ".forge/performance_table.yaml"
 
 
@@ -31,12 +33,16 @@ def test_parse_valid_overrides():
             "explore_every_n": 10,
             "min_sample_size": 5,
             "per_sprint_cap": 2,
+            "reliability_floor": 0.55,
+            "challenger_rotation": "random",
             "performance_cache_path": ".forge/custom.yaml",
         }
     )
     assert cfg.explore_every_n == 10
     assert cfg.min_sample_size == 5
     assert cfg.per_sprint_cap == 2
+    assert cfg.reliability_floor == 0.55
+    assert cfg.challenger_rotation == "random"
     assert cfg.performance_cache_path == ".forge/custom.yaml"
 
 
@@ -53,6 +59,12 @@ def test_per_sprint_cap_zero_is_allowed_and_disables():
         ({"per_sprint_cap": -1}, "per_sprint_cap"),
         ({"explore_every_n": "five"}, "explore_every_n"),
         ({"explore_every_n": True}, "explore_every_n"),  # bool rejected
+        ({"reliability_floor": 1.5}, "reliability_floor"),
+        ({"reliability_floor": -0.1}, "reliability_floor"),
+        ({"reliability_floor": "high"}, "reliability_floor"),
+        ({"reliability_floor": True}, "reliability_floor"),  # bool rejected
+        ({"challenger_rotation": "roundrobin"}, "challenger_rotation"),
+        ({"challenger_rotation": 5}, "challenger_rotation"),
         ({"performance_cache_path": ""}, "performance_cache_path"),
         ({"performance_cache_path": 5}, "performance_cache_path"),
     ],

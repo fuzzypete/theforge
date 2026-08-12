@@ -584,6 +584,12 @@ def _parse_positive_int(value: Any, *, key: str, minimum: int, default: int) -> 
     return value
 
 
+# Accepted ``assignment.exploration.challenger_rotation`` modes (#2392). Kept
+# here rather than imported from theforge.exploration so the config layer stays
+# a low-dependency boundary; the explorer validates against the same vocabulary.
+_CHALLENGER_ROTATIONS = frozenset({"least_sampled", "random"})
+
+
 def _parse_exploration(exploration_raw: Any) -> ExplorationConfig:
     """Parse and validate the ``assignment.exploration`` block (#325).
 
@@ -615,6 +621,21 @@ def _parse_exploration(exploration_raw: Any) -> ExplorationConfig:
         minimum=0,
         default=defaults.per_sprint_cap,
     )
+    reliability_floor = _parse_unit_float(
+        exploration_raw.get("reliability_floor"),
+        key="assignment.exploration.reliability_floor",
+        default=defaults.reliability_floor,
+    )
+    rotation_raw = exploration_raw.get("challenger_rotation")
+    if rotation_raw is None:
+        challenger_rotation = defaults.challenger_rotation
+    elif isinstance(rotation_raw, str) and rotation_raw.strip() in _CHALLENGER_ROTATIONS:
+        challenger_rotation = rotation_raw.strip()
+    else:
+        raise ValueError(
+            "assignment.exploration.challenger_rotation must be one of "
+            f"{sorted(_CHALLENGER_ROTATIONS)}, got {rotation_raw!r}"
+        )
     cache_path_raw = exploration_raw.get("performance_cache_path")
     if cache_path_raw is None:
         performance_cache_path = defaults.performance_cache_path
@@ -629,6 +650,8 @@ def _parse_exploration(exploration_raw: Any) -> ExplorationConfig:
         explore_every_n=explore_every_n,
         min_sample_size=min_sample_size,
         per_sprint_cap=per_sprint_cap,
+        reliability_floor=reliability_floor,
+        challenger_rotation=challenger_rotation,
         performance_cache_path=performance_cache_path,
     )
 

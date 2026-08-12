@@ -258,6 +258,120 @@ def test_winner_promotion_then_dethrone_with_recency():
     assert exp.select_winner(aggs2, 3) == "challenger"
 
 
+# ── Cost-to-trusted-completion objective + reliability floor (#2392) ───
+
+
+def test_completion_cost_divides_attempt_cost_by_success_rate():
+    """The objective is total cost to TRUSTED completion, not per-attempt cost."""
+    agg = exp.ModelAggregate(
+        model_id="m",
+        runs=4,
+        success_rate=0.5,
+        avg_cost_usd=1.0,
+        avg_iterations=1.0,
+        avg_duration_s=1.0,
+        cost_measured_runs=4,
+    )
+    # Half the attempts fail, so reaching completion costs two attempts' worth.
+    assert agg.completion_cost() == 2.0
+    assert exp.COMPLETION_COST_FORMULA == "avg_cost_usd / success_rate"
+
+
+def test_select_winner_prefers_cheaper_completion_over_higher_success():
+    """The contract this story flips (#2392).
+
+    ``pricey_good`` succeeds MORE often, but ``cheap_ok`` clears the reliability
+    floor and reaches trusted completion for a fraction of the price. Under the
+    old success-rate-first ranking, cost was consulted only on an exact rate tie
+    — which recency-weighted fractional rates never produce — so the expensive
+    incumbent could never be displaced. It now loses on completion cost.
+    """
+    data = _profiles_with(
+        {
+            "cheap_ok": [(True, 0.1, 1)] * 4 + [(False, 0.1, 1)],  # 0.8 @ $0.10
+            "pricey_good": [(True, 2.0, 1)] * 5,  # 1.0 @ $2.00
+        }
+    )
+    key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
+    aggs = exp.derive_key_aggregates(
+        data, [_cand("cheap_ok"), _cand("pricey_good")], key, min_sample_size=3
+    )
+    sel = exp.select_winner_evidence(aggs, 3, reliability_floor=0.7)
+    assert sel.winner == "cheap_ok"
+    assert sel.reason == exp.SELECTION_COST_QUALIFIED
+    # ~$0.125 to completion vs $2.00 — an order of magnitude, previously unreachable.
+    assert sel.completion_costs["cheap_ok"] < sel.completion_costs["pricey_good"]
+
+
+def test_reliability_floor_excludes_cheap_unreliable_candidate():
+    """Cheap is not enough: below the floor a candidate is excluded outright.
+
+    Cost-first ranking without a floor would crown whatever fails cheapest, so
+    the floor is what makes misjudging a model degrade gracefully in BOTH
+    directions.
+    """
+    data = _profiles_with(
+        {
+            "cheap_flaky": [(True, 0.01, 1)] + [(False, 0.01, 1)] * 4,  # 0.2 @ $0.01
+            "solid": [(True, 1.0, 1)] * 5,  # 1.0 @ $1.00
+        }
+    )
+    key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
+    aggs = exp.derive_key_aggregates(
+        data, [_cand("cheap_flaky"), _cand("solid")], key, min_sample_size=3
+    )
+    sel = exp.select_winner_evidence(aggs, 3, reliability_floor=0.7)
+    assert sel.winner == "solid"
+    assert "cheap_flaky" in sel.below_reliability_floor
+    # Excluded from exploitation — but still a candidate the explorer may race.
+    assert "cheap_flaky" not in sel.qualified
+
+
+def test_no_winner_when_nothing_clears_the_reliability_floor():
+    data = _profiles_with({"flaky": [(True, 0.1, 1)] + [(False, 0.1, 1)] * 4})
+    key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
+    aggs = exp.derive_key_aggregates(data, [_cand("flaky")], key, min_sample_size=3)
+    sel = exp.select_winner_evidence(aggs, 3, reliability_floor=0.7)
+    assert sel.winner is None
+    assert sel.reason == exp.SELECTION_BELOW_FLOOR
+
+
+def test_unmeasured_cost_is_surfaced_not_ranked_as_most_expensive():
+    """An unmeasured candidate is reported as unmeasured, never ranked worst.
+
+    The old key sorted a missing ``avg_cost_usd`` as ``float('inf')`` — silently
+    the most expensive model possible — on a tie-break it could never reach. Now
+    it is excluded from cost-ranked exploitation and NAMED, so bounded
+    exploration can go measure it.
+    """
+    data: dict = {"models": {}}
+    for _ in range(5):
+        apply_run(data, RunOutcome("large", "unmeasured", True, 1, None))
+        apply_run(data, RunOutcome("large", "measured", True, 1, 3.0))
+    key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
+    aggs = exp.derive_key_aggregates(
+        data, [_cand("unmeasured"), _cand("measured")], key, min_sample_size=3
+    )
+    assert aggs["unmeasured"].cost_measured is False
+    assert aggs["unmeasured"].completion_cost() is None
+    sel = exp.select_winner_evidence(aggs, 3, reliability_floor=0.7)
+    assert sel.winner == "measured"
+    assert sel.unmeasured_cost == ("unmeasured",)
+
+
+def test_no_winner_when_every_reliable_candidate_is_unmeasured():
+    """No completion-cost evidence anywhere → no exploitation, declared tier stands."""
+    data: dict = {"models": {}}
+    for _ in range(5):
+        apply_run(data, RunOutcome("large", "m1", True, 1, None))
+    key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
+    aggs = exp.derive_key_aggregates(data, [_cand("m1")], key, min_sample_size=3)
+    sel = exp.select_winner_evidence(aggs, 3, reliability_floor=0.7)
+    assert sel.winner is None
+    assert sel.reason == exp.SELECTION_UNMEASURED
+    assert sel.unmeasured_cost == ("m1",)
+
+
 # ── Challenger selection: stochastic, recorded pool ────────────────────
 
 
@@ -272,6 +386,88 @@ def test_choose_challenger_excludes_winner_and_is_reproducible():
 
 def test_choose_challenger_none_when_only_winner_eligible():
     assert exp.choose_challenger(["a"], "a", random.Random(0)) is None
+
+
+def _agg(model_id: str, runs: int) -> exp.ModelAggregate:
+    return exp.ModelAggregate(
+        model_id=model_id,
+        runs=runs,
+        success_rate=1.0,
+        avg_cost_usd=1.0,
+        avg_iterations=1.0,
+        avg_duration_s=1.0,
+        cost_measured_runs=runs,
+    )
+
+
+def test_challenger_rotation_draws_the_least_sampled_alternative():
+    """Least-sampled-first: the alternative with the thinnest record races next."""
+    aggs = {m: _agg(m, r) for m, r in (("w", 40), ("a", 9), ("b", 2), ("c", 7))}
+    pick = exp.choose_challenger(["w", "a", "b", "c"], "w", random.Random(0), aggregates=aggs)
+    assert pick == "b"
+
+
+def test_challenger_rotation_gives_every_alternative_a_race_within_pool_size():
+    """The evidence-accumulation rate is bounded BELOW, not just above (#2392).
+
+    A uniform draw lets a specific alternative go arbitrarily long without a
+    race, so the incumbent's volume made its own displacement impossible. Under
+    rotation, racing a candidate raises its run count, so within ``len(pool)-1``
+    cadence hits every eligible alternative has been raced at least once.
+    """
+    pool = ["w", "a", "b", "c"]
+    runs = {"w": 40, "a": 0, "b": 0, "c": 0}
+    raced: list[str] = []
+    for _ in range(len(pool) - 1):
+        aggs = {m: _agg(m, r) for m, r in runs.items()}
+        pick = exp.choose_challenger(pool, "w", random.Random(0), aggregates=aggs)
+        assert pick is not None
+        raced.append(pick)
+        runs[pick] += 1  # the race itself is the evidence it accumulates
+    assert sorted(raced) == ["a", "b", "c"]
+
+
+def test_challenger_rotation_random_mode_restores_uniform_draw():
+    aggs = {m: _agg(m, r) for m, r in (("w", 40), ("a", 9), ("b", 2))}
+    picks = {
+        exp.choose_challenger(
+            ["w", "a", "b"],
+            "w",
+            random.Random(seed),
+            aggregates=aggs,
+            rotation=exp.ROTATION_RANDOM,
+        )
+        for seed in range(20)
+    }
+    # Uniform mode ignores sample counts, so the well-sampled "a" is still drawn.
+    assert picks == {"a", "b"}
+
+
+def test_decide_exploration_rotates_to_the_least_sampled_candidate():
+    """The rotation reaches decide_exploration, not just the helper."""
+    key = exp.RoutingKey.build(phase="dev", complexity="HIGH", domains=None)
+    # 4 admissible runs for the key → this is the 5th → cadence hit at N=5.
+    data = _profiles_with(
+        {
+            "winner": [(True, 0.1, 1)] * 2,
+            "well_sampled": [(True, 0.1, 1)] * 2,
+            "starved": [],
+        }
+    )
+    cands = [_cand("winner"), _cand("well_sampled"), _cand("starved")]
+    aggs = exp.derive_key_aggregates(data, cands, key, min_sample_size=3)
+    out = exp.decide_exploration(
+        key=key,
+        candidates=cands,
+        aggregates=aggs,
+        winner="winner",
+        explore_every_n=5,
+        min_sample_size=3,
+        sprint_budget_remaining=1,
+        rng=random.Random(0),
+    )
+    assert out.mode == exp.MODE_CHALLENGER
+    assert out.selected == "starved"  # zero runs — the thinnest record races
 
 
 # ── decide_exploration: cadence, cold start, sprint cap ────────────────
