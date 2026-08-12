@@ -89,14 +89,21 @@ class TestOpenAIFunctionToolRequestShape:
         assert shape.transport == "responses"
         assert shape.chat_extra_kwargs() == {}
 
-    def test_current_reasoning_models_send_reasoning_effort_none_for_tools(self):
-        shape = openai_function_tool_request_shape("gpt-5.6-sol")
+    @pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra"])
+    def test_observed_reasoning_models_send_reasoning_effort_none_for_tools(self, model):
+        shape = openai_function_tool_request_shape(model)
 
         assert shape.transport == "chat"
         assert shape.chat_extra_kwargs() == {"reasoning_effort": "none"}
 
     def test_tool_capability_defaults_to_plain_chat_when_no_override_is_needed(self):
         shape = openai_function_tool_request_shape("gpt-4o")
+
+        assert shape.transport == "chat"
+        assert shape.chat_extra_kwargs() == {}
+
+    def test_unprobed_gpt5_chat_models_keep_default_reasoning_for_tools(self):
+        shape = openai_function_tool_request_shape("gpt-5.4")
 
         assert shape.transport == "chat"
         assert shape.chat_extra_kwargs() == {}

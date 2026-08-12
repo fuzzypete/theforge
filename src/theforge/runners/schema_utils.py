@@ -84,17 +84,19 @@ def uses_openai_responses_api(model: str) -> bool:
     return model in _RESPONSES_ONLY_MODELS
 
 
+# Keep this list limited to models for which issue #2377 observed the provider
+# reject tool-bearing Chat Completions requests unless reasoning_effort='none'
+# is supplied. Do not broaden it without a concrete failing probe.
 _CHAT_COMPLETIONS_TOOL_REASONING_NONE_MODELS: frozenset[str] = frozenset(
     {
-        "gpt-5.4",
-        "gpt-5.4-mini",
-        "gpt-5.4-pro",
-        "gpt-5.5",
         "gpt-5.6-sol",
         "gpt-5.6-terra",
     }
 )
 
+# Leave empty until a shipped model is observed to lack both a supported Chat
+# Completions tool shape and a Responses path. "unsupported" is fail-closed
+# metadata, not something we should guess from a model-family prefix.
 _CHAT_COMPLETIONS_TOOL_UNSUPPORTED_MODELS: frozenset[str] = frozenset()
 
 

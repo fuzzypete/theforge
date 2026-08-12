@@ -561,6 +561,36 @@ class TestOpenAIFunctionToolCompatibility:
         make_chat.assert_called_once()
         assert make_chat.call_args.kwargs["extra_kwargs"] == {"reasoning_effort": "none"}
 
+    def test_unprobed_tool_models_do_not_send_reasoning_effort_override(self, tmp_path):
+        import sys
+
+        profile = _make_profile(model="gpt-5.4", allowed_tools=("read_file",))
+        mock_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.01,
+            exit_code=0,
+            raw={},
+            profile_name=profile.name,
+        )
+        mock_openai, mock_httpx, _ = self._make_mock_openai_module()
+
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runners.api._make_openai_chat_adapter") as make_chat,
+            patch("theforge.runners.api._make_openai_chat_finalizer") as make_chat_finalizer,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
+        ):
+            make_chat.return_value = MagicMock()
+            make_chat_finalizer.return_value = MagicMock()
+            MockManager.return_value.run.return_value = mock_result
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        assert result is mock_result
+        make_chat.assert_called_once()
+        assert make_chat.call_args.kwargs["extra_kwargs"] == {}
+
     def test_tool_free_requests_do_not_send_reasoning_effort_override(self, tmp_path):
         import sys
 

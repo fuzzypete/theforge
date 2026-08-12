@@ -96,8 +96,8 @@ def _redact_tool_call_arguments(arguments: dict) -> dict:
 
 
 # Patterns in result.output that indicate a model-preference fallback should fire.
-# Only usage-exhaustion and model-not-found errors trigger fallback; runtime errors
-# (bad code, schema violations) propagate immediately.
+# Usage-exhaustion, model-not-found, and fail-closed capability mismatches are
+# fallback-eligible; runtime errors (bad code, schema violations) are not.
 _MODEL_FALLBACK_PATTERNS = (
     "429",
     "rate limit",
@@ -117,6 +117,8 @@ _MODEL_FALLBACK_PATTERNS = (
     "model has been deprecated",
 )
 
+_MODEL_FALLBACK_FAILURE_CODES: frozenset[str] = frozenset({"capability_mismatch"})
+
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Return True if *exc* is a provider 429 / quota-exhausted error."""
@@ -130,11 +132,14 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 def _classify_api_model_fallback(result: AgentResult) -> str | None:
     """Return a reason string if *result* should trigger model-preference fallback.
 
-    Only quota-exhaustion and model-not-found errors trigger fallback.
-    Runtime errors (bad code, schema violations, timeouts) return None.
+    Quota-exhaustion, model-not-found, and fail-closed capability mismatches
+    trigger fallback. Runtime errors (bad code, schema violations, timeouts)
+    return None.
     """
     if result.success:
         return None
+    if result.failure_code in _MODEL_FALLBACK_FAILURE_CODES:
+        return f"matched failure_code {result.failure_code!r}"
     output_lower = result.output.lower()
     for pattern in _MODEL_FALLBACK_PATTERNS:
         if pattern in output_lower:
@@ -1147,10 +1152,11 @@ def run_api_agent(
     JSON output that does not match the ideation prompt.
 
     If profile.fallback_models is non-empty, forge tries each model in
-    (profile.model, *profile.fallback_models) order. Only quota-exhaustion and
-    model-not-found errors trigger fallback; runtime errors propagate immediately.
-    The model actually used is recorded in AgentResult.model_usage[*].model and,
-    when a fallback fired, in AgentResult.model_config (the full preference list).
+    (profile.model, *profile.fallback_models) order. Quota-exhaustion,
+    model-not-found, and fail-closed capability mismatches trigger fallback;
+    runtime errors propagate immediately. The model actually used is recorded in
+    AgentResult.model_usage[*].model and, when a fallback fired, in
+    AgentResult.model_config (the full preference list).
     """
     if not profile.provider:
         return AgentResult(
