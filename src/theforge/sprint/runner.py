@@ -120,13 +120,14 @@ from .manifest import (
     resolve_from_manifest,
 )
 from .prior_landing import landing_settled
-from .query import NormalizedDependencyPlan, normalize_dependency_plan
 from .query import (
+    NormalizedDependencyPlan,
     load_sprint_carry_budget_snapshot,
-    prior_sprint_cost_incomplete as _query_prior_sprint_cost_incomplete,
-    prior_unmeasured_spend_sources as _query_prior_unmeasured_spend_sources,
-    read_prior_sprint_accounting as _query_read_prior_sprint_accounting,
+    normalize_dependency_plan,
 )
+from .query import prior_sprint_cost_incomplete as _query_prior_sprint_cost_incomplete
+from .query import prior_unmeasured_spend_sources as _query_prior_unmeasured_spend_sources
+from .query import read_prior_sprint_accounting as _query_read_prior_sprint_accounting
 from .sources import StorySource
 from .state_writer import (
     SPRINT_PHASE_DONE,
@@ -5172,9 +5173,8 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             accepted_unmeasured=dict(accepted_unmeasured),
         )
         _headroom = _carry_snapshot.remaining_headroom_usd(_ctx.resolved.budget_usd)
-        _budget_line = (
-            f"Budget ${_ctx.resolved.budget_usd:.2f} · carried ${_carry_snapshot.carried_cost_usd:.2f}"
-        )
+        _budget_line = f"Budget ${_ctx.resolved.budget_usd:.2f}"
+        _budget_line += f" · carried ${_carry_snapshot.carried_cost_usd:.2f}"
         if _carry_snapshot.accepted_unmeasured_ceiling_usd > 0.0:
             _budget_line += (
                 " · accepted unmeasured ceiling "

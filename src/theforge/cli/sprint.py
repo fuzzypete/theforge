@@ -1182,9 +1182,8 @@ def _run_query_mode(
                 selected_slugs=[task.slug for task in tasks],
             )
             headroom = carry_snapshot.remaining_headroom_usd(resolved.budget_usd)
-            budget_line = (
-                f"  budget=${resolved.budget_usd:.2f} carried=${carry_snapshot.carried_cost_usd:.2f}"
-            )
+            budget_line = f"  budget=${resolved.budget_usd:.2f}"
+            budget_line += f" carried=${carry_snapshot.carried_cost_usd:.2f}"
             if carry_snapshot.accepted_unmeasured_ceiling_usd > 0.0:
                 budget_line += (
                     " accepted_unmeasured_ceiling="

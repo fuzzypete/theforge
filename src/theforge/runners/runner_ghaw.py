@@ -208,7 +208,9 @@ def _discover_run_id(
 ) -> str | None:
     """Poll `gh run list` until the run carrying our dispatch id appears."""
     discovery_deadline = min(deadline, time.monotonic() + _RUN_DISCOVERY_TIMEOUT_SECONDS)
-    while time.monotonic() < discovery_deadline:
+    attempted = False
+    while not attempted or time.monotonic() < discovery_deadline:
+        attempted = True
         proc = _gh(
             build_run_list_argv(workflow=workflow, ref=ref),
             working_dir=working_dir,
@@ -222,6 +224,8 @@ def _discover_run_id(
             for run in runs:
                 if dispatch_id in (run.get("displayTitle") or ""):
                     return str(run.get("databaseId"))
+        if time.monotonic() >= discovery_deadline:
+            break
         time.sleep(_poll_seconds())
     return None
 

@@ -11,6 +11,7 @@ import json
 import logging
 import re
 import subprocess
+from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
