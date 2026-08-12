@@ -3039,6 +3039,64 @@ class _DevExplorationResult:
     routing_key: str
 
 
+# How the dev slot's model was arrived at, recorded in the exploration block's
+# ``evidence`` payload (#2392). A closed vocabulary so an operator can query
+# "which stories routed on evidence and which fell back to the declared tier".
+_SELECTION_STATIC_FALLBACK = "static_fallback"
+_SELECTION_COST_QUALIFIED = "cost_qualified_exploitation"
+_SELECTION_BOUNDED_EXPLORATION = "bounded_exploration"
+
+
+def _dev_selection_evidence(
+    *,
+    agent: AgentDef,
+    aggregate: object | None,
+    dev_base_tier: str,
+    reliability_floor: float,
+    selection: str,
+    winner_selection: object | None,
+    cross_tier_blocked: bool = False,
+) -> dict[str, object]:
+    """Build the audit payload for the dev model that actually runs (#2392).
+
+    Convention 6: data that moves a routing decision must be visible in the
+    audit trail, not reconstructed afterwards. The tier substitution this story
+    fixes was diagnosable only because the rationale string happened to name
+    both tiers; this records the whole basis — declared vs selected tier, the
+    reliability floor and the observed rate against it, the sample behind that
+    rate, whether cost was MEASURED at all, the completion-cost estimate and the
+    formula that produced it, and which of the three selection paths ran.
+    """
+    from theforge.exploration import COMPLETION_COST_FORMULA  # noqa: PLC0415
+
+    success_rate = getattr(aggregate, "success_rate", None)
+    completion_cost = (
+        aggregate.completion_cost() if aggregate is not None else None  # type: ignore[attr-defined]
+    )
+    cost_measured = bool(getattr(aggregate, "cost_measured", False))
+    return {
+        "selected_model": agent.name,
+        "declared_tier": dev_base_tier,
+        "selected_tier": agent.tier,
+        "selection": selection,
+        "reliability_floor": reliability_floor,
+        "observed_reliability": success_rate,
+        "sample_size": int(getattr(aggregate, "runs", 0) or 0),
+        "cost_status": "measured" if cost_measured else "unmeasured",
+        "estimated_completion_cost_usd": completion_cost,
+        "completion_cost_formula": COMPLETION_COST_FORMULA,
+        "winner_selection_reason": getattr(winner_selection, "reason", None),
+        # True when a neighbouring-tier candidate WOULD have been crowned but the
+        # declared-tier pick had no comparable measured evidence to displace.
+        "cross_tier_promotion_blocked": cross_tier_blocked,
+        "below_reliability_floor": list(
+            getattr(winner_selection, "below_reliability_floor", ()) or ()
+        ),
+        "unmeasured_cost": list(getattr(winner_selection, "unmeasured_cost", ()) or ()),
+        "completion_costs_usd": dict(getattr(winner_selection, "completion_costs", {}) or {}),
+    }
+
+
 def _apply_dev_exploration(
     *,
     agents: list[AgentDef],
@@ -3066,6 +3124,10 @@ def _apply_dev_exploration(
     """
     from theforge import exploration as _exp  # noqa: PLC0415
 
+    reliability_floor = float(
+        getattr(exploration_cfg, "reliability_floor", _exp.DEFAULT_RELIABILITY_FLOOR)
+    )
+    rotation = str(getattr(exploration_cfg, "challenger_rotation", _exp.ROTATION_LEAST_SAMPLED))
     key = _exp.RoutingKey.build(phase="dev", complexity=norm_complexity, domains=domains)
     # Eligible challenger pool: every authed agent (dev role has no tier lock for
     # exploration — downward exploration to a cheaper tier is in scope, #170).
@@ -3092,6 +3154,14 @@ def _apply_dev_exploration(
             winner=incumbent.name,
             reason=_exp.REASON_ON_POLICY,
             domains=key.domains,
+            evidence=_dev_selection_evidence(
+                agent=incumbent,
+                aggregate=None,
+                dev_base_tier=dev_base_tier,
+                reliability_floor=reliability_floor,
+                selection=_SELECTION_STATIC_FALLBACK,
+                winner_selection=None,
+            ),
         ).to_block()
         return _DevExplorationResult(block, None, incumbent.name, key.as_str())
 
@@ -3103,41 +3173,93 @@ def _apply_dev_exploration(
         min_sample_size=min_sample,
         recency=recency,
     )
-    # Winner selection stays consistent with routing policy: only floor-compliant
-    # candidates (tier >= the complexity-required base tier) can be crowned, so a
-    # promoted/dethroned winner never drops the dev slot below its guardrail. The
-    # challenger pool remains unrestricted (downward exploration is challenger-only).
-    floor_idx = _TIER_ORDER.index(dev_base_tier) if dev_base_tier in _TIER_ORDER else 0
-    floor_ids = {
+    # Exploitation is scoped to the story's DECLARED tier and its immediate
+    # neighbours — never "every tier at or above the band" (#2392). The old
+    # cross-tier pool let the strong-tier incumbent, which simply had the most
+    # history, override the right-sized mid-tier pick on every mid-band story.
+    # A neighbouring tier can still replace the declared one, but only via
+    # select_winner_evidence, which requires an admissible, reliability-qualified
+    # candidate with MEASURED completion-cost evidence. With no such evidence the
+    # winner is None and the static tier-routed pick stands — including when the
+    # sprint budget is present or exhausted.
+    declared_idx = _TIER_ORDER.index(dev_base_tier) if dev_base_tier in _TIER_ORDER else 0
+    exploit_ids = {
         a.name
         for a in eligible
-        if a.tier in _TIER_ORDER and _TIER_ORDER.index(a.tier) >= floor_idx
+        if a.tier in _TIER_ORDER and abs(_TIER_ORDER.index(a.tier) - declared_idx) <= 1
     }
-    winner_aggs = {mid: agg for mid, agg in aggregates.items() if mid in floor_ids}
-    empirical_winner = _exp.select_winner(winner_aggs, min_sample)
+    winner_aggs = {mid: agg for mid, agg in aggregates.items() if mid in exploit_ids}
+    winner_selection = _exp.select_winner_evidence(
+        winner_aggs, min_sample, reliability_floor=reliability_floor
+    )
+    empirical_winner = winner_selection.winner
+    # Cross-tier promotion needs a COMPARISON, not just a candidate with more
+    # history. The incumbent is the complexity router's right-sized pick; a
+    # neighbouring tier may displace it only when the incumbent itself carries
+    # admissible, measured evidence to be compared against (it need not clear the
+    # reliability floor — an unreliable incumbent SHOULD be displaced). Without
+    # that, the declared tier stands and bounded exploration goes and measures it,
+    # instead of the neighbouring-band incumbent winning by sheer volume (#2392).
+    incumbent_agg = aggregates.get(incumbent.name)
+    incumbent_comparable = (
+        incumbent_agg is not None
+        and incumbent_agg.meets_floor(min_sample)
+        and incumbent_agg.cost_measured
+    )
+    cross_tier_blocked = False
+    if empirical_winner is not None and empirical_winner != incumbent.name:
+        winner_agent = next((a for a in eligible if a.name == empirical_winner), None)
+        if (
+            winner_agent is not None
+            and winner_agent.tier != incumbent.tier
+            and not incumbent_comparable
+        ):
+            empirical_winner = None
+            cross_tier_blocked = True
     outcome = _exp.decide_exploration(
         key=key,
         candidates=candidates,
         aggregates=aggregates,
         # The recorded/routed winner is the AUDIT-DERIVED empirical winner, not
         # the deterministic static-tier incumbent — otherwise promotion and
-        # dethroning never reach winner-mode routing.
+        # dethroning never reach winner-mode routing. ``None`` here means "no
+        # qualified evidence": the caller keeps its declared-tier pick.
         winner=empirical_winner,
         explore_every_n=int(getattr(exploration_cfg, "explore_every_n", 5)),
         min_sample_size=min_sample,
         sprint_budget_remaining=sprint_exploration_budget,
         rng=rng or random.Random(),
+        rotation=rotation,
     )
-    # Route to the selected model (challenger or promoted winner) when it differs
-    # from the deterministic incumbent; cold start (selected is None) keeps the
-    # static-tier pick.
+    # Route to the selected model (challenger or cost-qualified winner) when it
+    # differs from the deterministic incumbent; no selection (cold start, or no
+    # qualified evidence) keeps the declared static-tier pick.
     route_agent: AgentDef | None = None
     if outcome.selected is not None:
         cand_agent = next((a for a in eligible if a.name == outcome.selected), None)
         if cand_agent is not None and cand_agent.name != incumbent.name:
             route_agent = cand_agent
+    routed = route_agent or incumbent
+    if outcome.mode == _exp.MODE_CHALLENGER and outcome.selected is not None:
+        selection_kind = _SELECTION_BOUNDED_EXPLORATION
+    elif empirical_winner is not None:
+        selection_kind = _SELECTION_COST_QUALIFIED
+    else:
+        selection_kind = _SELECTION_STATIC_FALLBACK
+    block = _replace(
+        outcome,
+        evidence=_dev_selection_evidence(
+            agent=routed,
+            aggregate=aggregates.get(routed.name),
+            dev_base_tier=dev_base_tier,
+            reliability_floor=reliability_floor,
+            selection=selection_kind,
+            winner_selection=winner_selection,
+            cross_tier_blocked=cross_tier_blocked,
+        ),
+    ).to_block()
     return _DevExplorationResult(
-        outcome.to_block(), route_agent, empirical_winner or incumbent.name, key.as_str()
+        block, route_agent, empirical_winner or incumbent.name, key.as_str()
     )
 
 
@@ -3442,10 +3564,15 @@ def assign_models(
                     # exploration spend: leave the budget floor at dev_base_tier so
                     # the per-story cost target can still downgrade it to a
                     # floor-compliant cheaper dev (no protected envelope).
+                    _ev = _exp.block.get("evidence") or {}
+                    _cost = _ev.get("estimated_completion_cost_usd")
+                    _rate = _ev.get("observed_reliability")
                     rationale["dev"] += (
-                        f"; EXPLORATION empirical winner {dev_agent.model} "
-                        f"(tier {dev_agent.tier}) routed for key {_exp.routing_key} "
-                        f"(promotion/dethrone off the static-tier pick)"
+                        f"; EXPLORATION cost-qualified winner {dev_agent.model} "
+                        f"(tier {dev_agent.tier}, declared {dev_base_tier}) routed for key "
+                        f"{_exp.routing_key} — completion cost "
+                        f"{_cost if _cost is None else f'${_cost:.2f}'}, reliability "
+                        f"{_rate} >= floor {_ev.get('reliability_floor')}"
                     )
 
     # ── Preflight ──────────────────────────────────────────────────────

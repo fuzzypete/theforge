@@ -103,6 +103,21 @@ class ExplorationConfig:
     - ``per_sprint_cap``: at most this many exploration runs *per sprint* across
       ALL routing keys (not one-per-key unbounded). Must be >= 0; 0 disables
       exploration entirely.
+    - ``reliability_floor``: the minimum recency-weighted success rate a
+      candidate must clear before it is eligible to be *exploited* as the
+      winner for a key (#2392). Winner ranking is expected-cost-to-trusted-
+      completion first, so without a floor the cheapest model would win
+      regardless of how often it fails. A candidate below the floor is excluded
+      from exploitation no matter how cheap it is; it remains eligible for
+      bounded challenger exploration. In ``[0.0, 1.0]``.
+    - ``challenger_rotation``: how a challenger is drawn from the eligible
+      non-winner pool. ``least_sampled`` (default) draws from the candidates
+      with the FEWEST admissible runs for the key (ties broken by the injected
+      RNG), which bounds each alternative's evidence-accumulation rate from
+      *below* — every eligible alternative gets a race within
+      ``len(pool) - 1`` cadence hits, so an incumbent's historical volume
+      cannot make its own displacement impossible. ``random`` restores the
+      uniform draw over the whole non-winner pool.
     - ``performance_cache_path``: a rebuildable, gitignored **derived view** of
       the per-key aggregates for operator inspection only. Never read as
       authoritative — the router always consults the native audit substrate.
@@ -111,6 +126,8 @@ class ExplorationConfig:
     explore_every_n: int = 5
     min_sample_size: int = 3
     per_sprint_cap: int = 1
+    reliability_floor: float = 0.7
+    challenger_rotation: str = "least_sampled"
     performance_cache_path: str = ".forge/performance_table.yaml"
 
 

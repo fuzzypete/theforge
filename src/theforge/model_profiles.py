@@ -2397,6 +2397,11 @@ def get_dev_complexity_stats(
         "runs": float(runs),
         "avg_iterations": round(iterations_sum / runs, 4),
         "avg_cost_usd": round(cost_sum / measured_runs, 6) if measured_runs > 0 else 0.0,
+        # How many of those runs actually had a measurable cost. Without this the
+        # caller cannot tell a genuinely $0.00 band from an entirely UNMEASURED
+        # one — both report ``avg_cost_usd: 0.0`` — and cost-ranked routing
+        # (#2392) would treat an unmeasured model as free.
+        "cost_measured_runs": float(measured_runs),
         "max_duration_s": round(max_duration_s, 4),
         "duration_runs": float(duration_runs),
         "max_killed_timeout_s": round(max_killed_timeout_s, 4),

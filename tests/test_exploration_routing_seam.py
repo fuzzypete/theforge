@@ -321,6 +321,106 @@ def test_winner_mode_promotion_is_budget_downgradable_to_floor(_anthropic_key):
     assert decision.budget_audit["within_target"] is True
 
 
+# ── Declared-tier fallback + cost-qualified displacement (#2392) ────────
+
+
+def _mid_band_profiles(*, mid_runs: int = 0, mid_cost: float = 0.5) -> dict:
+    """Strong incumbent with a long clean record; mid pick optionally measured."""
+    data: dict = {"models": {}}
+    for _ in range(12):
+        apply_run(data, RunOutcome("medium", "strong_champ", True, 1, 5.0))
+    for _ in range(mid_runs):
+        apply_run(data, RunOutcome("medium", "mid_pick", True, 1, mid_cost))
+    return data
+
+
+def _mid_band_decision(profiles: dict, budget: int | None) -> object:
+    return assign_models(
+        _tiered_agents(),
+        _cfg(explore_every_n=99),  # never a cadence run → exploitation path
+        complexity="MEDIUM",
+        complexity_score=5,
+        model_profiles=profiles,
+        sprint_exploration_budget=budget,
+        explore_rng=random.Random(0),
+    )
+
+
+@pytest.mark.parametrize("budget", [0, 1])
+def test_mid_band_routes_declared_tier_when_incumbent_has_no_evidence(_anthropic_key, budget):
+    """The reported defect (#2392): a mid-band story dispatching the strong incumbent.
+
+    The strong-tier model has all the history simply because it wins; the
+    right-sized mid pick has none. Cross-tier promotion now requires a
+    comparison, so with nothing to compare the declared tier stands — for an
+    open budget AND an exhausted one (a zero budget used to route winner mode
+    just the same).
+    """
+    decision = _mid_band_decision(_mid_band_profiles(mid_runs=0), budget)
+    assert decision.dev.name == "mid_pick"
+    evidence = _dev_exploration(decision)["evidence"]
+    assert evidence["declared_tier"] == "mid"
+    assert evidence["selected_tier"] == "mid"
+    assert evidence["selection"] == "static_fallback"
+    assert evidence["cross_tier_promotion_blocked"] is True
+
+
+def test_mid_band_promotes_cross_tier_only_on_cheaper_measured_completion(_anthropic_key):
+    """A neighbouring tier displaces the declared one only by winning on cost.
+
+    Here the mid pick IS measured but expensive per completion ($9.00/run at
+    rate 1.0) while the strong candidate reaches completion for $5.00 — an
+    evidence-vs-evidence comparison, which is the only thing that may override
+    the complexity router.
+    """
+    decision = _mid_band_decision(_mid_band_profiles(mid_runs=5, mid_cost=9.0), 1)
+    assert decision.dev.name == "strong_champ"
+    evidence = _dev_exploration(decision)["evidence"]
+    assert evidence["selection"] == "cost_qualified_exploitation"
+    assert evidence["selected_tier"] == "strong"
+    assert evidence["declared_tier"] == "mid"
+    assert evidence["estimated_completion_cost_usd"] == 5.0
+
+
+def test_mid_band_keeps_cheaper_measured_incumbent_over_pricier_strong(_anthropic_key):
+    """Both tiers measured and reliable → the cheaper completion wins, i.e. the
+    right-sized mid pick, at a third of the incumbent's price."""
+    decision = _mid_band_decision(_mid_band_profiles(mid_runs=5, mid_cost=1.0), 1)
+    assert decision.dev.name == "mid_pick"
+    evidence = _dev_exploration(decision)["evidence"]
+    assert evidence["selection"] == "cost_qualified_exploitation"
+    assert evidence["selected_tier"] == "mid"
+    assert evidence["estimated_completion_cost_usd"] == 1.0
+    assert evidence["completion_costs_usd"]["strong_champ"] == 5.0
+
+
+def test_routing_audit_records_the_evidence_that_selected_the_dev_model(_anthropic_key):
+    """Convention 6: the values that moved the decision are in the audit trail."""
+    decision = _mid_band_decision(_mid_band_profiles(mid_runs=5, mid_cost=1.0), 1)
+    evidence = _dev_exploration(decision)["evidence"]
+    assert evidence["selected_model"] == "mid_pick"
+    assert evidence["reliability_floor"] == 0.7
+    assert evidence["observed_reliability"] == 1.0
+    assert evidence["sample_size"] == 5
+    assert evidence["cost_status"] == "measured"
+    assert evidence["completion_cost_formula"] == "avg_cost_usd / success_rate"
+    assert evidence["winner_selection_reason"] == "cost_qualified"
+
+
+def test_unmeasured_incumbent_is_labeled_and_keeps_the_declared_tier(_anthropic_key):
+    """An unmeasured-cost model is surfaced as unmeasured, not ranked as priciest."""
+    data: dict = {"models": {}}
+    for _ in range(5):
+        apply_run(data, RunOutcome("medium", "mid_pick", True, 1, None))
+    decision = _mid_band_decision(data, 1)
+    assert decision.dev.name == "mid_pick"
+    evidence = _dev_exploration(decision)["evidence"]
+    assert evidence["cost_status"] == "unmeasured"
+    assert evidence["estimated_completion_cost_usd"] is None
+    assert evidence["winner_selection_reason"] == "no_measured_completion_cost"
+    assert evidence["unmeasured_cost"] == ["mid_pick"]
+
+
 # ── Domain-scoped routing (routing key honors domain) ──────────────────
 
 
