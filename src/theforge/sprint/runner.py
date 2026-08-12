@@ -190,6 +190,7 @@ AUDIT_PUBLISH_COMMITTED = "committed_unpublished"
 AUDIT_PUBLISH_PUBLISHED = "published"
 AUDIT_PUBLISH_LOCAL_ONLY = "local_only"
 AUDIT_PUBLISH_COMMIT_FAILED = "commit_failed"
+AUDIT_PUBLISH_BRANCH_MISMATCH = "branch_mismatch"
 AUDIT_PUBLISH_PUSH_REFUSED = "push_refused"
 AUDIT_PUBLISH_RECONCILE_FAILED = "reconcile_failed"
 AUDIT_PUBLISH_VERIFY_FAILED = "verify_failed"
@@ -243,6 +244,26 @@ def _record_audit_publish_state(
         _log(f"Warning: could not record story run audit publish state: {exc}")
 
 
+def _require_audit_publish_branch(project_root: Path, base_branch: str, *, operation: str) -> None:
+    """Refuse before mutating the project root from the wrong checked-out branch."""
+    try:
+        current_branch = coordinator_workspace._current_checked_out_branch(project_root)
+    except RuntimeError as exc:
+        raise StoryRunAuditPublishError(
+            f"Failed to verify the checked-out branch before {operation} story run audits: {exc}",
+            state=AUDIT_PUBLISH_BRANCH_MISMATCH,
+        ) from exc
+    if current_branch == base_branch:
+        return
+    raise StoryRunAuditPublishError(
+        f"Refusing to {operation} story run audits for base branch '{base_branch}' because "
+        f"the project root currently has '{current_branch}' checked out. Check out "
+        f"{base_branch} and rerun the publish, or move the pending audit records off "
+        f"'{current_branch}'.",
+        state=AUDIT_PUBLISH_BRANCH_MISMATCH,
+    )
+
+
 def _reconcile_base_with_origin(project_root: Path, base_branch: str) -> None:
     """Fetch origin and rebase the local base branch onto its current head.
 
@@ -251,6 +272,7 @@ def _reconcile_base_with_origin(project_root: Path, base_branch: str) -> None:
     """
     from ..coordinator import util as _cu  # noqa: PLC0415
 
+    _require_audit_publish_branch(project_root, base_branch, operation="reconcile")
     quoted_base = shlex.quote(base_branch)
     ok_fetch, fetch_out = _cu._run_shell(f"git fetch origin {quoted_base}", project_root)
     if not ok_fetch:
@@ -261,7 +283,7 @@ def _reconcile_base_with_origin(project_root: Path, base_branch: str) -> None:
         )
 
     ok_rebase, rebase_out = _cu._run_shell(
-        f"git rebase origin/{quoted_base}",
+        f"git rebase origin/{quoted_base} {quoted_base}",
         project_root,
     )
     if not ok_rebase:
@@ -302,6 +324,12 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
 
     if not (project_root / ".git").exists():
         return
+
+    try:
+        _require_audit_publish_branch(project_root, base_branch, operation="publish")
+    except StoryRunAuditPublishError as exc:
+        _record_audit_publish_state(project_root, base_branch, exc.state, detail=str(exc))
+        raise
 
     audit_dir = Path(_STORY_RUN_AUDIT_DIR)
     quoted_audit_dir = shlex.quote(audit_dir.as_posix())
@@ -4713,6 +4741,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         stage="sprint-entry",
     )
 
+    if _project_root_is_git_checkout(_ctx.config.project_root):
+        coordinator_workspace.assert_base_branch_checked_out(
+            _ctx.config, operation="sprint launch"
+        )
     if not _ctx.no_pull and _project_root_is_git_checkout(_ctx.config.project_root):
         coordinator_workspace.pull_base_branch(_ctx.config, lands_locally=_sprint_lands_locally)
 

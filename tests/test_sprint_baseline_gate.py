@@ -226,6 +226,7 @@ def test_baseline_gate_evidence_and_worktree_survive_the_sprint_abort(
     )
 
     with (
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch("theforge.sprint.runner.run_batch_preflight") as mock_preflight,
         patch("theforge.sprint.runner.run_task") as mock_run_task,
     ):
