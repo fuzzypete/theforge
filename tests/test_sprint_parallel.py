@@ -3279,6 +3279,7 @@ class TestSprintLandsLocallyResolution:
 
         with (
             patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+            patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
             patch("theforge.coordinator.workspace.pull_base_branch", side_effect=fake_pull),
             pytest.raises(RuntimeError, match="stop after base sync"),
         ):
@@ -3335,6 +3336,8 @@ class TestSprintRunAuditCommit:
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
             shell_calls.append((cmd, Path(cwd)))
+            if cmd == "git rev-parse --abbrev-ref HEAD":
+                return (True, "main\n")
             if cmd == "git status --porcelain -- .forge/audits/runs":
                 return (True, "?? .forge/audits/runs/run-123.json")
             if cmd == "git add -- .forge/audits/runs":
@@ -3387,6 +3390,8 @@ class TestSprintRunAuditCommit:
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
             shell_calls.append((cmd, Path(cwd)))
+            if cmd == "git rev-parse --abbrev-ref HEAD":
+                return (True, "main\n")
             if cmd == "git status --porcelain -- .forge/audits/runs":
                 return (True, "")
             return (True, "")
@@ -3431,6 +3436,8 @@ class TestSprintRunAuditCommit:
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
             shell_calls.append((cmd, Path(cwd)))
+            if cmd == "git rev-parse --abbrev-ref HEAD":
+                return (True, "main\n")
             if cmd == "git status --porcelain -- .forge/audits/runs":
                 return (True, "?? .forge/audits/runs/run-123.json")
             if cmd == "git add -- .forge/audits/runs":
@@ -3476,6 +3483,8 @@ class TestSprintRunAuditCommit:
         warnings: list[str] = []
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
+            if cmd == "git rev-parse --abbrev-ref HEAD":
+                return (True, "main\n")
             if cmd == "git status --porcelain -- .forge/audits/runs":
                 return (True, "?? .forge/audits/runs/run-123.json")
             if cmd == "git rev-list --count origin/main..main":
@@ -3524,6 +3533,8 @@ class TestSprintRunAuditCommit:
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
             shell_calls.append(cmd)
+            if cmd == "git rev-parse --abbrev-ref HEAD":
+                return (True, "main\n")
             if cmd == "git status --porcelain -- .forge/audits/runs":
                 return (True, "?? .forge/audits/runs/run-123.json")
             if cmd == "git rev-list --count origin/main..main":
@@ -3567,6 +3578,8 @@ class TestSprintRunAuditCommit:
 
         def fake_shell(cmd, cwd, **kwargs):  # noqa: ANN001
             shell_calls.append(cmd)
+            if cmd == "git rev-parse --abbrev-ref HEAD":
+                return (True, "main\n")
             if cmd == "git status --porcelain -- .forge/audits/runs":
                 return (True, "?? .forge/audits/runs/run-123.json")
             return (True, "")

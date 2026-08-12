@@ -18,6 +18,7 @@ import pytest
 
 from theforge.sprint.runner import (
     _STORY_RUN_AUDIT_PUBLISH_STATE_PATH,
+    AUDIT_PUBLISH_BRANCH_MISMATCH,
     AUDIT_PUBLISH_CLEAN,
     AUDIT_PUBLISH_LOCAL_ONLY,
     AUDIT_PUBLISH_PUBLISHED,
@@ -105,7 +106,9 @@ def test_publish_pushes_audits_when_remote_is_unchanged(
 
 
 def test_publish_reconciles_when_the_base_branch_advanced(
-    tmp_path: Path, origin_and_clone: tuple[Path, Path]
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    origin_and_clone: tuple[Path, Path],
 ) -> None:
     """The sprint's own merge landing mid-run must not strand the audit commit."""
     origin, clone = origin_and_clone
@@ -113,6 +116,18 @@ def test_publish_reconciles_when_the_base_branch_advanced(
     # The base branch moves after the clone's last fetch — the merge of the PR
     # for the story this sprint just landed.
     _advance_origin(tmp_path, origin, "story-merge")
+    push_shas: list[str] = []
+
+    from theforge.coordinator import util as _cu
+
+    real_run_shell = _cu._run_shell
+
+    def tracing_run_shell(cmd: str, cwd: Path, *args: object, **kwargs: object):
+        if cmd.startswith("git push origin"):
+            push_shas.append(_git(clone, "rev-parse", BASE))
+        return real_run_shell(cmd, cwd, *args, **kwargs)
+
+    monkeypatch.setattr(_cu, "_run_shell", tracing_run_shell)
 
     _commit_story_run_audits(clone, BASE, publish=True)
 
@@ -122,6 +137,32 @@ def test_publish_reconciles_when_the_base_branch_advanced(
     assert "story-merge.txt" in tree
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_PUBLISHED
     assert _git(clone, "rev-list", "--count", f"origin/{BASE}..{BASE}") == "0"
+    assert len(push_shas) == 2
+    assert push_shas[0] != push_shas[1]
+
+
+def test_publish_refuses_when_a_different_branch_is_checked_out(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    _origin, clone = origin_and_clone
+    _git(clone, "checkout", "-b", "feature/wrong-branch")
+    head_before = _git(clone, "rev-parse", "HEAD")
+    base_before = _git(clone, "rev-parse", BASE)
+    _write_audit(clone, "run-g.json")
+
+    with pytest.raises(StoryRunAuditPublishError) as excinfo:
+        _commit_story_run_audits(clone, BASE, publish=True)
+
+    assert excinfo.value.state == AUDIT_PUBLISH_BRANCH_MISMATCH
+    assert BASE in str(excinfo.value)
+    assert "feature/wrong-branch" in str(excinfo.value)
+    assert _git(clone, "rev-parse", "HEAD") == head_before
+    assert _git(clone, "rev-parse", BASE) == base_before
+    assert _git(clone, "diff", "--cached", "--name-only") == ""
+    state = _read_state(clone)
+    assert state["state"] == AUDIT_PUBLISH_BRANCH_MISMATCH
+    assert BASE in state["detail"]
+    assert "feature/wrong-branch" in state["detail"]
 
 
 def test_publish_raises_with_push_refused_state_when_retries_are_exhausted(
