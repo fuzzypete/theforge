@@ -78,13 +78,26 @@ def _render_packet(packet: EvidencePacket) -> str:
         lines.append("### Detected pattern: TOPOLOGY WALK (deterministic detector)")
         sig = packet.topology_signal
         cycles = ", ".join(str(c) for c in (sig.get("cycles") or []))
-        lines.append(
-            "This escalation fired BEFORE the cycle ceiling. A deterministic detector "
-            "found that successive review cycles each resolved their predecessor's "
-            "findings and then raised a NEW instance of the same underlying concern at "
-            "a location nobody had enumerated. The loop was not converging — it was "
-            "inventorying a surface one development pass at a time."
+        detector_finding = (
+            "A deterministic detector found that successive review cycles each "
+            "resolved their predecessor's findings and then raised a NEW instance of "
+            "the same underlying concern at a location nobody had enumerated. The "
+            "loop was not converging — it was inventorying a surface one development "
+            "pass at a time."
         )
+        # Only say the ceiling was not reached when the detector is what stopped
+        # the story. The same signal is recorded on runs that escalated for
+        # another reason, and there it is evidence about the churn, not an
+        # account of why this escalation happened.
+        if packet.topology_triggered:
+            lines.append(f"This escalation fired BEFORE the cycle ceiling. {detector_finding}")
+        else:
+            lines.append(
+                f"This escalation was NOT triggered by the detector — see the "
+                f"escalation reason below for what stopped the story. The pattern is "
+                f"reported here as supporting evidence about the churn. "
+                f"{detector_finding}"
+            )
         lines.append(f"shared concern (anchor): {sig.get('seed_anchor')}")
         lines.append(f"cycles in the pattern: {cycles}")
         for item in sig.get("sequence") or []:
@@ -136,7 +149,11 @@ def build_advisor_prompt(packet: EvidencePacket) -> str:
     # topology walk routes here with cycles still available, precisely so the
     # decision is made while it is still worth something. Saying "exhausted"
     # there would hand the advisor a false premise about what the run spent.
-    if packet.topology_signal:
+    #
+    # Keyed on topology_TRIGGERED, not on the signal's presence. A run that hit
+    # the ceiling can still carry a recorded signal, and telling the advisor
+    # cycles remain when they do not is the same false premise in reverse.
+    if packet.topology_triggered and packet.topology_signal:
         situation = (
             "A story has escalated BEFORE its review cycles were exhausted: a "
             "deterministic detector found the loop walking a topology rather than "

@@ -408,3 +408,100 @@ class TestTwoBlockingConcernsInFlightDoNotEscalate:
         assert state.review_topology_signal is None
         assert state.review_topology_escalated is False
         assert state.review_cycle == 3
+
+
+class TestIdenticalWordingWalkRoutesEndToEnd:
+    """Through the real classifier and the real detector: a walk stated in the
+    same words at each sibling location still reaches the gate."""
+
+    _SAME = "unpriced_dispatch: this path is dispatched without a price lookup"
+
+    def test_same_wording_new_location_each_cycle_escalates(self, tmp_path):
+        _init_repo_with_dev_commit(tmp_path)
+        config = _config(tmp_path, max_review_cycles=5)
+        task = _make_task(tmp_path)
+        state = _fresh_state(tmp_path, config)
+
+        places = [("src/routing/dispatch.py", 10), ("src/routing/fallback.py", 22)]
+        places.append(("src/routing/transport.py", 44))
+
+        with patch(
+            "theforge.coordinator.review_phase._run_escalate_gate",
+            return_value=CoordinatorResult(
+                success=False, phase=Phase.ESCALATE, state=state, message="escalated"
+            ),
+        ) as gate_mock:
+            for file, line in places:
+                outcome, _result, config = _run_cycle(
+                    state, config, task, tmp_path, _review(file, line, self._SAME)
+                )
+
+        assert gate_mock.call_count == 1
+        assert outcome is _ReviewOutcome.ESCALATE
+        assert state.review_topology_signal is not None
+        assert [i["file"] for i in state.review_topology_signal["sequence"]] == [
+            p[0] for p in places
+        ]
+
+
+class TestTriggerFlagTracksThisEscalation:
+    """``review_topology_escalated`` latches for the run; ``..._triggered`` names
+    the escalation currently in force, so the advisor is never told the ceiling
+    was not reached on a run where it was."""
+
+    def test_flag_is_set_when_the_detector_routes(self, tmp_path):
+        _init_repo_with_dev_commit(tmp_path)
+        config = _config(tmp_path, max_review_cycles=5)
+        task = _make_task(tmp_path)
+        state = _fresh_state(tmp_path, config)
+
+        with patch(
+            "theforge.coordinator.review_phase._run_escalate_gate",
+            return_value=CoordinatorResult(
+                success=False, phase=Phase.ESCALATE, state=state, message="escalated"
+            ),
+        ):
+            for file, line, desc in _WALK[:3]:
+                _run_cycle(state, config, task, tmp_path, _review(file, line, desc))
+
+        assert state.review_topology_triggered is True
+        assert state.review_topology_escalated is True
+
+    def test_gate_continue_clears_the_trigger_but_keeps_the_latch(self, tmp_path):
+        _init_repo_with_dev_commit(tmp_path)
+        config = _config(tmp_path, max_review_cycles=5)
+        task = _make_task(tmp_path)
+        state = _fresh_state(tmp_path, config)
+
+        with patch("theforge.coordinator.review_phase._run_escalate_gate", return_value=None):
+            for file, line, desc in _WALK[:3]:
+                _run_cycle(state, config, task, tmp_path, _review(file, line, desc))
+
+        # The operator chose to keep going, so this escalation is over. A later
+        # ceiling-triggered escalation must not be described as having fired
+        # early just because a signal is still on record.
+        assert state.review_topology_triggered is False
+        assert state.review_topology_escalated is True
+        assert state.review_topology_signal is not None
+
+    def test_ceiling_escalation_after_a_continue_is_not_marked_early(self, tmp_path):
+        _init_repo_with_dev_commit(tmp_path)
+        config = _config(tmp_path, max_review_cycles=4)
+        task = _make_task(tmp_path)
+        state = _fresh_state(tmp_path, config)
+
+        gate = patch("theforge.coordinator.review_phase._run_escalate_gate", return_value=None)
+        with gate as gate_mock:
+            for file, line, desc in _WALK[:4]:
+                outcome, _result, config = _run_cycle(
+                    state, config, task, tmp_path, _review(file, line, desc)
+                )
+
+        # Cycle 3 routed on the detector (continue), cycle 4 hit the ceiling.
+        # The ceiling branch's own continue decrements review_cycle to make room
+        # for the cycle it granted, which is why this reads 3 rather than 4.
+        assert gate_mock.call_count == 2
+        assert state.review_cycle == 3
+        assert "Max cycles" in (state.error or "")
+        assert state.review_topology_triggered is False
+        assert state.review_topology_signal is not None

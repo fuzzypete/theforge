@@ -2222,6 +2222,10 @@ def _run_review_phase(
         _signal = state.review_topology_signal
         _cycle_seq = ", ".join(str(c) for c in _signal.get("cycles", []))
         state.review_topology_escalated = True
+        # Names THIS escalation as the detector's, so the advisor is told the
+        # ceiling was not reached. Cleared on the continue path below, so a
+        # later ceiling-triggered escalation is not misdescribed as early.
+        state.review_topology_triggered = True
         state.phase = Phase.ESCALATE
         state.escalate_kind = "content"
         state.error = (
@@ -2270,6 +2274,7 @@ def _run_review_phase(
         # resumes from where it is rather than replaying them.
         state.error = None
         state.escalate_kind = None
+        state.review_topology_triggered = False
         state.last_review_findings = review_to_dev_handoff(parsed_review)
         state.budget.reset_cycle()
         state.human_feedback = None

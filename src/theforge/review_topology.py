@@ -265,11 +265,17 @@ def detect_topology_walk(
     # Every cycle in the window must sit at a DIFFERENT location: that is what
     # "a new sibling path each cycle" means, and it is the whole distinction
     # from a residual restatement of the same finding.
+    #
+    # Location — not wording — carries this. Reviewers routinely describe the
+    # same invariant in the same words at each place it is violated ("X is
+    # dispatched without a price lookup"), and requiring the prose to differ
+    # rejected exactly the walks stated most clearly. The shared family anchor
+    # already establishes that it is one concern; distinct locations establish
+    # that they are different instances of it. A genuine restatement of one
+    # finding repeats its location and is caught here, and by the
+    # predecessor-resolution check below.
     locations = [_location(m) for _, m in members]
     if len(set(locations)) != len(locations):
-        return None
-    descriptions = [_norm(m.get("description")) for _, m in members]
-    if len(set(descriptions)) != len(descriptions):
         return None
 
     # Successive cycles must have RESOLVED their predecessor: no P1 location

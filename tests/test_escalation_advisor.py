@@ -491,7 +491,7 @@ class TestTopologySignalReachesTheAdvisor:
         assert packet.topology_signal is None
         assert packet.to_dict()["topology_signal"] is None
 
-    def _packet(self, signal):
+    def _packet(self, signal, *, triggered=True, reason=None):
         from theforge.escalation_advisor import CycleEvidence
 
         return EvidencePacket(
@@ -512,8 +512,9 @@ class TestTopologySignalReachesTheAdvisor:
             final_verdict="REQUEST_CHANGES",
             dev_diff="",
             test_failures="",
-            escalation_reason="Topology walk detected at review cycle 3 of 5.",
+            escalation_reason=reason or "Topology walk detected at review cycle 3 of 5.",
             topology_signal=signal,
+            topology_triggered=triggered,
         )
 
     def test_prompt_renders_the_detected_pattern_and_its_sequence(self):
@@ -545,3 +546,45 @@ class TestTopologySignalReachesTheAdvisor:
         exhausted = build_advisor_prompt(self._packet(None))
         assert "the review cycles were exhausted" in exhausted
         assert "TOPOLOGY WALK" not in exhausted
+
+    def test_ceiling_triggered_escalation_carrying_a_signal_is_not_called_early(self):
+        """A signal is recorded on every cycle it is detected, including cycles
+        that escalate for another reason. Only the detector's own route may tell
+        the advisor the ceiling was not reached."""
+        from theforge.task.advisor_prompts import build_advisor_prompt
+
+        prompt = build_advisor_prompt(
+            self._packet(
+                dict(_TOPOLOGY_SIGNAL),
+                triggered=False,
+                reason="Review requested changes after 5 cycles. Max cycles (5) exhausted.",
+            )
+        )
+
+        # The budget DID run out, so the introduction must say so.
+        assert "the review cycles were exhausted" in prompt
+        assert "BEFORE its review cycles were exhausted" not in prompt
+        assert "Review cycles remain available" not in prompt
+        # The pattern is still shown — as supporting evidence, not as the cause.
+        assert "TOPOLOGY WALK" in prompt
+        assert "NOT triggered by the detector" in prompt
+        assert "This escalation fired BEFORE the cycle ceiling." not in prompt
+        assert "unpriced_dispatch" in prompt
+
+    def test_packet_records_whether_the_detector_caused_the_escalation(self, tmp_path):
+        config = _config(tmp_path)
+        task = TaskStory(name="Pricing", slug="issue-2372", github_issue=2372)
+        state = CoordinatorState()
+        state.story_content = "body"
+        state.review_topology_signal = dict(_TOPOLOGY_SIGNAL)
+
+        # Signal recorded, but the detector did not route this escalation.
+        packet = build_evidence_packet(state, task, config, tmp_path / "nope")
+        assert packet.topology_signal is not None
+        assert packet.topology_triggered is False
+        assert packet.to_dict()["topology_triggered"] is False
+
+        state.review_topology_triggered = True
+        packet = build_evidence_packet(state, task, config, tmp_path / "nope")
+        assert packet.topology_triggered is True
+        assert packet.to_dict()["topology_triggered"] is True

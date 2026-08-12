@@ -960,6 +960,12 @@ class CoordinatorState:
     # the same pattern on the very next cycle would spend the decision it just
     # made, so detection routes at most once per run.
     review_topology_escalated: bool = False
+    # True while the escalation currently in force is the one the detector
+    # routed. Distinct from the latch above, which stays set for the rest of the
+    # run: after a gate "continue" this clears, so a later ceiling-triggered
+    # escalation is not described to the operator as having fired early. The
+    # signal itself is still carried as supporting evidence either way (#2372).
+    review_topology_triggered: bool = False
     # Challenger-sampling exploration (#325, ADR-0006 clause 8). When the router
     # ran a challenger instead of the winner for this story's dev slot, this
     # holds the decision (routing_key/challenger/winner) so the coordinator can

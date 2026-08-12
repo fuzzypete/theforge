@@ -143,6 +143,12 @@ class EvidencePacket:
     # about the framing, not about the latest finding. Defaulted so packets
     # assembled by paths that predate the detector remain constructible.
     topology_signal: dict | None = None
+    # True only when the detector's route is what caused THIS escalation. A
+    # signal can be recorded on a run that escalated for another reason (the
+    # cycle ceiling, a converged loop with a blocking P1) — there it is
+    # supporting evidence about the churn, and telling the advisor the ceiling
+    # was not reached would be false.
+    topology_triggered: bool = False
 
     def to_dict(self) -> dict:
         """Serialise the packet for the audit trail."""
@@ -166,6 +172,7 @@ class EvidencePacket:
             "test_failures": self.test_failures,
             "escalation_reason": self.escalation_reason,
             "topology_signal": dict(self.topology_signal) if self.topology_signal else None,
+            "topology_triggered": self.topology_triggered,
         }
 
 

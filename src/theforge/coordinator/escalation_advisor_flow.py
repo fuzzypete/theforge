@@ -194,6 +194,7 @@ def build_evidence_packet(
         test_failures=test_failures,
         escalation_reason=state.error or state.escalate_reason or "ESCALATE",
         topology_signal=state.review_topology_signal or None,
+        topology_triggered=bool(state.review_topology_triggered),
     )
 
 

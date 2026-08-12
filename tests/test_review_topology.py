@@ -370,3 +370,48 @@ class TestUnresolvableBlockingFamilySuppresses:
             )
             is None
         )
+
+
+class TestIdenticalWordingAcrossSiblings:
+    """Reviewers routinely describe one invariant in the same words at each place
+    it is violated. Location, not prose, is what makes a sibling a sibling."""
+
+    _SAME = "unpriced_dispatch: this path is dispatched without a price lookup"
+
+    def test_identical_descriptions_at_distinct_locations_still_fire(self):
+        cycles = [
+            [_finding("src/routing/dispatch.py", 10, self._SAME)],
+            [_finding("src/routing/fallback.py", 22, self._SAME)],
+            [_finding("src/routing/transport.py", 44, self._SAME)],
+        ]
+        signal = _detect(cycles)
+        assert signal is not None
+        assert signal["seed_anchor"] == "unpriced_dispatch"
+        assert [item["file"] for item in signal["sequence"]] == [
+            "src/routing/dispatch.py",
+            "src/routing/fallback.py",
+            "src/routing/transport.py",
+        ]
+
+    def test_identical_descriptions_at_one_location_still_do_not_fire(self):
+        """The relaxation is scoped to wording. Same words, same place is a
+        finding the loop failed to fix — still a convergence story."""
+        cycles = [
+            [_finding("src/routing/dispatch.py", 10, self._SAME)],
+            [_finding("src/routing/dispatch.py", 10, self._SAME)],
+            [_finding("src/routing/dispatch.py", 10, self._SAME)],
+        ]
+        assert _detect(cycles) is None
+
+    def test_identical_descriptions_within_one_cycle_are_still_unresolvable(self):
+        """Two findings sharing wording in the SAME cycle leave the family's
+        record pointing at two places, which stays ambiguous."""
+        cycles = [
+            [_finding("src/routing/dispatch.py", 10, self._SAME)],
+            [
+                _finding("src/routing/fallback.py", 22, self._SAME),
+                _finding("src/routing/retry.py", 33, self._SAME),
+            ],
+            [_finding("src/routing/transport.py", 44, self._SAME)],
+        ]
+        assert _detect(cycles) is None

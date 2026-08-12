@@ -156,6 +156,7 @@ def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         # signal nor re-escalates a pattern the operator already decided on.
         "review_topology_signal": state.review_topology_signal,
         "review_topology_escalated": state.review_topology_escalated,
+        "review_topology_triggered": state.review_topology_triggered,
         "escalate_kind": state.escalate_kind,
         # Gate-execution count, so the "N gate run(s)" an escalation reports
         # covers the story's whole history rather than restarting at the most
@@ -215,6 +216,8 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         state.review_topology_signal = data["review_topology_signal"]
     if isinstance(data.get("review_topology_escalated"), bool):
         state.review_topology_escalated = data["review_topology_escalated"]
+    if isinstance(data.get("review_topology_triggered"), bool):
+        state.review_topology_triggered = data["review_topology_triggered"]
     if isinstance(data.get("gate_runs"), int) and not isinstance(data.get("gate_runs"), bool):
         state.gate_runs = max(0, int(data["gate_runs"]))
     if isinstance(data.get("last_gate_commit"), str) and data["last_gate_commit"]:
