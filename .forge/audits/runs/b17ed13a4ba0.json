@@ -1,0 +1,4294 @@
+{
+  "schema_version": 26,
+  "run_id": "b17ed13a4ba0",
+  "parent_run_id": null,
+  "forge_version": "0.13.0rc29",
+  "task": {
+    "name": "Winner-mode exploitation overrides the complexity tier with a cross-tier incumbent ranked on success rate alone, so cost never influences dev selection and the incumbent self-perpetuates",
+    "slug": "issue-2392",
+    "story_path": null,
+    "story_text": "## Observed\n\nThe complexity router right-sizes the dev model and is then overridden. A story scored into the\nmiddle complexity band resolves to the mid tier, the mid tier is populated with capable candidates,\nand the tier router selects one of them \u2014 and the exploration layer's winner mode then replaces that\nselection with the empirical winner drawn from a cross-tier pool. The winner is whichever model has\naccumulated the most admissible run history, which is the strong-tier incumbent, so mid-band work\ndispatches at strong-tier prices. Every mid-band routing snapshot from the current dogfood window\nrecords the same substitution: rationale says the middle tier, dispatch runs the incumbent.\n\nThe winner ranking consults success rate first and cost only on an exact success-rate tie. With\nrecency-weighted fractional rates, that tie does not occur in practice, so a candidate that\ncompletes the same band at a third of the price can never displace an incumbent that succeeds one\npoint more often. A candidate whose cost was never measured sorts as worst on the tie-break it will\nnever reach.\n\nThe evidence-gathering path that is supposed to correct this cannot. Challenger races are limited to\none per sprint, fire only every fifth run of a routing key, draw one challenger at random from the\nnon-winner pool, and a challenger needs several admissible recent runs at the same key before it is\neven compared. Routing keys are further fragmented by domain. Under those defaults a specific\nalternative accumulates comparison-grade evidence at a rate slower than recency decay erodes it, so\nthe incumbent's victory is self-perpetuating: it wins because it has the history, and it has the\nhistory because it wins.\n\nThe system was built to optimize the total cost of completing an issue with the right-sized model.\nIn this state it optimizes role-level success rate and treats price as unreachable metadata.\n\n## Expected\n\nAdaptive dev routing selects on evidence that reflects the total cost of carrying a story to trusted\ncompletion \u2014 gate pass and review approval, including retries and review cycles \u2014 subject to an\nexplicit reliability floor, rather than on a single role-level success rate with price as a\ntie-break. A candidate that reaches trusted completion more cheaply at acceptable reliability\ndisplaces a more expensive incumbent once it has admissible evidence, and a candidate below the\nreliability floor is excluded no matter how cheap it is, so misjudging a model degrades gracefully\nin both directions.\n\nEligible alternatives have a feasible path to admissible evidence under default settings: the rate\nat which a specific alternative can accumulate comparison-grade runs is bounded below, not just\nbounded above, so an incumbent's historical volume cannot make its own displacement impossible.\nWhere no admissible evidence exists for a slot, selection falls back to the declared tier for the\nstory's band, not to the incumbent of a neighbouring band. A candidate whose cost is unknown is\nsurfaced as unmeasured and explored under the same bounds as any other candidate rather than being\nsilently ranked as the most expensive possible model.\n\n## Diagnosis\n\n- **Observed symptom:** stories scored 4\u20136 route to the mid tier in the rationale and dispatch the\n  strong-tier incumbent; all 19 mid-band routing snapshots in `.forge/routing/` record the\n  substitution, and August dev spend concentrates ~90% of implementation runs on one model.\n- **Evidence:**\n  - Reproduced deterministically on the `release/v0.13` checkout with the live `forge.yaml` and\n    `.forge/model_profiles.yaml`: `assign_models(..., complexity_score=6)` returns the mid-tier\n    candidate when `sprint_exploration_budget` is omitted and the strong-tier incumbent the moment\n    it is passed (any value, including 0 \u2014 exhausted budget still routes winner mode).\n  - Run `21c042885a9d` (issue-2374, score 6) audit rationale: \"tier mid \u2026 EXPLORATION empirical\n    winner opus (tier strong) routed for key dev:medium:backend (promotion/dethrone off the\n    static-tier pick)\". The pool recorded for the key spans all three tiers.\n  - `src/theforge/exploration.py:241` \u2014 `_winner_sort_key` returns\n    `(-success, cost, iters, dur, model_id)`: cost is consulted only on an exact success-rate tie,\n    and a missing `avg_cost_usd` sorts as `float(\"inf\")`.\n  - `src/theforge/exploration.py:384` \u2014 an exhausted or zero sprint budget downgrades to winner\n    mode; the override applies on every story, not only on exploration stories.\n  - Live exploration config: `explore_every_n=5`, `per_sprint_cap=1`, `min_sample_size=3`, with\n    per-domain routing keys and a uniform random challenger draw from the non-winner pool.\n- **Ruled out:** tier bucket miscalibration (score 4\u20136 resolves to mid and the mid tier holds four\n  enabled candidates); profile-backed dev pre-promotion (#158) \u2014 the recency-recovery check held and\n  did not fire; the auth-fallback floor path (its rationale marker is absent); audit dishonesty (the\n  per-run audit records the override in full).\n- **Confirmed cause:** winner-mode exploitation replaces the tier-routed dev selection with the\n  cross-tier empirical winner; the winner objective ranks success rate lexicographically ahead of\n  cost, and the challenger cadence, sample floor, key fragmentation, and random draw jointly make it\n  infeasible for any alternative to accumulate the admissible evidence needed to dethrone the\n  incumbent.\n- **Affected code path:** `theforge.exploration` (`_winner_sort_key`, `select_winner`,\n  `decide_exploration`) and its consumption in `theforge.assignment` where the exploration block\n  replaces the dev slot; exploration defaults in `assignment.exploration` config.\n- **Fix-success criterion:** on a pool where a cheaper candidate meets the reliability floor for a\n  band, routing converges to that candidate within a bounded number of stories at default settings,\n  and the per-story audit can show, for the selected model, the completion-cost evidence and floor\n  check that selected it; a pool with no admissible evidence routes by declared tier.\n",
+    "github_issue": 2392,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": {
+    "status": "recovered",
+    "reason": "story_content_match",
+    "recovered_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "source_run_id": "a3705a649b86",
+    "recorded_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "reentry_impact": null,
+    "block_selection": []
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Winner-mode exploitation overrides the complexity tier with a cross-tier incumbent ranked on success rate alone, so cost never influences dev selection and the incumbent self-perpetuates' completed. Review approved after 1 cycle(s), 1 dev iteration(s). Branch: feat/issue-2392",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "d7755e72e25c1d8f8cceedc8814c3e643ca6b24fa5cfc2712a2b130812886209",
+    "resolved_sha256": "ffa5cb7ed6d2973718c6aa767030146b7ba5db7782c5d2786fa806785f01a4d8",
+    "source_sha256_at_finish": "d7755e72e25c1d8f8cceedc8814c3e643ca6b24fa5cfc2712a2b130812886209",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-12T06:12:54.401842+00:00",
+    "finished_at": "2026-08-12T06:36:41.226759+00:00",
+    "duration_seconds": 1426.824917
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2392",
+    "branch": "feat/issue-2392",
+    "story_provenance": null,
+    "inherited_superseded_work": false,
+    "inherited_work_surfaced_to_dev": false,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "gate_decisions": [
+      "PASS"
+    ],
+    "gate_runs": 1,
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 3,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 6.737674000000001,
+        "duration_s": 948.03,
+        "meaningful_progress": true,
+        "files_changed": [
+          "docs/guides/inputs-reference.md",
+          "src/theforge/assignment.py",
+          "src/theforge/config/models.py",
+          "src/theforge/config/types.py",
+          "src/theforge/exploration.py",
+          "src/theforge/model_profiles.py",
+          "tests/test_exploration.py",
+          "tests/test_exploration_config.py",
+          "tests/test_exploration_routing_seam.py",
+          "tests/test_model_profiles.py"
+        ],
+        "files_changed_count": 10,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "mechanical",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "opus",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_process_teardowns": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 2.743634,
+        "duration_s": 317.77
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 1,
+        "max": 3,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 1,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 8,
+      "complexity_band_input": "large",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "anthropic-opus-cli",
+      "model_actual": "opus",
+      "model_provider": null,
+      "model_cli": "claude",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 20.7373,
+      "static_dev_max": 3,
+      "estimate_headroom_factor": 1.25,
+      "complexity_score_used": 8,
+      "base_review": 5,
+      "profile_history_runs": 138,
+      "profile_avg_iterations": 1.9348,
+      "profile_avg_cost_usd": 12.047069,
+      "score_cost_history_runs": 78,
+      "score_cost_avg_usd": 14.954873,
+      "profile_raw_dev_max": 2.9022,
+      "dev_cost_estimate_basis": {
+        "source": "profile_observed_score",
+        "band": "large",
+        "complexity_score": 8,
+        "statistic": "avg_cost_usd",
+        "scope": "dev_phase",
+        "sample_count": 78,
+        "headroom_multiplier": 1.25,
+        "headroom_basis": "allocation_headroom",
+        "allocation_comparable": true,
+        "reason": "profile_score_history"
+      },
+      "iteration_derived_timeout_seconds": 1350,
+      "profile_max_duration_s": 3298.03,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 4948,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 3,
+      "chosen_dev_timeout_seconds": 4948,
+      "chosen_dev_cost_estimate_usd": 18.6936,
+      "review_history_sample_size": 28,
+      "p75_review": 3,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 138 large-band profile runs with 1.5x iteration headroom and 2.5x budget headroom; timeout floored on observed run duration+headroom (4948s). Dev cost estimate from 78 score-8 run(s) across all models (avg $14.95 x 1.25x allocation headroom) \u2014 the population the story allocation is drawn from. review history stayed within the complexity-derived review base.",
+      "review_cycle_planning": {
+        "planned_cost_usd": 6.3646,
+        "basis": "observed_complexity_score",
+        "fallback_configured_usd": 62.2119,
+        "sample_count": 45,
+        "median_usd": 5.0917,
+        "p90_usd": 12.3287,
+        "max_usd": 17.6354,
+        "headroom_multiplier": 1.25,
+        "reason": "derived from median observed review-cycle spend $5.09 x 1.25 headroom over 45 cycle(s) on stories at complexity score 8",
+        "excluded_for_taint": 0,
+        "composition": [
+          "anthropic-claude-haiku-4-5-cli",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ],
+        "complexity_score": 8,
+        "requested_complexity_score": 8
+      },
+      "review_cycle_reconciliation": {
+        "requested_review_max": 5,
+        "reconciled_review_max": 5,
+        "affordable_review_cycles": 24,
+        "allocation_usd": 172.12,
+        "spent_so_far_usd": 0.4738,
+        "dev_cost_estimate_usd": 18.6936,
+        "review_cycle_cost_usd": 6.3646,
+        "review_cycle_cost_basis": "observed_complexity_score",
+        "review_cycle_cost_sample_count": 45,
+        "review_cycle_cost_median_usd": 5.0917,
+        "review_cycle_cost_p90_usd": 12.3287,
+        "review_cycle_cost_max_usd": 17.6354,
+        "review_cycle_cost_headroom_multiplier": 1.25,
+        "review_cycle_cost_reason": "derived from median observed review-cycle spend $5.09 x 1.25 headroom over 45 cycle(s) on stories at complexity score 8",
+        "review_cycle_cost_composition": [
+          "anthropic-claude-haiku-4-5-cli",
+          "google-gemini-3.5-flash-api",
+          "openai-gpt-5.5-cli"
+        ],
+        "review_cycle_cost_complexity_score": 8,
+        "review_cycle_cost_requested_complexity_score": 8,
+        "review_cycle_cost_comparable": true,
+        "dev_cost_estimate_basis": "profile_observed_score",
+        "dev_cost_estimate_basis_reason": "profile_score_history",
+        "dev_cost_estimate_statistic": "avg_cost_usd",
+        "dev_cost_estimate_scope": "dev_phase",
+        "dev_cost_estimate_band": "large",
+        "dev_cost_estimate_complexity_score": 8,
+        "dev_cost_estimate_sample_count": 78,
+        "dev_cost_estimate_headroom_multiplier": 1.25,
+        "dev_cost_estimate_headroom_basis": "allocation_headroom",
+        "dev_cost_estimate_comparable": true,
+        "remaining_after_dev_usd": 152.9526,
+        "reserved_review_cycles": 5,
+        "reserved_review_usd": 31.823,
+        "action": "within_allocation",
+        "basis": "substrate_band",
+        "complexity_score": 8
+      },
+      "review_funding_reservation": {
+        "allocation_usd": 172.12,
+        "reserved_review_usd": 31.823,
+        "reserved_review_cycles": 5,
+        "review_cycle_cost_usd": 6.3646,
+        "action": "within_allocation",
+        "nonreview_allocation_usd": 140.297,
+        "released": true,
+        "release_reason": "approve_final",
+        "release_review_cycle": 1,
+        "review_observed_at_release_usd": 2.7436,
+        "retained_review_cycles": 0,
+        "retained_review_usd": 0.0,
+        "released_review_usd": 29.0794,
+        "release_count": 1
+      },
+      "story_ceiling_cap": {
+        "raw_timeout_seconds": 4948,
+        "story_ceiling_seconds": 13500,
+        "max_invocations": 3,
+        "share": 0.8,
+        "capped": true,
+        "cap_seconds": 3600,
+        "floor_seconds": 900,
+        "floor_applied": false,
+        "dev_share_seconds": 10800,
+        "floor_capped_by_share": false,
+        "final_timeout_seconds": 3600,
+        "rationale": "per-invocation timeout capped 4948s \u2192 3600s to fit 3 invocation(s) inside the 13500s story ceiling (share 0.8)"
+      }
+    },
+    "dev_timeout_clamps": [],
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-12T06:12:57.800707+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 9.955147000000002,
+    "dev_usd": 6.737674000000001,
+    "review_usd": 2.7436341,
+    "dev_invocations": 1,
+    "review_invocations": 4,
+    "agents": [
+      {
+        "role": "preflight",
+        "profile": "preflight",
+        "cost_usd": 0.4738389000000001,
+        "duration_seconds": 69.92977716680616,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.4738389000000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6566,
+            "output_tokens": 5168,
+            "cache_read_tokens": 581243,
+            "cache_creation_tokens": 35916,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 6544,
+              "output_tokens": 16,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.0066240000000000005,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 22,
+              "output_tokens": 5152,
+              "cache_read_tokens": 581243,
+              "cache_creation_tokens": 35916,
+              "thinking_tokens": 0,
+              "cost_usd": 0.4672149000000001,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 6544,
+            "output_tokens": 16,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.0066240000000000005
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": 22,
+            "output_tokens": 5152,
+            "cache_read_tokens": 581243,
+            "cache_creation_tokens": 35916,
+            "cost_usd": 0.4672149000000001
+          }
+        ],
+        "model_used": "sonnet",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 6.737674000000001,
+        "duration_seconds": 948.0282694171183,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "anthropic-opus-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 6.737674000000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 231,
+            "output_tokens": 51889,
+            "cache_read_tokens": 8349428,
+            "cache_creation_tokens": 126458,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 231,
+              "output_tokens": 51889,
+              "cache_read_tokens": 8349428,
+              "cache_creation_tokens": 126458,
+              "thinking_tokens": 0,
+              "cost_usd": 6.737674000000001,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 231,
+            "output_tokens": 51889,
+            "cache_read_tokens": 8349428,
+            "cache_creation_tokens": 126458,
+            "cost_usd": 6.737674000000001
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.487765,
+        "duration_seconds": 83.38064868065219,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": "high",
+          "cost_usd": 1.487765,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1374925,
+            "output_tokens": 10134,
+            "cache_read_tokens": 1264640,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 6894
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1374925,
+              "output_tokens": 10134,
+              "cache_read_tokens": 1264640,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 6894,
+              "cost_usd": 1.487765,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 1374925,
+            "output_tokens": 10134,
+            "cache_read_tokens": 1264640,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.487765
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "google-gemini-3.5-flash-api",
+        "cost_usd": 1.070781,
+        "duration_seconds": 83.38064868065219,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 1.070781,
+          "cost_provenance": "estimated_unconfirmed",
+          "configured_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gemini-3.5-flash",
+            "transport": "api",
+            "identity": "google/gemini-3.5-flash/api",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 638476,
+            "output_tokens": 2535,
+            "cache_read_tokens": 457615,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 10028
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gemini-3.5-flash",
+                "transport": "api",
+                "identity": "google/gemini-3.5-flash/api",
+                "resolution": "canonical"
+              },
+              "input_tokens": 638476,
+              "output_tokens": 2535,
+              "cache_read_tokens": 457615,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 10028,
+              "cost_usd": 1.070781,
+              "cost_provenance": "estimated_unconfirmed"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gemini-3.5-flash",
+            "input_tokens": 638476,
+            "output_tokens": 2535,
+            "cache_read_tokens": 457615,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.070781
+          }
+        ],
+        "model_used": "gemini-3.5-flash",
+        "transport_used": "api"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-claude-haiku-4-5-cli",
+        "cost_usd": 0.144125,
+        "duration_seconds": 83.38064868065219,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-claude-haiku-4-5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.144125,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "claude-haiku-4-5",
+            "transport": "cli",
+            "identity": "anthropic/claude-haiku-4-5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "claude-haiku-4-5",
+            "transport": "cli",
+            "identity": "anthropic/claude-haiku-4-5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 9,
+            "output_tokens": 7459,
+            "cache_read_tokens": 18990,
+            "cache_creation_tokens": 52461,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 9,
+              "output_tokens": 7459,
+              "cache_read_tokens": 18990,
+              "cache_creation_tokens": 52461,
+              "thinking_tokens": 0,
+              "cost_usd": 0.144125,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5",
+            "input_tokens": 9,
+            "output_tokens": 7459,
+            "cache_read_tokens": 18990,
+            "cache_creation_tokens": 52461,
+            "cost_usd": 0.144125
+          }
+        ],
+        "model_used": "claude-haiku-4-5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-claude-haiku-4-5-cli",
+        "cost_usd": 0.040963099999999995,
+        "duration_seconds": null,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-claude-haiku-4-5-cli",
+          "complexity": "large",
+          "complexity_score": 8,
+          "reasoning_effort": null,
+          "cost_usd": 0.040963099999999995,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "claude-haiku-4-5",
+            "transport": "cli",
+            "identity": "anthropic/claude-haiku-4-5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "claude-haiku-4-5",
+            "transport": "cli",
+            "identity": "anthropic/claude-haiku-4-5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 10,
+            "output_tokens": 5174,
+            "cache_read_tokens": 71451,
+            "cache_creation_tokens": 3969,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 10,
+              "output_tokens": 5174,
+              "cache_read_tokens": 71451,
+              "cache_creation_tokens": 3969,
+              "thinking_tokens": 0,
+              "cost_usd": 0.040963099999999995,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5",
+            "input_tokens": 10,
+            "output_tokens": 5174,
+            "cache_read_tokens": 71451,
+            "cache_creation_tokens": 3969,
+            "cost_usd": 0.040963099999999995
+          }
+        ],
+        "model_used": "claude-haiku-4-5",
+        "transport_used": "cli"
+      }
+    ],
+    "story_allocation": {
+      "allocation_usd": 172.12,
+      "basis": "substrate_band",
+      "complexity_score": 8,
+      "excluded_for_taint": 2,
+      "fallback_configured_usd": 50.0,
+      "max_usd": 137.6928,
+      "median_usd": 12.2115,
+      "p90_usd": 58.6114,
+      "reason": "derived from 57 admissible run(s) at complexity score 8 (max $137.69 x 1.25)",
+      "sample_count": 57,
+      "scaled_profiles": {
+        "preflight": 20.7373,
+        "plan": 2.0737,
+        "dev": 20.7373,
+        "review_pool[0]": 20.7373,
+        "review_pool[1]": 20.7373,
+        "review_pool[2]": 20.7373,
+        "plan_agent_review[0]": 20.7373,
+        "plan_agent_review[1]": 20.7373,
+        "plan_agent_review[2]": 20.7373,
+        "synthesis": 4.1475
+      },
+      "carried": true,
+      "observed_usd": 9.9551,
+      "status": "within_allocation",
+      "exceeded": false
+    },
+    "allocation_exhausted": null,
+    "reviewer_budget_overruns": []
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "Confirmed against src/theforge/exploration.py and assignment.py that winner selection ranks success rate lexicographically ahead of cost (_winner_sort_key), the winner pool spans tiers at/above the story's floor tier (floor_ids in _apply_dev_exploration), and an exhausted/zero sprint budget still routes the pre-selected empirical winner rather than the static-tier pick \u2014 all matching the spec's diagnosis exactly.",
+    "complexity": "large",
+    "complexity_score": 8,
+    "implementation_complexity_score": 8,
+    "validation_complexity_score": 1,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 8",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "algorithms"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.4738389000000001,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "dca9ac325f9a",
+    "cache_snapshot": {
+      "worktree_head": "b4590b33f459baaccfe2e321d867967574224317",
+      "evaluation_base_branch": "main",
+      "evaluation_base_branch_head": "b4590b33f459baaccfe2e321d867967574224317",
+      "story_content_hash": "d01d628217fcbb745d663c151bd10306be1124656f8ca07242b4c0199f5cc114"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "b4590b33f459baaccfe2e321d867967574224317",
+      "current_worktree_head": "b4590b33f459baaccfe2e321d867967574224317",
+      "cached_evaluation_base_branch": "main",
+      "current_evaluation_base_branch": "main",
+      "cached_evaluation_base_branch_head": "b4590b33f459baaccfe2e321d867967574224317",
+      "current_evaluation_base_branch_head": "b4590b33f459baaccfe2e321d867967574224317",
+      "cached_story_content_hash": "d01d628217fcbb745d663c151bd10306be1124656f8ca07242b4c0199f5cc114",
+      "current_story_content_hash": "d01d628217fcbb745d663c151bd10306be1124656f8ca07242b4c0199f5cc114",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "complexity_source": "preflight",
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.4738389000000001,
+        "duration_s": 69.93,
+        "success": true,
+        "exit_code": 0,
+        "completed": true,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": null,
+          "complexity_score": null,
+          "reasoning_effort": null,
+          "cost_usd": 0.4738389000000001,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6566,
+            "output_tokens": 5168,
+            "cache_read_tokens": 581243,
+            "cache_creation_tokens": 35916,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 6544,
+              "output_tokens": 16,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.0066240000000000005,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 22,
+              "output_tokens": 5152,
+              "cache_read_tokens": 581243,
+              "cache_creation_tokens": 35916,
+              "thinking_tokens": 0,
+              "cost_usd": 0.4672149000000001,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        }
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "large",
+      "complexity_score": 8,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "gpt-5.6-sol",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.6-sol/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "builtin",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          }
+        ],
+        "dev": {
+          "model": "opus",
+          "source": "builtin",
+          "canonical_id": "anthropic/opus/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "gemini-3.5-flash",
+            "source": "builtin",
+            "canonical_id": "google/gemini-3.5-flash/api"
+          },
+          {
+            "model": "claude-haiku-4-5",
+            "source": "builtin",
+            "canonical_id": "anthropic/claude-haiku-4-5/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.77 \u2265 threshold 0.60 over 138 admissible runs \u2014 pre-promotion held) (profile success_rate=0.77 @ HIGH); per-story routing cost target: unset",
+        "preflight": "tier cheap ($5.00)",
+        "planner": "complexity score 8 \u2192 tier strong ($5.00); per-story routing cost target: unset",
+        "plan_review": "3 reviewer(s), tier strong, providers ['openai', 'anthropic', 'google'], complexity score 8; per-story routing cost target: unset",
+        "code_review": "3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 45.0,
+        "final_total_usd": 45.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "opus",
+            "budget_usd": 5.0
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 5.0
+          },
+          "plan_reviewers": [
+            {
+              "model": "gpt-5.6-sol",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "opus",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 5.0
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "gemini-3.5-flash",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "claude-haiku-4-5",
+              "budget_usd": 5.0
+            }
+          ],
+          "total_usd": 45.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "large",
+        "complexity_score": 8,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gemini-3.1-pro-preview",
+          "gpt-5.6-terra",
+          "gpt-5.5",
+          "gpt-5.6-sol"
+        ],
+        "source": "complexity_adaptive"
+      },
+      "story_allocation": {
+        "allocation_usd": 172.12,
+        "basis": "substrate_band",
+        "complexity_score": 8,
+        "excluded_for_taint": 2,
+        "fallback_configured_usd": 50.0,
+        "max_usd": 137.6928,
+        "median_usd": 12.2115,
+        "p90_usd": 58.6114,
+        "reason": "derived from 57 admissible run(s) at complexity score 8 (max $137.69 x 1.25)",
+        "sample_count": 57,
+        "scaled_profiles": {
+          "preflight": 20.7373,
+          "plan": 2.0737,
+          "dev": 20.7373,
+          "review_pool[0]": 20.7373,
+          "review_pool[1]": 20.7373,
+          "review_pool[2]": 20.7373,
+          "plan_agent_review[0]": 20.7373,
+          "plan_agent_review[1]": 20.7373,
+          "plan_agent_review[2]": 20.7373,
+          "synthesis": 4.1475
+        },
+        "carried": true
+      },
+      "complexity_source": "preflight",
+      "preflight_degraded": {
+        "degraded": false,
+        "degraded_reason": null,
+        "failure_action": null,
+        "risk_signals": [],
+        "complexity_source": "preflight"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [],
+      "items_dropped": []
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2392/iter_1.yaml",
+      "handoff": {
+        "summary": "Reworked adaptive dev routing so exploitation selects on total cost to trusted completion under an explicit reliability floor. exploration.py now ranks qualified candidates by avg_cost_usd/success_rate (COMPLETION_COST_FORMULA) instead of success-rate-first-with-cost-as-tiebreak, gates eligibility on a configurable reliability_floor, excludes unmeasured-cost candidates from cost ranking while naming them in the audit, and returns a WinnerSelection evidence object. model_profiles.get_dev_complexity_stats now reports cost_measured_runs so an unmeasured band is distinguishable from a genuinely free one. assignment._apply_dev_exploration scopes the exploitation pool to the declared tier plus immediate neighbours and requires the declared-tier pick to carry admissible measured evidence before a neighbouring tier may displace it, so with no comparison the static tier routing stands for budget 1 and 0 alike. Challenger draws are least-sampled-first (challenger_rotation) so every eligible alternative races within pool-1 cadence hits. The exploration block gained an evidence payload recording selected model, declared/selected tier, floor, observed reliability, sample size, cost status, completion-cost estimate and formula, and which of static_fallback / cost_qualified_exploitation / bounded_exploration produced the pick. Config knobs reliability_floor (0.7) and challenger_rotation (least_sampled) added to ExplorationConfig with load-boundary validation and docs.",
+        "commits": [
+          {
+            "sha": "c3e8849c",
+            "message": "fix(exploration): select dev models on cost to trusted completion under a reliability floor"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "Adaptive dev routing selects on evidence reflecting total cost of carrying a story to trusted completion, subject to an explicit reliability floor, rather than a single role-level success rate with price as a tie-break.",
+            "status": "MET",
+            "notes": "_winner_sort_key now ranks on ModelAggregate.completion_cost() = avg_cost_usd / success_rate; reliability is a hard admission gate (reliability_floor, default 0.7) plus a secondary tie-break. The substrate stores no retry-inclusive cost field, so completion cost is a derived estimate and the formula travels with the number in the audit payload."
+          },
+          {
+            "criterion": "A candidate that reaches trusted completion more cheaply at acceptable reliability displaces a more expensive incumbent once it has admissible evidence.",
+            "status": "MET",
+            "notes": "test_select_winner_prefers_cheaper_completion_over_higher_success (unit) and test_mid_band_keeps_cheaper_measured_incumbent_over_pricier_strong (seam)."
+          },
+          {
+            "criterion": "A candidate below the reliability floor is excluded no matter how cheap it is.",
+            "status": "MET",
+            "notes": "select_winner_evidence gate 2; test_reliability_floor_excludes_cheap_unreliable_candidate and test_no_winner_when_nothing_clears_the_reliability_floor. The excluded candidate stays in the challenger pool, so the degradation is graceful in both directions."
+          },
+          {
+            "criterion": "Eligible alternatives have a feasible path to admissible evidence under default settings: the rate at which a specific alternative accumulates comparison-grade runs is bounded below, not just above.",
+            "status": "PARTIAL",
+            "notes": "Bounded below WITHIN a routing key: least-sampled-first rotation guarantees each eligible alternative a race within pool-1 cadence hits (test_challenger_rotation_gives_every_alternative_a_race_within_pool_size). NOT bounded below ACROSS routing keys \u2014 per_sprint_cap is still enforced globally first-come in coordinator/exploration_budget.py, so with the default cap of 1 another key can consume the sprint's only slot. See deferred_items."
+          },
+          {
+            "criterion": "Where no admissible evidence exists for a slot, selection falls back to the declared tier for the story's band, not to the incumbent of a neighbouring band.",
+            "status": "MET",
+            "notes": "Exploitation pool narrowed from 'every tier at or above the band' to declared tier plus immediate neighbours, and cross-tier displacement additionally requires the declared-tier pick to carry admissible measured evidence to be compared against. test_mid_band_routes_declared_tier_when_incumbent_has_no_evidence covers budget 0 and 1. See story_deviations for the interpretation this rests on."
+          },
+          {
+            "criterion": "A candidate whose cost is unknown is surfaced as unmeasured and explored under the same bounds as any other candidate, rather than silently ranked as the most expensive possible model.",
+            "status": "MET",
+            "notes": "cost_measured_runs threaded from model_profiles into ModelAggregate.cost_measured; unmeasured candidates are excluded from cost ranking, listed in WinnerSelection.unmeasured_cost and the audit evidence, and remain in the challenger pool. Covered by test_unmeasured_cost_is_surfaced_not_ranked_as_most_expensive and test_unmeasured_incumbent_is_labeled_and_keeps_the_declared_tier."
+          },
+          {
+            "criterion": "The per-story audit can show, for the selected model, the completion-cost evidence and floor check that selected it.",
+            "status": "MET",
+            "notes": "_dev_selection_evidence emits selected_model, declared_tier, selected_tier, selection kind, reliability_floor, observed_reliability, sample_size, cost_status, estimated_completion_cost_usd, completion_cost_formula, winner_selection_reason, below_reliability_floor, unmeasured_cost, completion_costs_usd, cross_tier_promotion_blocked. test_routing_audit_records_the_evidence_that_selected_the_dev_model."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": [
+          "Spec ambiguity resolved by interpretation: the Expected section says fallback goes to the declared tier 'where no admissible evidence exists for a slot', but in the reported failure evidence DOES exist for the slot \u2014 all of it belonging to the strong-tier incumbent, which is precisely why it self-perpetuates. A literal reading would leave the substitution intact. I implemented the stricter rule that cross-tier displacement requires a comparison: the declared-tier pick must itself carry admissible measured evidence. It need not clear the reliability floor, so an unreliable declared-tier incumbent can still be displaced.",
+          "Plan step 1 named assignment.py and model_profiles.py as the home for the new config knobs; the real owners are config/types.py (ExplorationConfig) and config/models.py (_parse_exploration), as the plan reviewer flagged. Knobs were added there and only consumed in assignment.py.",
+          "Updated tests asserting the old contract: test_exploration.py::test_select_winner_prefers_higher_success_then_cost was replaced by cost-objective coverage, and two test_model_profiles.py dict-equality assertions gained cost_measured_runs. No unrelated tests were modified."
+        ],
+        "deferred_items": [
+          "Cross-routing-key exploration fairness. per_sprint_cap is enforced globally and first-come in coordinator/exploration_budget.py and coordinator/preflight.py, so per-key rotation cannot stop a different key from consuming the sprint's sole default slot. A real lower bound across keys needs a persistent debt/allocation ledger at project level with its own concurrency story \u2014 a separate mechanism, not a variant of this change. The plan did not scope it (the plan reviewer raised it as advisory). Practically, the cost-ranked exploitation path narrows the impact: a cheaper candidate with existing evidence now wins immediately without needing any challenger race at all.",
+          "17 pre-existing test failures in test_cut_rc_isolation.py, test_sprint_lock.py and test_sprint_reexec_collision.py are sandbox-environmental (mktemp: Operation not permitted; process-supervision under a nested gate) and unrelated to this diff \u2014 same set before and after the change. 8253 tests pass.",
+          "Housekeeping for the operator: a git stash/pop mishap during verification popped an unrelated pre-existing stash from branch feat/issue-2234, conflicting src/theforge/sprint/runner.py. I restored that file from HEAD; the foreign stash entry is intact and still sitting at stash@{0}. Nothing was lost and nothing of it is in this commit."
+        ]
+      }
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "c3e8849c094105fb40f3d3054b56f041b262ec08",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "c3e8849c094105fb40f3d3054b56f041b262ec08",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-claude-haiku-4-5-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "google-gemini-3.5-flash-api",
+        "anthropic-claude-haiku-4-5-cli"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "google-gemini-3.5-flash-api": "google/gemini-3.5-flash/api",
+        "anthropic-claude-haiku-4-5-cli": "anthropic/claude-haiku-4-5/cli"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 1,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "google-gemini-3.5-flash-api": "succeeded",
+        "anthropic-claude-haiku-4-5-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] The change satisfies the routing objective, fallback, audit, and evidence-path requirements; targeted tests and ruff passed. | [google-gemini-3.5-flash-api] Approved: Reworked winner-mode exploitation to select on cost to trusted completion under a reliability floor, with structured selection audit trails and least-sampled challenger rotation. | [anthropic-claude-haiku-4-5-cli] Comprehensive fix for winner-mode exploitation override; correctly implements cost-to-completion ranking under reliability floor with proper evidence instrumentation and bounded challenger rotation. All acceptance criteria verified within their specified scope (within-key fairness is bounded; across-key allocation was advisory and deferred). 8253 tests pass; 17 pre-existing unrelated sandbox failures documented.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Adaptive dev routing selects on evidence reflecting total cost of carrying a story to trusted completion, subject to an explicit reliability floor, rather than a single role-level success rate with price as a tie-break.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/exploration.py:170-191 derives completion cost as avg_cost_usd divided by success_rate, and src/theforge/exploration.py:381-410 admits only sampled, reliable, measured candidates before sorting by that cost; tests/test_exploration.py:279-302 covers the cheaper acceptable-reliability candidate beating the higher-success expensive candidate.; Calculated in ModelAggregate.completion_cost() (src/theforge/exploration.py:174-192) and ranked in _winner_sort_key (src/theforge/exploration.py:314-334), with a hard reliability floor gate in select_winner_evidence (src/theforge/exploration.py:384). Tested in tests/test_exploration.py (test_completion_cost_divides_attempt_cost_by_success_rate, test_reliability_floor_excludes_cheap_unreliable_candidate).; src/theforge/exploration.py:265\u2013284 (_winner_sort_key ranks by completion_cost() first, with reliability as secondary tie-break). src/theforge/exploration.py:327\u2013353 (select_winner_evidence gates on reliability_floor and returns only candidates meeting all three gates). test_exploration.py:276\u2013291 (test_completion_cost_divides_attempt_cost_by_success_rate verifies formula; test_select_winner_prefers_cheaper_completion_over_higher_success confirms cost-first ranking displaces higher-success incumbent)."
+        },
+        {
+          "criterion": "A candidate that reaches trusted completion more cheaply at acceptable reliability displaces a more expensive incumbent once it has admissible evidence.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:3191-3218 selects the cost-qualified winner and permits cross-tier displacement only after comparable incumbent evidence exists; tests/test_exploration_routing_seam.py:385-394 verifies the mid-tier measured candidate remains selected over the pricier strong incumbent, and tests/test_exploration_routing_seam.py:368-382 verifies a cheaper measured strong candidate can displace an expensive mid pick.; Implemented in _winner_sort_key (src/theforge/exploration.py:329-334) sorting by completion cost. Unit test tests/test_exploration.py::test_select_winner_prefers_cheaper_completion_over_higher_success and seam test tests/test_exploration_routing_seam.py::test_mid_band_keeps_cheaper_measured_incumbent_over_pricier_strong cover this.; src/theforge/exploration.py:327\u2013353 (select_winner_evidence cost-first gate). test_exploration.py:294\u2013317 (test_select_winner_prefers_cheaper_completion_over_higher_success). test_exploration_routing_seam.py:347\u2013356 (test_mid_band_keeps_cheaper_measured_incumbent_over_pricier_strong: cheaper mid_pick at 1.00 completion wins over strong_champ at 5.00)."
+        },
+        {
+          "criterion": "A candidate below the reliability floor is excluded no matter how cheap it is.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/exploration.py:384-390 filters admissible candidates through meets_reliability before cost ranking; tests/test_exploration.py:306-327 verifies a cheap flaky candidate is excluded while the reliable candidate wins, and tests/test_exploration.py:330-336 verifies no winner is declared when nothing clears the floor.; Filtered in select_winner_evidence (src/theforge/exploration.py:384) using meets_reliability(). Covered by tests/test_exploration.py::test_reliability_floor_excludes_cheap_unreliable_candidate and test_no_winner_when_nothing_clears_the_reliability_floor.; src/theforge/exploration.py:329\u2013335 (gate 2 filters admissible by meets_reliability). src/theforge/exploration.py:160\u2013162 (meets_reliability enforces success_rate >= reliability_floor). test_exploration.py:320\u2013341 (test_reliability_floor_excludes_cheap_unreliable_candidate and test_no_winner_when_nothing_clears_the_reliability_floor)."
+        },
+        {
+          "criterion": "Eligible alternatives have a feasible path to admissible evidence under default settings: the rate at which a specific alternative can accumulate comparison-grade runs is bounded below, not just above.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/exploration.py:438-475 implements default least-sampled challenger rotation, and src/theforge/assignment.py:3130 plus src/theforge/assignment.py:3219-3232 pass the configured default into runtime exploration decisions; tests/test_exploration.py:410-427 verifies every non-winner in a key receives a race within pool-minus-one cadence hits, and tests/test_exploration.py:446-470 verifies decide_exploration routes the least-sampled candidate.; Bounded from below within key via least_sampled in choose_challenger() (src/theforge/exploration.py:455-481). Tested in tests/test_exploration.py::test_challenger_rotation_draws_the_least_sampled_alternative and test_challenger_rotation_gives_every_alternative_a_race_within_pool_size."
+        },
+        {
+          "criterion": "Where no admissible evidence exists for a slot, selection falls back to the declared tier for the story's band, not to the incumbent of a neighbouring band.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:3191-3218 blocks neighbouring-tier displacement when the declared-tier incumbent lacks comparable measured evidence, and src/theforge/assignment.py:3237-3263 keeps the incumbent static-tier pick when no qualified winner is selected; tests/test_exploration_routing_seam.py:349-365 verifies mid-band routing stays on the mid pick for both open and exhausted budgets when only the strong incumbent has history.; Pools restricted in src/theforge/assignment.py:3176-3195. Cross-tier comparisons verified at src/theforge/assignment.py:3196-3218, and tested in tests/test_exploration_routing_seam.py::test_mid_band_routes_declared_tier_when_incumbent_has_no_evidence.; src/theforge/assignment.py:3173\u20133212 (exploitation pool narrowed to declared tier \u00b1 1; cross-tier displacement requires incumbent_comparable check). src/theforge/assignment.py:3187\u20133202 (if empirical_winner != incumbent.name and cross-tier and not incumbent_comparable, clear winner and set cross_tier_blocked=True). test_exploration_routing_seam.py:324\u2013345 (test_mid_band_routes_declared_tier_when_incumbent_has_no_evidence: mid_pick stays selected despite strong_champ in exploit pool)."
+        },
+        {
+          "criterion": "A candidate whose cost is unknown is surfaced as unmeasured and explored under the same bounds as any other candidate, rather than silently ranked as the most expensive possible model.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/model_profiles.py:2396-2405 reports cost_measured_runs, src/theforge/exploration.py:161-191 treats unmeasured cost as no completion-cost evidence, and src/theforge/exploration.py:391-410 records unmeasured candidates outside the ranked set; tests/test_exploration.py:339-358 verifies unmeasured cost is surfaced without winning the cost ranking, and tests/test_exploration_routing_seam.py:410-421 verifies the routing audit labels the unmeasured incumbent.; Tracked with cost_measured_runs from model profiles (src/theforge/model_profiles.py:2400), aggregated in cost_measured (src/theforge/exploration.py:159), and excluded in select_winner_evidence (src/theforge/exploration.py:391). Tested by tests/test_exploration.py::test_unmeasured_cost_is_surfaced_not_ranked_as_most_expensive and tests/test_exploration_routing_seam.py::test_unmeasured_incumbent_is_labeled_and_keeps_the_declared_tier.; src/theforge/model_profiles.py:2400\u20132406 (get_dev_complexity_stats reports cost_measured_runs). src/theforge/exploration.py:153\u2013155 (cost_measured property checks cost_measured_runs > 0). src/theforge/exploration.py:335\u2013342 (select_winner_evidence gate 3 filters on completion_cost() != None, lists unmeasured in WinnerSelection.unmeasured_cost). test_exploration.py:359\u2013377 (test_unmeasured_cost_is_surfaced_not_ranked_as_most_expensive). test_exploration_routing_seam.py:357\u2013365 (test_unmeasured_incumbent_is_labeled_and_keeps_the_declared_tier)."
+        },
+        {
+          "criterion": "The per-story audit can show, for the selected model, the completion-cost evidence and floor check that selected it.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/assignment.py:3050-3097 builds the selected-model evidence payload with tier, reliability, sample, cost status, formula, completion cost, and exclusion lists, and src/theforge/assignment.py:3249-3260 attaches it to the exploration block consumed by the routing decision; tests/test_exploration_routing_seam.py:397-407 verifies the audit fields for the selected dev model.; Implemented in _dev_selection_evidence (src/theforge/assignment.py:3048-3100) returning a detailed dictionary of metrics. Tested in tests/test_exploration_routing_seam.py::test_routing_audit_records_the_evidence_that_selected_the_dev_model.; src/theforge/assignment.py:3041\u20133097 (_dev_selection_evidence builds evidence dict with selected_model, declared_tier, selected_tier, selection, reliability_floor, observed_reliability, sample_size, cost_status, estimated_completion_cost_usd, completion_cost_formula, winner_selection_reason, below_reliability_floor, unmeasured_cost, completion_costs_usd, cross_tier_promotion_blocked). src/theforge/exploration.py:523\u2013527 (ExplorationOutcome.to_block serializes evidence dict). src/theforge/assignment.py:3225\u20133232 (evidence threaded into block). test_exploration_routing_seam.py:348\u2013356 (test_routing_audit_records_the_evidence_that_selected_the_dev_model verifies all fields present in audit)."
+        },
+        {
+          "criterion": "Eligible alternatives have a feasible path to admissible evidence under default settings: the rate at which a specific alternative accumulates comparison-grade runs is bounded below, not just above.",
+          "status": "VERIFIED",
+          "evidence": "Within a routing key, the criterion is satisfied: src/theforge/exploration.py:465\u2013480 (choose_challenger least_sampled_first draws from candidates with fewest runs for the key); test_exploration.py:432\u2013449 (test_challenger_rotation_gives_every_alternative_a_race_within_pool_size confirms each non-winner races within pool-1 cadence hits). The spec concern (incumbent's historical volume making displacement impossible) is prevented at this level. Across-key per_sprint_cap interaction flagged as advisory by plan reviewer and explicitly deferred to persistent allocation ledger mechanism (deferred_items); this second-order fairness issue does not prevent alternatives from racing within their own key."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "anthropic-claude-haiku-4-5-cli",
+      "provider": null,
+      "model": "claude-haiku-4-5",
+      "cli": "claude",
+      "canonical_id": "anthropic/claude-haiku-4-5/cli",
+      "resolved_model": "anthropic/claude-haiku-4-5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "google-gemini-3.5-flash-api",
+      "provider": "google",
+      "model": "gemini-3.5-flash",
+      "cli": null,
+      "canonical_id": "google/gemini-3.5-flash/api",
+      "resolved_model": "google/gemini-3.5-flash/api",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "anthropic-claude-haiku-4-5-cli",
+      "provider": null,
+      "model": "claude-haiku-4-5",
+      "cli": "claude",
+      "canonical_id": "anthropic/claude-haiku-4-5/cli",
+      "resolved_model": "anthropic/claude-haiku-4-5/cli",
+      "completed_parseable_verdict": false,
+      "outcome": "parse_failure",
+      "failure_reason": "returned output but no parseable verdict",
+      "cycle": 1
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [openai-gpt-5.6-sol-cli] Step 1 assigns exploration configuration defaults and schema loading to src/theforge/assignment.py and src/theforge/model_profiles.py, but the real configuration contract is the frozen ExplorationConfig in src/theforge/config/types.py:86 and _parse_exploration in src/theforge/config/models.py:587. Without modifying those owners, the proposed reliability and rotation knobs cannot be loaded into assignment_config.exploration.\n  Suggestion: Add src/theforge/config/types.py and src/theforge/config/models.py to Step 1, including validation and tests in tests/test_exploration_config.py; retain assignment.py only for consuming the parsed values.\n- [P1-impl] [openai-gpt-5.6-sol-cli] Step 2 proposes deriving trusted-completion cost from existing history, but exploration.py:217-228 reads avg_cost_usd from dev-only complexity statistics. model_profiles_bridge.py:367-382 records overall run success but supplies only state.total_dev_cost_measured, while review and other phase costs are separate in CoordinatorState. Therefore the listed data flow cannot rank by total cost including review cycles as required.\n  Suggestion: Plan an upstream evidence change through src/theforge/coordinator/model_profiles_bridge.py and src/theforge/model_profiles.py that records an explicitly defined measured trusted-completion cost attributable to the routed dev candidate, preserves unknown-cost status, and exposes it through the aggregate reader used by exploration.py.\n- [P1-impl] [openai-gpt-5.6-sol-cli] Step 4 changes only exploration.py, but per_sprint_cap is enforced globally and first-come across all routing keys in coordinator/preflight.py:1403-1459 and coordinator/exploration_budget.py:57-112. Deterministic or least-sampled rotation within one key cannot stop another key from consuming the sole default sprint slot first on every sprint, so a specific candidate can still receive zero opportunities.\n  Suggestion: Extend the plan to the coordinator budget/reservation path with a persistent fairness or debt mechanism, per-key allocation, or another concrete policy that provides a lower bound across routing keys while retaining the sprint-wide upper bound.\n- [P1-impl] [openai-gpt-5.6-sol-cli] Step 6 omits the existing behavioral seam tests in tests/test_exploration_routing_seam.py, including test_empirical_winner_routed_over_static_incumbent_in_winner_mode, which asserts the contract being changed. It also omits profile-bridge coverage for the new completion-cost evidence.\n  Suggestion: Include tests/test_exploration_routing_seam.py, tests/test_exploration_config.py, and focused model_profiles_bridge/profile aggregation tests in the test scope.\n- [P1-impl] [anthropic-opus-cli] Step 1 lists src/theforge/assignment.py and src/theforge/model_profiles.py as the sites for exploration config defaults/validation, but the ExplorationConfig dataclass and its defaults live in src/theforge/config/types.py:97-113 (explore_every_n=5, min_sample_size=3, per_sprint_cap=1) and the parsing/validation in src/theforge/config/models.py:600-631. model_profiles.py contains zero references to exploration config (it is the run-history/cost source: get_dev_signal, get_dev_complexity_stats, _fold_cost).\n  Suggestion: Add the new reliability-floor and challenger-rotation knobs to ExplorationConfig in config/types.py and to the _parse_positive_int block in config/models.py, keep assignment.py to threading them via getattr(exploration_cfg, ...) at assignment.py:3081-3127, and treat model_profiles.py only as the evidence source for cost/iteration/reliability fields.\n- [P2] [anthropic-opus-cli] Step 6 lists only tests/test_exploration.py and tests/test_assignment.py, but existing tests assert the behavior being changed and will break: tests/test_exploration.py:220 test_select_winner_prefers_higher_success_then_cost, plus tests/test_exploration_config.py, tests/test_exploration_routing_seam.py, tests/test_exploration_budget.py, tests/test_assignment_price_tiebreak.py.\n  Suggestion: Update those existing suites in the same change so the new objective and config schema are reflected rather than left as failures.\n- [P2] [anthropic-opus-cli] Step 2 says to rank by 'expected cost to trusted completion, using existing admissible run history fields' but the profiles store only avg_cost_usd, avg_iterations, success_rate \u2014 there is no retry/review-cycle-inclusive cost field anywhere in src/theforge.\n  Suggestion: State explicitly that completion cost is a derived estimate from the available fields (e.g. avg_cost_usd scaled by iterations and/or reliability) and record the formula in the audit payload from Step 5 so the estimate is auditable.\n- [P2] [google-gemini-3.5-flash-api] Step 1 mentions adding configuration parameters in assignment.py and model_profiles.py but omits the actual schema classes. Expected: Configuration-schema and validation models should be modified in their dedicated modules to maintain consistency (evidence at src/theforge/config/types.py:87 and src/theforge/config/models.py:587). Suggestion: Add the reliability floor and bounded challenger controls into ExplorationConfig in types.py and parse them in _parse_exploration in models.py.\n- [P2] [google-gemini-3.5-flash-api] Step 2 specifies ranking qualified measured candidates by expected cost to trusted completion but does not name the specific formula. Expected: The calculation for expected cost to trusted completion should be clearly formulated to ensure consistent implementation (evidence at src/theforge/exploration.py:241). Suggestion: Express the expected cost to trusted completion mathematically as avg_cost_usd divided by success_rate.",
+    "cost_usd": 0,
+    "plan_finding_registry": [],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against\n  finding[4]: UNMATCHED \u2014 no prior findings to match against\n  finding[5]: UNMATCHED \u2014 no prior findings to match against\n  finding[6]: UNMATCHED \u2014 no prior findings to match against\n  finding[7]: UNMATCHED \u2014 no prior findings to match against\n  finding[8]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2404",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2392",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2404",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2404",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_review": {
+    "source": "merged_cycle_review",
+    "verdict": "APPROVE"
+  },
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-12T06:36:41.226759+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/assignment.py",
+      "detail": "src/theforge/assignment.py has 3991 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/check_config.py",
+      "detail": "src/theforge/cli/check_config.py has 838 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/explain.py",
+      "detail": "src/theforge/cli/explain.py has 663 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint.py",
+      "detail": "src/theforge/cli/sprint.py has 1472 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/sprint_digest.py",
+      "detail": "src/theforge/cli/sprint_digest.py has 654 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/cli/status.py",
+      "detail": "src/theforge/cli/status.py has 1230 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/load.py",
+      "detail": "src/theforge/config/load.py has 1819 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/model_catalog.py",
+      "detail": "src/theforge/config/model_catalog.py has 867 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/models.py",
+      "detail": "src/theforge/config/models.py has 833 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/profiles.py",
+      "detail": "src/theforge/config/profiles.py has 660 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/config/types.py",
+      "detail": "src/theforge/config/types.py has 1338 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/conventions.py",
+      "detail": "src/theforge/conventions.py has 681 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit.py",
+      "detail": "src/theforge/coordinator/audit.py has 1240 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/audit_substrate.py",
+      "detail": "src/theforge/coordinator/audit_substrate.py has 3281 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/completion.py",
+      "detail": "src/theforge/coordinator/completion.py has 1682 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/dev_phase.py",
+      "detail": "src/theforge/coordinator/dev_phase.py has 1836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/diagnose_flow.py",
+      "detail": "src/theforge/coordinator/diagnose_flow.py has 1514 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/engine.py",
+      "detail": "src/theforge/coordinator/engine.py has 2084 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/plan_flow.py",
+      "detail": "src/theforge/coordinator/plan_flow.py has 2080 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight.py",
+      "detail": "src/theforge/coordinator/preflight.py has 1819 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/preflight_flow.py",
+      "detail": "src/theforge/coordinator/preflight_flow.py has 1320 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/resume_persistence.py",
+      "detail": "src/theforge/coordinator/resume_persistence.py has 1051 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_phase.py",
+      "detail": "src/theforge/coordinator/review_phase.py has 2430 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/review_pool.py",
+      "detail": "src/theforge/coordinator/review_pool.py has 1265 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/run_setup.py",
+      "detail": "src/theforge/coordinator/run_setup.py has 654 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/state.py",
+      "detail": "src/theforge/coordinator/state.py has 1322 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/story_budget.py",
+      "detail": "src/theforge/coordinator/story_budget.py has 1542 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/util.py",
+      "detail": "src/theforge/coordinator/util.py has 723 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/validate_phase.py",
+      "detail": "src/theforge/coordinator/validate_phase.py has 1305 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/coordinator/workspace.py",
+      "detail": "src/theforge/coordinator/workspace.py has 1377 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/exploration.py",
+      "detail": "src/theforge/exploration.py has 733 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/ideate.py",
+      "detail": "src/theforge/ideate.py has 836 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/groom_flow.py",
+      "detail": "src/theforge/intake/groom_flow.py has 657 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/intake/remediation.py",
+      "detail": "src/theforge/intake/remediation.py has 745 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "src/theforge/model_profiles.py has 3494 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/process_group.py",
+      "detail": "src/theforge/process_group.py has 1430 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/review.py",
+      "detail": "src/theforge/review.py has 1065 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/api.py",
+      "detail": "src/theforge/runners/api.py has 1196 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "src/theforge/runners/cli.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_claude.py",
+      "detail": "src/theforge/runners/runner_claude.py has 1134 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/runner_codex.py",
+      "detail": "src/theforge/runners/runner_codex.py has 885 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/runners/schema_utils.py",
+      "detail": "src/theforge/runners/schema_utils.py has 618 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/schemas.py",
+      "detail": "src/theforge/schemas.py has 665 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/shape_check/heuristics.py",
+      "detail": "src/theforge/shape_check/heuristics.py has 1130 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/audit.py",
+      "detail": "src/theforge/sprint/audit.py has 1962 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/batch_report.py",
+      "detail": "src/theforge/sprint/batch_report.py has 877 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/dag.py",
+      "detail": "src/theforge/sprint/dag.py has 960 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/rca.py",
+      "detail": "src/theforge/sprint/rca.py has 2621 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/runner.py",
+      "detail": "src/theforge/sprint/runner.py has 7777 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/sources.py",
+      "detail": "src/theforge/sprint/sources.py has 655 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/status_reader.py",
+      "detail": "src/theforge/sprint/status_reader.py has 1447 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/sprint/story_state.py",
+      "detail": "src/theforge/sprint/story_state.py has 619 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/dev_prompts.py",
+      "detail": "src/theforge/task/dev_prompts.py has 613 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_module_lines",
+      "file": "src/theforge/task/plan_prompts.py",
+      "detail": "src/theforge/task/plan_prompts.py has 696 lines (limit 600)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_assignment.py",
+      "detail": "tests/test_assignment.py has 1645 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_audit_substrate.py",
+      "detail": "tests/test_audit_substrate.py has 1472 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_check_config.py",
+      "detail": "tests/test_check_config.py has 1263 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_setup.py",
+      "detail": "tests/test_cli_setup.py has 1273 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_sprint_status.py",
+      "detail": "tests/test_cli_sprint_status.py has 1527 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cli_status_watch.py",
+      "detail": "tests/test_cli_status_watch.py has 1087 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_load.py",
+      "detail": "tests/test_config_load.py has 1346 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_config_models.py",
+      "detail": "tests/test_config_models.py has 1012 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_dev_phase_routing.py",
+      "detail": "tests/test_coord_dev_phase_routing.py has 1081 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_gate_exec.py",
+      "detail": "tests/test_coord_gate_exec.py has 1009 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_merge_pr.py",
+      "detail": "tests/test_coord_merge_pr.py has 2067 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_model_profiles_seam.py",
+      "detail": "tests/test_coord_model_profiles_seam.py has 1600 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_plan_flow_agent.py",
+      "detail": "tests/test_coord_plan_flow_agent.py has 2790 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_preflight_verdict.py",
+      "detail": "tests/test_coord_preflight_verdict.py has 1175 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_phase_pool.py",
+      "detail": "tests/test_coord_review_phase_pool.py has 1021 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_review_pool.py",
+      "detail": "tests/test_coord_review_pool.py has 1398 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_state.py",
+      "detail": "tests/test_coord_state.py has 1164 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace.py",
+      "detail": "tests/test_coord_workspace.py has 1230 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coord_workspace_stale.py",
+      "detail": "tests/test_coord_workspace_stale.py has 1111 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_coordinator.py",
+      "detail": "tests/test_coordinator.py has 1417 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_cut_rc_isolation.py",
+      "detail": "tests/test_cut_rc_isolation.py has 1775 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_diagnose_flow.py",
+      "detail": "tests/test_diagnose_flow.py has 1566 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_generate_audit_log.py",
+      "detail": "tests/test_generate_audit_log.py has 1116 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_profiles.py",
+      "detail": "tests/test_model_profiles.py has 1259 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_degraded_disclosure.py",
+      "detail": "tests/test_preflight_degraded_disclosure.py has 1040 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_preflight_work_type.py",
+      "detail": "tests/test_preflight_work_type.py has 1146 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_process_teardown_lifecycle.py",
+      "detail": "tests/test_process_teardown_lifecycle.py has 1599 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_review.py",
+      "detail": "tests/test_review.py has 1106 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_claude.py",
+      "detail": "tests/test_runner_claude.py has 1310 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_runner_stuck_detection.py",
+      "detail": "tests/test_runner_stuck_detection.py has 1098 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_shape_check.py",
+      "detail": "tests/test_shape_check.py has 1242 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_parallel.py",
+      "detail": "tests/test_sprint_parallel.py has 3667 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_rca.py",
+      "detail": "tests/test_sprint_rca.py has 2576 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_reexec_reconcile.py",
+      "detail": "tests/test_sprint_reexec_reconcile.py has 1124 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_resume.py",
+      "detail": "tests/test_sprint_resume.py has 1901 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_run_id_rollover.py",
+      "detail": "tests/test_sprint_run_id_rollover.py has 1292 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_sprint_runner.py",
+      "detail": "tests/test_sprint_runner.py has 1636 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_budget_allocation.py",
+      "detail": "tests/test_story_budget_allocation.py has 1743 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_budget_seam.py",
+      "detail": "tests/test_story_budget_seam.py has 1857 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_story_sources.py",
+      "detail": "tests/test_story_sources.py has 1337 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_unmeasured_cost_reporting.py",
+      "detail": "tests/test_unmeasured_cost_reporting.py has 2033 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_validate_phase.py",
+      "detail": "tests/test_validate_phase.py has 1717 lines (limit 1000)",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/types.py",
+      "detail": "Circular import detected: theforge.config.types \u2192 theforge.config.models \u2192 theforge.config.types",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/config/defaults.py",
+      "detail": "Circular import detected: theforge.config.defaults \u2192 theforge.config.types \u2192 theforge.config.defaults",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/review.py",
+      "detail": "Circular import detected: theforge.review \u2192 theforge.plan_finding_classifier \u2192 theforge.review",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/model_profiles.py",
+      "detail": "Circular import detected: theforge.model_profiles \u2192 theforge.reviewer_value \u2192 theforge.model_profiles",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/__init__.py",
+      "detail": "Circular import detected: theforge.runners \u2192 theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/api.py",
+      "detail": "Circular import detected: theforge.runners.api \u2192 theforge.runners.adapters.google \u2192 theforge.runners.cli \u2192 theforge.runners.api",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_codex \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/runners/cli.py",
+      "detail": "Circular import detected: theforge.runners.cli \u2192 theforge.runners.runner_gemini \u2192 theforge.runners.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/task/__init__.py",
+      "detail": "Circular import detected: theforge.task \u2192 theforge.task.dev_prompts \u2192 theforge.coordinator.state \u2192 theforge.task",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/sprint/manifest.py",
+      "detail": "Circular import detected: theforge.sprint.manifest \u2192 theforge.sprint.sources \u2192 theforge.sprint.manifest",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/coordinator/notify.py",
+      "detail": "Circular import detected: theforge.coordinator.notify \u2192 theforge.notify_backends \u2192 theforge.coordinator.notify",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "no_circular_imports",
+      "file": "src/theforge/cli/__init__.py",
+      "detail": "Circular import detected: theforge.cli \u2192 theforge.cli.main \u2192 theforge.cli.status \u2192 theforge.cli",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/agent_types.py",
+      "detail": "No test mirror found for src/theforge/agent_types.py (expected tests/test_agent_types.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/artifacts.py",
+      "detail": "No test mirror found for src/theforge/artifacts.py (expected tests/test_artifacts.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_launchd.py",
+      "detail": "No test mirror found for src/theforge/daemon_launchd.py (expected tests/test_daemon_launchd.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/daemon_state.py",
+      "detail": "No test mirror found for src/theforge/daemon_state.py (expected tests/test_daemon_state.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/ideate.py",
+      "detail": "No test mirror found for src/theforge/ideate.py (expected tests/test_ideate.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/log_level.py",
+      "detail": "No test mirror found for src/theforge/log_level.py (expected tests/test_log_level.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/review_finding_classifier.py",
+      "detail": "No test mirror found for src/theforge/review_finding_classifier.py (expected tests/test_review_finding_classifier.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/root_file_conventions.py",
+      "detail": "No test mirror found for src/theforge/root_file_conventions.py (expected tests/test_root_file_conventions.py)",
+      "blocking": false
+    },
+    {
+      "rule": "test_mirrors_source",
+      "file": "src/theforge/runners",
+      "detail": "No test mirror found for package src/theforge/runners (expected tests/test_runners_*.py or tests/test_runners/)",
+      "blocking": false
+    },
+    {
+      "rule": "no_scratch_files",
+      "file": "GEMINI.md",
+      "detail": "GEMINI.md is not an allowed root-level file \u2014 source files must live in appropriate project directories, not the repository root",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [],
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose. Extract when a responsibility separates from its neighbours \u2014 never to satisfy a line count. Putting a change in an already-large module is correct if that is where it belongs; a module carved at whatever line got the count down is worse than the large module it came from.",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 7,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 8,
+      "score_controlled": true,
+      "enabled": true,
+      "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+      "phases": {
+        "plan": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "plan",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            }
+          ],
+          "provider_support": "supported_metered",
+          "varies_by_provider": false
+        },
+        "dev": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "dev",
+          "applied": false,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "provider_unsupported",
+          "varies_by_provider": false
+        },
+        "review": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "review",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.6-sol-cli",
+              "model": "gpt-5.6-sol",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 24576
+            },
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "google-gemini-3.5-flash-api",
+              "model": "gemini-3.5-flash",
+              "transport": "google",
+              "knob": "budget",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "thinking_budget",
+              "value": 24576
+            },
+            {
+              "name": "anthropic-claude-haiku-4-5-cli",
+              "model": "claude-haiku-4-5",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "mixed",
+          "varies_by_provider": false
+        }
+      },
+      "applied": true
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 7,
+            "selected": true
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 6,
+            "completed": 5,
+            "raw": 0.8333,
+            "weighted": 0.8345,
+            "rate": 0.8345,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($5.00)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 27,
+            "completed": 27,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 1,
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 \u2192 tier strong ($5.00); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 8,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": 0.8333,
+              "weighted": 0.7665,
+              "runs": 138,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": 0.7665,
+              "resolved_population": {
+                "by_resolved_model": {
+                  "anthropic/opus/cli": 15
+                },
+                "distinct": 1,
+                "mixed": false,
+                "attributed": 15,
+                "unattributed": 123
+              }
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "algorithms"
+              ],
+              "raw": 0.8505,
+              "weighted": 0.75,
+              "runs": 107,
+              "tainted_runs": 0,
+              "floor": "pass",
+              "recency": "windowed",
+              "rate": 0.75,
+              "by_domain": {
+                "backend": {
+                  "runs": 105,
+                  "raw": 0.8571,
+                  "weighted": 0.8,
+                  "tainted_runs": 0,
+                  "resolved_population": {
+                    "by_resolved_model": {
+                      "anthropic/opus/cli": 19
+                    },
+                    "distinct": 1,
+                    "mixed": false,
+                    "attributed": 19,
+                    "unattributed": 86
+                  }
+                },
+                "algorithms": {
+                  "runs": 2,
+                  "raw": 0.5,
+                  "weighted": 0.5,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                }
+              },
+              "resolved_population": {
+                "by_resolved_model": {
+                  "anthropic/opus/cli": 19
+                },
+                "distinct": 1,
+                "mixed": false,
+                "attributed": 19,
+                "unattributed": 88
+              }
+            },
+            "cost_tiebreak": {
+              "value": Infinity,
+              "source": "seed",
+              "seed": Infinity,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null,
+              "resolved_population": {}
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "algorithms"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "algorithms": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                }
+              },
+              "resolved_population": {}
+            },
+            "cost_tiebreak": {
+              "value": 30.0,
+              "source": "seed",
+              "seed": 30.0,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none",
+          "signals": {
+            "success_rate": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "weighting": {
+                "mode": "exponential",
+                "half_life_runs": 50.0,
+                "window": 200
+              },
+              "rate": null,
+              "resolved_population": {}
+            },
+            "domain": {
+              "domains": [
+                "backend",
+                "algorithms"
+              ],
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "tainted_runs": 0,
+              "floor": "fail",
+              "recency": "windowed",
+              "rate": null,
+              "by_domain": {
+                "backend": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                },
+                "algorithms": {
+                  "runs": 0,
+                  "raw": null,
+                  "weighted": null,
+                  "tainted_runs": 0,
+                  "resolved_population": {}
+                }
+              },
+              "resolved_population": {}
+            },
+            "cost_tiebreak": {
+              "value": 30.0,
+              "source": "seed",
+              "seed": 30.0,
+              "reason": "no_matching_cohort",
+              "observations": 0,
+              "cohort": {
+                "role": "DEV",
+                "complexity": "HIGH",
+                "reasoning_effort": "high"
+              }
+            }
+          }
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "cost_tiebreak": {
+        "selected_model": "anthropic-opus-cli",
+        "value": Infinity,
+        "source": "seed",
+        "observations": 0,
+        "cohort": {
+          "role": "DEV",
+          "complexity": "HIGH",
+          "reasoning_effort": "high"
+        },
+        "reason": "no_matching_cohort"
+      },
+      "domain_match": {
+        "domains": [
+          "backend",
+          "algorithms"
+        ],
+        "influenced": false,
+        "complexity_only_head": "anthropic-opus-cli",
+        "domain_head": "anthropic-opus-cli",
+        "selected_model_slice": {
+          "domains": [
+            "backend",
+            "algorithms"
+          ],
+          "raw": 0.8505,
+          "weighted": 0.75,
+          "runs": 107,
+          "tainted_runs": 0,
+          "floor": "pass",
+          "recency": "windowed",
+          "rate": 0.75,
+          "by_domain": {
+            "backend": {
+              "runs": 105,
+              "raw": 0.8571,
+              "weighted": 0.8,
+              "tainted_runs": 0,
+              "resolved_population": {
+                "by_resolved_model": {
+                  "anthropic/opus/cli": 19
+                },
+                "distinct": 1,
+                "mixed": false,
+                "attributed": 19,
+                "unattributed": 86
+              }
+            },
+            "algorithms": {
+              "runs": 2,
+              "raw": 0.5,
+              "weighted": 0.5,
+              "tainted_runs": 0,
+              "resolved_population": {}
+            }
+          },
+          "resolved_population": {
+            "by_resolved_model": {
+              "anthropic/opus/cli": 19
+            },
+            "distinct": 1,
+            "mixed": false,
+            "attributed": 19,
+            "unattributed": 88
+          }
+        },
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "anthropic-opus-cli",
+        "complexity": "HIGH",
+        "raw_success_rate": 0.8333,
+        "weighted_success_rate": 0.7665,
+        "sample_size": 138,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "strong",
+        "to_tier": "strong"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.7665,
+          "threshold": 0.6,
+          "sample_size": 138,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:large:algorithms+backend",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "openai-gpt-5.6-sol-cli",
+          "openai-gpt-5.6-terra-cli",
+          "anthropic-claude-haiku-4-5-cli",
+          "google-gemini-3.5-flash-api",
+          "google-gemini-3.1-pro-preview-api"
+        ],
+        "selected": "anthropic-opus-cli",
+        "winner": "anthropic-opus-cli",
+        "reason": "not_cadence_run",
+        "domains": [
+          "algorithms",
+          "backend"
+        ]
+      },
+      "final": {
+        "model": "opus",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 8 (HIGH) \u2192 tier strong (recency recovery: weighted success_rate 0.77 \u2265 threshold 0.60 over 138 admissible runs \u2014 pre-promotion held) (profile success_rate=0.77 @ HIGH); per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 7,
+            "completed": 7,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 208,
+            "completed": 197,
+            "raw": 0.9471,
+            "weighted": 0.9618,
+            "rate": 0.9618,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 37,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 15,
+            "completed": 13,
+            "raw": 0.8667,
+            "weighted": 0.861,
+            "rate": 0.861,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-opus-cli": {
+              "clean_streak": 7,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 37,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "plan_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-cli": {
+            "runs": 5,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.95,
+              "weighted": 0.9507,
+              "rate": 0.9507,
+              "floor": "pass"
+            },
+            "latency_per_p1": {
+              "raw": 73.2768,
+              "weighted": 73.4824,
+              "rate": 73.4824,
+              "floor": "pass"
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "runs": 4,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.625,
+              "weighted": 0.625,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 53.5442,
+              "weighted": 53.5442,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 1,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 82.0533,
+              "weighted": 82.0533,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 4,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 69.6963,
+              "weighted": 69.6963,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-cli": {
+              "raw": 0.95,
+              "weighted": 0.9507,
+              "runs": 5,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-opus-cli": {
+              "raw": 0.625,
+              "weighted": 0.625,
+              "runs": 4,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 1,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": 0.875,
+              "weighted": 0.875,
+              "runs": 4,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.6-sol",
+          "opus",
+          "gemini-3.5-flash"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'anthropic', 'google'], complexity score 8; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 8,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "max",
+          "range": [
+            8,
+            10
+          ],
+          "output": "max",
+          "resolved_count": 3,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 3
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 238,
+            "completed": 235,
+            "raw": 0.9874,
+            "weighted": 0.9858,
+            "rate": 0.9858,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 60,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 208,
+            "completed": 197,
+            "raw": 0.9471,
+            "weighted": 0.9618,
+            "rate": 0.9618,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 37,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 15,
+            "completed": 13,
+            "raw": 0.8667,
+            "weighted": 0.861,
+            "rate": 0.861,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 60,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-sol-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 37,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "code_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "HIGH",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "runs": 26,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 0.9615,
+              "weighted": 0.9598,
+              "rate": 0.9598,
+              "floor": "pass"
+            },
+            "latency_per_p1": {
+              "raw": 124.6174,
+              "weighted": 124.3262,
+              "rate": 124.3262,
+              "floor": "pass"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "raw": 0.9615,
+              "weighted": 0.9598,
+              "runs": 26,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-sol-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "gemini-3.5-flash",
+          "claude-haiku-4-5"
+        ],
+        "rationale": "[preflight] 3 reviewer(s), tier strong, providers ['openai', 'google', 'anthropic'], complexity score 8 [value check: evaluated 1 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [],
+  "trust_status": "unchecked",
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.473839,
+      "duration_s": 69.93,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": {
+      "cost_usd": 0,
+      "duration_s": 259.47,
+      "iterations": 0,
+      "outcome": "approve"
+    },
+    "dev": {
+      "cost_usd": 6.737674,
+      "duration_s": 948.03,
+      "iterations": 1,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 146.14,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 2.743634,
+      "duration_s": 250.14,
+      "cycles": 1,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 1.487765,
+          "verdict": "APPROVE"
+        },
+        "google-gemini-3.5-flash-api": {
+          "cost": 1.070781,
+          "verdict": "APPROVE"
+        },
+        "anthropic-claude-haiku-4-5-cli": {
+          "cost": 0.185088,
+          "verdict": "APPROVE"
+        }
+      },
+      "per_reviewer_value": [
+        {
+          "cycle": 1,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 83.38,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "google-gemini-3.5-flash-api",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 83.38,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "anthropic-claude-haiku-4-5-cli",
+          "complexity": "large",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 83.38,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        }
+      ]
+    }
+  },
+  "totals": {
+    "cost_usd": 9.955147,
+    "duration_s": 1673.71,
+    "dev_attempts_total": 1,
+    "dev_iterations_productive": 1,
+    "review_cycles_total": 1,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 1,
+    "review_cycles": 1
+  },
+  "sprint_id": "a499f6c5d4d6",
+  "sprint_name": "issues-2392,2371,2372"
+}
