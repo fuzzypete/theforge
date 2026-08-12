@@ -1205,8 +1205,7 @@ def _run_query_mode(
             )
             if carry_budget_decision is not None:
                 print(
-                    "  cannot dispatch under the supplied ceiling: "
-                    f"{carry_budget_decision.detail}"
+                    f"  cannot dispatch under the supplied ceiling: {carry_budget_decision.detail}"
                 )
         for task, _src, _ref in resolved.stories:
             deps = ", ".join(task.depends_on) if task.depends_on else "-"
