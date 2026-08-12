@@ -189,6 +189,62 @@ class TestStaysSilentOnConvergence:
         assert _detect(cycles) is None
 
 
+class TestOnlyBlockingFamiliesCount:
+    """A family is only a reason to stop the story if it is why the story is
+    still running. A recurring P2 never blocked anything."""
+
+    def test_p2_only_family_does_not_fire_even_with_an_unrelated_p1_present(self):
+        # The `naming_convention` nit spans all three cycles at new locations —
+        # the topology-walk shape exactly — but it is P2. The P1s that are
+        # actually holding the story are unrelated and are NOT walking.
+        cycles = [
+            [
+                _finding("src/x.py", 1, "naming_convention: the helper name reads poorly", "P2"),
+                _finding("src/p.py", 1, "the retry_budget is never reset"),
+            ],
+            [
+                _finding("src/y.py", 2, "naming_convention: the fixture name reads poorly", "P2"),
+                _finding("src/q.py", 2, "logging omits the run identifier"),
+            ],
+            [
+                _finding("src/z.py", 3, "naming_convention: the constant name reads poorly", "P2"),
+                _finding("src/r.py", 3, "the merge lock is acquired twice"),
+            ],
+        ]
+        assert _detect(cycles) is None
+
+    def test_p2_family_running_alongside_a_real_p1_walk_does_not_mask_it(self):
+        """Filtering to blocking families happens BEFORE the one-family
+        uniqueness check, so P2 churn cannot hide a genuine P1 walk."""
+        cycles = [
+            [
+                _finding("src/x.py", 1, "naming_convention: the helper name reads poorly", "P2"),
+                _TOPOLOGY_WALK[0][0],
+            ],
+            [
+                _finding("src/y.py", 2, "naming_convention: the fixture name reads poorly", "P2"),
+                _TOPOLOGY_WALK[1][0],
+            ],
+            [
+                _finding("src/z.py", 3, "naming_convention: the constant name reads poorly", "P2"),
+                _TOPOLOGY_WALK[2][0],
+            ],
+        ]
+        signal = _detect(cycles)
+        assert signal is not None
+        assert signal["seed_anchor"] == "unpriced_dispatch"
+
+    def test_a_family_that_turns_p2_mid_window_does_not_fire(self):
+        """Every cycle's member must block. A concern downgraded to P2 is a
+        concern the loop is no longer running for."""
+        cycles = [
+            list(_TOPOLOGY_WALK[0]),
+            [dict(_TOPOLOGY_WALK[1][0], severity="P2")],
+            list(_TOPOLOGY_WALK[2]),
+        ]
+        assert _detect(cycles) is None
+
+
 class TestStaysSilentWhenUncertain:
     def test_file_path_only_overlap_is_not_a_shared_concern(self):
         """ "The same file keeps having problems" is not one invariant. Unrelated

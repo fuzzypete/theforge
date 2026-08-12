@@ -22,10 +22,15 @@ dispositions) and returns a plain evidence dict, or ``None``.
 
 It is deliberately conservative. The cost of a false negative is one more
 development cycle; the cost of a false positive is halting a change that was
-about to finish. Every ambiguity — sparse history, more than one surviving
+about to finish. Every ambiguity — sparse history, more than one blocking
 family, a finding whose family membership cannot be resolved back to a concrete
 location, a repeated location, a file-path-only anchor, an unresolved
 predecessor still on the registry — returns ``None``.
+
+Only families whose member is a **blocking (P1) finding in every cycle of the
+window** can produce a signal. A recurring P2 nit is not why the loop is still
+running, so stopping the story over one would halt work for churn that never
+blocked it.
 """
 
 from __future__ import annotations
@@ -171,40 +176,48 @@ def detect_topology_walk(
     if any(cyc not in by_cycle for cyc in span):
         return None
 
-    # The cycle that just ran must actually be blocking on something; a cycle
-    # with no P1 is not walking anything.
-    if not [f for f in by_cycle[trajectory_cycle] if _is_p1(f)]:
-        return None
-
     # A predecessor finding the classifier still calls `unresolved` is a change
     # that did NOT fix what it was shown — the convergence-residual shape.
     if _has_unresolved_predecessor(finding_registry, review_cycle):
         return None
 
+    # Candidate families: one concern present in every cycle of the window,
+    # whose member in every one of those cycles is a BLOCKING (P1) finding.
+    #
+    # The P1 requirement is what ties the pattern to the reason the loop is
+    # still running. A recurring P2 nit can span three cycles perfectly well
+    # while the P1s that are actually holding the story are unrelated and
+    # converging; escalating on it would stop the story over churn that never
+    # blocked anything. Filtering here rather than after the uniqueness check
+    # also means such a nit cannot mask a genuine P1 walk running alongside it.
     span_set = set(span)
-    candidates = [
-        fam
-        for fam in finding_trajectory
-        if isinstance(fam, dict) and span_set.issubset(set(fam.get("cycles") or []))
-    ]
+    candidates: list[tuple[dict, list[tuple[int, dict]]]] = []
+    for fam in finding_trajectory:
+        if not isinstance(fam, dict) or not span_set.issubset(set(fam.get("cycles") or [])):
+            continue
+        seed = str(fam.get("seed_anchor") or "").strip()
+        if not seed or _looks_like_path(seed):
+            continue
+        # Resolve each cycle's family member back to a concrete finding. An
+        # unresolvable member means the location is not knowable, which
+        # disqualifies the family rather than the whole detection.
+        members: list[tuple[int, dict]] = []
+        for cyc in span:
+            member = _family_member(fam, cyc, by_cycle[cyc])
+            if member is None or not _is_p1(member):
+                members = []
+                break
+            members.append((cyc, member))
+        if members:
+            candidates.append((fam, members))
+
     if len(candidates) != 1:
-        # Zero: no single concern spans the window — nothing to name.
+        # Zero: no single blocking concern spans the window — nothing to name.
         # More than one: several concerns are in flight at once, which is not
         # the single-invariant signature this detector is allowed to claim.
         return None
-    family = candidates[0]
-
-    seed_anchor = str(family.get("seed_anchor") or "").strip()
-    if not seed_anchor or _looks_like_path(seed_anchor):
-        return None
-
-    # Resolve each cycle's family member back to a concrete finding.
-    members: list[tuple[int, dict]] = []
-    for cyc in span:
-        member = _family_member(family, cyc, by_cycle[cyc])
-        if member is None:
-            return None
-        members.append((cyc, member))
+    family, members = candidates[0]
+    seed_anchor = str(family["seed_anchor"]).strip()
 
     # Every cycle in the window must sit at a DIFFERENT location: that is what
     # "a new sibling path each cycle" means, and it is the whole distinction

@@ -61,19 +61,25 @@ def _init_repo_with_dev_commit(path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=path, check=True)
 
 
+def _finding(file: str, line: int, description: str, severity: str = "P1") -> ReviewFinding:
+    return ReviewFinding(
+        severity=severity,
+        file=file,
+        line=line,
+        observed=description,
+        suggestion="Price it at dispatch.",
+    )
+
+
 def _review(file: str, line: int, description: str) -> ReviewResult:
+    return _review_of(_finding(file, line, description), summary=description)
+
+
+def _review_of(*findings: ReviewFinding, summary: str) -> ReviewResult:
     return ReviewResult(
         verdict="REQUEST_CHANGES",
-        summary=f"changes needed: {description}",
-        findings=[
-            ReviewFinding(
-                severity="P1",
-                file=file,
-                line=line,
-                observed=description,
-                suggestion="Price it at dispatch.",
-            )
-        ],
+        summary=f"changes needed: {summary}",
+        findings=list(findings),
         story_matches=True,
         story_mismatches=[],
         test_adequate=True,
@@ -313,3 +319,48 @@ class TestSmallCeilingDegradesToExistingBehaviour:
         # The signal is still computed and recorded — the operator gets the
         # evidence even when the ceiling, not the detector, was the trigger.
         assert state.review_topology_signal is not None
+
+
+class TestNonBlockingChurnDoesNotStopTheStory:
+    """A recurring P2 nit is not why the loop is still running, so it must not
+    reach the gate — even when the cycle also carries an unrelated blocking P1."""
+
+    def test_p2_only_walk_with_unrelated_p1s_never_reaches_the_gate(self, tmp_path):
+        _init_repo_with_dev_commit(tmp_path)
+        config = _config(tmp_path, max_review_cycles=5)
+        task = _make_task(tmp_path)
+        state = _fresh_state(tmp_path, config)
+
+        # The `naming_convention` nit walks a topology across all three cycles;
+        # the P1s that actually block are unrelated to each other.
+        rounds = [
+            (
+                _finding("src/x.py", 1, "naming_convention: the helper name reads poorly", "P2"),
+                _finding("src/p.py", 1, "the retry_budget is never reset"),
+            ),
+            (
+                _finding("src/y.py", 2, "naming_convention: the fixture name reads poorly", "P2"),
+                _finding("src/q.py", 2, "logging omits the run identifier"),
+            ),
+            (
+                _finding("src/z.py", 3, "naming_convention: the constant name reads poorly", "P2"),
+                _finding("src/r.py", 3, "the merge lock is acquired twice"),
+            ),
+        ]
+
+        with patch(
+            "theforge.coordinator.review_phase._run_escalate_gate",
+            return_value=CoordinatorResult(
+                success=False, phase=Phase.ESCALATE, state=state, message="escalated"
+            ),
+        ) as gate_mock:
+            for nit, blocker in rounds:
+                outcome, _result, config = _run_cycle(
+                    state, config, task, tmp_path, _review_of(nit, blocker, summary="mixed")
+                )
+
+        # The story keeps its remaining cycles: nothing blocking is walking.
+        assert gate_mock.call_count == 0
+        assert outcome is _ReviewOutcome.RETRY_DEV
+        assert state.review_topology_signal is None
+        assert state.review_topology_escalated is False
