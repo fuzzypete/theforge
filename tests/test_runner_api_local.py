@@ -571,6 +571,46 @@ class TestToolCallingFallback:
         assert result.success
         assert result is fallback_result
 
+    def test_bad_request_fallback_logs_provider_message(self, tmp_path):
+        """The provider's own error text (not just the fixed fallback string) is logged,
+        so the reason for the 400 is diagnosable from the run log without reproducing
+        the request against the provider by hand."""
+        import sys
+
+        profile = _make_local_profile(
+            base_url="http://localhost:11434/v1", allowed_tools=("read_file",)
+        )
+        review_json = self._valid_review_json()
+        fallback_result = MagicMock()
+        fallback_result.success = True
+        fallback_result.cost_usd = 0.0
+        fallback_result.output = review_json
+
+        mock_openai, mock_httpx, FakeBadRequestError = self._make_mock_openai_module()
+        provider_message = (
+            "Function tools with reasoning_effort are not supported for gpt-5.1 in "
+            "/v1/chat/completions. To use function tools, use /v1/responses or set "
+            "reasoning_effort to 'none'."
+        )
+        bad_request = FakeBadRequestError(
+            f"Error code: 400 - tool config invalid: {provider_message}"
+        )
+
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
+            patch.dict(
+                "theforge.runners.api.PROVIDER_RUNNERS",
+                {"openai": MagicMock(return_value=fallback_result)},
+            ),
+            patch("theforge.runners.api._log") as mock_log,
+        ):
+            MockManager.return_value.run.side_effect = bad_request
+            _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        logged = "\n".join(call.args[0] for call in mock_log.call_args_list)
+        assert provider_message in logged
+
     def test_bad_request_without_tool_keyword_reraises(self, tmp_path):
         """BadRequestError without 'tool' in message propagates (not a tool-call issue)."""
         import sys

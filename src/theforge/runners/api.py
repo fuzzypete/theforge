@@ -810,9 +810,15 @@ def _run_loop_openai(
         )
     except Exception as exc:
         if isinstance(exc, openai.BadRequestError) and "tool" in str(exc).lower():
+            # The provider's own error body names the offending parameter and
+            # the working alternative (e.g. "use /v1/responses or set
+            # reasoning_effort to 'none'"). Without it here, the fallback
+            # absorbs the rejection into an untraceable "tool-call 400" line
+            # and diagnosing the cause requires reproducing the request by
+            # hand against the live provider (#2379).
             _log(
                 f"  ⚠ {profile.name or profile.model} tool-call 400 — "
-                "falling back to single-shot text mode"
+                f"falling back to single-shot text mode: {exc}"
             )
             fallback_prompt = (
                 prompt
