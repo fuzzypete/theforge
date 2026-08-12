@@ -14,6 +14,7 @@ from theforge.config import ForgeConfig
 from theforge.review import ReviewResult
 from theforge.task import TaskStory
 
+from .changed_files import capture_changed_files
 from .gate import _parse_dirty_files
 from .github_integration import assign_pr_reviewers, post_findings_comment
 from .logging import StructuredLogger
@@ -1474,6 +1475,12 @@ def land_story(
         else:
             _log(f"Warning: could not inspect worktree before merge: {status_out}")
 
+        # Last moment the evidence exists: the merge below removes the worktree
+        # and deletes the branch, after which nothing can say what this run
+        # changed (#2347). Captured *after* the pre-merge cleanup commit so the
+        # files it just landed are inside the comparison.
+        capture_changed_files(state, config, workspace_path)
+
         merge_info = _merge_branch(
             config.project_root,
             config.workspace.base_branch,
@@ -1529,6 +1536,10 @@ def land_story(
                 },
                 "failed",
             )
+
+        # Same pre-cleanup seam as the local-merge path above: a merged PR takes
+        # the worktree and branch with it (#2347).
+        capture_changed_files(state, config, workspace_path)
 
         merge_info = _merge_pr(config, task, branch_name, parsed_review, state)
         if logger:

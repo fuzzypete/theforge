@@ -18,6 +18,7 @@ from .agent_failure import NO_JUDGMENT
 from .audit_render import build_agent_entries, build_reviews
 from .audit_substrate import CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION
 from .audit_substrate import MIGRATION_HELPERS
+from .changed_files import resolve_changed_files
 from .iteration_usage import dev_usage
 from .landing_record import build_landing_record
 from .preflight import complexity_source
@@ -1174,6 +1175,21 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # older records migrate to "unchecked" on read (audit_substrate v7→v8).
         "trust_checks": _build_trust_checks(state),
         "trust_status": derive_trust_status(_build_trust_checks(state)),
+        # ── Changed-file set (#2347) ──────────────────────────────────────
+        # What the run's spend was spent *on*. The cost block above says what a
+        # run cost; without this the join from cost to code does not exist, and
+        # reconstructing it afterwards from commit messages recovers ~10% of
+        # spend because a third of commits name more than one issue.
+        #
+        # Serialized from the snapshot captured at the pre-cleanup seam
+        # (``changed_files.capture_changed_files``), never recomputed here from
+        # a workspace landing may already have deleted. The fallback collection
+        # covers runs that terminated before landing and still have their
+        # worktree — escalated and failed runs, which are the runs most worth
+        # attributing. ``null`` when no comparison could be made at all; a
+        # captured comparison that found nothing records ``files: []``, and the
+        # two must never be conflated.
+        "changed_files": resolve_changed_files(state, config),
         **_build_phases_block(state, config),
     }
 

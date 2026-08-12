@@ -72,7 +72,14 @@ from .agent_identity import (
 # This is the DB-schema counter only: the new table is derived from the same
 # record fields readers already parse, so no per-record ``MIGRATION_HELPERS``
 # entry and no ``CURRENT_RECORD_SCHEMA_VERSION`` bump is implied.
-SUBSTRATE_SCHEMA_VERSION = 8
+#
+# Bumped to 9 by #2347: a run recorded what it cost and never what it changed,
+# so spend could not be attributed to code. ``audit_changed_files`` indexes the
+# record's new ``changed_files`` block one row per (run_id, path), which is what
+# makes "what did this module cost" a join instead of a scan that deserializes
+# every ``raw_json``. A version-8 substrate is re-derived on open so the table
+# covers already-indexed history wherever the record carries the block.
+SUBSTRATE_SCHEMA_VERSION = 9
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -86,7 +93,7 @@ SUBSTRATE_SCHEMA_VERSION = 8
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 27
+CURRENT_RECORD_SCHEMA_VERSION = 28
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -325,6 +332,17 @@ CREATE INDEX IF NOT EXISTS idx_inline_remediation_events_issue
     ON inline_remediation_events(issue_id);
 CREATE INDEX IF NOT EXISTS idx_inline_remediation_events_action
     ON inline_remediation_events(action);
+CREATE TABLE IF NOT EXISTS audit_changed_files (
+    run_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    base_ref TEXT,
+    head_ref TEXT,
+    insertions INTEGER,
+    deletions INTEGER,
+    binary INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (run_id, path)
+);
+CREATE INDEX IF NOT EXISTS idx_audit_changed_files_path ON audit_changed_files(path);
 """
 
 
@@ -388,6 +406,7 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
     if prior_version is not None and prior_version < SUBSTRATE_SCHEMA_VERSION:
         _reindex_dev_model_identity(conn)
         _reindex_invocation_identities(conn)
+        _reindex_changed_files(conn)
     conn.execute(
         "INSERT INTO meta(key, value) VALUES (?, ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -554,6 +573,138 @@ def _reindex_invocation_identities(conn: sqlite3.Connection) -> int:
         if _write_invocation_identities(conn, str(run_id), record):
             updated += 1
     return updated
+
+
+_CHANGED_FILE_COLUMNS: tuple[str, ...] = (
+    "run_id",
+    "path",
+    "base_ref",
+    "head_ref",
+    "insertions",
+    "deletions",
+    "binary",
+)
+
+
+def _changed_file_params(run_id: str, record: dict) -> list[tuple]:
+    """Project a record's ``changed_files`` block to its per-file rows (#2347).
+
+    ``changed_files`` is ``None`` on a run whose file set could not be captured
+    and on every record written before the block existed. Both contribute no
+    rows — an absent comparison must not be indexed as one that found nothing.
+    A captured comparison with an empty ``files`` list likewise writes no rows;
+    the empty-vs-absent distinction is preserved in ``raw_json``, which is the
+    canonical record, rather than by fabricating a sentinel row here.
+    """
+    block = record.get("changed_files")
+    if not isinstance(block, dict):
+        return []
+    files = block.get("files")
+    if not isinstance(files, list):
+        return []
+    base_ref = block.get("base_ref") if isinstance(block.get("base_ref"), str) else None
+    head_ref = block.get("head_ref") if isinstance(block.get("head_ref"), str) else None
+    params: list[tuple] = []
+    seen: set[str] = set()
+    for entry in files:
+        if not isinstance(entry, dict):
+            continue
+        path = entry.get("path")
+        if not isinstance(path, str) or not path or path in seen:
+            continue
+        seen.add(path)
+        insertions = entry.get("insertions")
+        deletions = entry.get("deletions")
+        params.append(
+            (
+                run_id,
+                path,
+                base_ref,
+                head_ref,
+                insertions if isinstance(insertions, int) else None,
+                deletions if isinstance(deletions, int) else None,
+                1 if entry.get("binary") else 0,
+            )
+        )
+    return params
+
+
+def _write_changed_files(conn: sqlite3.Connection, run_id: str, record: dict) -> int:
+    """Rewrite the changed-file rows for one run. Returns rows written."""
+    conn.execute("DELETE FROM audit_changed_files WHERE run_id = ?", (run_id,))
+    params = _changed_file_params(run_id, record)
+    if not params:
+        return 0
+    names = ", ".join(_CHANGED_FILE_COLUMNS)
+    placeholders = ", ".join(["?"] * len(_CHANGED_FILE_COLUMNS))
+    conn.executemany(
+        f"INSERT OR REPLACE INTO audit_changed_files({names}) VALUES ({placeholders})",
+        params,
+    )
+    return len(params)
+
+
+def _reindex_changed_files(conn: sqlite3.Connection) -> int:
+    """Derive ``audit_changed_files`` for every already-indexed run (#2347).
+
+    Same discipline as :func:`_reindex_invocation_identities`: ``raw_json`` is
+    the record, so the backfill reaches any row whose stored JSON already
+    carries a ``changed_files`` block — including records indexed before the
+    table existed. Returns the number of runs that produced rows.
+    """
+    try:
+        rows = conn.execute("SELECT run_id, raw_json FROM audit_records").fetchall()
+    except sqlite3.OperationalError:
+        return 0
+    updated = 0
+    for row in rows:
+        run_id = row[0] if not isinstance(row, sqlite3.Row) else row["run_id"]
+        raw = row[1] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            record = json.loads(raw)
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        if _write_changed_files(conn, str(run_id), record):
+            updated += 1
+    return updated
+
+
+def runs_touching_path(conn: sqlite3.Connection, path: str) -> list[dict]:
+    """Return the runs that changed ``path``, joined to their cost and outcome.
+
+    The query this table exists for. It answers "what did this file cost" by
+    index lookup on ``audit_changed_files.path`` joined to ``audit_records`` on
+    ``run_id`` — no ``raw_json`` is deserialized, which is the difference
+    between a query that is run and one that is not.
+    """
+    rows = conn.execute(
+        "SELECT c.run_id, c.insertions, c.deletions, c.binary, c.base_ref, c.head_ref, "
+        "r.slug, r.issue_id, r.total_cost_usd, r.complexity_score, r.outcome_success, "
+        "r.verdict, r.started_at "
+        "FROM audit_changed_files c JOIN audit_records r ON r.run_id = c.run_id "
+        "WHERE c.path = ? ORDER BY r.started_at",
+        (path,),
+    ).fetchall()
+    return [
+        {
+            "run_id": row[0],
+            "insertions": row[1],
+            "deletions": row[2],
+            "binary": bool(row[3]),
+            "base_ref": row[4],
+            "head_ref": row[5],
+            "slug": row[6],
+            "issue_id": row[7],
+            "total_cost_usd": row[8],
+            "complexity_score": row[9],
+            "outcome_success": row[10],
+            "verdict": row[11],
+            "started_at": row[12],
+        }
+        for row in rows
+    ]
 
 
 def _reindex_dev_model_identity(conn: sqlite3.Connection) -> int:
@@ -1569,6 +1720,24 @@ def _migrate_v26_to_v27(record: dict) -> dict:
     return {**record, "review_topology_signal": None}
 
 
+def _migrate_v27_to_v28(record: dict) -> dict:
+    """Backfill the absent changed-file set (issue #2347).
+
+    v28 records the file set the run changed against its base ref. A v27 record
+    predates the capture entirely, and the comparison is not recoverable after
+    the fact — the worktree and branch are gone, and commit-message attribution
+    recovers a small minority of runs. So the honest backfill is ``null``:
+    "no comparison was recorded", which is deliberately NOT the same claim as a
+    recorded comparison that found nothing (``{"files": []}``). Conflating the
+    two would make every pre-#2347 run look like a run that changed no files.
+    The stored record is never rewritten (ADR-0002 refusal-to-forget); this is
+    the reader-side lift applied on load.
+    """
+    if "changed_files" in record:
+        return record
+    return {**record, "changed_files": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1604,6 +1773,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     24: _migrate_v24_to_v25,
     25: _migrate_v25_to_v26,
     26: _migrate_v26_to_v27,
+    27: _migrate_v27_to_v28,
 }
 
 
@@ -1770,6 +1940,10 @@ def upsert_run_record(
     # same delete-then-insert discipline as reviews below so a re-upsert of the
     # same run replaces rather than accumulates.
     _write_invocation_identities(conn, run_id, record)
+    # Rewrite the per-file changed-set rows for this run_id (#2347), on the same
+    # delete-then-insert discipline: a re-upsert of the same run replaces its
+    # file rows rather than leaving a stale path indexed against it.
+    _write_changed_files(conn, run_id, record)
     # Rewrite reviews for this run_id.
     conn.execute("DELETE FROM reviews WHERE run_id = ?", (run_id,))
     review_rows = _extract_reviews(record)
