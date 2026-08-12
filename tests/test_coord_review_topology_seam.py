@@ -364,3 +364,47 @@ class TestNonBlockingChurnDoesNotStopTheStory:
         assert outcome is _ReviewOutcome.RETRY_DEV
         assert state.review_topology_signal is None
         assert state.review_topology_escalated is False
+
+
+class TestTwoBlockingConcernsInFlightDoNotEscalate:
+    """A window with a second blocking concern whose findings are not resolvable
+    is not the single-invariant shape a signal may be claimed for, so the story
+    keeps its remaining cycles."""
+
+    _DUP = "stale_manifest: the manifest is not refreshed before dispatch"
+
+    def test_unresolvable_second_p1_family_keeps_the_story_running(self, tmp_path):
+        _init_repo_with_dev_commit(tmp_path)
+        config = _config(tmp_path, max_review_cycles=5)
+        task = _make_task(tmp_path)
+        state = _fresh_state(tmp_path, config)
+
+        # `unpriced_dispatch` walks cleanly; `stale_manifest` also spans the
+        # window but raises one description at two places in cycle 2, so which
+        # location its family record means is not knowable.
+        rounds = [
+            [_finding(*_WALK[0]), _finding("src/b.py", 1, self._DUP)],
+            [
+                _finding(*_WALK[1]),
+                _finding("src/d.py", 2, self._DUP),
+                _finding("src/e.py", 3, self._DUP),
+            ],
+            [_finding(*_WALK[2]), _finding("src/f.py", 4, self._DUP)],
+        ]
+
+        with patch(
+            "theforge.coordinator.review_phase._run_escalate_gate",
+            return_value=CoordinatorResult(
+                success=False, phase=Phase.ESCALATE, state=state, message="escalated"
+            ),
+        ) as gate_mock:
+            for findings in rounds:
+                outcome, _result, config = _run_cycle(
+                    state, config, task, tmp_path, _review_of(*findings, summary="two concerns")
+                )
+
+        assert gate_mock.call_count == 0
+        assert outcome is _ReviewOutcome.RETRY_DEV
+        assert state.review_topology_signal is None
+        assert state.review_topology_escalated is False
+        assert state.review_cycle == 3

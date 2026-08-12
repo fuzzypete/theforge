@@ -23,14 +23,16 @@ dispositions) and returns a plain evidence dict, or ``None``.
 It is deliberately conservative. The cost of a false negative is one more
 development cycle; the cost of a false positive is halting a change that was
 about to finish. Every ambiguity — sparse history, more than one blocking
-family, a finding whose family membership cannot be resolved back to a concrete
-location, a repeated location, a file-path-only anchor, an unresolved
+family, a window-spanning family whose findings cannot be resolved back to
+concrete locations, a repeated location, a file-path-only anchor, an unresolved
 predecessor still on the registry — returns ``None``.
 
 Only families whose member is a **blocking (P1) finding in every cycle of the
 window** can produce a signal. A recurring P2 nit is not why the loop is still
 running, so stopping the story over one would halt work for churn that never
-blocked it.
+blocked it. That exclusion applies only where non-blocking is *proven*: a
+spanning family that cannot be resolved might be a second blocking concern, so
+it suppresses the signal rather than being quietly dropped from the count.
 """
 
 from __future__ import annotations
@@ -79,17 +81,28 @@ def _looks_like_path(anchor: str) -> bool:
     return "/" in anchor or anchor.endswith((".py", ".md", ".yaml", ".yml", ".json", ".toml"))
 
 
-def _family_member(
+#: A family that spans the window but is provably non-blocking there — some
+#: cycle's candidates are all P2. It is not why the loop is still running, so it
+#: neither produces a signal nor stands in the way of one.
+_FAMILY_NON_BLOCKING = "non_blocking"
+#: Every cycle in the window resolves to exactly one blocking (P1) finding.
+_FAMILY_RESOLVED = "resolved"
+#: Spans the window and cannot be ruled non-blocking, but its concrete findings
+#: are not knowable. A second blocking concern may be in flight, so the window
+#: is not the single-invariant shape a signal may be claimed for.
+_FAMILY_AMBIGUOUS = "ambiguous"
+
+
+def _family_matches(
     family: dict,
     cycle: int,
     cycle_findings: Sequence[dict],
-) -> dict | None:
-    """Resolve the family's recorded description for ``cycle`` to a finding.
+) -> list[dict] | None:
+    """Findings in ``cycle`` matching the family's recorded description there.
 
-    Returns ``None`` when the family has no entry for that cycle, or when the
-    recorded description matches zero or more than one finding in the cycle's
-    snapshot — either way the concrete location is not knowable, and a detector
-    that guesses one would be reporting a location nobody raised.
+    Returns ``None`` when the family records no single description for that
+    cycle (a malformed or multiply-recorded entry), which is distinct from an
+    empty list — a well-formed record whose description matches nothing.
     """
     cycles = family.get("cycles") or []
     descriptions = family.get("descriptions") or []
@@ -99,14 +112,44 @@ def _family_member(
     if len(recorded) != 1:
         return None
     wanted = _norm(recorded[0])
-    matches = [
+    return [
         f
         for f in cycle_findings
         if _norm(str(f.get("description") or "")[:_DESC_PREFIX]) == wanted
     ]
-    if len(matches) != 1:
-        return None
-    return matches[0]
+
+
+def _classify_family(
+    family: dict,
+    span: Sequence[int],
+    by_cycle: dict[int, list[dict]],
+) -> tuple[str, list[tuple[int, dict]]]:
+    """Classify a window-spanning family and resolve its per-cycle members.
+
+    The three outcomes are deliberately distinct. Only ``_FAMILY_NON_BLOCKING``
+    may be silently dropped: it is *known* not to be a reason the loop is still
+    running. ``_FAMILY_AMBIGUOUS`` must not be dropped — a family whose members
+    cannot be resolved might be a second blocking concern, and discarding it
+    would let a window with two concerns in flight read as single-invariant.
+    """
+    members: list[tuple[int, dict]] = []
+    ambiguous = False
+    for cyc in span:
+        matches = _family_matches(family, cyc, by_cycle[cyc])
+        if matches and not any(_is_p1(m) for m in matches):
+            # Every candidate this cycle is non-blocking, so whatever this
+            # family is, it did not block the loop across the whole window.
+            return _FAMILY_NON_BLOCKING, []
+        if matches is None or len(matches) != 1 or not _is_p1(matches[0]):
+            # Unknowable: no recorded description, no match, or several matches
+            # of which at least one blocks. The location a signal would name is
+            # not derivable, and non-blocking has not been established either.
+            ambiguous = True
+            continue
+        members.append((cyc, matches[0]))
+    if ambiguous:
+        return _FAMILY_AMBIGUOUS, []
+    return _FAMILY_RESOLVED, members
 
 
 def _has_unresolved_predecessor(
@@ -190,6 +233,12 @@ def detect_topology_walk(
     # converging; escalating on it would stop the story over churn that never
     # blocked anything. Filtering here rather than after the uniqueness check
     # also means such a nit cannot mask a genuine P1 walk running alongside it.
+    #
+    # Only a family PROVEN non-blocking may be dropped this way. One that spans
+    # the window but whose findings cannot be resolved is a concern that might
+    # still be blocking, and dropping it would let a two-concern window pass the
+    # uniqueness check below as if it were single-invariant — so it abandons the
+    # detection outright.
     span_set = set(span)
     candidates: list[tuple[dict, list[tuple[int, dict]]]] = []
     for fam in finding_trajectory:
@@ -198,18 +247,12 @@ def detect_topology_walk(
         seed = str(fam.get("seed_anchor") or "").strip()
         if not seed or _looks_like_path(seed):
             continue
-        # Resolve each cycle's family member back to a concrete finding. An
-        # unresolvable member means the location is not knowable, which
-        # disqualifies the family rather than the whole detection.
-        members: list[tuple[int, dict]] = []
-        for cyc in span:
-            member = _family_member(fam, cyc, by_cycle[cyc])
-            if member is None or not _is_p1(member):
-                members = []
-                break
-            members.append((cyc, member))
-        if members:
-            candidates.append((fam, members))
+        status, members = _classify_family(fam, span, by_cycle)
+        if status == _FAMILY_NON_BLOCKING:
+            continue
+        if status == _FAMILY_AMBIGUOUS:
+            return None
+        candidates.append((fam, members))
 
     if len(candidates) != 1:
         # Zero: no single blocking concern spans the window — nothing to name.

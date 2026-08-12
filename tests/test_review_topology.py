@@ -309,3 +309,64 @@ class TestCounterSeparation:
         assert signal is not None
         assert signal["review_cycle"] == 3
         assert signal["trajectory_cycle"] == 3
+
+
+class TestUnresolvableBlockingFamilySuppresses:
+    """Dropping a family from the candidate set is a claim that it is not a
+    reason the loop is running. That claim can only be made when non-blocking is
+    *proven* — otherwise a second concern in flight would be silently discounted
+    and a two-concern window would read as single-invariant."""
+
+    # One description, raised at two places in the same cycle. The family's
+    # stored description therefore resolves to two concrete findings, so which
+    # location it means is not knowable.
+    _DUP = "stale_manifest: the manifest is not refreshed before dispatch"
+
+    def _window_with_unresolvable_p1_family(self):
+        return [
+            [_TOPOLOGY_WALK[0][0], _finding("src/b.py", 1, self._DUP)],
+            [
+                _TOPOLOGY_WALK[1][0],
+                _finding("src/d.py", 2, self._DUP),
+                _finding("src/e.py", 3, self._DUP),
+            ],
+            [_TOPOLOGY_WALK[2][0], _finding("src/f.py", 4, self._DUP)],
+        ]
+
+    def test_unresolvable_p1_family_suppresses_an_otherwise_valid_walk(self):
+        cycles = self._window_with_unresolvable_p1_family()
+        # Sanity: both families really do span the window, so this is the
+        # two-blocking-concerns case and not an accident of family formation.
+        _snapshots, store = _build(cycles)
+        spanning = {fam["seed_anchor"] for fam in store if {1, 2, 3}.issubset(set(fam["cycles"]))}
+        assert spanning == {"unpriced_dispatch", "stale_manifest"}
+
+        assert _detect(cycles) is None
+
+    def test_the_same_walk_fires_once_the_second_family_is_absent(self):
+        """Isolates the suppression to the unresolvable family: remove it and
+        the identical `unpriced_dispatch` walk is detected."""
+        cycles = [[row[0]] for row in self._window_with_unresolvable_p1_family()]
+        signal = _detect(cycles)
+        assert signal is not None
+        assert signal["seed_anchor"] == "unpriced_dispatch"
+
+    def test_a_spanning_family_whose_description_matches_nothing_suppresses(self):
+        """Zero matches is as unknowable as two: non-blocking was not established,
+        so the family cannot be discounted."""
+        cycles = self._window_with_unresolvable_p1_family()
+        _snapshots, store = _build(cycles)
+        # Rewrite the second family's cycle-2 description to something no
+        # finding carries, reproducing a stored record that resolves to nothing.
+        for fam in store:
+            if fam["seed_anchor"] == "stale_manifest":
+                fam["descriptions"][fam["cycles"].index(2)] = "a description nobody raised"
+        assert (
+            detect_topology_walk(
+                trajectory_cycle=3,
+                review_cycle_findings=[(i + 1, c) for i, c in enumerate(cycles)],
+                finding_trajectory=store,
+                review_cycle=3,
+            )
+            is None
+        )
