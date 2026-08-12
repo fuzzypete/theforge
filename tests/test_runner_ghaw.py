@@ -20,6 +20,7 @@ from theforge.config import ModelProfile
 from theforge.runners import runner_ghaw
 from theforge.runners.cli import run_agent
 from theforge.runners.runner_ghaw import (
+    _discover_run_id,
     _run_ghaw,
     build_argv,
     build_run_download_argv,
@@ -144,6 +145,25 @@ class TestGhawLifecycle:
 
 
 class TestGhawGuards:
+    def test_discover_run_id_skips_run_list_when_deadline_already_elapsed(
+        self, tmp_path: Path
+    ) -> None:
+        with (
+            patch("theforge.runners.runner_ghaw.time.monotonic", return_value=123.0),
+            patch("theforge.runners.runner_ghaw._gh") as mock_gh,
+        ):
+            run_id = _discover_run_id(
+                workflow="forge-dev-ghaw.lock.yml",
+                ref="main",
+                dispatch_id="abc123",
+                working_dir=tmp_path,
+                env={},
+                deadline=122.0,
+            )
+
+        assert run_id is None
+        mock_gh.assert_not_called()
+
     def test_oversized_prompt_refused_before_dispatch(self, tmp_path: Path) -> None:
         result = _run_ghaw(
             prompt="x" * 70_000,
