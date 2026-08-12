@@ -10,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
+from theforge.sprint.carry import load_sprint_carry_budget_snapshot
 from theforge.sprint.audit import (
     persist_accepted_unmeasured_spend,
     persist_accumulated_story_state,
@@ -20,7 +21,6 @@ from theforge.sprint.query import (
     _gh_api_paginate_issues,
     fetch_issues_for_label,
     fetch_issues_for_milestone,
-    load_sprint_carry_budget_snapshot,
 )
 
 
@@ -288,6 +288,20 @@ def _write_incomplete_prior_sprint_audit(
 
 
 class TestLoadSprintCarryBudgetSnapshot:
+    def test_programming_errors_in_prior_sprint_block_are_not_suppressed(
+        self, tmp_path: Path
+    ) -> None:
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
+
+        with patch("yaml.safe_load", side_effect=RuntimeError("boom")):
+            with pytest.raises(RuntimeError, match="boom"):
+                load_sprint_carry_budget_snapshot(
+                    project_root=tmp_path,
+                    sprint_name="Test Sprint",
+                    resume=True,
+                )
+
     def test_resume_uses_sprint_audit_when_progressive_state_is_absent(
         self, tmp_path: Path
     ) -> None:
@@ -298,7 +312,6 @@ class TestLoadSprintCarryBudgetSnapshot:
             snapshot = load_sprint_carry_budget_snapshot(
                 project_root=tmp_path,
                 sprint_name="Test Sprint",
-                selected_slugs=["issue-1"],
                 resume=True,
             )
 
@@ -316,7 +329,6 @@ class TestLoadSprintCarryBudgetSnapshot:
         snapshot = load_sprint_carry_budget_snapshot(
             project_root=tmp_path,
             sprint_name="Test Sprint",
-            selected_slugs=["issue-1"],
             resume=True,
         )
 
@@ -376,7 +388,6 @@ class TestLoadSprintCarryBudgetSnapshot:
         snapshot = load_sprint_carry_budget_snapshot(
             project_root=tmp_path,
             sprint_name="Test Sprint",
-            selected_slugs=["issue-1"],
             resume=True,
         )
 
@@ -421,7 +432,6 @@ class TestLoadSprintCarryBudgetSnapshot:
         snapshot = load_sprint_carry_budget_snapshot(
             project_root=tmp_path,
             sprint_name="Test Sprint",
-            selected_slugs=["issue-1"],
             resume=True,
         )
 
@@ -455,7 +465,6 @@ class TestLoadSprintCarryBudgetSnapshot:
         snapshot = load_sprint_carry_budget_snapshot(
             project_root=tmp_path,
             sprint_name="Test Sprint",
-            selected_slugs=["issue-1"],
             resume=False,
             reexec=False,
         )
@@ -487,7 +496,6 @@ class TestLoadSprintCarryBudgetSnapshot:
         snapshot = load_sprint_carry_budget_snapshot(
             project_root=tmp_path,
             sprint_name="Test Sprint",
-            selected_slugs=["issue-1"],
             resume=False,
             reexec=False,
         )

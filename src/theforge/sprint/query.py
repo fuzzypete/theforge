@@ -16,18 +16,12 @@ from typing import TYPE_CHECKING
 from urllib.parse import quote
 
 from ..log_util import _log_line
-from . import carry
 
 if TYPE_CHECKING:
     from ..task import TaskStory
     from .manifest import ResolvedSprint
 
 logger = logging.getLogger(__name__)
-
-# Backward-compatible query surface for tests/callers that imported the helper
-# from this module before it moved to sprint/carry.py.
-load_sprint_carry_budget_snapshot = carry.load_sprint_carry_budget_snapshot
-
 
 class MilestoneNotFoundError(RuntimeError):
     """Raised when a milestone title is absent from the repository."""

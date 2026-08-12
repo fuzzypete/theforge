@@ -5152,7 +5152,6 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         _carry_snapshot = load_sprint_carry_budget_snapshot(
             project_root=_ctx.config.project_root,
             sprint_name=_ctx.resolved.name,
-            selected_slugs=list(_ctx.slug_to_context.keys()),
             sprint_id=_ctx.sprint_id,
             resume=_ctx.resume,
             reexec=_ctx.reexec,

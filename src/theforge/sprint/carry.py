@@ -76,7 +76,7 @@ def _prior_sprint_block(project_root: Path, sprint_id: str | None) -> dict:
         if sprint_block.get("sprint_id") != sprint_id:
             return {}
         return sprint_block
-    except Exception:
+    except (OSError, yaml.YAMLError, AttributeError):
         return {}
 
 
@@ -164,7 +164,6 @@ def load_sprint_carry_budget_snapshot(
     *,
     project_root: Path,
     sprint_name: str,
-    selected_slugs: list[str],
     sprint_id: str | None = None,
     resume: bool = False,
     reexec: bool = False,
@@ -172,10 +171,6 @@ def load_sprint_carry_budget_snapshot(
     has_previous_run_marker: bool | None = None,
 ) -> SprintCarryBudgetSnapshot:
     """Return the carried budget state the next dispatch will inherit."""
-    # The enforcing ledger seeds prior cost from the whole logical sprint, not
-    # from just the stories selected for the next invocation, so disclosure must
-    # report the same carried total even when only a subset is about to run.
-    del selected_slugs
     resolved_sprint_id = sprint_id or _existing_sprint_id(sprint_name, project_root)
     carries_prior_spend = sprint_invocation_carries_prior_spend(resume=resume, reexec=reexec)
     if has_previous_run_marker is None:

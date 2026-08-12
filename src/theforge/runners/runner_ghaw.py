@@ -208,6 +208,8 @@ def _discover_run_id(
 ) -> str | None:
     """Poll `gh run list` until the run carrying our dispatch id appears."""
     discovery_deadline = min(deadline, time.monotonic() + _RUN_DISCOVERY_TIMEOUT_SECONDS)
+    if time.monotonic() >= discovery_deadline:
+        return None
     attempted = False
     while not attempted or time.monotonic() < discovery_deadline:
         attempted = True

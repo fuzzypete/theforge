@@ -1180,7 +1180,6 @@ def _run_query_mode(
             carry_snapshot = load_sprint_carry_budget_snapshot(
                 project_root=config.project_root,
                 sprint_name=sprint_name,
-                selected_slugs=[task.slug for task in tasks],
                 resume=resume,
                 reexec=reexec,
             )
