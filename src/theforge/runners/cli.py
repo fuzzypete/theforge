@@ -333,7 +333,8 @@ def _maybe_run_api_fallback(
     1. The legacy api_fallback profile (TransportFallbackConfig), if configured.
     2. Each entry in profile.fallback_models that resolves to an API model.
 
-    Only quota-exhaustion/capacity and model-not-found errors trigger fallback.
+    Only quota-exhaustion/capacity, model-not-found, and fail-closed API
+    capability mismatches trigger fallback.
     When a resumed CLI session hits one of those failures, the retry crosses
     transports and starts a fresh API request with the same prompt context.
     That preserves forward progress within the same dev iteration, but session

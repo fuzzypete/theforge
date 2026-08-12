@@ -1,4 +1,4 @@
-"""Tests for diagnostic logging, local endpoint detection, cost zeroing, and tool-calling fallback."""  # noqa: E501
+"""Tests for diagnostic logging, local endpoint detection, cost zeroing, and OpenAI tool compatibility."""  # noqa: E501
 
 from __future__ import annotations
 
@@ -31,6 +31,7 @@ def _make_profile(
     allowed_tools: tuple[str, ...] = (),
     timeout_seconds: int = 300,
     max_tool_output_bytes: int = 51200,
+    phase: str | None = None,
 ) -> ModelProfile:
     return ModelProfile(
         name=name,
@@ -41,6 +42,7 @@ def _make_profile(
         timeout_seconds=timeout_seconds,
         allowed_tools=allowed_tools,
         max_tool_output_bytes=max_tool_output_bytes,
+        phase=phase,
     )
 
 
@@ -514,20 +516,8 @@ class TestLocalEndpointCostZeroing:
         assert result.model_usage[0].cost_usd == 0.0
 
 
-class TestToolCallingFallback:
-    """When AgentLoopManager raises BadRequestError with 'tool' in the message,
-    _run_loop_openai falls back to single-shot via PROVIDER_RUNNERS["openai"]."""
-
-    def _valid_review_json(self) -> str:
-        return json.dumps(
-            {
-                "verdict": "APPROVE",
-                "summary": "ok",
-                "findings": [],
-                "story_compliance": {"matches_spec": True, "mismatches": []},
-                "test_coverage": {"adequate": True, "gaps": []},
-            }
-        )
+class TestOpenAIFunctionToolCompatibility:
+    """Tool-required OpenAI loop requests use a supported request shape or fail closed."""
 
     def _make_mock_openai_module(self):
         """Build a sys.modules-compatible mock openai with a real BadRequestError subclass."""
@@ -541,51 +531,104 @@ class TestToolCallingFallback:
         mock_httpx = MagicMock()
         return mock_openai, mock_httpx, FakeBadRequestError
 
-    def test_bad_request_with_tool_keyword_triggers_fallback(self, tmp_path):
-        """BadRequestError mentioning 'tool' triggers single-shot retry."""
+    def test_reasoning_models_send_reasoning_effort_none_with_tools(self, tmp_path):
         import sys
 
-        profile = _make_local_profile(
-            base_url="http://localhost:11434/v1", allowed_tools=("read_file",)
+        profile = _make_profile(model="gpt-5.6-sol", allowed_tools=("read_file",))
+        mock_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.01,
+            exit_code=0,
+            raw={},
+            profile_name=profile.name,
         )
-        review_json = self._valid_review_json()
-        fallback_result = MagicMock()
-        fallback_result.success = True
-        fallback_result.cost_usd = 0.0
-        fallback_result.output = review_json
-
-        mock_openai, mock_httpx, FakeBadRequestError = self._make_mock_openai_module()
-        bad_request = FakeBadRequestError("model does not support tools")
+        mock_openai, mock_httpx, _ = self._make_mock_openai_module()
 
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runners.api._make_openai_chat_adapter") as make_chat,
+            patch("theforge.runners.api._make_openai_chat_finalizer") as make_chat_finalizer,
             patch("theforge.runners.api.AgentLoopManager") as MockManager,
-            patch.dict(
-                "theforge.runners.api.PROVIDER_RUNNERS",
-                {"openai": MagicMock(return_value=fallback_result)},
-            ),
         ):
-            MockManager.return_value.run.side_effect = bad_request
+            make_chat.return_value = MagicMock()
+            make_chat_finalizer.return_value = MagicMock()
+            MockManager.return_value.run.return_value = mock_result
             result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
 
-        assert result.success
-        assert result is fallback_result
+        assert result is mock_result
+        make_chat.assert_called_once()
+        assert make_chat.call_args.kwargs["extra_kwargs"] == {"reasoning_effort": "none"}
 
-    def test_bad_request_fallback_logs_provider_message(self, tmp_path):
-        """The provider's own error text (not just the fixed fallback string) is logged,
-        so the reason for the 400 is diagnosable from the run log without reproducing
-        the request against the provider by hand."""
+    def test_unprobed_tool_models_do_not_send_reasoning_effort_override(self, tmp_path):
+        import sys
+
+        profile = _make_profile(model="gpt-5.4", allowed_tools=("read_file",))
+        mock_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.01,
+            exit_code=0,
+            raw={},
+            profile_name=profile.name,
+        )
+        mock_openai, mock_httpx, _ = self._make_mock_openai_module()
+
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runners.api._make_openai_chat_adapter") as make_chat,
+            patch("theforge.runners.api._make_openai_chat_finalizer") as make_chat_finalizer,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
+        ):
+            make_chat.return_value = MagicMock()
+            make_chat_finalizer.return_value = MagicMock()
+            MockManager.return_value.run.return_value = mock_result
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        assert result is mock_result
+        make_chat.assert_called_once()
+        assert make_chat.call_args.kwargs["extra_kwargs"] == {}
+
+    def test_tool_free_requests_do_not_send_reasoning_effort_override(self, tmp_path):
+        import sys
+
+        profile = _make_profile(model="gpt-5.6-sol", phase="preflight")
+        mock_result = AgentResult(
+            success=True,
+            output="{}",
+            session_id=None,
+            cost_usd=0.01,
+            exit_code=0,
+            raw={},
+            profile_name=profile.name,
+        )
+
+        mock_openai, mock_httpx, _ = self._make_mock_openai_module()
+
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runners.api._make_openai_chat_adapter") as make_chat,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
+        ):
+            make_chat.return_value = MagicMock()
+            MockManager.return_value.run.return_value = mock_result
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        assert result is mock_result
+        make_chat.assert_called_once()
+        assert make_chat.call_args.kwargs["extra_kwargs"] is None
+
+    def test_provider_tool_rejection_becomes_capability_mismatch(self, tmp_path):
+        """A provider 400 about tools fails the phase instead of degrading to text."""
         import sys
 
         profile = _make_local_profile(
-            base_url="http://localhost:11434/v1", allowed_tools=("read_file",)
+            model="gpt-5.6-sol",
+            base_url="https://api.openai.test/v1",
+            allowed_tools=("read_file",),
         )
-        review_json = self._valid_review_json()
-        fallback_result = MagicMock()
-        fallback_result.success = True
-        fallback_result.cost_usd = 0.0
-        fallback_result.output = review_json
-
         mock_openai, mock_httpx, FakeBadRequestError = self._make_mock_openai_module()
         provider_message = (
             "Function tools with reasoning_effort are not supported for gpt-5.1 in "
@@ -599,17 +642,37 @@ class TestToolCallingFallback:
         with (
             patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
             patch("theforge.runners.api.AgentLoopManager") as MockManager,
-            patch.dict(
-                "theforge.runners.api.PROVIDER_RUNNERS",
-                {"openai": MagicMock(return_value=fallback_result)},
-            ),
             patch("theforge.runners.api._log") as mock_log,
         ):
             MockManager.return_value.run.side_effect = bad_request
-            _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
 
         logged = "\n".join(call.args[0] for call in mock_log.call_args_list)
         assert provider_message in logged
+        assert not result.success
+        assert result.failure_code == "capability_mismatch"
+        assert "function-tools" in result.output
+        assert provider_message in result.output
+
+    def test_pre_dispatch_unsupported_tool_shape_fails_closed(self, tmp_path):
+        import sys
+
+        profile = _make_profile(model="gpt-5.6-sol", allowed_tools=("read_file",))
+        mock_openai, mock_httpx, _ = self._make_mock_openai_module()
+
+        with (
+            patch.dict(sys.modules, {"openai": mock_openai, "httpx": mock_httpx}),
+            patch("theforge.runners.api.openai_function_tool_request_shape") as tool_shape,
+            patch("theforge.runners.api.AgentLoopManager") as MockManager,
+        ):
+            tool_shape.return_value.transport = "unsupported"
+            tool_shape.return_value.chat_extra_kwargs.return_value = {}
+            result = _run_loop_openai("prompt", profile, tmp_path, secrets=None)
+
+        MockManager.return_value.run.assert_not_called()
+        assert not result.success
+        assert result.failure_code == "capability_mismatch"
+        assert "function-tools" in result.output
 
     def test_bad_request_without_tool_keyword_reraises(self, tmp_path):
         """BadRequestError without 'tool' in message propagates (not a tool-call issue)."""
