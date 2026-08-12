@@ -61,6 +61,7 @@ from theforge.runners.schema_utils import (
     _estimate_cost,
     cache_reads_are_subset_of_input,
     noop_finalizer,
+    openai_function_tool_request_shape,
     rate_card_confirmed,
     uses_openai_responses_api,
 )
@@ -95,8 +96,8 @@ def _redact_tool_call_arguments(arguments: dict) -> dict:
 
 
 # Patterns in result.output that indicate a model-preference fallback should fire.
-# Only usage-exhaustion and model-not-found errors trigger fallback; runtime errors
-# (bad code, schema violations) propagate immediately.
+# Usage-exhaustion, model-not-found, and fail-closed capability mismatches are
+# fallback-eligible; runtime errors (bad code, schema violations) are not.
 _MODEL_FALLBACK_PATTERNS = (
     "429",
     "rate limit",
@@ -116,6 +117,8 @@ _MODEL_FALLBACK_PATTERNS = (
     "model has been deprecated",
 )
 
+_MODEL_FALLBACK_FAILURE_CODES: frozenset[str] = frozenset({"capability_mismatch"})
+
 
 def _is_rate_limit_error(exc: Exception) -> bool:
     """Return True if *exc* is a provider 429 / quota-exhausted error."""
@@ -129,11 +132,14 @@ def _is_rate_limit_error(exc: Exception) -> bool:
 def _classify_api_model_fallback(result: AgentResult) -> str | None:
     """Return a reason string if *result* should trigger model-preference fallback.
 
-    Only quota-exhaustion and model-not-found errors trigger fallback.
-    Runtime errors (bad code, schema violations, timeouts) return None.
+    Quota-exhaustion, model-not-found, and fail-closed capability mismatches
+    trigger fallback. Runtime errors (bad code, schema violations, timeouts)
+    return None.
     """
     if result.success:
         return None
+    if result.failure_code in _MODEL_FALLBACK_FAILURE_CODES:
+        return f"matched failure_code {result.failure_code!r}"
     output_lower = result.output.lower()
     for pattern in _MODEL_FALLBACK_PATTERNS:
         if pattern in output_lower:
@@ -761,6 +767,36 @@ def _build_registry_tools(profile: "ModelProfile") -> list[ToolDef]:
     return result
 
 
+def _capability_mismatch_result(
+    profile: "ModelProfile", provider: str, reason: str
+) -> AgentResult:
+    """Return a fail-closed runner result for a missing required capability."""
+    usage = _UsageAccumulator().to_model_usage(profile.model, provider)
+    if _is_local_endpoint(profile.base_url):
+        usage = dataclasses.replace(usage, cost_usd=0.0)
+        cost = 0.0
+    else:
+        cost = usage.cost_usd
+    return AgentResult(
+        success=False,
+        output=reason,
+        session_id=None,
+        cost_usd=cost,
+        exit_code=1,
+        raw={},
+        profile_name=profile.name,
+        model_usage=(usage,),
+        failure_code="capability_mismatch",
+    )
+
+
+def _openai_function_tools_mismatch_text(model: str, detail: str) -> str:
+    return (
+        f"CAPABILITY_MISMATCH: OpenAI model {model!r} cannot satisfy required "
+        f"function-tools on the API transport. {detail}"
+    )
+
+
 # ── Loop-mode entry points ────────────────────────────────────────────
 
 
@@ -778,6 +814,7 @@ def _run_loop_openai(
     tools = _build_registry_tools(profile)
     is_responses = uses_openai_responses_api(profile.model)
     is_review = profile.phase not in _NO_SUBMIT_PHASES
+    chat_extra_kwargs: dict[str, Any] | None = None
 
     if is_responses:
         tool_schemas = [t.to_openai_responses_function() for t in tools] + (
@@ -791,7 +828,19 @@ def _run_loop_openai(
         tool_schemas = [t.to_openai_function() for t in tools] + (
             _build_submit_tools_openai(responses_api=False) if is_review else []
         )
-        adapter = _make_openai_chat_adapter(profile, secrets)
+        if tool_schemas and not _is_local_endpoint(profile.base_url):
+            tool_shape = openai_function_tool_request_shape(profile.model)
+            if tool_shape.transport == "unsupported":
+                return _capability_mismatch_result(
+                    profile,
+                    "openai",
+                    _openai_function_tools_mismatch_text(
+                        profile.model,
+                        "No supported tool-bearing request shape is configured for this model.",
+                    ),
+                )
+            chat_extra_kwargs = tool_shape.chat_extra_kwargs()
+        adapter = _make_openai_chat_adapter(profile, secrets, extra_kwargs=chat_extra_kwargs)
         finalizer = _make_openai_chat_finalizer(profile, secrets) if is_review else noop_finalizer
 
     manager = AgentLoopManager(
@@ -809,23 +858,13 @@ def _run_loop_openai(
             tool_schemas=tool_schemas,
         )
     except Exception as exc:
-        if isinstance(exc, openai.BadRequestError) and "tool" in str(exc).lower():
-            # The provider's own error body names the offending parameter and
-            # the working alternative (e.g. "use /v1/responses or set
-            # reasoning_effort to 'none'"). Without it here, the fallback
-            # absorbs the rejection into an untraceable "tool-call 400" line
-            # and diagnosing the cause requires reproducing the request by
-            # hand against the live provider (#2379).
-            _log(
-                f"  ⚠ {profile.name or profile.model} tool-call 400 — "
-                f"falling back to single-shot text mode: {exc}"
+        if tool_schemas and isinstance(exc, openai.BadRequestError) and "tool" in str(exc).lower():
+            message = _openai_function_tools_mismatch_text(
+                profile.model,
+                f"Provider response: {exc}",
             )
-            fallback_prompt = (
-                prompt
-                + "\n\n[SYSTEM] Respond with a JSON object matching the review output schema. "
-                "Do not use tool calls."
-            )
-            return PROVIDER_RUNNERS["openai"](fallback_prompt, profile, secrets)
+            _log(f"  ⚠ {profile.name or profile.model} capability mismatch: {message}")
+            return _capability_mismatch_result(profile, "openai", message)
         raise
 
     if _is_local_endpoint(profile.base_url):
@@ -1113,10 +1152,11 @@ def run_api_agent(
     JSON output that does not match the ideation prompt.
 
     If profile.fallback_models is non-empty, forge tries each model in
-    (profile.model, *profile.fallback_models) order. Only quota-exhaustion and
-    model-not-found errors trigger fallback; runtime errors propagate immediately.
-    The model actually used is recorded in AgentResult.model_usage[*].model and,
-    when a fallback fired, in AgentResult.model_config (the full preference list).
+    (profile.model, *profile.fallback_models) order. Quota-exhaustion,
+    model-not-found, and fail-closed capability mismatches trigger fallback;
+    runtime errors propagate immediately. The model actually used is recorded in
+    AgentResult.model_usage[*].model and, when a fallback fired, in
+    AgentResult.model_config (the full preference list).
     """
     if not profile.provider:
         return AgentResult(

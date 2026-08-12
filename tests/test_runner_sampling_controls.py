@@ -18,7 +18,10 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from theforge.config import ModelProfile
-from theforge.runners.schema_utils import sampling_control_kwargs
+from theforge.runners.schema_utils import (
+    openai_function_tool_request_shape,
+    sampling_control_kwargs,
+)
 
 # Names deliberately chosen to span "known at authoring time" and "not yet
 # released": the policy must be identical for all of them.
@@ -79,6 +82,33 @@ class TestSamplingControlPolicy:
         assert inspect.signature(sampling_control_kwargs).parameters == {}
 
 
+class TestOpenAIFunctionToolRequestShape:
+    def test_responses_only_models_route_tools_to_responses(self):
+        shape = openai_function_tool_request_shape("gpt-5.1-codex")
+
+        assert shape.transport == "responses"
+        assert shape.chat_extra_kwargs() == {}
+
+    @pytest.mark.parametrize("model", ["gpt-5.6-sol", "gpt-5.6-terra"])
+    def test_observed_reasoning_models_send_reasoning_effort_none_for_tools(self, model):
+        shape = openai_function_tool_request_shape(model)
+
+        assert shape.transport == "chat"
+        assert shape.chat_extra_kwargs() == {"reasoning_effort": "none"}
+
+    def test_tool_capability_defaults_to_plain_chat_when_no_override_is_needed(self):
+        shape = openai_function_tool_request_shape("gpt-4o")
+
+        assert shape.transport == "chat"
+        assert shape.chat_extra_kwargs() == {}
+
+    def test_unprobed_gpt5_chat_models_keep_default_reasoning_for_tools(self):
+        shape = openai_function_tool_request_shape("gpt-5.4")
+
+        assert shape.transport == "chat"
+        assert shape.chat_extra_kwargs() == {}
+
+
 class TestOpenAICompatibleRequests:
     """Chat Completions single-shot, loop adapter, and finalizers."""
 
@@ -104,6 +134,23 @@ class TestOpenAICompatibleRequests:
 
         kwargs = client.chat.completions.create.call_args.kwargs
         assert "temperature" not in kwargs
+        assert kwargs["tools"] == [{"type": "function", "name": "read_file"}]
+
+    def test_loop_adapter_accepts_provider_specific_tool_controls(self):
+        from theforge.runners.adapters.openai import _make_openai_chat_adapter
+
+        client = _openai_chat_client()
+        adapter = _make_openai_chat_adapter(
+            _profile(model="gpt-5.6-sol"),
+            None,
+            client=client,
+            extra_kwargs={"reasoning_effort": "none"},
+        )
+        adapter([{"role": "user", "content": "go"}], [{"type": "function", "name": "read_file"}])
+
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["reasoning_effort"] == "none"
         assert kwargs["tools"] == [{"type": "function", "name": "read_file"}]
 
     @pytest.mark.parametrize("model", FUTURE_AND_CURRENT_MODELS)
