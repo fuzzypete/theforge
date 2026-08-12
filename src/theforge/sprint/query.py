@@ -15,9 +15,8 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import quote
 
-from . import carry
-
 from ..log_util import _log_line
+from . import carry
 
 if TYPE_CHECKING:
     from ..task import TaskStory
