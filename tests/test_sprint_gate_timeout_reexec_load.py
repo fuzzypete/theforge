@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -30,7 +31,6 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import run_sprint
 from theforge.sprint.gate_timeout_resolver import resolve_effective_gate_timeout
 
 # ── Pure resolver: running_stories is additive load ──────────────────
@@ -163,7 +163,7 @@ def test_fresh_start_timeout_derives_from_configured_parallel(tmp_path: Path, ca
         patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
         patch("os.cpu_count", return_value=10),
     ):
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
     err = capsys.readouterr().err
     assert "running_stories=0 actual_parallel=2" in err
@@ -186,7 +186,7 @@ def test_continuation_timeout_counts_inherited_running_stories(tmp_path: Path, c
         patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
         patch("os.cpu_count", return_value=10),
     ):
-        run_sprint(
+        run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,

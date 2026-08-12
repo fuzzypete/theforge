@@ -753,8 +753,9 @@ def _preflight_states_for(*slugs: str, files: dict[str, list[str]]) -> dict:
 
 def test_run_sprint_dispatches_one_dev_pass_and_reports_each_story(tmp_path: Path) -> None:
     """The scheduler seam: two eligible stories, one dev pass, two story rows."""
+    from sprint_test_helpers import run_sprint_ctx
+
     from tests.test_sprint_resume import _make_coordinator_result, _make_manifest, _make_spec_file
-    from theforge.sprint.runner import run_sprint
 
     _make_spec_file(tmp_path, "Bug A", "bug-a")
     _make_spec_file(tmp_path, "Bug B", "bug-b")
@@ -774,7 +775,7 @@ def test_run_sprint_dispatches_one_dev_pass_and_reports_each_story(tmp_path: Pat
         patch("theforge.sprint.runner.run_task", return_value=leader_result) as run_task_mock,
         patch("theforge.sprint.runner.run_review_only", return_value=member_result) as review_only,
     ):
-        result = run_sprint(config, manifest_path)
+        result = run_sprint_ctx(config, manifest_path)
 
     # One dev pass for the group — not one per story.
     assert run_task_mock.call_count == 1
@@ -791,13 +792,14 @@ def test_run_sprint_dispatches_one_dev_pass_and_reports_each_story(tmp_path: Pat
 
 
 def test_run_sprint_does_not_batch_when_the_knob_is_off(tmp_path: Path) -> None:
+    from sprint_test_helpers import run_sprint_ctx
+
     from tests.test_sprint_resume import (
         _make_config,
         _make_coordinator_result,
         _make_manifest,
         _make_spec_file,
     )
-    from theforge.sprint.runner import run_sprint
 
     _make_spec_file(tmp_path, "Bug A", "bug-a")
     _make_spec_file(tmp_path, "Bug B", "bug-b")
@@ -815,7 +817,7 @@ def test_run_sprint_does_not_batch_when_the_knob_is_off(tmp_path: Path) -> None:
         ) as run_task_mock,
         patch("theforge.sprint.runner.run_review_only") as review_only,
     ):
-        result = run_sprint(config, manifest_path)
+        result = run_sprint_ctx(config, manifest_path)
 
     assert run_task_mock.call_count == 2
     review_only.assert_not_called()
@@ -825,9 +827,9 @@ def test_run_sprint_does_not_batch_when_the_knob_is_off(tmp_path: Path) -> None:
 def test_batched_stories_are_visible_as_a_group_in_live_state(tmp_path: Path) -> None:
     """`forge status` reads batch_group from the live state file the sprint writes."""
     import yaml
+    from sprint_test_helpers import run_sprint_ctx
 
     from tests.test_sprint_resume import _make_coordinator_result, _make_manifest, _make_spec_file
-    from theforge.sprint.runner import run_sprint
 
     _make_spec_file(tmp_path, "Bug A", "bug-a")
     _make_spec_file(tmp_path, "Bug B", "bug-b")
@@ -860,7 +862,7 @@ def test_batched_stories_are_visible_as_a_group_in_live_state(tmp_path: Path) ->
         ),
         patch.object(SprintStateWriter, "init", capturing_init),
     ):
-        run_sprint(config, manifest_path, run_id="run-batch-1")
+        run_sprint_ctx(config, manifest_path, run_id="run-batch-1")
 
     by_slug = {s["slug"]: s for s in captured}
     assert by_slug["bug-a"]["batch_group"] == "batch-bug-a"
@@ -879,9 +881,9 @@ def _queued_pr_batch_sprint(tmp_path: Path, *, poll_status: str):
     member rows have already been written. Returns (SprintResult, story_state).
     """
     import yaml
+    from sprint_test_helpers import run_sprint_ctx
 
     from tests.test_sprint_resume import _make_coordinator_result, _make_manifest, _make_spec_file
-    from theforge.sprint.runner import run_sprint
 
     _make_spec_file(tmp_path, "Bug A", "bug-a")
     _make_spec_file(tmp_path, "Bug B", "bug-b")
@@ -908,7 +910,7 @@ def _queued_pr_batch_sprint(tmp_path: Path, *, poll_status: str):
         ),
         patch("theforge.sprint.runner._poll_queued_pr", return_value={"status": poll_status}),
     ):
-        result = run_sprint(config, manifest_path)
+        result = run_sprint_ctx(config, manifest_path)
 
     summary_path = tmp_path / ".forge" / "logs" / "Test Sprint" / "sprint-summary.yaml"
     summary = yaml.safe_load(summary_path.read_text(encoding="utf-8"))

@@ -140,8 +140,8 @@ def test_cli_query_mode_filters_skipped_and_passes_to_run_sprint(tmp_path: Path)
 
     captured: dict = {}
 
-    def fake_run_sprint(*_args, **kwargs):
-        captured.update(kwargs)
+    def fake_run_sprint(run_context):
+        captured["context"] = run_context
         return _ok_result()
 
     with (
@@ -160,9 +160,10 @@ def test_cli_query_mode_filters_skipped_and_passes_to_run_sprint(tmp_path: Path)
         rc = cmd_sprint(args)
 
     assert rc == 0
-    assert "skipped_issues" in captured
-    assert len(captured["skipped_issues"]) == 1
-    assert captured["skipped_issues"][0].issue_number == 2
+    assert "context" in captured
+    skipped_issues = captured["context"].skipped_issues
+    assert len(skipped_issues) == 1
+    assert skipped_issues[0].issue_number == 2
     # Only runnable issues feed build_resolved_sprint.
     # (Confirmed by ``build_resolved_sprint`` being called with one issue,
     # which _resolved([1]) represents — if two had leaked through, the

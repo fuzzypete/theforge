@@ -582,7 +582,7 @@ class TestCmdSprintConflictGuard:
 
             assert rc == 0
             mock_run.assert_called_once()
-            assert mock_run.call_args.kwargs["dropped_slugs"] == {
+            assert mock_run.call_args.args[0].dropped_slugs == {
                 "my-feature": "story-lock-held-by-other-process"
             }
             captured = capsys.readouterr()
@@ -634,7 +634,7 @@ class TestCmdSprintConflictGuard:
 
             assert rc == 0
             mock_run.assert_called_once()
-            assert mock_run.call_args.kwargs["dropped_slugs"] == {}
+            assert mock_run.call_args.args[0].dropped_slugs == {}
             captured = capsys.readouterr()
             assert "--force overrides apparent story lock conflicts" in captured.err
             assert "Proceeding without launch locks" in captured.err

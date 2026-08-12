@@ -24,6 +24,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -35,7 +36,6 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import run_sprint
 from theforge.sprint.audit import persist_accumulated_story_state
 from theforge.sprint.dag import StoryTriage
 from theforge.sprint.launch_guard import (
@@ -314,7 +314,7 @@ def _run_reexec_with_unlanded_prior_done(tmp_path: Path, writes: list | None = N
         ),
         patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             reexec=True,
@@ -403,7 +403,7 @@ class TestRunnerRefusesUnlandedPriorDone:
             patch("theforge.sprint.runner.run_task", return_value=fresh),
             patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev"}, clear=False),
         ):
-            result = run_sprint(
+            result = run_sprint_ctx(
                 config,
                 manifest_path,
                 reexec=True,
@@ -446,7 +446,7 @@ class TestPersistedRecordStatesLandingObligation:
                 return_value=({"action": "merge", "merged": True}, "landed"),
             ),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert len(writes) >= 2, f"expected a pre- and post-landing write, got {writes}"
         pre_landing = writes[0]

@@ -594,8 +594,7 @@ class TestSprintSpecHeaderPrinted:
         self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path, capsys
     ):
         import yaml as _yaml
-
-        from theforge.sprint import run_sprint
+        from sprint_test_helpers import run_sprint_ctx
 
         # Write a minimal forge.yaml
         config = _make_config(tmp_path)
@@ -630,7 +629,7 @@ class TestSprintSpecHeaderPrinted:
             _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
         ]
 
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
         captured = capsys.readouterr()
         # Header banner for spec [1/1] must appear

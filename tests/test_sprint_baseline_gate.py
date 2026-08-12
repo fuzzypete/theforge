@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -22,7 +23,6 @@ from theforge.sprint.runner import (
     BASELINE_TEMP_PREFIX,
     BASELINE_WORKTREE_KEEP,
     _run_baseline_gate,
-    run_sprint,
 )
 from theforge.sprint.sources import FileSource
 
@@ -230,7 +230,7 @@ def test_baseline_gate_evidence_and_worktree_survive_the_sprint_abort(
         patch("theforge.sprint.runner.run_task") as mock_run_task,
     ):
         try:
-            run_sprint(config, resolved, no_pull=True, run_id="abc123")
+            run_sprint_ctx(config, resolved, no_pull=True, run_id="abc123")
             raise AssertionError("expected baseline failure")
         except RuntimeError as exc:
             message = str(exc)
@@ -422,7 +422,7 @@ def test_baseline_gate_fail_aborts_before_any_agent_runner(tmp_path: Path) -> No
         patch("theforge.sprint.runner.run_task") as mock_run_task,
     ):
         try:
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
             raise AssertionError("expected baseline failure")
         except RuntimeError as exc:
             assert "Broken baseline" in str(exc)
@@ -455,7 +455,7 @@ def test_baseline_pass_proceeds_to_normal_sprint_flow(
         patch("theforge.sprint.runner._write_sprint_audit"),
         patch("theforge.sprint.runner._write_sprint_summary"),
     ):
-        result = run_sprint(config, resolved)
+        result = run_sprint_ctx(config, resolved)
 
     assert result.specs_succeeded == 1
     assert mock_run_task.called

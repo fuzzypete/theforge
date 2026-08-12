@@ -13,9 +13,9 @@ from unittest.mock import patch
 
 import pytest
 from coord_test_helpers import _make_agent_result
+from sprint_test_helpers import run_sprint_ctx
 
 from tests.test_sprint_resume import _make_config, _make_manifest, _make_spec_file
-from theforge.sprint.runner import run_sprint
 
 ALREADY_DONE_OUTPUT = """\
 ```yaml
@@ -105,7 +105,7 @@ class TestSprintAlreadyDonePreflightCost:
             patch("theforge.coordinator.preflight_flow.run_agent", side_effect=fake_preflight),
             patch("theforge.coordinator.preflight_flow._is_branch_merged", return_value=False),
         ):
-            result = run_sprint(config, manifest_path, no_pull=True)
+            result = run_sprint_ctx(config, manifest_path, no_pull=True)
 
         # ALREADY_DONE is a terminal succeeded outcome under the canonical
         # state model — closed-at-fetch issues surface as DONE everywhere.

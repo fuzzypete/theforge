@@ -12,6 +12,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 from test_sprint_parallel import (
     _make_config,
     _make_coordinator_result,
@@ -22,7 +23,6 @@ from test_sprint_parallel import (
 from theforge.advisory_conventions import AdvisoryArtifactError
 from theforge.coordinator.agent_failure import ERROR_TYPE_INFRASTRUCTURE_ABORT
 from theforge.sprint.rca import UNKNOWN_CLASS, build_sprint_rca
-from theforge.sprint.runner import run_sprint
 
 
 def _advisory_error(tmp_path: Path) -> AdvisoryArtifactError:
@@ -48,7 +48,7 @@ def test_advisory_persistence_failure_is_not_a_story_escalate(tmp_path: Path) ->
         "theforge.sprint.runner.run_task",
         side_effect=[_advisory_error(tmp_path), result_b],
     ):
-        sprint = run_sprint(config, manifest_path)
+        sprint = run_sprint_ctx(config, manifest_path)
 
     # The sprint still finishes and the other story is unaffected.
     assert sprint.specs_succeeded == 1
@@ -92,7 +92,7 @@ def test_advisory_persistence_failure_classifies_as_shared_infrastructure(
         "theforge.sprint.runner.run_task",
         side_effect=[_advisory_error(tmp_path)],
     ):
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
     summary_path = tmp_path / ".forge" / "logs" / "Parallel Sprint" / "sprint-summary.yaml"
     assert summary_path.exists(), "sprint summary was not written"

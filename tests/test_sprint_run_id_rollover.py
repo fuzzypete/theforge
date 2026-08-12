@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.cli import explain
 from theforge.config import (
@@ -27,7 +28,6 @@ from theforge.config import (
 )
 from theforge.coordinator import audit_substrate as sub
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import run_sprint
 from theforge.sprint.audit import (
     _get_or_create_sprint_id,
     _load_accumulated_stories,
@@ -220,7 +220,7 @@ class TestRunIdRolloverReporting:
             return result
 
         with patch("theforge.sprint.runner.run_task", side_effect=_run_story):
-            sprint_result = run_sprint(config, manifest_path, run_id="sprint-cli-run")
+            sprint_result = run_sprint_ctx(config, manifest_path, run_id="sprint-cli-run")
 
         assert sprint_result.specs_total == 3
         assert sprint_result.specs_succeeded == 3
@@ -352,7 +352,7 @@ class TestRunIdRolloverReporting:
             patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
             patch("theforge.sprint.runner.run_task", return_value=result_b),
         ):
-            sprint_result = run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+            sprint_result = run_sprint_ctx(config, manifest_path, resume=True, run_id="run-b-test")
 
         # Both stories should be counted
         assert sprint_result.specs_total == 2
@@ -433,7 +433,7 @@ class TestRunIdRolloverReporting:
             patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
             patch("theforge.sprint.runner.run_task", return_value=result_b),
         ):
-            sprint_result = run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+            sprint_result = run_sprint_ctx(config, manifest_path, resume=True, run_id="run-b-test")
 
         assert sprint_result.specs_total == 2
 
@@ -481,7 +481,7 @@ class TestRunIdRolloverReporting:
                 return_value=_make_coordinator_result(),
             ):
                 with patch("theforge.sprint.runner.SprintStateWriter.remove"):
-                    run_sprint(config, manifest_path, resume=True, run_id="run-live-test")
+                    run_sprint_ctx(config, manifest_path, resume=True, run_id="run-live-test")
 
         entries = read_live_status("run-live-test", tmp_path)
         assert entries is not None
@@ -549,7 +549,7 @@ class TestRunIdRolloverReporting:
             patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
             patch("theforge.sprint.runner.run_task", return_value=result_b),
         ):
-            run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+            run_sprint_ctx(config, manifest_path, resume=True, run_id="run-b-test")
 
         summary_path = tmp_path / ".forge" / "logs" / sprint_name / "sprint-summary.yaml"
         entries = read_completed_status(summary_path)
@@ -564,7 +564,7 @@ class TestRunIdRolloverReporting:
         assert fa.cost_usd == pytest.approx(1.18)
 
     def test_sprint_id_stable_across_two_run_invocations(self, tmp_path: Path) -> None:
-        """sprint_id does not change between the first and second run_sprint() invocations."""
+        """sprint_id does not change between the first and second run_sprint_ctx() invocations."""
         sprint_name = "Test Sprint"
 
         # Pre-create sprint_id (first invocation would have created this)
@@ -588,7 +588,7 @@ class TestRunIdRolloverReporting:
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, manifest_path, run_id="run-a-test")
+            run_sprint_ctx(config, manifest_path, run_id="run-a-test")
 
         # The substrate must contain at least one row referencing this sprint_id.
         sub_path = audit_substrate.substrate_path(tmp_path)
@@ -623,7 +623,7 @@ class TestRunIdRolloverReporting:
         )
 
         with patch("theforge.sprint.runner._triage_spec", return_value=skip_triage):
-            run_sprint(config, manifest_path, resume=True, run_id="run-resume-test")
+            run_sprint_ctx(config, manifest_path, resume=True, run_id="run-resume-test")
 
         stories = _load_accumulated_stories(sprint_id, tmp_path)
         assert len(stories) == 1
@@ -674,7 +674,7 @@ class TestRunIdRolloverReporting:
         )
 
         with patch("theforge.sprint.runner._triage_spec", return_value=skip_triage):
-            run_sprint(config, manifest_path, resume=True, run_id="run-resume-test")
+            run_sprint_ctx(config, manifest_path, resume=True, run_id="run-resume-test")
 
         accumulated = _load_accumulated_stories(sprint_id, tmp_path)
         stories = {story["canonical_ref"]: story for story in accumulated}
@@ -693,7 +693,7 @@ class TestRunIdRolloverReporting:
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, manifest_path, run_id="run-cleanup-test")
+            run_sprint_ctx(config, manifest_path, run_id="run-cleanup-test")
 
         assert not (tmp_path / ".forge" / "runs" / "run-cleanup-test.state").exists()
 
@@ -842,7 +842,7 @@ class TestRedirectChainResolution:
         result_b = _make_coordinator_result(success=True, cost=9.26)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_b):
-            run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+            run_sprint_ctx(config, manifest_path, resume=True, run_id="run-b-test")
 
         summary_path = tmp_path / ".forge" / "logs" / sprint_name / "sprint-summary.yaml"
         with open(summary_path, encoding="utf-8") as f:
@@ -922,7 +922,7 @@ class TestRedirectChainResolution:
             patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
             patch("theforge.sprint.runner.run_task", side_effect=_capture_live_state),
         ):
-            run_sprint(config, manifest_path, resume=True, run_id="run-current")
+            run_sprint_ctx(config, manifest_path, resume=True, run_id="run-current")
 
         live = captured.get("live")
         assert live is not None, "feature-b should appear in live status while running"
@@ -1004,7 +1004,7 @@ class TestRedirectChainResolution:
             patch("theforge.sprint.runner._triage_spec", side_effect=_mock_triage),
             patch("theforge.sprint.runner.run_task", side_effect=_capture_live_state),
         ):
-            run_sprint(config, manifest_path, resume=True, run_id="run-b-test")
+            run_sprint_ctx(config, manifest_path, resume=True, run_id="run-b-test")
 
     def test_live_state_includes_closed_issue_dropped_at_query_time(self, tmp_path: Path) -> None:
         """Live status surfaces closed-at-fetch issues even when query mode drops them."""
@@ -1040,7 +1040,7 @@ class TestRedirectChainResolution:
             return result_b
 
         with patch("theforge.sprint.runner.run_task", side_effect=_capture_live_state):
-            sprint_result = run_sprint(
+            sprint_result = run_sprint_ctx(
                 config,
                 sprint=_mock_build_resolved_sprint(),
                 run_id="run-b-test",

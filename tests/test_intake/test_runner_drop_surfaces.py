@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config.types import IntakeConfig
 from theforge.intake.findings import FixType, IntakeFinding, IntakeSeverity
@@ -30,7 +31,6 @@ from theforge.sprint.runner import (
     _intake_log_lines,
     _intake_outcome_summary,
     _intake_problem_lines,
-    run_sprint,
 )
 from theforge.sprint.status_reader import _stage_and_detail_from_live_story
 
@@ -527,7 +527,7 @@ def test_run_sprint_dropped_after_fix_propagates_intake_detail_through_full_runn
         ),
         patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
     ):
-        result = run_sprint(config, manifest_path, no_pull=True)
+        result = run_sprint_ctx(config, manifest_path, no_pull=True)
 
     log_blob = capfd.readouterr().err
 

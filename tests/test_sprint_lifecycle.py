@@ -8,6 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
@@ -24,7 +25,7 @@ from theforge.config import (
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.notify import _notify, _osa_quote
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint import load_sprint_manifest, run_sprint
+from theforge.sprint import load_sprint_manifest
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -192,7 +193,7 @@ class TestRunSprint:
             patch("theforge.sprint.runner._scrub_root_forge_artifacts") as mock_scrub,
             patch("theforge.sprint.runner.run_task", return_value=result_a),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         mock_scrub.assert_called_once_with(config)
 
@@ -228,7 +229,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         captured = capsys.readouterr()
         assert "Cost not tracked" not in captured.err
@@ -264,7 +265,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         captured = capsys.readouterr()
         assert "Cost not tracked" not in captured.err
@@ -291,7 +292,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert "Cost not tracked for gemini_reviewer" in capsys.readouterr().err
 
@@ -313,7 +314,7 @@ class TestRunSprint:
         results = [_make_coordinator_result(success=True, cost=c) for c in (1.5, 2.0, 2.5)]
 
         with patch("theforge.sprint.runner.run_task", side_effect=results):
-            sprint_result = run_sprint(config, manifest_path)
+            sprint_result = run_sprint_ctx(config, manifest_path)
 
         assert sprint_result.specs_total == 3
         assert sprint_result.specs_succeeded == 3
@@ -332,7 +333,7 @@ class TestRunSprint:
         result_b = _make_coordinator_result(success=True, cost=3.0)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]):
-            sprint_result = run_sprint(config, manifest_path)
+            sprint_result = run_sprint_ctx(config, manifest_path)
 
         assert sprint_result.specs_total == 2
         assert sprint_result.specs_succeeded == 2
@@ -362,7 +363,7 @@ class TestRunSprint:
         result_b = _make_coordinator_result(success=True, cost=2.0)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a, result_b]):
-            sprint_result = run_sprint(config, manifest_path)
+            sprint_result = run_sprint_ctx(config, manifest_path)
 
         assert sprint_result.specs_succeeded == 1
         assert sprint_result.specs_failed == 1
@@ -381,7 +382,7 @@ class TestRunSprint:
         )
 
         with patch("theforge.sprint.runner.run_task", return_value=result):
-            sprint_result = run_sprint(config, manifest_path)
+            sprint_result = run_sprint_ctx(config, manifest_path)
 
         assert sprint_result.specs_succeeded == 1
         assert sprint_result.specs_skipped == 0
@@ -401,7 +402,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=6.0)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
-            sprint_result = run_sprint(config, manifest_path)
+            sprint_result = run_sprint_ctx(config, manifest_path)
 
         # Only spec A ran; B and C were skipped
         assert mock_run.call_count == 1
@@ -424,7 +425,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=3.0)
 
         with patch("theforge.sprint.runner.run_task", side_effect=[result_a]) as mock_run:
-            sprint_result = run_sprint(config, manifest_path)
+            sprint_result = run_sprint_ctx(config, manifest_path)
 
         assert mock_run.call_count == 1
         assert sprint_result.specs_skipped == 1  # spec B skipped
@@ -437,7 +438,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run:
-            run_sprint(config, manifest_path, auto_merge=True)
+            run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("auto_merge") is True
@@ -450,7 +451,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=1.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run:
-            run_sprint(config, manifest_path, interactive=True)
+            run_sprint_ctx(config, manifest_path, interactive=True)
 
         _, kwargs = mock_run.call_args
         assert kwargs.get("interactive") is True
@@ -461,7 +462,7 @@ class TestRunSprint:
         config = _make_config(tmp_path)
 
         with pytest.raises(ValueError, match="missing"):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
     def test_audit_yaml_written(self, tmp_path: Path) -> None:
         """sprint-audit.yaml is written to project root."""
@@ -471,7 +472,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=1.5, merged=True)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         assert audit_path.exists()
@@ -495,7 +496,7 @@ class TestRunSprint:
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         with open(audit_path) as f:
@@ -526,7 +527,7 @@ class TestRunSprint:
         )
 
         with patch("theforge.sprint.runner.run_task", return_value=result_failed_merge):
-            sprint_result = run_sprint(config, manifest_path, auto_merge=True)
+            sprint_result = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
         # Sprint counts as succeeded (task itself passed), but merge did not happen
         assert sprint_result.specs_succeeded == 1
@@ -570,7 +571,7 @@ class TestRunSprint:
         )
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
         audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         audit = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
@@ -611,7 +612,7 @@ class TestRunSprint:
         )
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a):
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
         captured = capsys.readouterr()
         assert "dependency-shaped prose ignored" not in captured.err
@@ -646,7 +647,7 @@ class TestSprintNotifications:
 
         with patch("theforge.sprint.runner._notify") as mock_notify:
             with patch("theforge.sprint.runner.run_task", return_value=result_a):
-                run_sprint(config, manifest_path, notify=True)
+                run_sprint_ctx(config, manifest_path, notify=True)
 
         mock_notify.assert_called_once()
         title, body = mock_notify.call_args[0]
@@ -654,7 +655,7 @@ class TestSprintNotifications:
         assert "1" in body  # specs_succeeded count
 
     def test_sprint_forwards_notify_true_to_run_task(self, tmp_path: Path) -> None:
-        """run_sprint() passes notify=True down to each run_task() call."""
+        """run_sprint_ctx() passes notify=True down to each run_task() call."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
         config = _make_config(tmp_path)
@@ -662,20 +663,20 @@ class TestSprintNotifications:
 
         with patch("theforge.sprint.runner._notify"):
             with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run_task:
-                run_sprint(config, manifest_path, notify=True)
+                run_sprint_ctx(config, manifest_path, notify=True)
 
         _, kwargs = mock_run_task.call_args
         assert kwargs.get("notify") is True
 
     def test_sprint_forwards_notify_false_to_run_task(self, tmp_path: Path) -> None:
-        """run_sprint() passes notify=False down to each run_task() call."""
+        """run_sprint_ctx() passes notify=False down to each run_task() call."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=10.0)
         config = _make_config(tmp_path)
         result_a = _make_coordinator_result(success=True, cost=2.0)
 
         with patch("theforge.sprint.runner.run_task", return_value=result_a) as mock_run_task:
-            run_sprint(config, manifest_path, notify=False)
+            run_sprint_ctx(config, manifest_path, notify=False)
 
         _, kwargs = mock_run_task.call_args
         assert kwargs.get("notify") is False
@@ -689,7 +690,7 @@ class TestSprintNotifications:
 
         with patch("theforge.sprint.runner._notify") as mock_notify:
             with patch("theforge.sprint.runner.run_task", return_value=result_a):
-                run_sprint(config, manifest_path, notify=False)
+                run_sprint_ctx(config, manifest_path, notify=False)
 
         mock_notify.assert_not_called()
 
@@ -704,7 +705,7 @@ class TestSprintNotifications:
 
         with patch("theforge.sprint.runner._notify") as mock_notify:
             with patch("theforge.sprint.runner.run_task", return_value=result_a):
-                run_sprint(config, manifest_path, notify=True)
+                run_sprint_ctx(config, manifest_path, notify=True)
 
         mock_notify.assert_not_called()
 

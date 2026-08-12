@@ -282,7 +282,7 @@ class DaemonServer:
     ) -> None:
         """Execute a sprint in a thread executor. Called via run_in_executor."""
         from .config import load_config
-        from .sprint import run_sprint
+        from .sprint import SprintRunContext, run_sprint
         from .sprint.lock import SprintConflictError, acquire_story_locks, release_story_locks
         from .sprint.runner import parse_manifest_slugs
 
@@ -306,20 +306,22 @@ class DaemonServer:
 
         try:
             run_sprint(
-                config,
-                manifest_path,
-                auto_merge=args.get("auto_merge", False),
-                interactive=False,  # daemon mode is non-interactive
-                notify=args.get("notify", True),
-                resume=args.get("resume", False),
-                state_update_fn=state_update_fn,
-                no_pull=args.get("no_pull", False),
-                force=args.get("force", False),
-                # Enumerated explicitly like every other kwarg here, so an
-                # operator acceptance submitted with --detach is not silently
-                # dropped on the way to the runner (#2310).
-                accept_unmeasured_spend=args.get("accept_unmeasured_spend") or [],
-                accept_unmeasured_reason=args.get("accept_unmeasured_reason"),
+                SprintRunContext.for_sprint(
+                    config,
+                    manifest_path,
+                    auto_merge=args.get("auto_merge", False),
+                    interactive=False,  # daemon mode is non-interactive
+                    notify=args.get("notify", True),
+                    resume=args.get("resume", False),
+                    state_update_fn=state_update_fn,
+                    no_pull=args.get("no_pull", False),
+                    force=args.get("force", False),
+                    # Enumerated explicitly like every other kwarg here, so an
+                    # operator acceptance submitted with --detach is not silently
+                    # dropped on the way to the runner (#2310).
+                    accept_unmeasured_spend=args.get("accept_unmeasured_spend") or [],
+                    accept_unmeasured_reason=args.get("accept_unmeasured_reason"),
+                )
             )
         finally:
             release_story_locks(locked_fds)

@@ -20,12 +20,12 @@ from coord_test_helpers import (
     _write_handoff,
     patch_gate_shell,
 )
+from sprint_test_helpers import run_sprint_ctx
 
 from tests.test_coord_plan_flow_agent import PLAN_AGENT_APPROVE
 from tests.test_sprint_resume import _make_config
 from theforge.config import PlanAgentReviewConfig, PlanConfig, RetryPolicy
 from theforge.coordinator.state import CoordinatorState
-from theforge.sprint.runner import run_sprint
 
 PREFLIGHT_SMOKE_OUTPUT = """\
 ```yaml
@@ -246,7 +246,7 @@ def test_make_gate_covers_mocked_sprint_pipeline_smoke_run(tmp_path: Path) -> No
         patch("theforge.coordinator.completion.land_story", side_effect=fake_land_story),
         patch("theforge.sprint.runner.run_task", side_effect=record_cached_preflight),
     ):
-        result = run_sprint(
+        result = run_sprint_ctx(
             config,
             manifest_path,
             auto_merge=True,

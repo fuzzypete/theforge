@@ -1070,8 +1070,8 @@ class TestCampaignAuditWrites:
 
     @patch("theforge.sprint.runner.run_task")
     def test_campaign_writes_durable_story_audit(self, mock_run_task, tmp_path):
-        """After run_sprint(), the durable per-story log contains audit.yaml."""
-        from theforge.sprint import run_sprint
+        """After run_sprint_ctx(), the durable per-story log contains audit.yaml."""
+        from sprint_test_helpers import run_sprint_ctx
 
         config = _make_config(tmp_path)
 
@@ -1087,7 +1087,7 @@ class TestCampaignAuditWrites:
         mock_run_task.return_value = fake_result
 
         manifest_path = self._make_manifest(tmp_path, ["spec.md"])
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
         audit_path = tmp_path / ".forge" / "logs" / "Test Campaign" / "my-spec" / "audit.yaml"
         assert audit_path.exists(), "durable per-story audit.yaml not written to log dir"
@@ -1100,7 +1100,7 @@ class TestCampaignAuditWrites:
     @patch("theforge.sprint.runner.run_task")
     def test_sprint_audit_includes_review_summary(self, mock_run_task, tmp_path):
         """sprint-audit.yaml has reviews list per spec with pool/successful/failed fields."""
-        from theforge.sprint import run_sprint
+        from sprint_test_helpers import run_sprint_ctx
 
         config = _make_config(tmp_path)
 
@@ -1114,7 +1114,7 @@ class TestCampaignAuditWrites:
         mock_run_task.return_value = fake_result
 
         manifest_path = self._make_manifest(tmp_path, ["spec.md"])
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
         sprint_audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         assert sprint_audit_path.exists(), "sprint-audit.yaml not written"
@@ -1136,8 +1136,9 @@ class TestCampaignAuditWrites:
     @patch("theforge.sprint.runner.run_task")
     def test_campaign_already_done_no_worktree_audit(self, mock_run_task, tmp_path):
         """ALREADY_DONE specs do not write a worktree audit (no worktree was created)."""
+        from sprint_test_helpers import run_sprint_ctx
+
         from theforge.coordinator.state import CoordinatorResult, CoordinatorState
-        from theforge.sprint import run_sprint
 
         config = _make_config(tmp_path)
 
@@ -1156,7 +1157,7 @@ class TestCampaignAuditWrites:
         mock_run_task.return_value = fake_result
 
         manifest_path = self._make_manifest(tmp_path, ["spec.md"])
-        run_sprint(config, manifest_path)
+        run_sprint_ctx(config, manifest_path)
 
         # No workspace dir → no .forge/audit.yaml written there
         workspace = tmp_path / "done-spec"

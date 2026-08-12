@@ -3483,10 +3483,12 @@ class SprintRunContext:
 
     Everything here is settled before the first story is dispatched: the
     resolved sprint, the identifiers its audit trail is written under, and the
-    operator's invocation choices. The nested functions of ``run_sprint`` read
-    these and only read them, and the frozen dataclass is what says so — the
-    split between what a sprint mutates and what it merely consults is a fact
-    about this type versus :class:`SprintExecutionState`, not a convention.
+    operator's invocation choices. This is also ``run_sprint``'s whole
+    signature — a new sprint-wide input becomes a field here rather than the
+    nineteenth parameter. The run and the functions it calls read these and only
+    read them, and the frozen dataclass is what says so: the split between what
+    a sprint mutates and what it merely consults is a fact about this type
+    versus :class:`SprintExecutionState`, not a convention.
 
     ``config`` and ``resolved`` are objects rather than values; freezing the
     context pins *which* ones the run uses, not their internals.
@@ -3494,8 +3496,8 @@ class SprintRunContext:
 
     config: ForgeConfig
     resolved: ResolvedSprint
-    sprint_id: str | None
-    run_id: str | None
+    sprint_id: str | None = None
+    run_id: str | None = None
     auto_merge: bool = False
     interactive: bool = False
     notify: bool = False
@@ -3509,6 +3511,78 @@ class SprintRunContext:
     entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None
     live_story_slugs: frozenset[str] = frozenset()
     unresolved_live_slugs: frozenset[str] = frozenset()
+    # Operator acceptance of unmeasured spend. Consulted by the budget guard and
+    # never written by the run, so it belongs here beside ``force`` rather than
+    # on the execution state (#2399).
+    accept_unmeasured_spend: "Sequence[str] | None" = None
+    accept_unmeasured_reason: str | None = None
+    # Derived once from ``resolved`` — the (task, source, canonical_ref) triple
+    # every consumer looks up by slug. Derived rather than passed, so no caller
+    # can hand the run a mapping that disagrees with the sprint it resolved.
+    slug_to_context: "dict[str, tuple[TaskStory, StorySource, str]]" = field(
+        init=False, repr=False, compare=False, default_factory=dict
+    )
+
+    def __post_init__(self) -> None:
+        # Normalise the liveness sets here rather than at each construction
+        # site: an unresolved slug that is also confirmed live is one story, and
+        # every consumer downstream reads ``live_slugs`` for "do not treat this
+        # worktree as foreign".
+        confirmed = frozenset(s for s in (self.live_story_slugs or ()) if s)
+        object.__setattr__(self, "live_story_slugs", confirmed)
+        object.__setattr__(
+            self,
+            "unresolved_live_slugs",
+            frozenset(s for s in (self.unresolved_live_slugs or ()) if s and s not in confirmed),
+        )
+        object.__setattr__(
+            self,
+            "slug_to_context",
+            {
+                task.slug: (task, source, canonical_ref)
+                for task, source, canonical_ref in self.resolved.stories
+            },
+        )
+
+    @classmethod
+    def for_sprint(
+        cls,
+        config: ForgeConfig,
+        sprint: "Path | ResolvedSprint",
+        **options: object,
+    ) -> "SprintRunContext":
+        """Build the context for an invocation, resolving a manifest path if given.
+
+        ``run_sprint`` takes the context and nothing else, so the manifest →
+        :class:`ResolvedSprint` step lives here: one place resolves it, and the
+        run body has no path-shaped branch left to keep in step with query mode.
+        Tests and callers that patch ``resolve_from_manifest`` still see the same
+        boundary. A manifest is identified by being a path — everything else is
+        taken as already resolved, so query mode's own resolver output goes
+        through untouched.
+        """
+        if isinstance(sprint, (str, Path)):
+            resolved = resolve_from_manifest(Path(sprint), config.project_root)
+        else:
+            resolved = sprint
+        live = options.pop("live_story_slugs", None) or ()
+        unresolved = options.pop("unresolved_live_slugs", None) or ()
+        return cls(
+            config=config,
+            resolved=resolved,
+            live_story_slugs=frozenset(live),  # type: ignore[arg-type]
+            unresolved_live_slugs=frozenset(unresolved),  # type: ignore[arg-type]
+            **options,  # type: ignore[arg-type]
+        )
+
+    @property
+    def live_slugs(self) -> frozenset[str]:
+        """Every slug this run must not treat as foreign work.
+
+        Unresolved liveness joins confirmed-live deliberately: failing to resolve
+        an agent sidecar is not evidence the agent is gone (#2079).
+        """
+        return self.live_story_slugs | self.unresolved_live_slugs
 
     @property
     def name(self) -> str:
@@ -3534,6 +3608,12 @@ class SprintExecutionState:
     total, and :attr:`stop` is the only thing that decides the sprint has
     stopped. Neither can be advanced by assigning to a shared variable, because
     neither is one.
+
+    Holding the state is what lets a function leave ``run_sprint``: the
+    module-scope helpers below take this object and their own per-call inputs,
+    never a list of the values it carries — which is the parameter threading
+    that produced an eighteen-parameter entrypoint in the first place (#2399).
+    ``tests/test_sprint_runner_structure.py`` holds that shape.
     """
 
     context: SprintRunContext
@@ -3549,34 +3629,758 @@ class SprintExecutionState:
     batch_assignments: dict[str, int] = field(default_factory=dict)
     batch_number: int = 0
 
+    # --- identifiers and writers -------------------------------------------
+    # The run id the sprint's own structured log is written under. Distinct from
+    # ``context.run_id``, which is the CLI's live-state id and may be absent.
+    sprint_run_id: str = ""
+    # Present only once a live state file exists (a run_id was supplied).
+    state_writer: "SprintStateWriter | None" = None
+    publish_gate_hold: "Callable[..., None] | None" = None
 
-def run_sprint(
-    config: ForgeConfig,
-    sprint: "Path | ResolvedSprint",
+    # --- scheduling ---------------------------------------------------------
+    # Built once the satisfied/triaged sets are known; None before that.
+    dag: "StoryDAG | None" = None
+    active: "dict[str, Future[object]]" = field(default_factory=dict)  # slug -> running future
+    # Per-story cancellation events: set by the timeout handler so worker
+    # threads stop running instead of continuing past their deadline.
+    stop_events: dict[str, threading.Event] = field(default_factory=dict)
+    queued_prs: "dict[str, tuple[TaskStory, CoordinatorResult, str]]" = field(default_factory=dict)
+    queued_probe_at: dict[str, float] = field(default_factory=dict)  # slug -> last PR probe
+
+    # --- plan gates and collision claims ------------------------------------
+    # ``phase_lock`` guards ``plan_done``; the plan gate holds a story between
+    # PLAN and DEV while a sibling claims files it planned to touch (#2234).
+    phase_lock: threading.Lock = field(default_factory=threading.Lock)
+    file_footprints: dict[str, set[str]] = field(default_factory=dict)  # slug -> files from plan
+    plan_gates: dict[str, threading.Event] = field(default_factory=dict)  # slug -> PLAN→DEV gate
+    plan_done: dict[str, str] = field(default_factory=dict)  # slug -> workspace_path
+    collision_claims: dict[str, str] = field(default_factory=dict)  # slug -> CLAIM_* reason
+    claim_results: "dict[str, CoordinatorResult]" = field(default_factory=dict)  # last known
+    gate_stood_down: dict[str, str] = field(default_factory=dict)  # slug -> never entered DEV
+
+    # --- batch-group landing bookkeeping (#727) -----------------------------
+    # A group's commits live on ONE branch — the leader's — so a member is
+    # exactly as landed as its leader is, and no more. The leader's landing can
+    # resolve at four different moments (immediate integration, the
+    # pending-integration retry sweep, queued-PR polling, sprint wrap-up), and
+    # members may be recorded before *or* after that resolution, so both
+    # directions have to be handled.
+    batch_group_of_leader: dict[str, str] = field(default_factory=dict)  # leader -> group
+    batch_leader_landing: dict[str, str] = field(default_factory=dict)  # group -> landing status
+    batch_member_records: "dict[str, tuple[str, TaskStory, CoordinatorResult]]" = field(
+        default_factory=dict
+    )  # member -> (group, task, result), awaiting the leader's verdict
+
+    # --- durable per-story accounting ---------------------------------------
+    # This generation's per-story projection, by canonical ref. Written for
+    # every slug, including those that never produce a CoordinatorResult
+    # (dropped at the intake gate, blocked by deps, skipped pre-launch), so the
+    # audit and summary writers have error/error_type/intake metadata to report.
+    current_story_entries_by_ref: dict[str, dict] = field(default_factory=dict)
+    recovered_prior_entries_by_ref: dict[str, dict] = field(default_factory=dict)
+    # Failure causes already on disk for this sprint, by canonical ref. Read
+    # unconditionally — not just when resuming — because every generation
+    # rewrites the accumulated state file, so a plain re-run of the same sprint
+    # would otherwise erase the previous attempt's recorded cause before
+    # anything had a chance to read it (#2030).
+    prior_failure_history_by_ref: dict[str, list[dict]] = field(default_factory=dict)
+    # slug -> what the generation that ran the story before this one recorded.
+    # Populated when its drop record is written, and read back for the story's
+    # sprint row so both surfaces report the same accounting (#2214).
+    prior_generation_work: dict[str, dict] = field(default_factory=dict)
+    story_cost_adjustments: dict[str, float] = field(default_factory=dict)
+    # Stories this generation actually put through a coordinator run — and
+    # therefore the ones whose seeded prior cost was overwritten.
+    ran_this_generation: set[str] = field(default_factory=set)
+
+    @classmethod
+    def for_run(cls, context: SprintRunContext) -> "SprintExecutionState":
+        """The state a run of *context* starts from.
+
+        Everything here is empty at the start of a run, so this is a
+        one-argument constructor by construction — which is the point: a caller
+        can build the state a sprint would have and assert against it, and a
+        function extracted from ``run_sprint`` can be called with it.
+        """
+        return cls(context=context)
+
+
+# --- functions extracted from run_sprint (ADR-0008, #2399) -----------------
+#
+# Each of these was a closure over run_sprint's frame. They take the sprint's
+# execution state and their own per-call inputs, and nothing else: the state
+# is the parameter, not a list of the values it holds, which is what makes the
+# next extraction a move rather than a re-decision.
+
+
+def _set_outcome(
+    state: SprintExecutionState, slug: str, outcome: StoryOutcome | str, **fields: object
+) -> None:
+    """Transition a story's canonical outcome.
+
+    All count-affecting events flow through this helper so the canonical
+    structure is the only place the runner records outcomes. The state
+    writer (when present) shares the same SprintStoryState instance and
+    the on-disk live status file is updated in lockstep.
+    """
+    if not state.stories.has(slug):
+        ctx = state.context.slug_to_context.get(slug)
+        if ctx is not None:
+            _t, _src, _ref = ctx
+            _key = f"Issue #{_ref.split(':')[1]}" if _ref.startswith("issue:") else _ref
+            state.stories.register(slug, _key, canonical_ref=_ref)
+        else:
+            state.stories.register(slug, slug)
+    canonical_outcome = coerce_outcome(outcome)
+    if canonical_outcome.is_terminal and "finished_at" not in fields:
+        fields["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if state.state_writer is not None:
+        # Writer holds the same instance; this both transitions outcome
+        # AND atomically rewrites the live .state file.
+        state.state_writer.update(slug, status=outcome, **fields)
+    else:
+        state.stories.transition(slug, outcome=outcome, **fields)
+
+
+def _landing_evidence_fields(result: CoordinatorResult) -> dict:
+    """The accumulated entry's account of this story's landing.
+
+    ``landing_status`` is the coordinator/scheduler's own three-state answer
+    (``None`` = no landing owed, ``pending_integration`` = owed and not yet
+    resolved, ``landed`` / ``failed`` = resolved), and ``landing`` carries the
+    structured record once a landing attempt actually happened. Together they
+    are what lets a later generation tell a completed story from one that
+    merely reached Phase.DONE before its landing step ran (#2189).
+    """
+    _merge = result.merge if isinstance(result.merge, dict) else None
+    return {
+        "landing_status": getattr(result, "landing_status", None),
+        "landing": build_landing_record(_merge),
+        "merge": bool(_merge and _merge.get("merged", False)),
+    }
+
+
+def _story_allocation_entry(
+    state: SprintExecutionState, story_state: CoordinatorState, story_cost: float | None
+) -> dict | None:
+    """Join this story's allocation with the sprint ceiling for reporting.
+
+    The coordinator derives and enforces the per-story allocation but has no
+    view of the sprint ceiling — budget governance at that level lives here.
+    Joining the two on the story row is what makes "the story ran out of its
+    own allocation while the sprint still had $74 left" readable as one fact
+    rather than two disconnected ones (#2169).
+    """
+    from theforge.coordinator import story_budget as _story_budget
+
+    block = _story_budget.evaluate_allocation_dict(
+        getattr(story_state, "story_allocation", None),
+        story_state.total_cost_measured,
+    )
+    exhausted = getattr(story_state, "allocation_exhausted", None)
+    if block is None and not exhausted:
+        return None
+    block = block or {}
+    _cost_snapshot = state.cost.snapshot()
+    _spent = _cost_snapshot.spent
+    _remaining = round(state.context.resolved.budget_usd - _spent, 4)
+    block["reported_cost_usd"] = story_cost
+    block["sprint_budget_usd"] = state.context.resolved.budget_usd
+    block["sprint_spent_usd"] = round(_spent, 4)
+    block["sprint_remaining_usd"] = _remaining
+    # A lower-bound sprint total cannot certify headroom; say so rather
+    # than asserting a number the sprint does not actually have (#1992).
+    block["sprint_cost_measured"] = _cost_snapshot.measured
+    block["sprint_headroom_remained"] = None if not _cost_snapshot.measured else _remaining > 0
+    if exhausted:
+        block["allocation_exhausted"] = exhausted
+        block["status"] = "allocation_exhausted"
+    return block
+
+
+def _persist_accumulated_story_entries(
+    state: SprintExecutionState,
+) -> None:
+    if state.context.sprint_id is None:
+        return
+    accumulated_by_ref = {
+        ref: dict(entry) for ref, entry in state.recovered_prior_entries_by_ref.items()
+    }
+    for canonical_ref, entry in state.current_story_entries_by_ref.items():
+        # This generation's entry replaces the prior one — except for the
+        # failure history, which accumulates. Wholesale replacement is what
+        # let a resume destroy the only recorded cause of the attempt it was
+        # resuming from, so the story that failed became undiagnosable the
+        # moment someone tried to fix it (#2030).
+        prior_entry = accumulated_by_ref.get(canonical_ref) or {
+            "failure_history": state.prior_failure_history_by_ref.get(canonical_ref) or []
+        }
+        merged_entry: dict = {"canonical_ref": canonical_ref, **entry}
+        history = accumulate_failure_history(prior_entry, merged_entry)
+        if history:
+            merged_entry["failure_history"] = history
+        accumulated_by_ref[canonical_ref] = merged_entry
+    persist_accumulated_story_state(
+        state.context.sprint_id,
+        state.context.resolved.name,
+        state.context.config.project_root,
+        list(accumulated_by_ref.values()),
+    )
+
+
+def _persist_story_landing(
+    state: SprintExecutionState, slug: str, result: CoordinatorResult
+) -> None:
+    """Re-persist a dispatched story's landing evidence once it resolves.
+
+    ``_persist_current_story_result`` runs before the landing step, so the
+    entry it writes records the landing as *owed*. Every site that later
+    resolves a landing — immediate integration, the pending-integration
+    sweep, queued-PR polling, sprint wrap-up — calls this so the durable
+    record matches reality before the next re-exec can read it. Without it a
+    story that genuinely landed would stay recorded as landing-owed and be
+    stranded on the next generation instead of reconciled.
+    """
+    task_ctx = state.context.slug_to_context.get(slug)
+    if task_ctx is None:
+        return
+    canonical_ref = task_ctx[2]
+    entry = state.current_story_entries_by_ref.get(canonical_ref)
+    if entry is None:
+        return
+    entry.update(_landing_evidence_fields(result))
+    _persist_accumulated_story_entries(state)
+
+
+def _persist_current_story_result(
+    state: SprintExecutionState,
+    slug: str,
+    result: CoordinatorResult,
     *,
-    auto_merge: bool = False,
-    interactive: bool = False,
-    notify: bool = False,
-    resume: bool = False,
-    reexec: bool = False,
-    state_update_fn: "Callable[[dict], None] | None" = None,
-    no_pull: bool = False,
-    run_id: str | None = None,
-    dropped_slugs: "dict[str, str] | None" = None,
-    skipped_issues: "list | None" = None,
-    entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None,
-    force: bool = False,
-    live_story_slugs: "set[str] | None" = None,
-    unresolved_live_slugs: "set[str] | None" = None,
-    accept_unmeasured_spend: Sequence[str] | None = None,
-    accept_unmeasured_reason: str | None = None,
-) -> SprintResult:
+    started_at: datetime.datetime,
+    finished_at: datetime.datetime,
+) -> None:
+    task_ctx = state.context.slug_to_context.get(slug)
+    if task_ctx is None:
+        return
+    # Every terminal path for a dispatched story lands here (completion,
+    # timeout, exception), so this is the reliable record of which stories
+    # actually consumed a coordinator run this generation — and therefore
+    # which ones had a seeded prior cost overwritten by transition().
+    state.ran_this_generation.add(slug)
+    task, _source, canonical_ref = task_ctx
+    display_key = (
+        f"Issue #{canonical_ref.split(':')[1]}"
+        if canonical_ref.startswith("issue:")
+        else canonical_ref
+    )
+    preflight = (
+        "cached"
+        if getattr(result.state, "preflight_cached", False)
+        else (result.state.preflight_verdict or "PROCEED")
+    )
+    outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else result.phase.name
+    outcome_source = (
+        "preflight_verdict" if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE" else None
+    )
+    _story_cost = _story_reported_cost(result.state, state.story_cost_adjustments.get(slug, 0.0))
+    state.current_story_entries_by_ref[canonical_ref] = {
+        "path": display_key,
+        "slug": slug,
+        "outcome": outcome,
+        "outcome_source": outcome_source,
+        "verdict": None,
+        "cost_usd": _story_cost,
+        # Spend against BOTH governors (#2169): the story's own band-derived
+        # allocation and the sprint ceiling. An allocation shortfall that
+        # happened while sprint headroom remained is only visible as such
+        # when both numbers sit on the same row.
+        "story_allocation": _story_allocation_entry(state, result.state, _story_cost),
+        "story_run_id": state.context.run_id,
+        "preflight": preflight,
+        "preflight_original_verdict": getattr(
+            result.state, "preflight_cached_original_verdict", None
+        ),
+        "preflight_source_run_id": getattr(result.state, "preflight_cached_from_run_id", None),
+        # A story dispatched on a preflight that produced no evidence is
+        # still a story this run proceeded on unfounded values. Recording it
+        # on the run's own row is what makes the condition countable from
+        # the sprint record instead of from a log line at the moment of
+        # failure — the property that let it repeat unnoticed for months
+        # (#2346). Escalated stories carry it too: failure_action='escalate'
+        # is the half that stopped, and it belongs on the same row.
+        **preflight_degraded_row_fields(result.state),
+        "error": result.state.error,
+        "error_type": result.state.error_type,
+        "outcome_code": result.state.error_type or outcome.lower(),
+        # Landing evidence recorded beside the phase, because the phase alone
+        # cannot say whether the story landed: this entry is written the
+        # moment the coordinator returns, and for an approved story that is
+        # BEFORE _attempt_integration runs. A re-exec in that window used to
+        # leave a bare ``outcome: DONE`` that the next generation read as
+        # proof of completion for a story still unmerged on its branch
+        # (#2189). ``landing_status`` names the obligation and its state;
+        # _persist_story_landing rewrites these once landing resolves.
+        **_landing_evidence_fields(result),
+        "batch_group": getattr(result.state, "preflight_batch_group", None),
+        "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "batch": 0,
+        "depends_on": list(getattr(task, "depends_on", None) or []),
+        "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
+        "inferred_dependencies": {
+            "manifest": [
+                dep
+                for dep in (getattr(task, "depends_on", None) or [])
+                if dep not in (getattr(task, "inferred_dependencies", None) or [])
+            ],
+            "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
+        },
+    }
+    # A worker exception or timeout reaches here with the cause on its state.
+    # Carrying it structurally is what keeps it in the accumulated row: the
+    # ``error`` prose alone is a string a later generation overwrites (#2030).
+    carry_failure_cause(
+        state.current_story_entries_by_ref[canonical_ref],
+        getattr(result.state, "abnormal_termination", None),
+        prior_history=state.prior_failure_history_by_ref.get(canonical_ref),
+    )
+    _persist_accumulated_story_entries(state)
+
+
+def _record_dropped_story_audit(state: SprintExecutionState, slug: str, cause_text: str) -> dict:
+    """Write the per-run audit record for a story dropped before dispatch.
+
+    A dropped story never reaches the coordinator, so it never reaches audit
+    finalization either — which made the runs with the least recoverable
+    context the only ones with no record at all (#2030). The record written
+    here is deliberately the same shape as the worker-exception and
+    worker-timeout ones: same synthetic result, same ``error``, same
+    ``abnormal_termination`` block, differing only in ``kind``.
+
+    A drop at a re-exec boundary is not necessarily a story that never ran:
+    the generation before the boundary may have run dev, run review and
+    committed an implementation. The record it flushed as it went is carried
+    into this one, so the drop reports the phase that work reached and the
+    budget it consumed instead of the INIT/$0.00 of a story that never
+    started (#2214).
+
+    Returns the cause record so the caller can retain it in sprint state as
+    well. Best-effort: a story is never left un-dropped because its evidence
+    could not be written.
+    """
+    task_ctx = state.context.slug_to_context.get(slug)
+    if task_ctx is None:
+        return {}
+    dropped_at = datetime.datetime.now(datetime.timezone.utc)
+    try:
+        drop_result = _abnormal_story_result(
+            slug,
+            config=state.context.config,
+            sprint_name=state.context.resolved.name,
+            started_at=dropped_at,
+            error=f"Dropped before dispatch: {cause_text}",
+            error_type="LaunchGuardDrop",
+            message=f"Launch guard dropped {slug} before dispatch: {cause_text}",
+            # Never ESCALATE: the story did not escalate, it never ran, and
+            # stamping ESCALATE would mark its worktree as escalated too.
+            phase=Phase.INIT,
+        )
+        cause = build_abnormal_cause(
+            kind=ABNORMAL_LAUNCH_GUARD_DROP,
+            cause=cause_text,
+            error_type="LaunchGuardDrop",
+            phase="LAUNCH",
+            run_id=drop_result.state.run_id,
+            source="sprint.runner:launch-guard-drop",
+        )
+        drop_result.state.abnormal_termination = cause
+        prior = load_prior_generation_story_audit(
+            state.context.config.project_root,
+            state.context.resolved.name,
+            slug,
+            exclude_run_id=drop_result.state.run_id,
+        )
+        if prior is not None:
+            state.prior_generation_work[slug] = {
+                **prior.summary,
+                "recoverable_cost_usd": prior.recoverable_cost_usd,
+            }
+            _log(
+                f"CARRIED {slug}: drop record carries the prior generation's work "
+                f"(run {prior.summary['run_id']}, phase "
+                f"{prior.summary['final_phase']}, cost "
+                f"{prior.summary['cost_usd']})"
+            )
+        _write_story_audit(
+            state.context.config,
+            task_ctx[0],
+            drop_result,
+            sprint_id=state.context.sprint_id,
+            # A dropped story shares its log directory with the generation
+            # that actually ran it. Its audit.yaml is that run's evidence and
+            # must survive the drop record, not be replaced by it.
+            overwrite_story_audit=False,
+            prior_generation=prior,
+        )
+        return cause
+    except Exception as exc:  # noqa: BLE001 - evidence writing must not fail the sprint
+        _log(f"WARN {slug}: could not write drop audit record: {exc}")
+        return {}
+
+
+def _end_collision_claim(state: SprintExecutionState, slug: str, why: str) -> None:
+    """Drop a story's claim on its planned files, and the state behind it."""
+    if state.collision_claims.pop(slug, None) is not None:
+        _log(f"Collision claim released for {slug} ({why})")
+    state.claim_results.pop(slug, None)
+    state.file_footprints.pop(slug, None)
+    # Nothing throttles a claim that no longer exists, and a slug that were
+    # ever re-queued must be probed immediately rather than inheriting a
+    # timestamp from its previous landing attempt.
+    state.queued_probe_at.pop(slug, None)
+    # plan_done is what re-derives the footprint; leaving it behind would
+    # resurrect the claim on the next _release_plan_gates pass.
+    with state.phase_lock:
+        state.plan_done.pop(slug, None)
+
+
+def _apply_batch_landing_to_member(
+    state: SprintExecutionState,
+    member_slug: str,
+    task: TaskStory,
+    result: CoordinatorResult,
+    landing_status: str,
+    leader_slug: str,
+    group_id: str,
+) -> None:
+    """Give one batch member the landing verdict its leader's branch reached.
+
+    A member's changes exist only on the leader's branch, so reporting it
+    DONE while that branch failed to land would claim work that is not on
+    the base branch — the exact misreport this propagation exists to
+    prevent. A member that failed on its own merits keeps its own verdict:
+    the leader landing successfully does not retroactively approve it.
+    """
+    if not result.success:
+        return
+    if landing_status == "landed":
+        if result.landing_status == "landed":
+            return
+        result.landing_status = "landed"
+        state.merged_slugs.add(member_slug)
+        state.dag.mark_complete(member_slug)
+        _set_outcome(state, member_slug, StoryOutcome.DONE, phase=result.phase.name, landed=True)
+        _log(f"✓ {member_slug}: landed with batch leader {leader_slug}")
+    else:
+        if result.landing_status == "failed":
+            return
+        reason = (
+            f"batch group {group_id}: leader {leader_slug} failed to land; "
+            "this story's changes exist only on that branch"
+        )
+        result.landing_status = "failed"
+        result.state.error = result.state.error or reason
+        _set_outcome(
+            state,
+            member_slug,
+            StoryOutcome.MERGE_FAILED,
+            phase=result.phase.name,
+            reason=reason,
+        )
+        _log(f"✗ {member_slug}: {reason}")
+    _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
+    _times = state.story_times.get(member_slug)
+    if _times is not None:
+        _persist_current_story_result(
+            state, member_slug, result, started_at=_times[0], finished_at=_times[1]
+        )
+
+
+def _resolve_batch_leader_landing(
+    state: SprintExecutionState, leader_slug: str, landing_status: str
+) -> None:
+    """Record a batch leader's final landing status and push it to its members.
+
+    Called from every site where a leader's landing reaches a terminal
+    answer, including the queued-PR paths that resolve long after the
+    member rows were written. A no-op for stories that do not lead a batch.
+    """
+    group_id = state.batch_group_of_leader.get(leader_slug)
+    if group_id is None:
+        return
+    state.batch_leader_landing[group_id] = landing_status
+    for member_slug, (
+        member_group,
+        member_task,
+        member_result,
+    ) in list(state.batch_member_records.items()):
+        if member_group != group_id:
+            continue
+        _apply_batch_landing_to_member(
+            state, member_slug, member_task, member_result, landing_status, leader_slug, group_id
+        )
+
+
+def _resolve_queued_pr(state: SprintExecutionState, slug: str, *, blocking: bool, why: str) -> str:
+    """Poll one queued PR and apply its landing verdict everywhere it is owed.
+
+    The single site for queued-PR resolution during the work loop. Every
+    caller owes the same bookkeeping — DAG, canonical outcome, durable
+    landing evidence, audit, batch-leader propagation and, since #2234, the
+    collision claim — and the copies drifted: the dependent-dispatch gate
+    recorded neither the landing nor the claim release, so a merged parent
+    left a gated sibling parked on a claim nothing would ever clear.
+
+    With *blocking* false the PR is probed exactly once and anything short
+    of a confirmed merge returns ``"pending"``, leaving it queued for the
+    blocking poll that owns the failure verdict. Returns ``"merged"``,
+    ``"failed"`` or ``"pending"``.
+    """
+    task, result, pr_url = state.queued_prs[slug]
+    state.queued_probe_at[slug] = time.monotonic()
+    poll_result = _poll_queued_pr(
+        pr_url,
+        state.context.config.project_root,
+        state.context.config.workspace.merge_wait_timeout_seconds if blocking else 0,
+        base_branch=state.context.config.workspace.base_branch,
+    )
+    if not blocking and poll_result["status"] != "merged":
+        # A single probe cannot tell "still in the queue" from "decided
+        # against us" without re-running the wait budget, and only a merge
+        # is safe to conclude from it. Everything else stays queued.
+        return "pending"
+
+    # Out of queued_prs before the claim is reconciled: membership there is
+    # itself a reason to keep a collision claim alive.
+    del state.queued_prs[slug]
+    # The throttle only exists to pace probes of a *queued* PR. This one is
+    # decided; _end_collision_claim drops the entry on the paths that keep a
+    # claim, and this covers a resolution with no claim behind it.
+    state.queued_probe_at.pop(slug, None)
+
+    if poll_result["status"] == "merged":
+        state.merged_slugs.add(slug)
+        state.dag.mark_complete(slug)
+        result.landing_status = "landed"
+        # The immutability marker: this DONE is confirmed-landed and must
+        # not be clobbered by a later re-dispatch or wrap-up pass.
+        _set_outcome(state, slug, StoryOutcome.DONE, landed=True)
+        _persist_story_landing(state, slug, result)
+        _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
+        _resolve_batch_leader_landing(state, slug, "landed")
+        _end_collision_claim(state, slug, "queued PR merged")
+        _log(f"INFO {slug}: queued PR merged ({why}); unblocking dependents")
+        return "merged"
+
+    from ..coordinator.completion import (  # noqa: PLC0415
+        mark_merge_failed as _mark_mf,
+    )
+
+    _err = _queued_pr_failure_message(
+        poll_result, pr_url, state.context.config.workspace.merge_wait_timeout_seconds
+    )
+    _mark_mf(result.state, result, _err, result.state.branch_name)
+    _set_outcome(state, slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
+    _persist_story_landing(state, slug, result)
+    # Defensive/idempotent: the parent is normally already in the DAG's
+    # _finished set (added when its PR was queued, via the
+    # pending_integration classify branch), so its collision (soft) edge is
+    # already released; this guarantees it on any path that skipped that
+    # classification. _finished (not _completed) is what still blocks a hard
+    # depends_on dependent. Actual redispatch of a released dependent onto
+    # the current base comes from the dag.ready() re-check at the top of the
+    # deadlock-cleanup branch.
+    state.dag.mark_skipped(slug)
+    _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
+    _resolve_batch_leader_landing(state, slug, "failed")
+    _end_collision_claim(state, slug, f"queued PR {poll_result['status']}")
+    _log(f"✗ {slug}: queued PR {poll_result['status']} ({why})")
+    return "failed"
+
+
+def _service_plan_gates(
+    state: SprintExecutionState,
+) -> None:
+    """Release openable plan gates and stand down the unopenable ones."""
+    # A CLAIM_PENDING_LANDING claim is resolvable *in this run*, but only
+    # the queued-PR paths resolve it, and those run when the loop has no
+    # active workers. A worker parked at its plan gate keeps the loop busy
+    # forever, so the gate would wait on a PR that may have merged minutes
+    # ago and then open on its own 7200s timeout instead (#2234). Probe
+    # cheaply — one `gh pr view`, no queue wait — so the gate opens on the
+    # merge. The blocking polls keep sole ownership of the failure verdict.
+    if state.plan_gates and state.queued_prs:
+        _probe_now: float | None = None
+        for _q_slug in list(state.queued_prs):
+            if state.collision_claims.get(_q_slug) != CLAIM_PENDING_LANDING:
+                continue
+            # Read the clock only once a probe is actually in question: this
+            # runs on the 2s gate-service tick, and the common case has no
+            # queued PR holding a claim at all.
+            if _probe_now is None:
+                _probe_now = time.monotonic()
+            _last = state.queued_probe_at.get(_q_slug)
+            if _last is not None and _probe_now - _last < _QUEUED_CLAIM_PROBE_SECONDS:
+                continue
+            _resolve_queued_pr(state, _q_slug, blocking=False, why="holding a collision gate")
+
+    for _sd_slug in _release_plan_gates(
+        state.plan_done,
+        state.file_footprints,
+        state.plan_gates,
+        state.active,
+        state.phase_lock,
+        state.collision_claims,
+        gate_hold_fn=state.publish_gate_hold,
+    ):
+        _sd_gate = state.plan_gates.pop(_sd_slug, None)
+        state.gate_stood_down[_sd_slug] = (
+            "collision gate stood down: the files it planned to change are held "
+            "by preserved work that has not landed"
+        )
+        # stop_event BEFORE the gate, same ordering as the deadline teardown:
+        # the worker must observe the shutdown flag when the gate wakes it.
+        _sd_evt = state.stop_events.get(_sd_slug)
+        if _sd_evt is not None:
+            _sd_evt.set()
+        if _sd_gate is not None:
+            _sd_gate.set()
+
+
+def _attempt_integration(
+    state: SprintExecutionState,
+    slug: str,
+    task: TaskStory,
+    result: CoordinatorResult,
+) -> bool:
+    """Attempt to land an approved story under integration_lock.
+
+    Returns True when integration was attempted (success, failure, or queued).
+    Returns False when dependencies are unmet — caller should retry later.
+
+    This is the sole merge site for sprint execution.  Workers never merge;
+    they set landing_status="pending_integration" and return.
+    """
+    if not all(dep in state.merged_slugs for dep in task.depends_on):
+        result.landing_status = "pending_integration"
+        _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
+        return False
+
+    branch = state.context.config.workspace.branch_pattern.format(slug=slug)
+    wt = state.context.config.project_root / state.context.config.workspace.path_pattern.format(
+        slug=slug
+    )
+
+    # Read effective mode from the pending merge action stored by _finalize_approve.
+    # Falls back to config.workspace.on_approve for legacy/direct callers.
+    effective_on_approve = (result.merge or {}).get(
+        "action"
+    ) or state.context.config.workspace.on_approve
+    story_run_id = result.state.run_id or state.sprint_run_id
+
+    story_logger = StructuredLogger(
+        run_id=story_run_id,
+        project=state.context.config.project,
+        task=task.slug,
+        log_file=state.context.config.log.log_file,
+        enabled=state.context.config.log.enabled,
+        project_root=state.context.config.project_root,
+    )
+
+    with integration_lock(state.context.config.project_root):
+        from ..coordinator.completion import (  # noqa: PLC0415
+            land_story,
+            resolve_landing_review,
+        )
+
+        parsed_review = resolve_landing_review(result.state)
+        merge_info, landing_status = land_story(
+            state.context.config,
+            task,
+            branch,
+            wt,
+            parsed_review,
+            result.state,
+            effective_on_approve,
+            logger=story_logger,
+            run_id=story_run_id,
+        )
+
+    result.merge = merge_info
+    result.landing_status = landing_status
+    if landing_status == "failed":
+        from ..coordinator.completion import mark_merge_failed  # noqa: PLC0415
+
+        mark_merge_failed(
+            result.state,
+            result,
+            merge_info.get("error"),
+            branch,
+            inherited_dev_residue=bool(merge_info.get("inherited_dev_residue")),
+        )
+
+    # The accumulated entry was written before this landing ran and records
+    # the landing as owed. Now that it has resolved either way, rewrite it so
+    # the durable record a later re-exec reads matches what happened (#2189).
+    _persist_story_landing(state, slug, result)
+
+    if merge_info.get("merged"):
+        state.merged_slugs.add(slug)
+        state.dag.mark_complete(slug)
+        _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
+        _resolve_batch_leader_landing(state, slug, "landed")
+        if effective_on_approve == "merge-pr" and not merge_info.get("auto_merge_queued", False):
+            ci_result = poll_required_checks(
+                state.context.config.project_root,
+                state.context.config.workspace.base_branch,
+                state.context.config.workspace.ci_check_timeout_seconds,
+            )
+            if ci_result["status"] in {"fail", "timeout"}:
+                failing = ", ".join(ci_result["failing_checks"]) or "pending required checks"
+                # A check that stopped without a verdict is not a red result;
+                # naming it keeps the halt reason honest about what is known
+                # versus merely unknown (#2270).
+                unjudged = ", ".join(ci_result.get("unjudged_checks") or [])
+                state.stop.stop(
+                    "Required CI checks "
+                    f"{ci_result['status']} after merging {slug} "
+                    f"at {ci_result['sha']}: {failing}"
+                    + (f" (no verdict produced by: {unjudged})" if unjudged else ""),
+                    halt_slug=slug,
+                )
+                _log(
+                    f"HALT {slug}: required CI checks {ci_result['status']} "
+                    f"for {ci_result['sha']} ({failing})"
+                )
+        return True
+
+    if merge_info.get("merge_queued"):
+        state.queued_prs[slug] = (task, result, merge_info["pr_url"])
+        _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
+        _log(f"INFO {slug}: PR auto-merge queued; waiting for GitHub to report MERGED")
+        return True
+
+    result.state.error = merge_info.get("error") or "integration failed"
+    _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
+    _write_story_audit(state.context.config, task, result, sprint_id=state.context.sprint_id)
+    _resolve_batch_leader_landing(state, slug, "failed")
+    return True
+
+
+def run_sprint(context: SprintRunContext) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
-    Accepts either a ``Path`` to a sprint.yaml manifest (backward-compatible)
-    or a pre-built ``ResolvedSprint`` object (produced by query mode or
-    ``resolve_from_manifest``).  The function body has no path-shaped
-    assumptions — it operates entirely on the resolved object.
+    Takes the run's context and nothing else. Everything a sprint consults is
+    settled before the first story is dispatched, so it arrives as one named,
+    frozen object rather than as a parameter list that grows by one every time
+    the sprint learns to consult something new. Use
+    :meth:`SprintRunContext.for_sprint` to build it from a manifest path or a
+    pre-resolved sprint; the run body has no path-shaped assumptions left.
+
+    Everything the run *mutates* lives on the :class:`SprintExecutionState` this
+    function builds from the context — never in this frame, so a function that
+    needs sprint state can be moved out of here by taking the state (#2399).
 
     When max_parallel > 1, stories with no unmet dependencies are launched
     concurrently up to max_parallel. Budget is pooled across all workers.
@@ -3586,52 +4390,16 @@ def run_sprint(
     sequential runner.
 
     Args:
-        config: Loaded ForgeConfig for the project.
-        sprint: Either a Path to sprint.yaml or a pre-built ResolvedSprint.
-        auto_merge: If True, merge each story's branch after APPROVE.
-        interactive: If True, pause for human review at each story.
-        resume: If True, triage each story to find the optimal re-entry point
-            (skip_merged / review / dev / full) and carry forward prior costs.
-        reexec: True when this process was re-launched via ``os.execv`` after a
-            mid-sprint source change (workspace.pull_base_branch). Such a launch
-            keeps the original argv (no ``--resume``) but must be treated as
-            resume-equivalent for merged-state reconciliation: every manifest
-            story is triaged against merged state before dispatch so a story
-            whose PR already landed is never re-entered through WORKSPACE.
-        live_story_slugs: Stories of this same sprint generation whose agent
-            process groups survived the re-exec (resolved by the CLI via
-            ``theforge.sprint.live_stories``). Their worktrees are this run's own
-            live work: protected from the orphan sweep, excluded from the passes
-            that would collide with a running agent, and dispatched through the
-            deferred path that waits for that agent and then resumes the story —
-            this process is the only one that can still finish them. Their
-            existence is also the evidence that startup-only checks (the baseline
-            gate) no longer hold their precondition.
-        unresolved_live_slugs: Stories whose liveness could not be established
-            after a re-exec (unreadable/absent agent sidecars). Treated exactly
-            like ``live_story_slugs`` everywhere protection or deferral matters —
-            an unresolved lookup is not evidence that no agent is running — but
-            reported honestly as unresolved rather than as observed live work.
-        accept_unmeasured_spend: Unmeasured-spend source ids the operator has
-            deliberately accepted (``issue-2206`` or ``carried:issue-2206`` —
-            both name the same work). Each is resolved against the records the
-            failing run already wrote; one with no derivable ceiling is REFUSED
-            with the reason logged, and the budget guard stays closed on it. An
-            accepted source's ceiling is charged to budget verification in place
-            of the unknown, and the resolution is persisted so a later resume
-            reads it rather than requiring the flag again (#2310).
-        accept_unmeasured_reason: Free-text reason recorded on each acceptance
-            made by this invocation.
+        context: The sprint's run context — see :class:`SprintRunContext` for
+            what each field means and :meth:`SprintRunContext.for_sprint` for
+            building one.
 
     Returns:
         SprintResult with per-story outcomes and aggregate stats.
     """
-    if isinstance(sprint, ResolvedSprint):
-        resolved = sprint
-    else:
-        # Backward-compat: Path was passed — resolve via the shared helper so
-        # tests can patch the boundary and query-mode behavior stays aligned.
-        resolved = resolve_from_manifest(sprint, config.project_root)
+    # The context is rebound (never mutated) exactly twice below: once for the
+    # adaptively scaled gate timeout, once for the sprint id this run resolves.
+    _ctx = context
 
     # A re-exec'd launch (source changed mid-sprint) keeps the original argv and
     # therefore never carries ``--resume``, but it MUST run the same merged-state
@@ -3641,41 +4409,35 @@ def run_sprint(
     # prior (killed) generation is re-entered through WORKSPACE and its DONE
     # outcome is overwritten with a bogus FAILED. Treat re-exec as
     # resume-equivalent for all reconciliation/skip paths.
-    reconcile = resume or reexec
+    reconcile = _ctx.resume or _ctx.reexec
 
     # Stories still executing from before the re-exec. Everything downstream that
     # would otherwise treat their state as foreign — the orphan worktree sweep,
     # the baseline gate's "nothing has started yet" precondition, the gate-timeout
-    # load model — is told about them explicitly.
-    _confirmed_live_slugs: set[str] = {s for s in (live_story_slugs or set()) if s}
-    _unresolved_live_slugs: set[str] = {
-        s for s in (unresolved_live_slugs or set()) if s and s not in _confirmed_live_slugs
-    }
-    # One set for every consumer that must not treat the worktree as foreign.
-    # Unresolved liveness joins confirmed-live here deliberately: the failure to
-    # resolve is not evidence the agent is gone (#2079).
-    _live_story_slugs: set[str] = _confirmed_live_slugs | _unresolved_live_slugs
+    # load model — is told about them explicitly. The context normalises the two
+    # sets and joins them as ``live_slugs``.
+    _live_story_slugs: set[str] = set(_ctx.live_slugs)
 
     # Establish that the agents are reachable BEFORE committing wall clock or
     # budget to them (#1952). This runs ahead of the baseline gate, the base
     # pull, and every worktree touch, so a dead credential costs seconds and
     # leaves no story with a verdict — the run simply never happened.
-    enforce_sprint_auth_readiness(config, log=_log)
+    enforce_sprint_auth_readiness(_ctx.config, log=_log)
 
     # Defensive scrub for the root checkout used by sprint commands.
-    _scrub_root_forge_artifacts(config)
-    sweep_orphan_worktrees(config.project_root, config, protected_slugs=_live_story_slugs)
+    _scrub_root_forge_artifacts(_ctx.config)
+    sweep_orphan_worktrees(
+        _ctx.config.project_root, _ctx.config, protected_slugs=_live_story_slugs
+    )
 
     max_parallel = (
-        resolved.max_parallel if resolved.max_parallel is not None else config.sprint.max_parallel
+        _ctx.resolved.max_parallel
+        if _ctx.resolved.max_parallel is not None
+        else _ctx.config.sprint.max_parallel
     )
-    base_worker_timeout_seconds = config.sprint.worker_timeout_seconds
+    base_worker_timeout_seconds = _ctx.config.sprint.worker_timeout_seconds
 
-    # Build unified context mapping: (task, source, canonical_ref) per entry
-    task_entries = resolved.stories
-    slug_to_context: dict[str, tuple[TaskStory, StorySource, str]] = {
-        task.slug: (task, source, canonical_ref) for task, source, canonical_ref in task_entries
-    }
+    task_entries = _ctx.resolved.stories
     dependent_slugs = {dep for task, _src, _ref in task_entries for dep in task.depends_on}
 
     # Dependency parents this sprint can actually dispatch and integrate itself.
@@ -3685,7 +4447,7 @@ def run_sprint(
     # checkout, so a landing obligation derived from the raw set would refuse a
     # PR-landing sprint whose only edge points outside the manifest (#2048
     # review iteration 2).
-    in_manifest_dependency_parents = dependent_slugs & set(slug_to_context)
+    in_manifest_dependency_parents = dependent_slugs & set(_ctx.slug_to_context)
 
     # Which landing paths in this sprint actually merge into the project-root
     # checkout? Both flags mirror the effective-mode resolution the workers
@@ -3705,11 +4467,11 @@ def run_sprint(
     #     ``"pr"`` or ``"none"``. Under ``"merge-pr"`` the parent lands through
     #     its own PR and never touches the project-root checkout — the same
     #     carve-out the ``auto_enabled_dependency_merges`` warning makes below.
-    config_lands_in_project_root = config.workspace.on_approve == "merge" or (
-        auto_merge and max_parallel <= 1
+    config_lands_in_project_root = _ctx.config.workspace.on_approve == "merge" or (
+        _ctx.auto_merge and max_parallel <= 1
     )
     dependency_parents_land_in_project_root = (
-        max_parallel <= 1 or config.workspace.on_approve != "merge-pr"
+        max_parallel <= 1 or _ctx.config.workspace.on_approve != "merge-pr"
     )
 
     # Stories of this sprint whose agent survived the re-exec. They stay in the
@@ -3718,7 +4480,7 @@ def run_sprint(
     # whatever it left behind. Excluded only from the work that would collide
     # with a running agent — startup triage, intake, batch preflight — because
     # each of those reads or writes a worktree that is being mutated right now.
-    _inflight_slugs: set[str] = {s for s in _live_story_slugs if s in slug_to_context}
+    _inflight_slugs: set[str] = {s for s in _live_story_slugs if s in _ctx.slug_to_context}
 
     # Does ANY story in this sprint merge into the project-root base checkout?
     # This is a sprint-wide question, not a per-story one: story N merging
@@ -3731,8 +4493,10 @@ def run_sprint(
     # same one ``effective_am`` tests per story. The raw edge-target set would
     # also count purely external references, which no story here ever merges.
     _sprint_lands_locally = coordinator_workspace._base_branch_lands_locally(
-        config,
-        auto_merge=(max_parallel <= 1 and (auto_merge or bool(in_manifest_dependency_parents))),
+        _ctx.config,
+        auto_merge=(
+            max_parallel <= 1 and (_ctx.auto_merge or bool(in_manifest_dependency_parents))
+        ),
     )
 
     total = len(task_entries)
@@ -3744,15 +4508,15 @@ def run_sprint(
         from theforge.cli.substrate import emit_provenance
 
         emit_provenance(
-            cwd=config.project_root,
-            bypass_mismatch=bool(force),
+            cwd=_ctx.config.project_root,
+            bypass_mismatch=bool(_ctx.force),
         )
     except Exception:
         # Provenance is operator-visible information, not a correctness gate;
         # never let a detection failure block sprint start.
         pass
     print(
-        f'[sprint] "{resolved.name}"  {total} {noun}  budget=${resolved.budget_usd:.2f}'
+        f'[sprint] "{_ctx.resolved.name}"  {total} {noun}  budget=${_ctx.resolved.budget_usd:.2f}'
         f"  parallel={max_parallel}",
         file=sys.stderr,
         flush=True,
@@ -3766,11 +4530,11 @@ def run_sprint(
     # config-load time (theforge.config.load), so a malformed value here is
     # not a recoverable "mock or partial config" case — it is a config bug
     # that must fail fast rather than silently disable adaptive scaling.
-    _baseline_gate_timeout = int(config.validation.gate_timeout or 600)
+    _baseline_gate_timeout = int(_ctx.config.validation.gate_timeout or 600)
     _host_cores = os.cpu_count() or 1
-    _gate_cpu_raw = config.validation.gate_cpu_cores
+    _gate_cpu_raw = _ctx.config.validation.gate_cpu_cores
     _gate_cpu_cores = int(_gate_cpu_raw) if _gate_cpu_raw else None
-    _mode_raw = config.validation.gate_timeout_scale
+    _mode_raw = _ctx.config.validation.gate_timeout_scale
     if _mode_raw is None:
         _mode = "adaptive"
     elif isinstance(_mode_raw, str):
@@ -3814,15 +4578,21 @@ def run_sprint(
         _gate_timeout_resolution is not None
         and _gate_timeout_resolution.effective_timeout != _baseline_gate_timeout
     ):
-        config = replace(
-            config,
-            validation=replace(
-                config.validation,
-                gate_timeout=_gate_timeout_resolution.effective_timeout,
+        # Rebind the context, not a frame local: the scaled timeout has to be the
+        # one every consulted-config read below sees, and there is only one place
+        # a sprint reads its config from.
+        _ctx = replace(
+            _ctx,
+            config=replace(
+                _ctx.config,
+                validation=replace(
+                    _ctx.config.validation,
+                    gate_timeout=_gate_timeout_resolution.effective_timeout,
+                ),
             ),
         )
 
-    for warning in _agent_cost_tracking_warnings(config):
+    for warning in _agent_cost_tracking_warnings(_ctx.config):
         _log(warning)
     for task, _src, _ref in task_entries:
         for phrase in task.dependency_warnings:
@@ -3833,67 +4603,50 @@ def run_sprint(
                 "or leading issue metadata"
             )
 
-    # Sprint-level structured logger
-    _cli_run_id = run_id
-    _sprint_run_id = _generate_run_id()
-    _sprint_logger = StructuredLogger(
-        run_id=_sprint_run_id,
-        project=config.project,
-        task=resolved.name,
-        log_file=config.log.log_file,
-        enabled=config.log.enabled,
-        project_root=config.project_root,
-    )
-    _sprint_logger.emit(
-        "run_start",
-        stories=[ref for _, _, ref in task_entries],
-        budget_usd=resolved.budget_usd,
-        max_parallel=max_parallel,
-        resume=resume,
-    )
-
-    # Create sprint-level log directory
-    _sprint_log_dir = config.project_root / ".forge" / "logs" / resolved.name
-    try:
-        _sprint_log_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        _sprint_log_dir = None  # type: ignore[assignment]
+    _cli_run_id = _ctx.run_id
 
     # Stable sprint_id — does not change across run_id rollovers or --resume.
     # Used to aggregate story outcomes across all worker-process boundaries.
     _sprint_id: str | None = None
     try:
-        _sprint_id = _get_or_create_sprint_id(resolved.name, config.project_root)
+        _sprint_id = _get_or_create_sprint_id(_ctx.resolved.name, _ctx.config.project_root)
     except Exception:
         pass
 
-    # Everything the sprint consults is settled by this point, so bind it once
-    # into a named, frozen context and hold the mutable half in a named state
-    # object. Below this line the nested functions read ``_ctx`` and write
-    # ``_sprint_state``; the two questions the old ``nonlocal`` writes left open
-    # — what accumulates cost, and what decides the sprint has stopped — are
-    # answered by ``_sprint_state.cost`` and ``_sprint_state.stop`` and by
-    # nothing else.
-    _ctx = SprintRunContext(
-        config=config,
-        resolved=resolved,
-        sprint_id=_sprint_id,
-        run_id=run_id,
-        auto_merge=auto_merge,
-        interactive=interactive,
-        notify=notify,
-        resume=resume,
-        reexec=reexec,
-        no_pull=no_pull,
-        force=force,
-        state_update_fn=state_update_fn,
-        dropped_slugs=dropped_slugs,
-        skipped_issues=skipped_issues,
-        entry_intake_outcomes=entry_intake_outcomes,
-        live_story_slugs=frozenset(_confirmed_live_slugs),
-        unresolved_live_slugs=frozenset(_unresolved_live_slugs),
+    # Everything the sprint consults is settled by this point, so the context is
+    # final from here on and the mutable half gets its own named object. Below
+    # this line the nested functions read ``_ctx`` and write ``_sprint_state``,
+    # and nothing a relocated function needs is held in this frame: the two
+    # questions the old ``nonlocal`` writes left open — what accumulates cost,
+    # and what decides the sprint has stopped — are answered by
+    # ``_sprint_state.cost`` and ``_sprint_state.stop`` and by nothing else.
+    _ctx = replace(_ctx, sprint_id=_sprint_id)
+    _sprint_state = SprintExecutionState.for_run(_ctx)
+
+    # Sprint-level structured logger
+    _sprint_state.sprint_run_id = _generate_run_id()
+    _sprint_logger = StructuredLogger(
+        run_id=_sprint_state.sprint_run_id,
+        project=_ctx.config.project,
+        task=_ctx.resolved.name,
+        log_file=_ctx.config.log.log_file,
+        enabled=_ctx.config.log.enabled,
+        project_root=_ctx.config.project_root,
     )
-    _sprint_state = SprintExecutionState(context=_ctx)
+    _sprint_logger.emit(
+        "run_start",
+        stories=[ref for _, _, ref in task_entries],
+        budget_usd=_ctx.resolved.budget_usd,
+        max_parallel=max_parallel,
+        resume=_ctx.resume,
+    )
+
+    # Create sprint-level log directory
+    _sprint_log_dir = _ctx.config.project_root / ".forge" / "logs" / _ctx.resolved.name
+    try:
+        _sprint_log_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        _sprint_log_dir = None  # type: ignore[assignment]
 
     # Pin the configuration this sprint runs under (#1980). Captured once, on
     # first entry, and reloaded on every re-entry — --resume, and the re-exec
@@ -3926,12 +4679,8 @@ def run_sprint(
             _log(f"⚠ {config_snapshot_mod.describe_drift(_entry_drift)}")
             _sprint_logger.emit("sprint_config_drift", **_entry_drift)
 
-    # Failure causes already on disk for this sprint, by canonical ref. Read
-    # unconditionally — not just when resuming — because every generation
-    # rewrites the accumulated state file, so a plain re-run of the same sprint
-    # would otherwise erase the previous attempt's recorded cause before anything
-    # had a chance to read it (#2030).
-    _prior_failure_history_by_ref: dict[str, list[dict]] = {}
+    # Failure causes already on disk for this sprint (see
+    # SprintExecutionState.prior_failure_history_by_ref).
     if _ctx.sprint_id:
         from .audit import _load_accumulated_stories  # noqa: PLC0415
 
@@ -3941,7 +4690,7 @@ def run_sprint(
             _ref = _prior.get("canonical_ref")
             _history = accumulate_failure_history(_prior, None)
             if isinstance(_ref, str) and _ref and _history:
-                _prior_failure_history_by_ref[_ref] = _history
+                _sprint_state.prior_failure_history_by_ref[_ref] = _history
 
     # Landing precondition, first pass: a dirty project root makes every local
     # merge refuse, and discovering that at landing means the story's full
@@ -4054,20 +4803,18 @@ def run_sprint(
     # inheriting under a ``carried:`` prefix, so an operator acceptance made for
     # an earlier occurrence never absorbs a new unknown nobody has bounded
     # (#2310).
-    _cost_ledger = _sprint_state.cost
-
     # Entry-level intake remediation runs in the CLI before run_sprint and
     # spends the same sprint-authorized budget; fold its agent cost into
     # the sprint total so operator-visible accounting matches actual spend.
     if _ctx.entry_intake_outcomes:
         for _issue_num, _entry_outcome in _ctx.entry_intake_outcomes.items():
             if _intake_outcome_cost_measured(_entry_outcome) is None:
-                _cost_ledger.flag_unmeasured_here(f"entry-intake:issue-{_issue_num}")
+                _sprint_state.cost.flag_unmeasured_here(f"entry-intake:issue-{_issue_num}")
         _entry_intake_cost = sum(
             _intake_outcome_cost(o) for o in _ctx.entry_intake_outcomes.values()
         )
         if _entry_intake_cost > 0.0:
-            _cost_ledger.add(_entry_intake_cost)
+            _sprint_state.cost.add(_entry_intake_cost)
             _log(
                 f"Entry-intake remediation cost: ${_entry_intake_cost:.4f} "
                 "(rolled into sprint total)"
@@ -4103,7 +4850,6 @@ def run_sprint(
     #     actually ran.
     unseeded_prior_story_cost: dict[str, float] = {}
     seeded_prior_story_cost: dict[str, float] = {}
-    ran_this_generation: set[str] = set()
     # Pre-populate from prior-run accumulated state so cross-process resume
     # invocations see the full logical sprint in counts and projections.
     # Stories present in the current run are seeded only when their prior
@@ -4117,7 +4863,7 @@ def run_sprint(
     if _ctx.sprint_id is not None:
         from .audit import _load_accumulated_stories as _preload  # noqa: PLC0415
 
-        _current_run_slugs = set(slug_to_context.keys())
+        _current_run_slugs = set(_ctx.slug_to_context.keys())
         _succeeded_outcomes = {"DONE", "ALREADY_DONE"}
 
         def _prior_cost_of(prior: dict) -> float:
@@ -4140,7 +4886,7 @@ def run_sprint(
             # start with an empty ledger and enforce the cap against a carried
             # lower bound as if it were complete (#1992).
             if "cost_usd" in _prior and _prior.get("cost_usd") is None:
-                _cost_ledger.note_carried_unmeasured(f"carried:{_prior_slug}")
+                _sprint_state.cost.note_carried_unmeasured(f"carried:{_prior_slug}")
             _prior_outcome = (_prior.get("outcome") or "").upper()
             if _prior_slug in _current_run_slugs and _prior_outcome not in _succeeded_outcomes:
                 _defer_prior_cost(_prior_slug, _prior)
@@ -4222,7 +4968,7 @@ def run_sprint(
         """
         _occurrence = occurrence or (
             _OCCURRENCE_CURRENT
-            if raw in _cost_ledger.current_generation_unmeasured
+            if raw in _sprint_state.cost.current_generation_unmeasured
             else _OCCURRENCE_CARRIED
         )
         key = (_occurrence, unmeasured_spend_policy.normalize_source_id(raw))
@@ -4249,19 +4995,20 @@ def run_sprint(
             if _restored is not None:
                 accepted_unmeasured[_restored.source] = _restored
     _newly_accepted = False
-    if accept_unmeasured_spend:
+    if _ctx.accept_unmeasured_spend:
         # The set an operator could possibly be talking about: what this run has
         # already flagged, plus what the prior generation recorded. Accepting a
         # name outside it would record a resolution of nothing.
         _known_sources = {
-            unmeasured_spend_policy.normalize_source_id(s) for s in _cost_ledger.unmeasured_sources
+            unmeasured_spend_policy.normalize_source_id(s)
+            for s in _sprint_state.cost.unmeasured_sources
         }
         _known_sources.update(
             unmeasured_spend_policy.normalize_source_id(s)
             for s in _prior_unmeasured_spend_sources(_ctx.config.project_root, _ctx.sprint_id)
         )
         _accepted_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        for _raw_accept in accept_unmeasured_spend:
+        for _raw_accept in _ctx.accept_unmeasured_spend:
             _normalized = unmeasured_spend_policy.normalize_source_id(_raw_accept)
             if not _normalized:
                 continue
@@ -4279,7 +5026,7 @@ def run_sprint(
             _accepted = unmeasured_spend_policy.accept(
                 _source,
                 accepted_at=_accepted_at,
-                reason=accept_unmeasured_reason,
+                reason=_ctx.accept_unmeasured_reason,
             )
             if _accepted is None:
                 _log(
@@ -4315,48 +5062,20 @@ def run_sprint(
                 "again on the next one."
             )
 
-    _state_writer: SprintStateWriter | None = None
-    _stop = _sprint_state.stop
-
-    def _set_outcome(slug: str, outcome: StoryOutcome | str, **fields: object) -> None:
-        """Transition a story's canonical outcome.
-
-        All count-affecting events flow through this helper so the canonical
-        structure is the only place the runner records outcomes. The state
-        writer (when present) shares the same SprintStoryState instance and
-        the on-disk live status file is updated in lockstep.
-        """
-        if not _sprint_state.stories.has(slug):
-            ctx = slug_to_context.get(slug)
-            if ctx is not None:
-                _t, _src, _ref = ctx
-                _key = f"Issue #{_ref.split(':')[1]}" if _ref.startswith("issue:") else _ref
-                _sprint_state.stories.register(slug, _key, canonical_ref=_ref)
-            else:
-                _sprint_state.stories.register(slug, slug)
-        canonical_outcome = coerce_outcome(outcome)
-        if canonical_outcome.is_terminal and "finished_at" not in fields:
-            fields["finished_at"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        if _state_writer is not None:
-            # Writer holds the same instance; this both transitions outcome
-            # AND atomically rewrites the live .state file.
-            _state_writer.update(slug, status=outcome, **fields)
-        else:
-            _sprint_state.stories.transition(slug, outcome=outcome, **fields)
-
     # Derive slug_to_spec from unified context mapping
-    slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in slug_to_context.items()}
+    slug_to_spec: dict[str, str] = {slug: ctx[2] for slug, ctx in _ctx.slug_to_context.items()}
 
     recovered_prior_started_at: datetime.datetime | None = None
-    recovered_prior_entries_by_ref: dict[str, dict] = {}
     # Resume mode (and re-exec, treated as resume-equivalent): triage all stories
     # and carry forward prior costs.
     triages: dict[str, StoryTriage] = {}
     if reconcile:
-        _recovered_prior_cost, recovered_prior_started_at, recovered_prior_entries_by_ref = (
-            _read_prior_sprint_accounting(_ctx.config.project_root, _ctx.sprint_id)
-        )
-        _cost_ledger.set_prior(_recovered_prior_cost)
+        (
+            _recovered_prior_cost,
+            recovered_prior_started_at,
+            _sprint_state.recovered_prior_entries_by_ref,
+        ) = _read_prior_sprint_accounting(_ctx.config.project_root, _ctx.sprint_id)
+        _sprint_state.cost.set_prior(_recovered_prior_cost)
         if _recovered_prior_cost > 0.0:
             _log(f"Resuming with prior cost: ${_recovered_prior_cost:.2f}")
         if _prior_sprint_cost_incomplete(_ctx.config.project_root, _ctx.sprint_id):
@@ -4381,7 +5100,7 @@ def run_sprint(
                 # acceptable sources come across.
                 _carried_already = {
                     unmeasured_spend_policy.normalize_source_id(s)
-                    for s in _cost_ledger.unmeasured_sources
+                    for s in _sprint_state.cost.unmeasured_sources
                 }
                 for _prior_norm in unmeasured_spend_policy.acceptable_prior_sources(
                     _prior_unmeasured_spend_sources(_ctx.config.project_root, _ctx.sprint_id)
@@ -4393,15 +5112,15 @@ def run_sprint(
                     # It is still spend this sprint carries, so it goes in the
                     # ledger by name: its ceiling gets charged, the audit records
                     # it, and the total stays a lower bound.
-                    _cost_ledger.note_carried_unmeasured(f"carried:{_prior_norm}")
+                    _sprint_state.cost.note_carried_unmeasured(f"carried:{_prior_norm}")
                     _carried_already.add(_prior_norm)
             else:
-                _cost_ledger.note_carried_unmeasured("carried:prior-generation")
+                _sprint_state.cost.note_carried_unmeasured("carried:prior-generation")
         if recovered_prior_started_at is not None and recovered_prior_started_at < started_at:
             started_at = recovered_prior_started_at
         _log("Triaging specs...")
         _publish_sprint_phase(SPRINT_PHASE_TRIAGE)
-        for slug, (task, _src, canonical_ref) in slug_to_context.items():
+        for slug, (task, _src, canonical_ref) in _ctx.slug_to_context.items():
             if slug in _inflight_slugs:
                 # Triage reads the worktree to decide the re-entry point, and
                 # this one is being written to by a running agent right now — any
@@ -4433,8 +5152,8 @@ def run_sprint(
     # measured against run B's record and an acceptance the operator legitimately
     # made would be silently discarded (#2310 review).
     carried_occurrence_ids: dict[str, str | None] = {}
-    _carried_current = _cost_ledger.current_generation_unmeasured
-    for _carried_raw in _cost_ledger.unmeasured_sources:
+    _carried_current = _sprint_state.cost.current_generation_unmeasured
+    for _carried_raw in _sprint_state.cost.unmeasured_sources:
         if _carried_raw in _carried_current:
             continue
         _carried_origin = _describe_unmeasured_source(
@@ -4461,10 +5180,10 @@ def run_sprint(
         landing fields; the canonical entry is consulted for the in-run case,
         where a confirmed landing is marked with ``landed``.
         """
-        ref = canonical_ref or slug_to_context.get(slug, (None, None, None))[2]
-        record = current_story_entries_by_ref.get(ref) if ref else None
+        ref = canonical_ref or _ctx.slug_to_context.get(slug, (None, None, None))[2]
+        record = _sprint_state.current_story_entries_by_ref.get(ref) if ref else None
         if record is None:
-            _prior = recovered_prior_entries_by_ref.get(ref) if ref else None
+            _prior = _sprint_state.recovered_prior_entries_by_ref.get(ref) if ref else None
             record = _prior if isinstance(_prior, dict) else None
         if record is not None:
             return str(record.get("outcome") or "").upper() == "DONE" and landing_settled(record)
@@ -4514,7 +5233,7 @@ def run_sprint(
                 skip_slugs.add(triage.slug)
 
     # Build DAG
-    all_tasks = [ctx[0] for ctx in slug_to_context.values()]
+    all_tasks = [ctx[0] for ctx in _ctx.slug_to_context.values()]
     satisfied_slugs = resolve_satisfied_dependencies(
         all_tasks,
         project_root=_ctx.config.project_root,
@@ -4556,230 +5275,14 @@ def run_sprint(
 
         _update_state_phase(_ctx.run_id, _ctx.config.project_root, "intake-remediation")
 
-    # Per-story projection used by audit and summary writers when a slug never
-    # produces a CoordinatorResult (e.g., dropped at the intake gate, blocked
-    # by deps, or skipped pre-launch). Defined here — before the intake gate —
-    # so intake-dropped stories can populate it with their finding detail; the
-    # writers read from this dict to surface error/error_type/intake metadata
-    # that would otherwise be null in audit YAML and sprint summary YAML.
-    current_story_entries_by_ref: dict[str, dict] = {}
-
-    story_cost_adjustments: dict[str, float] = {}
-
-    def _persist_accumulated_story_entries() -> None:
-        if _ctx.sprint_id is None:
-            return
-        accumulated_by_ref = {
-            ref: dict(entry) for ref, entry in recovered_prior_entries_by_ref.items()
-        }
-        for canonical_ref, entry in current_story_entries_by_ref.items():
-            # This generation's entry replaces the prior one — except for the
-            # failure history, which accumulates. Wholesale replacement is what
-            # let a resume destroy the only recorded cause of the attempt it was
-            # resuming from, so the story that failed became undiagnosable the
-            # moment someone tried to fix it (#2030).
-            prior_entry = accumulated_by_ref.get(canonical_ref) or {
-                "failure_history": _prior_failure_history_by_ref.get(canonical_ref) or []
-            }
-            merged_entry: dict = {"canonical_ref": canonical_ref, **entry}
-            history = accumulate_failure_history(prior_entry, merged_entry)
-            if history:
-                merged_entry["failure_history"] = history
-            accumulated_by_ref[canonical_ref] = merged_entry
-        persist_accumulated_story_state(
-            _ctx.sprint_id,
-            _ctx.resolved.name,
-            _ctx.config.project_root,
-            list(accumulated_by_ref.values()),
-        )
-
-    def _story_allocation_entry(state, story_cost: float | None) -> dict | None:
-        """Join this story's allocation with the sprint ceiling for reporting.
-
-        The coordinator derives and enforces the per-story allocation but has no
-        view of the sprint ceiling — budget governance at that level lives here.
-        Joining the two on the story row is what makes "the story ran out of its
-        own allocation while the sprint still had $74 left" readable as one fact
-        rather than two disconnected ones (#2169).
-        """
-        from theforge.coordinator import story_budget as _story_budget
-
-        block = _story_budget.evaluate_allocation_dict(
-            getattr(state, "story_allocation", None),
-            state.total_cost_measured,
-        )
-        exhausted = getattr(state, "allocation_exhausted", None)
-        if block is None and not exhausted:
-            return None
-        block = block or {}
-        _cost_snapshot = _cost_ledger.snapshot()
-        _spent = _cost_snapshot.spent
-        _remaining = round(_ctx.resolved.budget_usd - _spent, 4)
-        block["reported_cost_usd"] = story_cost
-        block["sprint_budget_usd"] = _ctx.resolved.budget_usd
-        block["sprint_spent_usd"] = round(_spent, 4)
-        block["sprint_remaining_usd"] = _remaining
-        # A lower-bound sprint total cannot certify headroom; say so rather
-        # than asserting a number the sprint does not actually have (#1992).
-        block["sprint_cost_measured"] = _cost_snapshot.measured
-        block["sprint_headroom_remained"] = None if not _cost_snapshot.measured else _remaining > 0
-        if exhausted:
-            block["allocation_exhausted"] = exhausted
-            block["status"] = "allocation_exhausted"
-        return block
-
-    def _landing_evidence_fields(result: CoordinatorResult) -> dict:
-        """The accumulated entry's account of this story's landing.
-
-        ``landing_status`` is the coordinator/scheduler's own three-state answer
-        (``None`` = no landing owed, ``pending_integration`` = owed and not yet
-        resolved, ``landed`` / ``failed`` = resolved), and ``landing`` carries the
-        structured record once a landing attempt actually happened. Together they
-        are what lets a later generation tell a completed story from one that
-        merely reached Phase.DONE before its landing step ran (#2189).
-        """
-        _merge = result.merge if isinstance(result.merge, dict) else None
-        return {
-            "landing_status": getattr(result, "landing_status", None),
-            "landing": build_landing_record(_merge),
-            "merge": bool(_merge and _merge.get("merged", False)),
-        }
-
-    def _persist_story_landing(slug: str, result: CoordinatorResult) -> None:
-        """Re-persist a dispatched story's landing evidence once it resolves.
-
-        ``_persist_current_story_result`` runs before the landing step, so the
-        entry it writes records the landing as *owed*. Every site that later
-        resolves a landing — immediate integration, the pending-integration
-        sweep, queued-PR polling, sprint wrap-up — calls this so the durable
-        record matches reality before the next re-exec can read it. Without it a
-        story that genuinely landed would stay recorded as landing-owed and be
-        stranded on the next generation instead of reconciled.
-        """
-        task_ctx = slug_to_context.get(slug)
-        if task_ctx is None:
-            return
-        canonical_ref = task_ctx[2]
-        entry = current_story_entries_by_ref.get(canonical_ref)
-        if entry is None:
-            return
-        entry.update(_landing_evidence_fields(result))
-        _persist_accumulated_story_entries()
-
-    def _persist_current_story_result(
-        slug: str,
-        result: CoordinatorResult,
-        *,
-        started_at: datetime.datetime,
-        finished_at: datetime.datetime,
-    ) -> None:
-        task_ctx = slug_to_context.get(slug)
-        if task_ctx is None:
-            return
-        # Every terminal path for a dispatched story lands here (completion,
-        # timeout, exception), so this is the reliable record of which stories
-        # actually consumed a coordinator run this generation — and therefore
-        # which ones had a seeded prior cost overwritten by transition().
-        ran_this_generation.add(slug)
-        task, _source, canonical_ref = task_ctx
-        display_key = (
-            f"Issue #{canonical_ref.split(':')[1]}"
-            if canonical_ref.startswith("issue:")
-            else canonical_ref
-        )
-        preflight = (
-            "cached"
-            if getattr(result.state, "preflight_cached", False)
-            else (result.state.preflight_verdict or "PROCEED")
-        )
-        outcome = "ALREADY_DONE" if preflight == "ALREADY_DONE" else result.phase.name
-        outcome_source = (
-            "preflight_verdict"
-            if outcome == "ALREADY_DONE" and preflight == "ALREADY_DONE"
-            else None
-        )
-        _story_cost = _story_reported_cost(result.state, story_cost_adjustments.get(slug, 0.0))
-        current_story_entries_by_ref[canonical_ref] = {
-            "path": display_key,
-            "slug": slug,
-            "outcome": outcome,
-            "outcome_source": outcome_source,
-            "verdict": None,
-            "cost_usd": _story_cost,
-            # Spend against BOTH governors (#2169): the story's own band-derived
-            # allocation and the sprint ceiling. An allocation shortfall that
-            # happened while sprint headroom remained is only visible as such
-            # when both numbers sit on the same row.
-            "story_allocation": _story_allocation_entry(result.state, _story_cost),
-            "story_run_id": _ctx.run_id,
-            "preflight": preflight,
-            "preflight_original_verdict": getattr(
-                result.state, "preflight_cached_original_verdict", None
-            ),
-            "preflight_source_run_id": getattr(result.state, "preflight_cached_from_run_id", None),
-            # A story dispatched on a preflight that produced no evidence is
-            # still a story this run proceeded on unfounded values. Recording it
-            # on the run's own row is what makes the condition countable from
-            # the sprint record instead of from a log line at the moment of
-            # failure — the property that let it repeat unnoticed for months
-            # (#2346). Escalated stories carry it too: failure_action='escalate'
-            # is the half that stopped, and it belongs on the same row.
-            **preflight_degraded_row_fields(result.state),
-            "error": result.state.error,
-            "error_type": result.state.error_type,
-            "outcome_code": result.state.error_type or outcome.lower(),
-            # Landing evidence recorded beside the phase, because the phase alone
-            # cannot say whether the story landed: this entry is written the
-            # moment the coordinator returns, and for an approved story that is
-            # BEFORE _attempt_integration runs. A re-exec in that window used to
-            # leave a bare ``outcome: DONE`` that the next generation read as
-            # proof of completion for a story still unmerged on its branch
-            # (#2189). ``landing_status`` names the obligation and its state;
-            # _persist_story_landing rewrites these once landing resolves.
-            **_landing_evidence_fields(result),
-            "batch_group": getattr(result.state, "preflight_batch_group", None),
-            "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "batch": 0,
-            "depends_on": list(getattr(task, "depends_on", None) or []),
-            "dependency_warnings": list(getattr(task, "dependency_warnings", None) or []),
-            "inferred_dependencies": {
-                "manifest": [
-                    dep
-                    for dep in (getattr(task, "depends_on", None) or [])
-                    if dep not in (getattr(task, "inferred_dependencies", None) or [])
-                ],
-                "github_blockers": list(getattr(task, "inferred_dependencies", None) or []),
-            },
-        }
-        # A worker exception or timeout reaches here with the cause on its state.
-        # Carrying it structurally is what keeps it in the accumulated row: the
-        # ``error`` prose alone is a string a later generation overwrites (#2030).
-        carry_failure_cause(
-            current_story_entries_by_ref[canonical_ref],
-            getattr(result.state, "abnormal_termination", None),
-            prior_history=_prior_failure_history_by_ref.get(canonical_ref),
-        )
-        _persist_accumulated_story_entries()
-
     # Cost-aware batch-group assignment (#727), filled in after preflight once
     # compute_batch_groups has run. Declared here so the terminal-entry writers
     # below can read it on paths that fire before the scheduler gets that far.
     batch_group_by_slug: dict[str, str] = {}
     batch_members_by_group: dict[str, list[str]] = {}
-    # Batch-group landing bookkeeping (#727). A group's commits live on ONE
-    # branch — the leader's — so a member is exactly as landed as its leader is,
-    # and no more. The leader's landing can resolve at four different moments
-    # (immediate integration, the pending-integration retry sweep, queued-PR
-    # polling, sprint wrap-up), and members may be recorded before *or* after
-    # that resolution, so both directions have to be handled:
-    #   _dispatched_batch_leader / _batch_group_of_leader — group <-> leader
-    #   _batch_leader_landing    — the leader's resolved landing status, if any
-    #   _batch_member_records    — members already reported, awaiting the verdict
+    # Group -> leader. Its inverse, and the rest of the batch-group landing
+    # bookkeeping, lives on the execution state (#727).
     _dispatched_batch_leader: dict[str, str] = {}
-    _batch_group_of_leader: dict[str, str] = {}
-    _batch_leader_landing: dict[str, str] = {}
-    _batch_member_records: dict[str, tuple[str, TaskStory, CoordinatorResult]] = {}
 
     def _break_batch_group(group_id: str, reason: str) -> None:
         """Dissolve a batch group and dispatch its members individually.
@@ -4797,8 +5300,8 @@ def run_sprint(
             _state = preflight_states.get(member)
             if _state is not None:
                 _state.preflight_batch_group = None
-            if _state_writer is not None:
-                _state_writer.update(member, batch_group=None)
+            if _sprint_state.state_writer is not None:
+                _sprint_state.state_writer.update(member, batch_group=None)
         _log(
             f"BATCH {group_id}: dissolved ({reason}); dispatching {', '.join(members)} separately"
         )
@@ -4837,7 +5340,7 @@ def run_sprint(
         extras: dict | None = None,
         failure_cause: dict | None = None,
     ) -> None:
-        task_ctx = slug_to_context.get(slug)
+        task_ctx = _ctx.slug_to_context.get(slug)
         if task_ctx is None:
             return
         task, _source, canonical_ref = task_ctx
@@ -4882,10 +5385,10 @@ def run_sprint(
         carry_failure_cause(
             entry,
             failure_cause,
-            prior_history=_prior_failure_history_by_ref.get(canonical_ref),
+            prior_history=_sprint_state.prior_failure_history_by_ref.get(canonical_ref),
         )
-        current_story_entries_by_ref[canonical_ref] = entry
-        _persist_accumulated_story_entries()
+        _sprint_state.current_story_entries_by_ref[canonical_ref] = entry
+        _persist_accumulated_story_entries(_sprint_state)
 
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
@@ -4911,7 +5414,7 @@ def run_sprint(
     # different reason: they are still scheduled, but an agent is writing to
     # their worktree right now, so intake and preflight would be reasoning about
     # (and spending on) a story already being worked.
-    _dropped_exclusion = {s for s in (_ctx.dropped_slugs or {}) if s in slug_to_context}
+    _dropped_exclusion = {s for s in (_ctx.dropped_slugs or {}) if s in _ctx.slug_to_context}
     _no_dispatch_slugs = skip_slugs | _dropped_exclusion
     dispatch_tasks = [
         t
@@ -4931,22 +5434,23 @@ def run_sprint(
     # excludes every dollar spent on intake auto-fix attempts.
     for _intake_slug, _intake_outcome in intake_outcomes.items():
         if _intake_outcome_cost_measured(_intake_outcome) is None:
-            _cost_ledger.flag_unmeasured_here(f"intake:{_intake_slug}")
+            _sprint_state.cost.flag_unmeasured_here(f"intake:{_intake_slug}")
     _intake_remediation_cost = sum(_intake_outcome_cost(o) for o in intake_outcomes.values())
     if _intake_remediation_cost > 0.0:
-        _cost_ledger.add(_intake_remediation_cost)
+        _sprint_state.cost.add(_intake_remediation_cost)
         _log(
             f"Intake remediation cost: ${_intake_remediation_cost:.4f} (rolled into sprint total)"
         )
     for _slug, _outcome in intake_outcomes.items():
-        story_cost_adjustments[_slug] = story_cost_adjustments.get(
+        _sprint_state.story_cost_adjustments[_slug] = _sprint_state.story_cost_adjustments.get(
             _slug, 0.0
         ) + _intake_outcome_cost(_outcome)
     for _issue_num, _outcome in (_ctx.entry_intake_outcomes or {}).items():
         _issue_slug = f"issue-{_issue_num}"
-        story_cost_adjustments[_issue_slug] = story_cost_adjustments.get(
-            _issue_slug, 0.0
-        ) + _intake_outcome_cost(_outcome)
+        _sprint_state.story_cost_adjustments[_issue_slug] = (
+            _sprint_state.story_cost_adjustments.get(_issue_slug, 0.0)
+            + _intake_outcome_cost(_outcome)
+        )
     if intake_outcomes:
         terminal_kinds = {IntakeOutcomeKind.DROPPED_SHAPE, IntakeOutcomeKind.DROPPED_AFTER_FIX}
         dropped_slugs_intake = {
@@ -4997,7 +5501,7 @@ def run_sprint(
             # learn the blocking rule code(s) and detail without having to open
             # audit YAML or re-derive them with a Python snippet against
             # groom_check.
-            task_ctx = slug_to_context.get(slug)
+            task_ctx = _ctx.slug_to_context.get(slug)
             if task_ctx is not None:
                 _, _, canonical_ref = task_ctx
                 display_key = (
@@ -5012,6 +5516,7 @@ def run_sprint(
             ):
                 _log(log_line)
             _set_outcome(
+                _sprint_state,
                 slug,
                 outcome_value,
                 detail={
@@ -5055,7 +5560,7 @@ def run_sprint(
     # against their stale worktree, or spending budget on an already-dropped
     # story).
     _no_dispatch_slugs = skip_slugs | {
-        s for s in (_ctx.dropped_slugs or {}) if s in slug_to_context
+        s for s in (_ctx.dropped_slugs or {}) if s in _ctx.slug_to_context
     }
     preflight_tasks = [
         t
@@ -5145,7 +5650,7 @@ def run_sprint(
 
         _update_state_phase(_ctx.run_id, _ctx.config.project_root, "dag-build")
     try:
-        dag = build_dag(augmented_tasks, satisfied=satisfied_slugs)
+        _sprint_state.dag = build_dag(augmented_tasks, satisfied=satisfied_slugs)
     except ValueError as exc:
         raise ValueError(f"{exc} Synthetic collision edges: {synthetic_edges}") from exc
 
@@ -5160,34 +5665,38 @@ def run_sprint(
     # it a re-exec'd process would re-dispatch an already-merged story even though
     # it was excluded from preflight above.
     if reconcile:
-        for slug, (_task, _src, canonical_ref) in slug_to_context.items():
+        for slug, (_task, _src, canonical_ref) in _ctx.slug_to_context.items():
             triage = triages.get(canonical_ref)
             if triage and triage.action in ("skip_merged", "skip"):
                 _log(f"SKIP {slug} ({triage.reason})")
                 if triage.action == "skip_merged":
                     _sprint_state.merged_slugs.add(slug)
-                    dag.mark_complete(slug)
-                    _prior_entry = recovered_prior_entries_by_ref.get(canonical_ref)
+                    _sprint_state.dag.mark_complete(slug)
+                    _prior_entry = _sprint_state.recovered_prior_entries_by_ref.get(canonical_ref)
                     if _prior_entry is not None:
                         _skip_outcome, _skip_source = _skip_merged_outcome(slug, canonical_ref)
                         _already_done_entry = dict(_prior_entry)
                         _already_done_entry["outcome"] = _skip_outcome.name
                         _already_done_entry["outcome_source"] = _skip_source
-                        current_story_entries_by_ref[canonical_ref] = {
+                        _sprint_state.current_story_entries_by_ref[canonical_ref] = {
                             k: v for k, v in _already_done_entry.items() if k != "canonical_ref"
                         }
-                        _persist_accumulated_story_entries()
+                        _persist_accumulated_story_entries(_sprint_state)
                     # Preserve preloaded prior-run outcome (e.g., DONE) when
                     # accumulated state already has a stronger terminal —
                     # otherwise mark SKIPPED for the legacy aggregate contract.
                     _existing = _sprint_state.stories.get(slug)
                     if _existing is None or not _existing.outcome.is_succeeded:
-                        _set_outcome(slug, StoryOutcome.SKIPPED, reason=triage.reason)
+                        _set_outcome(
+                            _sprint_state, slug, StoryOutcome.SKIPPED, reason=triage.reason
+                        )
                 else:
-                    dag.mark_skipped(slug)
+                    _sprint_state.dag.mark_skipped(slug)
                     _existing = _sprint_state.stories.get(slug)
                     if _existing is None or not _existing.outcome.is_succeeded:
-                        _set_outcome(slug, StoryOutcome.SKIPPED, reason=triage.reason)
+                        _set_outcome(
+                            _sprint_state, slug, StoryOutcome.SKIPPED, reason=triage.reason
+                        )
                     _record_current_story_entry(slug, "SKIPPED", error=triage.reason)
 
     auto_enabled_dependency_merges = dependent_slugs - satisfied_slugs - _sprint_state.merged_slugs
@@ -5206,9 +5715,9 @@ def run_sprint(
     # Stories blocked by unresolved external dependencies never enter the DAG.
     for slug, blocked_by in blocked_slugs.items():
         _log(f"SKIPPED {slug} (blocked: {', '.join(blocked_by)})")
-        dag.mark_skipped(slug)
+        _sprint_state.dag.mark_skipped(slug)
         _blocked_reason = f"blocked: {', '.join(blocked_by)}"
-        _set_outcome(slug, StoryOutcome.SKIPPED, reason=_blocked_reason)
+        _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_blocked_reason)
         _record_current_story_entry(slug, "SKIPPED", error=_blocked_reason)
 
     # Stories dropped pre-launch (e.g. re-exec collision) never enter the DAG.
@@ -5220,10 +5729,6 @@ def run_sprint(
     # kept for human review, and counts as skipped (not failed) in aggregates.
     _dropped_slugs: dict[str, str] = dict(_ctx.dropped_slugs or {})
     _dropped_work: dict[str, WorktreeWork] = {}
-    # slug -> what the generation that ran the story before this one recorded.
-    # Populated when its drop record is written, and read back for the story's
-    # sprint row so both surfaces report the same accounting (#2214).
-    _prior_generation_work: dict[str, dict] = {}
     # slug -> description of the work the drop abandoned. Membership is the
     # single test for "this drop was not free and not evidence-free".
     _dropped_with_work: dict[str, str] = {}
@@ -5288,8 +5793,8 @@ def run_sprint(
 
     def _prior_generation_record(slug: str) -> dict | None:
         """The prior generation's accumulated entry for ``slug``, if recovered."""
-        ref = slug_to_context.get(slug, (None, None, None))[2]
-        prior = recovered_prior_entries_by_ref.get(ref) if ref else None
+        ref = _ctx.slug_to_context.get(slug, (None, None, None))[2]
+        prior = _sprint_state.recovered_prior_entries_by_ref.get(ref) if ref else None
         return prior if isinstance(prior, dict) else None
 
     def _reconcilable_prior_record(slug: str) -> bool:
@@ -5351,7 +5856,7 @@ def run_sprint(
         Returns ``None`` when nothing was recovered — never 0.0, which would
         assert that the prior generation spent nothing.
         """
-        carried = _prior_generation_work.get(slug)
+        carried = _sprint_state.prior_generation_work.get(slug)
         if not carried:
             return None
         cost = carried.get("recoverable_cost_usd")
@@ -5359,7 +5864,7 @@ def run_sprint(
             return None
         if not carried.get("cost_attributed"):
             carried["cost_attributed"] = True
-            _cost_ledger.add(cost)
+            _sprint_state.cost.add(cost)
             _log(f"RECOVERED {slug}: ${cost:.4f} of prior-generation spend rolled into the total")
         return cost
 
@@ -5375,93 +5880,13 @@ def run_sprint(
         cost for the story) is not in this generation's ledger, and putting it on
         the row would make the rows sum to more than the sprint total.
         """
-        carried = _prior_generation_work.get(slug)
+        carried = _sprint_state.prior_generation_work.get(slug)
         if carried and carried.get("cost_attributed"):
             return carried.get("recoverable_cost_usd")
         return None if slug in _dropped_with_work else 0.0
 
-    def _record_dropped_story_audit(slug: str, cause_text: str) -> dict:
-        """Write the per-run audit record for a story dropped before dispatch.
-
-        A dropped story never reaches the coordinator, so it never reaches audit
-        finalization either — which made the runs with the least recoverable
-        context the only ones with no record at all (#2030). The record written
-        here is deliberately the same shape as the worker-exception and
-        worker-timeout ones: same synthetic result, same ``error``, same
-        ``abnormal_termination`` block, differing only in ``kind``.
-
-        A drop at a re-exec boundary is not necessarily a story that never ran:
-        the generation before the boundary may have run dev, run review and
-        committed an implementation. The record it flushed as it went is carried
-        into this one, so the drop reports the phase that work reached and the
-        budget it consumed instead of the INIT/$0.00 of a story that never
-        started (#2214).
-
-        Returns the cause record so the caller can retain it in sprint state as
-        well. Best-effort: a story is never left un-dropped because its evidence
-        could not be written.
-        """
-        task_ctx = slug_to_context.get(slug)
-        if task_ctx is None:
-            return {}
-        dropped_at = datetime.datetime.now(datetime.timezone.utc)
-        try:
-            drop_result = _abnormal_story_result(
-                slug,
-                config=_ctx.config,
-                sprint_name=_ctx.resolved.name,
-                started_at=dropped_at,
-                error=f"Dropped before dispatch: {cause_text}",
-                error_type="LaunchGuardDrop",
-                message=f"Launch guard dropped {slug} before dispatch: {cause_text}",
-                # Never ESCALATE: the story did not escalate, it never ran, and
-                # stamping ESCALATE would mark its worktree as escalated too.
-                phase=Phase.INIT,
-            )
-            cause = build_abnormal_cause(
-                kind=ABNORMAL_LAUNCH_GUARD_DROP,
-                cause=cause_text,
-                error_type="LaunchGuardDrop",
-                phase="LAUNCH",
-                run_id=drop_result.state.run_id,
-                source="sprint.runner:launch-guard-drop",
-            )
-            drop_result.state.abnormal_termination = cause
-            prior = load_prior_generation_story_audit(
-                _ctx.config.project_root,
-                _ctx.resolved.name,
-                slug,
-                exclude_run_id=drop_result.state.run_id,
-            )
-            if prior is not None:
-                _prior_generation_work[slug] = {
-                    **prior.summary,
-                    "recoverable_cost_usd": prior.recoverable_cost_usd,
-                }
-                _log(
-                    f"CARRIED {slug}: drop record carries the prior generation's work "
-                    f"(run {prior.summary['run_id']}, phase "
-                    f"{prior.summary['final_phase']}, cost "
-                    f"{prior.summary['cost_usd']})"
-                )
-            _write_story_audit(
-                _ctx.config,
-                task_ctx[0],
-                drop_result,
-                sprint_id=_ctx.sprint_id,
-                # A dropped story shares its log directory with the generation
-                # that actually ran it. Its audit.yaml is that run's evidence and
-                # must survive the drop record, not be replaced by it.
-                overwrite_story_audit=False,
-                prior_generation=prior,
-            )
-            return cause
-        except Exception as exc:  # noqa: BLE001 - evidence writing must not fail the sprint
-            _log(f"WARN {slug}: could not write drop audit record: {exc}")
-            return {}
-
     for slug, reason in list(_dropped_slugs.items()):
-        if slug not in slug_to_context:
+        if slug not in _ctx.slug_to_context:
             continue
         _reclaim_dropped_agents(slug)
         if reason == REASON_RECONCILE_PRIOR_DONE and not _reconcilable_prior_record(slug):
@@ -5482,8 +5907,8 @@ def run_sprint(
             _dropped_slugs[slug] = reason
         if reason == "preserved-escalated":
             _log(f"PRESERVED {slug} (escalated worktree held for review)")
-            dag.mark_skipped(slug)
-            _set_outcome(slug, StoryOutcome.PRESERVED, reason=reason)
+            _sprint_state.dag.mark_skipped(slug)
+            _set_outcome(_sprint_state, slug, StoryOutcome.PRESERVED, reason=reason)
             _record_current_story_entry(slug, "PRESERVED", error=reason, error_type="dropped")
         elif reason == REASON_RECONCILE_PRIOR_DONE:
             # The prior generation already completed this story; its worktree
@@ -5495,8 +5920,8 @@ def run_sprint(
             # resume skip_merged, so dependents must not be stranded/skipped.
             _reconciled = _reconciled_prior_outcome(slug)
             _log(f"{_reconciled.name} {slug} (reconciled from prior generation)")
-            dag.mark_complete(slug)
-            _set_outcome(slug, _reconciled, reason=reason)
+            _sprint_state.dag.mark_complete(slug)
+            _set_outcome(_sprint_state, slug, _reconciled, reason=reason)
             _reconcile_extras: dict = {"drop_reason": reason}
             if _reconciled is StoryOutcome.ALREADY_DONE:
                 # Only a genuine no-op carries the ALREADY_DONE source tag; a
@@ -5517,8 +5942,8 @@ def run_sprint(
             # distinct reason so RCA/audit can tell it apart from a fresh
             # collision (do NOT clear the worktree and re-sprint fresh).
             _log(f"DROPPED {slug} (stranded prior-generation sprint state)")
-            dag.mark_skipped(slug)
-            _stranded_cause = _record_dropped_story_audit(slug, reason)
+            _sprint_state.dag.mark_skipped(slug)
+            _stranded_cause = _record_dropped_story_audit(_sprint_state, slug, reason)
             _stranded_cost = _measured_recorded_cost(slug)
             if _stranded_cost == 0.0:
                 # No record of spend anywhere the sprint keeps one — but the
@@ -5528,8 +5953,9 @@ def run_sprint(
                 if _recovered_stranded is not None:
                     _stranded_cost = _recovered_stranded
             if _stranded_cost is None:
-                _cost_ledger.flag_unmeasured_here(f"stranded-unmeasured:{slug}")
+                _sprint_state.cost.flag_unmeasured_here(f"stranded-unmeasured:{slug}")
             _set_outcome(
+                _sprint_state,
                 slug,
                 StoryOutcome.DROPPED,
                 reason=reason,
@@ -5540,7 +5966,7 @@ def run_sprint(
             # measured spend is this sprint's spend, whatever outcome the story
             # ended at. It must not be replaced by the 0.0 default (#2189).
             _stranded_extras: dict[str, object] = {"drop_reason": reason}
-            _stranded_prior = _prior_generation_work.get(slug)
+            _stranded_prior = _sprint_state.prior_generation_work.get(slug)
             if _stranded_prior:
                 _stranded_extras["prior_generation_run_id"] = _stranded_prior.get("run_id")
                 _stranded_extras["prior_generation_final_phase"] = _stranded_prior.get(
@@ -5568,25 +5994,26 @@ def run_sprint(
                 _dropped_with_work[slug] = work_detail
             _detail_msg = f"{reason}: {work_detail}" if work_detail else reason
             _log(f"DROPPED {slug} (reason: {_detail_msg})")
-            dag.mark_skipped(slug)
+            _sprint_state.dag.mark_skipped(slug)
             _extras: dict[str, object] = {"drop_reason": reason, **work.as_state_fields()}
             # The drop audit carries the fullest account available — the guard's
             # reason plus whatever work the drop abandoned — because that record,
             # not the sprint summary line, is what outlives the next resume.
-            _drop_cause = _record_dropped_story_audit(slug, _detail_msg)
+            _drop_cause = _record_dropped_story_audit(_sprint_state, slug, _detail_msg)
             # The generation that ran this story recorded what it reached and
             # what it spent; the sprint row reports the same, so the summary
             # cannot claim a story with committed work cost nothing and reached
             # nothing (#2214).
-            _carried = _prior_generation_work.get(slug)
+            _carried = _sprint_state.prior_generation_work.get(slug)
             if _carried:
                 _extras["prior_generation_run_id"] = _carried.get("run_id")
                 _extras["prior_generation_final_phase"] = _carried.get("final_phase")
             _carried_cost = _attribute_prior_generation_cost(slug)
             if work_detail:
                 if _carried_cost is None:
-                    _cost_ledger.flag_unmeasured_here(f"dropped-with-work:{slug}")
+                    _sprint_state.cost.flag_unmeasured_here(f"dropped-with-work:{slug}")
                 _set_outcome(
+                    _sprint_state,
                     slug,
                     StoryOutcome.DROPPED,
                     reason=_detail_msg,
@@ -5608,6 +6035,7 @@ def run_sprint(
                 # have spent budget on this story; 0.0 only when nothing did.
                 _row_cost = _carried_cost if _carried_cost is not None else 0.0
                 _set_outcome(
+                    _sprint_state,
                     slug,
                     StoryOutcome.DROPPED,
                     reason=reason,
@@ -5634,7 +6062,7 @@ def run_sprint(
             *,
             depends_on: list[str],
         ) -> dict:
-            prior_entry = recovered_prior_entries_by_ref.get(canonical_ref, {})
+            prior_entry = _sprint_state.recovered_prior_entries_by_ref.get(canonical_ref, {})
             # A story this sprint already ran to DONE keeps that outcome even
             # though its branch now reads as merged (#2150) — see
             # ``_skip_merged_outcome``.
@@ -5675,7 +6103,7 @@ def run_sprint(
             }
 
         _resume_accumulated_by_ref: dict[str, dict] = {
-            ref: dict(entry) for ref, entry in recovered_prior_entries_by_ref.items()
+            ref: dict(entry) for ref, entry in _sprint_state.recovered_prior_entries_by_ref.items()
         }
         for _canonical_ref, _triage in triages.items():
             if _triage.action != "skip_merged":
@@ -5688,7 +6116,7 @@ def run_sprint(
                     _resume_slug,
                     depends_on=list(
                         getattr(
-                            slug_to_context.get(_resume_slug, (None, None, None))[0],
+                            _ctx.slug_to_context.get(_resume_slug, (None, None, None))[0],
                             "depends_on",
                             None,
                         )
@@ -5718,7 +6146,7 @@ def run_sprint(
         _bundle_candidate_slugs: set[str] = {s for bundle in bundle_assignments for s in bundle}
         _initial_stories: list[dict] = []
         _initial_story_slugs: set[str] = set()
-        for _slug, (_task, _src, _canonical_ref) in slug_to_context.items():
+        for _slug, (_task, _src, _canonical_ref) in _ctx.slug_to_context.items():
             _display_key = (
                 f"Issue #{_canonical_ref.split(':')[1]}"
                 if _canonical_ref.startswith("issue:")
@@ -5840,7 +6268,7 @@ def run_sprint(
                 }
             )
             _initial_story_slugs.add(_closed_slug)
-        _state_writer = SprintStateWriter(
+        _sprint_state.state_writer = SprintStateWriter(
             _ctx.run_id,
             _ctx.config.project_root,
             _ctx.resolved.name,
@@ -5850,8 +6278,8 @@ def run_sprint(
             max_parallel=max_parallel,
             base_branch=getattr(getattr(_ctx.config, "workspace", None), "base_branch", None),
         )
-        _state_writer.init(_initial_stories)
-        _state_writer.set_phase("running")
+        _sprint_state.state_writer.init(_initial_stories)
+        _sprint_state.state_writer.set_phase("running")
         # Register shape-gate-skipped issues in the canonical structure so
         # forge status surfaces them with the gate reason. They are visible
         # to every operator surface from this point on.
@@ -5885,7 +6313,7 @@ def run_sprint(
                 _sk_detail["intake_findings"] = [f.as_dict() for f in _sk_intake.findings]
                 _sk_detail["intake_audit"] = dict(_sk_intake.audit)
                 _sk_detail["intake_proposed_replacement"] = _sk_intake.proposed_replacement
-            _state_writer.register(
+            _sprint_state.state_writer.register(
                 _sk_slug,
                 f"Issue #{_sk_num}",
                 outcome=_sk_outcome,
@@ -5929,7 +6357,6 @@ def run_sprint(
             )
 
     # Parallel scheduling state
-    active: dict[str, Future[object]] = {}
     story_deadlines: dict[str, float] = {}
     story_wait_started: set[str] = set()
 
@@ -5946,14 +6373,8 @@ def run_sprint(
         return story_deadlines[slug] + worker_budget.operator_wait_credit(slug)
 
     worker_phases: dict[str, str] = {}
-    phase_lock = threading.Lock()
     pending_integration: dict[str, tuple[TaskStory, CoordinatorResult]] = {}
-    queued_prs: dict[str, tuple[TaskStory, CoordinatorResult, str]] = {}
     _submission_counter = [0]  # mutable for closure capture; counts submitted stories
-
-    # Per-story cancellation events: set by the timeout handler so worker
-    # threads stop running instead of continuing past their deadline.
-    stop_events: dict[str, threading.Event] = {}
 
     # Auth circuit breaker (#1952): the structured cause of the first fatal
     # credential rejection observed after launch, or None while the substrate
@@ -5967,44 +6388,15 @@ def run_sprint(
     # because the credential was dead" apart from "the story failed".
     auth_cancelled_slugs: set[str] = set()
 
-    # Overlap detection state (plan gates)
-    file_footprints: dict[str, set[str]] = {}  # slug -> files from plan
-    plan_gates: dict[str, threading.Event] = {}  # slug -> gate for PLAN→DEV pause
-    plan_done: dict[str, str] = {}  # slug -> workspace_path (set by phase callback)
     use_plan_gates = max_parallel > 1  # only for parallel mode
-
-    # Collision claims (#2234). A story past its plan gate *claims* the files it
-    # planned to touch, and the claim outlives the worker: a story that escalates
-    # with its work preserved is no longer active, but the decision pending on it
-    # is precisely whether that work lands. Releasing the claim on the status
-    # transition hands a gated sibling a base that is about to change.
-    collision_claims: dict[str, str] = {}  # slug -> claim reason (CLAIM_* above)
-    claim_results: dict[str, CoordinatorResult] = {}  # slug -> last known result
-    gate_stood_down: dict[str, str] = {}  # slug -> reason it never entered DEV
-    _queued_probe_at: dict[str, float] = {}  # slug -> monotonic time of last PR probe
-
-    def _end_collision_claim(slug: str, why: str) -> None:
-        """Drop a story's claim on its planned files, and the state behind it."""
-        if collision_claims.pop(slug, None) is not None:
-            _log(f"Collision claim released for {slug} ({why})")
-        claim_results.pop(slug, None)
-        file_footprints.pop(slug, None)
-        # Nothing throttles a claim that no longer exists, and a slug that were
-        # ever re-queued must be probed immediately rather than inheriting a
-        # timestamp from its previous landing attempt.
-        _queued_probe_at.pop(slug, None)
-        # plan_done is what re-derives the footprint; leaving it behind would
-        # resurrect the claim on the next _release_plan_gates pass.
-        with phase_lock:
-            plan_done.pop(slug, None)
 
     def _reconcile_collision_claim(slug: str, result: CoordinatorResult) -> None:
         """Re-evaluate whether *slug* can still land the files it claimed."""
-        if slug not in collision_claims:
+        if slug not in _sprint_state.collision_claims:
             return
-        claim_results[slug] = result
+        _sprint_state.claim_results[slug] = result
         if (
-            slug in queued_prs
+            slug in _sprint_state.queued_prs
             or slug in pending_integration
             or result.landing_status == "pending_integration"
         ):
@@ -6017,357 +6409,58 @@ def run_sprint(
             # side of the asymmetry (waiting vs. a conflict found after spend).
             reason = CLAIM_PRESERVED
         else:
-            _end_collision_claim(slug, f"landing_status={result.landing_status or 'none'}")
+            _end_collision_claim(
+                _sprint_state, slug, f"landing_status={result.landing_status or 'none'}"
+            )
             return
-        if collision_claims.get(slug) != reason:
-            collision_claims[slug] = reason
-            _files = ", ".join(sorted(file_footprints.get(slug, set()))) or "its planned files"
+        if _sprint_state.collision_claims.get(slug) != reason:
+            _sprint_state.collision_claims[slug] = reason
+            _files = (
+                ", ".join(sorted(_sprint_state.file_footprints.get(slug, set())))
+                or "its planned files"
+            )
             _log(f"Holding collision claim for {slug} on {_files}: {reason}")
 
     def _refresh_collision_claims() -> None:
         """Re-evaluate every live claim against the latest known result."""
-        for _c_slug in list(collision_claims):
-            _c_result = claim_results.get(_c_slug)
+        for _c_slug in list(_sprint_state.collision_claims):
+            _c_result = _sprint_state.claim_results.get(_c_slug)
             if _c_result is not None:
                 _reconcile_collision_claim(_c_slug, _c_result)
 
-    def _apply_batch_landing_to_member(
-        member_slug: str,
-        task: TaskStory,
-        result: CoordinatorResult,
-        landing_status: str,
-        leader_slug: str,
-        group_id: str,
-    ) -> None:
-        """Give one batch member the landing verdict its leader's branch reached.
-
-        A member's changes exist only on the leader's branch, so reporting it
-        DONE while that branch failed to land would claim work that is not on
-        the base branch — the exact misreport this propagation exists to
-        prevent. A member that failed on its own merits keeps its own verdict:
-        the leader landing successfully does not retroactively approve it.
-        """
-        if not result.success:
-            return
-        if landing_status == "landed":
-            if result.landing_status == "landed":
-                return
-            result.landing_status = "landed"
-            _sprint_state.merged_slugs.add(member_slug)
-            dag.mark_complete(member_slug)
-            _set_outcome(member_slug, StoryOutcome.DONE, phase=result.phase.name, landed=True)
-            _log(f"✓ {member_slug}: landed with batch leader {leader_slug}")
-        else:
-            if result.landing_status == "failed":
-                return
-            reason = (
-                f"batch group {group_id}: leader {leader_slug} failed to land; "
-                "this story's changes exist only on that branch"
-            )
-            result.landing_status = "failed"
-            result.state.error = result.state.error or reason
-            _set_outcome(
-                member_slug,
-                StoryOutcome.MERGE_FAILED,
-                phase=result.phase.name,
-                reason=reason,
-            )
-            _log(f"✗ {member_slug}: {reason}")
-        _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-        _times = _sprint_state.story_times.get(member_slug)
-        if _times is not None:
-            _persist_current_story_result(
-                member_slug, result, started_at=_times[0], finished_at=_times[1]
-            )
-
-    def _resolve_batch_leader_landing(leader_slug: str, landing_status: str) -> None:
-        """Record a batch leader's final landing status and push it to its members.
-
-        Called from every site where a leader's landing reaches a terminal
-        answer, including the queued-PR paths that resolve long after the
-        member rows were written. A no-op for stories that do not lead a batch.
-        """
-        group_id = _batch_group_of_leader.get(leader_slug)
-        if group_id is None:
-            return
-        _batch_leader_landing[group_id] = landing_status
-        for member_slug, (
-            member_group,
-            member_task,
-            member_result,
-        ) in list(_batch_member_records.items()):
-            if member_group != group_id:
-                continue
-            _apply_batch_landing_to_member(
-                member_slug, member_task, member_result, landing_status, leader_slug, group_id
-            )
-
-    def _resolve_queued_pr(slug: str, *, blocking: bool, context: str) -> str:
-        """Poll one queued PR and apply its landing verdict everywhere it is owed.
-
-        The single site for queued-PR resolution during the work loop. Every
-        caller owes the same bookkeeping — DAG, canonical outcome, durable
-        landing evidence, audit, batch-leader propagation and, since #2234, the
-        collision claim — and the copies drifted: the dependent-dispatch gate
-        recorded neither the landing nor the claim release, so a merged parent
-        left a gated sibling parked on a claim nothing would ever clear.
-
-        With *blocking* false the PR is probed exactly once and anything short
-        of a confirmed merge returns ``"pending"``, leaving it queued for the
-        blocking poll that owns the failure verdict. Returns ``"merged"``,
-        ``"failed"`` or ``"pending"``.
-        """
-        task, result, pr_url = queued_prs[slug]
-        _queued_probe_at[slug] = time.monotonic()
-        poll_result = _poll_queued_pr(
-            pr_url,
-            _ctx.config.project_root,
-            _ctx.config.workspace.merge_wait_timeout_seconds if blocking else 0,
-            base_branch=_ctx.config.workspace.base_branch,
-        )
-        if not blocking and poll_result["status"] != "merged":
-            # A single probe cannot tell "still in the queue" from "decided
-            # against us" without re-running the wait budget, and only a merge
-            # is safe to conclude from it. Everything else stays queued.
-            return "pending"
-
-        # Out of queued_prs before the claim is reconciled: membership there is
-        # itself a reason to keep a collision claim alive.
-        del queued_prs[slug]
-        # The throttle only exists to pace probes of a *queued* PR. This one is
-        # decided; _end_collision_claim drops the entry on the paths that keep a
-        # claim, and this covers a resolution with no claim behind it.
-        _queued_probe_at.pop(slug, None)
-
-        if poll_result["status"] == "merged":
-            _sprint_state.merged_slugs.add(slug)
-            dag.mark_complete(slug)
-            result.landing_status = "landed"
-            # The immutability marker: this DONE is confirmed-landed and must
-            # not be clobbered by a later re-dispatch or wrap-up pass.
-            _set_outcome(slug, StoryOutcome.DONE, landed=True)
-            _persist_story_landing(slug, result)
-            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-            _resolve_batch_leader_landing(slug, "landed")
-            _end_collision_claim(slug, "queued PR merged")
-            _log(f"INFO {slug}: queued PR merged ({context}); unblocking dependents")
-            return "merged"
-
-        from ..coordinator.completion import (  # noqa: PLC0415
-            mark_merge_failed as _mark_mf,
-        )
-
-        _err = _queued_pr_failure_message(
-            poll_result, pr_url, _ctx.config.workspace.merge_wait_timeout_seconds
-        )
-        _mark_mf(result.state, result, _err, result.state.branch_name)
-        _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
-        _persist_story_landing(slug, result)
-        # Defensive/idempotent: the parent is normally already in the DAG's
-        # _finished set (added when its PR was queued, via the
-        # pending_integration classify branch), so its collision (soft) edge is
-        # already released; this guarantees it on any path that skipped that
-        # classification. _finished (not _completed) is what still blocks a hard
-        # depends_on dependent. Actual redispatch of a released dependent onto
-        # the current base comes from the dag.ready() re-check at the top of the
-        # deadlock-cleanup branch.
-        dag.mark_skipped(slug)
-        _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-        _resolve_batch_leader_landing(slug, "failed")
-        _end_collision_claim(slug, f"queued PR {poll_result['status']}")
-        _log(f"✗ {slug}: queued PR {poll_result['status']} ({context})")
-        return "failed"
-
-    _publish_gate_hold = _make_gate_hold_publisher(_state_writer)
-
-    def _service_plan_gates() -> None:
-        """Release openable plan gates and stand down the unopenable ones."""
-        # A CLAIM_PENDING_LANDING claim is resolvable *in this run*, but only
-        # the queued-PR paths resolve it, and those run when the loop has no
-        # active workers. A worker parked at its plan gate keeps the loop busy
-        # forever, so the gate would wait on a PR that may have merged minutes
-        # ago and then open on its own 7200s timeout instead (#2234). Probe
-        # cheaply — one `gh pr view`, no queue wait — so the gate opens on the
-        # merge. The blocking polls keep sole ownership of the failure verdict.
-        if plan_gates and queued_prs:
-            _probe_now: float | None = None
-            for _q_slug in list(queued_prs):
-                if collision_claims.get(_q_slug) != CLAIM_PENDING_LANDING:
-                    continue
-                # Read the clock only once a probe is actually in question: this
-                # runs on the 2s gate-service tick, and the common case has no
-                # queued PR holding a claim at all.
-                if _probe_now is None:
-                    _probe_now = time.monotonic()
-                _last = _queued_probe_at.get(_q_slug)
-                if _last is not None and _probe_now - _last < _QUEUED_CLAIM_PROBE_SECONDS:
-                    continue
-                _resolve_queued_pr(_q_slug, blocking=False, context="holding a collision gate")
-
-        for _sd_slug in _release_plan_gates(
-            plan_done,
-            file_footprints,
-            plan_gates,
-            active,
-            phase_lock,
-            collision_claims,
-            gate_hold_fn=_publish_gate_hold,
-        ):
-            _sd_gate = plan_gates.pop(_sd_slug, None)
-            gate_stood_down[_sd_slug] = (
-                "collision gate stood down: the files it planned to change are held "
-                "by preserved work that has not landed"
-            )
-            # stop_event BEFORE the gate, same ordering as the deadline teardown:
-            # the worker must observe the shutdown flag when the gate wakes it.
-            _sd_evt = stop_events.get(_sd_slug)
-            if _sd_evt is not None:
-                _sd_evt.set()
-            if _sd_gate is not None:
-                _sd_gate.set()
-
-    def _attempt_integration(
-        slug: str,
-        task: TaskStory,
-        result: CoordinatorResult,
-    ) -> bool:
-        """Attempt to land an approved story under integration_lock.
-
-        Returns True when integration was attempted (success, failure, or queued).
-        Returns False when dependencies are unmet — caller should retry later.
-
-        This is the sole merge site for sprint execution.  Workers never merge;
-        they set landing_status="pending_integration" and return.
-        """
-        if not all(dep in _sprint_state.merged_slugs for dep in task.depends_on):
-            result.landing_status = "pending_integration"
-            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-            return False
-
-        branch = _ctx.config.workspace.branch_pattern.format(slug=slug)
-        wt = _ctx.config.project_root / _ctx.config.workspace.path_pattern.format(slug=slug)
-
-        # Read effective mode from the pending merge action stored by _finalize_approve.
-        # Falls back to config.workspace.on_approve for legacy/direct callers.
-        effective_on_approve = (result.merge or {}).get(
-            "action"
-        ) or _ctx.config.workspace.on_approve
-        story_run_id = result.state.run_id or _sprint_run_id
-
-        story_logger = StructuredLogger(
-            run_id=story_run_id,
-            project=_ctx.config.project,
-            task=task.slug,
-            log_file=_ctx.config.log.log_file,
-            enabled=_ctx.config.log.enabled,
-            project_root=_ctx.config.project_root,
-        )
-
-        with integration_lock(_ctx.config.project_root):
-            from ..coordinator.completion import (  # noqa: PLC0415
-                land_story,
-                resolve_landing_review,
-            )
-
-            parsed_review = resolve_landing_review(result.state)
-            merge_info, landing_status = land_story(
-                _ctx.config,
-                task,
-                branch,
-                wt,
-                parsed_review,
-                result.state,
-                effective_on_approve,
-                logger=story_logger,
-                run_id=story_run_id,
-            )
-
-        result.merge = merge_info
-        result.landing_status = landing_status
-        if landing_status == "failed":
-            from ..coordinator.completion import mark_merge_failed  # noqa: PLC0415
-
-            mark_merge_failed(
-                result.state,
-                result,
-                merge_info.get("error"),
-                branch,
-                inherited_dev_residue=bool(merge_info.get("inherited_dev_residue")),
-            )
-
-        # The accumulated entry was written before this landing ran and records
-        # the landing as owed. Now that it has resolved either way, rewrite it so
-        # the durable record a later re-exec reads matches what happened (#2189).
-        _persist_story_landing(slug, result)
-
-        if merge_info.get("merged"):
-            _sprint_state.merged_slugs.add(slug)
-            dag.mark_complete(slug)
-            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-            _resolve_batch_leader_landing(slug, "landed")
-            if effective_on_approve == "merge-pr" and not merge_info.get(
-                "auto_merge_queued", False
-            ):
-                ci_result = poll_required_checks(
-                    _ctx.config.project_root,
-                    _ctx.config.workspace.base_branch,
-                    _ctx.config.workspace.ci_check_timeout_seconds,
-                )
-                if ci_result["status"] in {"fail", "timeout"}:
-                    failing = ", ".join(ci_result["failing_checks"]) or "pending required checks"
-                    # A check that stopped without a verdict is not a red result;
-                    # naming it keeps the halt reason honest about what is known
-                    # versus merely unknown (#2270).
-                    unjudged = ", ".join(ci_result.get("unjudged_checks") or [])
-                    _stop.stop(
-                        "Required CI checks "
-                        f"{ci_result['status']} after merging {slug} "
-                        f"at {ci_result['sha']}: {failing}"
-                        + (f" (no verdict produced by: {unjudged})" if unjudged else ""),
-                        halt_slug=slug,
-                    )
-                    _log(
-                        f"HALT {slug}: required CI checks {ci_result['status']} "
-                        f"for {ci_result['sha']} ({failing})"
-                    )
-            return True
-
-        if merge_info.get("merge_queued"):
-            queued_prs[slug] = (task, result, merge_info["pr_url"])
-            _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-            _log(f"INFO {slug}: PR auto-merge queued; waiting for GitHub to report MERGED")
-            return True
-
-        result.state.error = merge_info.get("error") or "integration failed"
-        _log(f"WARN {slug}: integration failed: {merge_info.get('error')}")
-        _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-        _resolve_batch_leader_landing(slug, "failed")
-        return True
+    _sprint_state.publish_gate_hold = _make_gate_hold_publisher(_sprint_state.state_writer)
 
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
-        while not dag.is_done():
-            _log(f"[debug] loop: active={list(active.keys())} fin={dag._finished}")
-            _refresh_external_satisfied(dag, all_tasks, _ctx.config, _sprint_state.merged_slugs)
-            ready = [t for t in dag.ready() if t.slug not in active]
+        while not _sprint_state.dag.is_done():
+            _log(
+                f"[debug] loop: active={list(_sprint_state.active.keys())} "
+                f"fin={_sprint_state.dag._finished}"
+            )
+            _refresh_external_satisfied(
+                _sprint_state.dag, all_tasks, _ctx.config, _sprint_state.merged_slugs
+            )
+            ready = [t for t in _sprint_state.dag.ready() if t.slug not in _sprint_state.active]
 
             for task in ready:
                 # ``ready`` is a snapshot taken before this pass. A batch-group
                 # dispatch earlier in the same pass registers every member as
                 # active at once, so a member still sitting in the snapshot must
                 # not be dispatched a second time.
-                if task.slug in active:
+                if task.slug in _sprint_state.active:
                     continue
 
                 # Auth circuit breaker (#1952): a credential the substrate
                 # already had refused is not worth re-presenting. Skip rather
                 # than fail — nothing about this story was ever judged.
                 if auth_circuit is not None:
-                    dag.mark_skipped(task.slug)
-                    _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=auth_circuit_reason)
+                    _sprint_state.dag.mark_skipped(task.slug)
+                    _set_outcome(
+                        _sprint_state, task.slug, StoryOutcome.SKIPPED, reason=auth_circuit_reason
+                    )
                     _log(f"SKIPPED {task.slug} ({auth_circuit_reason})")
                     _record_current_story_entry(task.slug, "SKIPPED", error=auth_circuit_reason)
-                    if _state_writer is not None:
-                        _state_writer.update(task.slug, status="skipped")
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(task.slug, status="skipped")
                     continue
 
                 # Both hard (depends_on) and soft (collision_deps) parents must
@@ -6382,27 +6475,27 @@ def run_sprint(
                 # abandon-and-proceed semantics for genuinely failed collision
                 # parents: those are never in queued_prs, so they skip this gate.
                 _gate_deps = list(dict.fromkeys((*task.depends_on, *task.collision_deps)))
-                blocked_by_queued = [dep for dep in _gate_deps if dep in queued_prs]
+                blocked_by_queued = [dep for dep in _gate_deps if dep in _sprint_state.queued_prs]
                 if blocked_by_queued:
                     dependency_failed = False
                     for dep in blocked_by_queued:
                         if (
                             _resolve_queued_pr(
-                                dep, blocking=True, context="before dependent dispatch"
+                                _sprint_state, dep, blocking=True, why="before dependent dispatch"
                             )
                             == "failed"
                         ):
                             dependency_failed = True
                     if dependency_failed:
                         continue
-                    if any(dep in queued_prs for dep in _gate_deps):
+                    if any(dep in _sprint_state.queued_prs for dep in _gate_deps):
                         continue
 
                 # Cap concurrent submissions at max_parallel
-                if len(active) >= max_parallel:
+                if len(_sprint_state.active) >= max_parallel:
                     break
 
-                _budget_snapshot = _cost_ledger.snapshot()
+                _budget_snapshot = _sprint_state.cost.snapshot()
                 _budget_unresolved, _budget_applied = unmeasured_spend_policy.partition(
                     list(_budget_snapshot.unmeasured),
                     accepted_unmeasured,
@@ -6430,10 +6523,12 @@ def run_sprint(
                     source_details=_budget_details,
                 )
                 if _budget_decision is not None:
-                    dag.mark_skipped(task.slug)
+                    _sprint_state.dag.mark_skipped(task.slug)
                     _budget_reason = _budget_decision.story_reason
-                    _set_outcome(task.slug, StoryOutcome.SKIPPED, reason=_budget_reason)
-                    if _stop.stop_if_unset(_budget_decision.stopped_reason):
+                    _set_outcome(
+                        _sprint_state, task.slug, StoryOutcome.SKIPPED, reason=_budget_reason
+                    )
+                    if _sprint_state.stop.stop_if_unset(_budget_decision.stopped_reason):
                         if _ctx.notify and _ctx.config.notifications.backend not in (
                             "ntfy",
                             "none",
@@ -6447,8 +6542,8 @@ def run_sprint(
                             )
                     _log(f"SKIPPED {task.slug} ({_budget_reason})")
                     _record_current_story_entry(task.slug, "SKIPPED", error=_budget_reason)
-                    if _state_writer is not None:
-                        _state_writer.update(task.slug, status="skipped")
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(task.slug, status="skipped")
                     continue
 
                 # Eager merge for sequential mode; disabled in parallel mode
@@ -6504,9 +6599,9 @@ def run_sprint(
                         m
                         for m in _members
                         if m in _ready_by_slug
-                        and m not in active
+                        and m not in _sprint_state.active
                         and m not in _inflight_slugs
-                        and m in slug_to_context
+                        and m in _ctx.slug_to_context
                         and (triages.get(slug_to_spec[m]) if _ctx.resume else None) is None
                     ]
                     if len(_dispatchable) < 2:
@@ -6538,8 +6633,8 @@ def run_sprint(
                                 file=sys.stderr,
                                 flush=True,
                             )
-                            if _state_writer is not None:
-                                _state_writer.update(
+                            if _sprint_state.state_writer is not None:
+                                _sprint_state.state_writer.update(
                                     _member_slug,
                                     status="running",
                                     batch_group=_batch_gid,
@@ -6556,10 +6651,10 @@ def run_sprint(
                             _batch_state_fns[_member_slug] = _make_worker_phase_fn(
                                 _member_slug,
                                 worker_phases,
-                                phase_lock,
+                                _sprint_state.phase_lock,
                                 _ctx.state_update_fn,
                                 plan_done=None,
-                                state_writer=_state_writer,
+                                state_writer=_sprint_state.state_writer,
                                 audit_flush=_make_audit_flush_fn(
                                     _ctx.config,
                                     _member_task,
@@ -6567,7 +6662,7 @@ def run_sprint(
                                     sprint_id=_ctx.sprint_id,
                                 ),
                             )
-                            stop_events[_member_slug] = _batch_stop_evt
+                            _sprint_state.stop_events[_member_slug] = _batch_stop_evt
                         # One worker runs the group, so the whole group shares one
                         # deadline: the sum of what its members would each have
                         # been allowed on their own. Registered BEFORE submit —
@@ -6592,7 +6687,7 @@ def run_sprint(
                             _ctx.config,
                             _leader_task,
                             _batch_tasks[1:],
-                            _sprint_run_id,
+                            _sprint_state.sprint_run_id,
                             _ctx.resolved.name,
                             _ctx.interactive,
                             _ctx.notify,
@@ -6605,9 +6700,9 @@ def run_sprint(
                             lands_in_project_root=_story_lands_in_root,
                         )
                         _dispatched_batch_leader[_batch_gid] = _dispatchable[0]
-                        _batch_group_of_leader[_dispatchable[0]] = _batch_gid
+                        _sprint_state.batch_group_of_leader[_dispatchable[0]] = _batch_gid
                         for _member_slug in _dispatchable:
-                            active[_member_slug] = _batch_fut
+                            _sprint_state.active[_member_slug] = _batch_fut
                             story_deadlines[_member_slug] = _batch_deadline
                         continue
 
@@ -6618,8 +6713,8 @@ def run_sprint(
                     file=sys.stderr,
                     flush=True,
                 )
-                if _state_writer is not None:
-                    _state_writer.update(
+                if _sprint_state.state_writer is not None:
+                    _sprint_state.state_writer.update(
                         task.slug,
                         status="running",
                         started_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -6631,23 +6726,23 @@ def run_sprint(
                 gate: threading.Event | None = None
                 if use_plan_gates and triage is None and not _inherited:
                     gate = threading.Event()
-                    plan_gates[task.slug] = gate
+                    _sprint_state.plan_gates[task.slug] = gate
 
                 worker_config = _ctx.config
 
                 state_fn = _make_worker_phase_fn(
                     task.slug,
                     worker_phases,
-                    phase_lock,
+                    _sprint_state.phase_lock,
                     _ctx.state_update_fn,
-                    plan_done=plan_done if use_plan_gates else None,
-                    state_writer=_state_writer,
+                    plan_done=_sprint_state.plan_done if use_plan_gates else None,
+                    state_writer=_sprint_state.state_writer,
                     audit_flush=_make_audit_flush_fn(
                         _ctx.config, task, _ctx.resolved.name, sprint_id=_ctx.sprint_id
                     ),
                 )
                 stop_evt = threading.Event()
-                stop_events[task.slug] = stop_evt
+                _sprint_state.stop_events[task.slug] = stop_evt
                 _dispatch_kwargs: dict = {
                     "base_lands_locally": _sprint_lands_locally,
                     "lands_in_project_root": _story_lands_in_root,
@@ -6678,7 +6773,7 @@ def run_sprint(
                     worker_config,
                     task,
                     triage,
-                    _sprint_run_id,
+                    _sprint_state.sprint_run_id,
                     _ctx.resolved.name,
                     _ctx.interactive,
                     _ctx.notify,
@@ -6693,37 +6788,37 @@ def run_sprint(
                     # positional argument for callers that index args[-1].
                     **_dispatch_kwargs,
                 )
-                active[task.slug] = fut
+                _sprint_state.active[task.slug] = fut
                 story_deadlines[task.slug] = _story_started + float(
                     story_worker_timeouts[task.slug]
                 )
 
             _log(
-                f"[debug] post-submit: active={list(active.keys())}"
-                f" queued_prs={list(queued_prs.keys())}"
+                f"[debug] post-submit: active={list(_sprint_state.active.keys())}"
+                f" queued_prs={list(_sprint_state.queued_prs.keys())}"
             )
-            if not active and not queued_prs:
+            if not _sprint_state.active and not _sprint_state.queued_prs:
                 # A terminal-but-not-merged soft-edge parent may have just
                 # released a dependent's collision edge. Before declaring a
                 # deadlock and sweeping remaining tasks into SKIP, re-enter
                 # dispatch for anything now schedulable so a released, ready
                 # story runs on the current base instead of being skipped.
-                if any(t.slug not in active for t in dag.ready()):
+                if any(t.slug not in _sprint_state.active for t in _sprint_state.dag.ready()):
                     continue
                 # Deadlock: remaining tasks have unmet or budget-blocked deps
                 # Release any pending plan gates so worker threads can exit
-                for g_slug, _gate in plan_gates.items():
+                for g_slug, _gate in _sprint_state.plan_gates.items():
                     _log(f"Releasing plan gate for {g_slug} (deadlock cleanup)")
                     _gate.set()
-                plan_gates.clear()
-                for t in dag.remaining():
+                _sprint_state.plan_gates.clear()
+                for t in _sprint_state.dag.remaining():
                     # A mark_skipped earlier in THIS sweep can release a
                     # sibling's soft edge; if that makes any task schedulable,
                     # stop skipping and re-enter dispatch on the next loop pass
                     # rather than sweeping the just-released sibling into a SKIP.
-                    if any(r.slug not in active for r in dag.ready()):
+                    if any(r.slug not in _sprint_state.active for r in _sprint_state.dag.ready()):
                         break
-                    unmet = dag.unmet_deps(t.slug)
+                    unmet = _sprint_state.dag.unmet_deps(t.slug)
                     if unmet:
                         dep_list = ", ".join(unmet)
                         _log(f"SKIPPED {t.slug} (dependency failed: {dep_list})")
@@ -6731,6 +6826,7 @@ def run_sprint(
                             t.slug, "SKIPPED", error=f"dependency failed: {dep_list}"
                         )
                         _set_outcome(
+                            _sprint_state,
                             t.slug,
                             StoryOutcome.SKIPPED,
                             reason=f"dependency failed: {dep_list}",
@@ -6738,8 +6834,8 @@ def run_sprint(
                     else:
                         _log(f"SKIPPED {t.slug} (blocked)")
                         _record_current_story_entry(t.slug, "SKIPPED", error="blocked")
-                        _set_outcome(t.slug, StoryOutcome.SKIPPED, reason="blocked")
-                    dag.mark_skipped(t.slug)
+                        _set_outcome(_sprint_state, t.slug, StoryOutcome.SKIPPED, reason="blocked")
+                    _sprint_state.dag.mark_skipped(t.slug)
                 else:
                     break
                 continue
@@ -6747,16 +6843,18 @@ def run_sprint(
             # No active workers but queued PRs are still in flight.
             # Poll each queued PR directly so dependents can be dispatched
             # once the PR lands — do not declare deadlock while PRs are pending.
-            if not active and queued_prs:
-                for _qp_slug in list(queued_prs):
+            if not _sprint_state.active and _sprint_state.queued_prs:
+                for _qp_slug in list(_sprint_state.queued_prs):
                     # The redispatch-after-restart bug lives on this path: a
                     # queued PR merges while another story occupies the only
                     # worker slot. _resolve_queued_pr writes the confirmed-landed
                     # DONE with its immutability marker so it cannot be clobbered.
-                    _resolve_queued_pr(_qp_slug, blocking=True, context="no active workers")
+                    _resolve_queued_pr(
+                        _sprint_state, _qp_slug, blocking=True, why="no active workers"
+                    )
                 continue
 
-            _log(f"[debug] calling wait() with {len(active)} active futures")
+            _log(f"[debug] calling wait() with {len(_sprint_state.active)} active futures")
             # Use a short poll interval when plan gates are pending so the
             # scheduler can release gated workers between polls.  Without
             # this, gated workers block in _run_fresh waiting for their gate
@@ -6774,25 +6872,27 @@ def run_sprint(
                             if slug not in story_wait_started
                             else _effective_deadline(slug) - _now
                         )
-                        for slug in active
+                        for slug in _sprint_state.active
                     ),
                 )
                 _poll_interval = (
-                    min(2.0, _time_to_next_timeout) if plan_gates else _time_to_next_timeout
+                    min(2.0, _time_to_next_timeout)
+                    if _sprint_state.plan_gates
+                    else _time_to_next_timeout
                 )
                 done_futs, _ = wait(
-                    list(active.values()),
+                    list(_sprint_state.active.values()),
                     return_when=FIRST_COMPLETED,
                     timeout=_poll_interval,
                 )
-                story_wait_started.update(active)
+                story_wait_started.update(_sprint_state.active)
                 if not done_futs and use_plan_gates:
                     # Service plan gates while polling
-                    _service_plan_gates()
+                    _service_plan_gates(_sprint_state)
                 _now = time.monotonic()
                 expired_slugs = [
                     slug
-                    for slug, fut in active.items()
+                    for slug, fut in _sprint_state.active.items()
                     if fut not in done_futs and _now >= _effective_deadline(slug)
                 ]
 
@@ -6801,21 +6901,21 @@ def run_sprint(
 
             if expired_slugs:
                 for slug in expired_slugs:
-                    if slug in plan_gates:
+                    if slug in _sprint_state.plan_gates:
                         _log(f"TIMEOUT releasing plan gate for {slug}")
-                        plan_gates[slug].set()
-                        del plan_gates[slug]
-                    fut = active.pop(slug)
+                        _sprint_state.plan_gates[slug].set()
+                        del _sprint_state.plan_gates[slug]
+                    fut = _sprint_state.active.pop(slug)
                     story_deadlines.pop(slug, None)
                     story_wait_started.discard(slug)
                     # A worker killed at its deadline is not preserved work
                     # awaiting a decision — nothing can land it, so its files
                     # are free.
-                    _end_collision_claim(slug, "worker timed out")
+                    _end_collision_claim(_sprint_state, slug, "worker timed out")
                     # Set the cancellation event BEFORE cancel() so any in-flight
                     # work stops at the next phase boundary or subprocess read.
                     # Future.cancel() is a no-op for an already-running thread.
-                    _stop_evt = stop_events.pop(slug, None)
+                    _stop_evt = _sprint_state.stop_events.pop(slug, None)
                     if _stop_evt is not None:
                         _stop_evt.set()
                     fut.cancel()
@@ -6845,7 +6945,7 @@ def run_sprint(
                     worker_budget.unregister_worker_budget(slug)
                     spec_str = slug_to_spec[slug]
                     timed_out_at = datetime.datetime.now(datetime.timezone.utc)
-                    snapshot = _snapshot_last_known(slug, _state_writer)
+                    snapshot = _snapshot_last_known(slug, _sprint_state.state_writer)
                     last_phase = snapshot["last_phase"]
                     if slug in _sprint_state.story_times:
                         story_started_at = _sprint_state.story_times[slug][0]
@@ -6901,12 +7001,13 @@ def run_sprint(
                     _sprint_state.results.append((spec_str, _timeout_result))
                     _write_story_audit(
                         _ctx.config,
-                        slug_to_context[slug][0],
+                        _ctx.slug_to_context[slug][0],
                         _timeout_result,
                         sprint_id=_ctx.sprint_id,
                         telemetry_snapshot=snapshot,
                     )
                     _set_outcome(
+                        _sprint_state,
                         slug,
                         _timeout_outcome,
                         phase="ESCALATE",
@@ -6919,15 +7020,16 @@ def run_sprint(
                         detail_updates={"gate_status": GATE_STATUS_TIMEOUT},
                     )
                     _persist_current_story_result(
+                        _sprint_state,
                         slug,
                         _timeout_result,
                         started_at=story_started_at,
                         finished_at=timed_out_at,
                     )
-                    dag.mark_skipped(slug)
+                    _sprint_state.dag.mark_skipped(slug)
                 continue
 
-            for slug, fut in list(active.items()):
+            for slug, fut in list(_sprint_state.active.items()):
                 if fut not in done_futs:
                     continue
                 try:
@@ -6942,15 +7044,15 @@ def run_sprint(
                         task, result, elapsed, t0, t1 = _fut_value  # type: ignore[misc]
                 except Exception as exc:
                     _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
-                    del active[slug]
+                    del _sprint_state.active[slug]
                     story_deadlines.pop(slug, None)
                     worker_budget.unregister_worker_budget(slug)
                     story_wait_started.discard(slug)
-                    stop_events.pop(slug, None)
-                    _end_collision_claim(slug, "worker raised")
+                    _sprint_state.stop_events.pop(slug, None)
+                    _end_collision_claim(_sprint_state, slug, "worker raised")
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
-                    snapshot = _snapshot_last_known(slug, _state_writer)
+                    snapshot = _snapshot_last_known(slug, _sprint_state.state_writer)
                     last_phase = snapshot["last_phase"]
                     if slug in _sprint_state.story_times:
                         story_started_at = _sprint_state.story_times[slug][0]
@@ -6995,12 +7097,13 @@ def run_sprint(
                     _sprint_state.results.append((spec_str, _exc_result))
                     _write_story_audit(
                         _ctx.config,
-                        slug_to_context[slug][0],
+                        _ctx.slug_to_context[slug][0],
                         _exc_result,
                         sprint_id=_ctx.sprint_id,
                         telemetry_snapshot=snapshot,
                     )
                     _set_outcome(
+                        _sprint_state,
                         slug,
                         _exc_outcome,
                         phase="ESCALATE",
@@ -7009,21 +7112,22 @@ def run_sprint(
                         detail_updates={"gate_status": GATE_STATUS_INCOMPLETE},
                     )
                     _persist_current_story_result(
+                        _sprint_state,
                         slug,
                         _exc_result,
                         started_at=story_started_at,
                         finished_at=failed_at,
                     )
-                    dag.mark_skipped(slug)
+                    _sprint_state.dag.mark_skipped(slug)
                     continue
-                del active[slug]
+                del _sprint_state.active[slug]
                 story_deadlines.pop(slug, None)
                 worker_budget.unregister_worker_budget(slug)
                 story_wait_started.discard(slug)
-                stop_events.pop(slug, None)
+                _sprint_state.stop_events.pop(slug, None)
                 _sprint_state.story_times[slug] = (t0, t1)
 
-                _cost_ledger.record_story_cost(
+                _sprint_state.cost.record_story_cost(
                     slug,
                     result.state.total_cost,
                     measured=result.state.total_cost_measured,
@@ -7055,12 +7159,12 @@ def run_sprint(
                             f"{_auth_phase} of {slug}"
                             + (f": {_auth_detail[:200]}" if _auth_detail else "")
                         )
-                        _stop.stop_if_unset(
+                        _sprint_state.stop.stop_if_unset(
                             f"Agent authentication failed ({auth_circuit_reason}); "
                             "remaining stories skipped — every subsequent call would "
                             "present the same rejected credential"
                         )
-                        _log(f"HALT sprint: {_stop.reason}")
+                        _log(f"HALT sprint: {_sprint_state.stop.reason}")
                         # Stop in-flight workers at their next phase boundary and
                         # release any plan gate they are parked on, so the sprint
                         # ends in seconds rather than at the worker timeout.
@@ -7068,13 +7172,13 @@ def run_sprint(
                         # back through the timeout-oriented cancellation path,
                         # which would otherwise hand them a story failure verdict
                         # for a substrate outage (#1951).
-                        for _pending_slug, _pending_evt in stop_events.items():
+                        for _pending_slug, _pending_evt in _sprint_state.stop_events.items():
                             auth_cancelled_slugs.add(_pending_slug)
                             _pending_evt.set()
-                        for _gate_slug, _pending_gate in plan_gates.items():
+                        for _gate_slug, _pending_gate in _sprint_state.plan_gates.items():
                             _log(f"Releasing plan gate for {_gate_slug} (auth abort)")
                             _pending_gate.set()
-                        plan_gates.clear()
+                        _sprint_state.plan_gates.clear()
 
                 # A sibling story we cancelled to stop the bleeding never got a
                 # model judgment — the sprint killed it mid-flight. Recording the
@@ -7086,15 +7190,19 @@ def run_sprint(
                     auth_cancelled_slugs.discard(slug)
                     _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
                     _mark_story_auth_cancelled(result, auth_circuit, reason=_cancel_reason)
-                    _end_collision_claim(slug, "cancelled by the auth circuit breaker")
+                    _end_collision_claim(
+                        _sprint_state, slug, "cancelled by the auth circuit breaker"
+                    )
                     _log(f"SKIPPED {slug} ({_cancel_reason})")
                     _record_current_story_entry(slug, "SKIPPED", error=_cancel_reason)
-                    _set_outcome(slug, StoryOutcome.SKIPPED, reason=_cancel_reason)
-                    if _state_writer is not None:
-                        _state_writer.update(slug, status="skipped")
-                    dag.mark_skipped(slug)
+                    _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_cancel_reason)
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(slug, status="skipped")
+                    _sprint_state.dag.mark_skipped(slug)
                     _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-                    _print_worker_status(active, worker_phases, dag, total)
+                    _print_worker_status(
+                        _sprint_state.active, worker_phases, _sprint_state.dag, total
+                    )
                     continue
 
                 # Stood down at its collision gate (#2234): the scheduler opened
@@ -7102,22 +7210,25 @@ def run_sprint(
                 # story reached PLAN and stopped, so it is skipped — not failed:
                 # nothing judged it, and its planned work is still valid once the
                 # preserved work it collided with is decided.
-                if slug in gate_stood_down:
-                    _stand_down_reason = gate_stood_down.pop(slug)
-                    _end_collision_claim(slug, "stood down before entering DEV")
+                if slug in _sprint_state.gate_stood_down:
+                    _stand_down_reason = _sprint_state.gate_stood_down.pop(slug)
+                    _end_collision_claim(_sprint_state, slug, "stood down before entering DEV")
                     _log(f"SKIPPED {slug} ({_stand_down_reason})")
                     _record_current_story_entry(slug, "SKIPPED", error=_stand_down_reason)
                     _set_outcome(
+                        _sprint_state,
                         slug,
                         StoryOutcome.SKIPPED,
                         reason=_stand_down_reason,
                         phase=result.phase.name,
                     )
-                    if _state_writer is not None:
-                        _state_writer.update(slug, status="skipped")
-                    dag.mark_skipped(slug)
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(slug, status="skipped")
+                    _sprint_state.dag.mark_skipped(slug)
                     _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-                    _print_worker_status(active, worker_phases, dag, total)
+                    _print_worker_status(
+                        _sprint_state.active, worker_phases, _sprint_state.dag, total
+                    )
                     continue
 
                 _done_status = (
@@ -7133,8 +7244,8 @@ def run_sprint(
                     _done_status = "waiting"
                 # Live status update — does not commit a terminal outcome to
                 # the canonical structure when the slug is still preflighting.
-                if _state_writer is not None and _done_status == "waiting":
-                    _state_writer.update(
+                if _sprint_state.state_writer is not None and _done_status == "waiting":
+                    _sprint_state.state_writer.update(
                         slug,
                         status=_done_status,
                         phase=result.phase.name,
@@ -7144,7 +7255,7 @@ def run_sprint(
                 _classify_outcome = _classify_and_record(
                     task,
                     result,
-                    dag,
+                    _sprint_state.dag,
                     _sprint_state.merged_slugs,
                     story_state=_sprint_state.stories,
                 )
@@ -7170,8 +7281,9 @@ def run_sprint(
                     )
                     _existing_detail["outcome_source"] = "preflight_verdict"
                     _outcome_fields["detail"] = _existing_detail
-                _set_outcome(task.slug, _classify_outcome, **_outcome_fields)
+                _set_outcome(_sprint_state, task.slug, _classify_outcome, **_outcome_fields)
                 _persist_current_story_result(
+                    _sprint_state,
                     slug,
                     result,
                     started_at=t0,
@@ -7193,7 +7305,7 @@ def run_sprint(
                 # Workers set landing_status="pending_integration" and return;
                 # _attempt_integration is the sole merge site for all sprint execution.
                 if result.success and result.landing_status == "pending_integration":
-                    integrated = _attempt_integration(slug, task, result)
+                    integrated = _attempt_integration(_sprint_state, slug, task, result)
                     if not integrated:
                         pending_integration[slug] = (task, result)
                     elif result.landing_status == "failed":
@@ -7202,14 +7314,16 @@ def run_sprint(
                         # terminal correction is permitted).
                         _merge_info = result.merge if isinstance(result.merge, dict) else {}
                         _failed_outcome = landing_failure_outcome(_merge_info)
-                        _set_outcome(slug, _failed_outcome, phase=result.phase.name)
+                        _set_outcome(_sprint_state, slug, _failed_outcome, phase=result.phase.name)
                     changed = True
                     while changed:
                         changed = False
                         for pending_slug, (pending_task, pending_result) in list(
                             pending_integration.items()
                         ):
-                            if _attempt_integration(pending_slug, pending_task, pending_result):
+                            if _attempt_integration(
+                                _sprint_state, pending_slug, pending_task, pending_result
+                            ):
                                 del pending_integration[pending_slug]
                                 if pending_result.landing_status == "failed":
                                     _pending_merge_info = (
@@ -7221,6 +7335,7 @@ def run_sprint(
                                         _pending_merge_info
                                     )
                                     _set_outcome(
+                                        _sprint_state,
                                         pending_slug,
                                         _pending_failed_outcome,
                                         phase=pending_result.phase.name,
@@ -7244,15 +7359,21 @@ def run_sprint(
                 _group_id = getattr(result.state, "preflight_batch_group", None)
                 _group_leader = _dispatched_batch_leader.get(_group_id) if _group_id else None
                 if _group_id and _group_leader is not None and slug != _group_leader:
-                    _batch_member_records[slug] = (_group_id, task, result)
-                    _known_landing = _batch_leader_landing.get(_group_id)
+                    _sprint_state.batch_member_records[slug] = (_group_id, task, result)
+                    _known_landing = _sprint_state.batch_leader_landing.get(_group_id)
                     if _known_landing is not None:
                         _apply_batch_landing_to_member(
-                            slug, task, result, _known_landing, _group_leader, _group_id
+                            _sprint_state,
+                            slug,
+                            task,
+                            result,
+                            _known_landing,
+                            _group_leader,
+                            _group_id,
                         )
 
                 # Fire StorySource lifecycle callbacks
-                ctx = slug_to_context.get(slug)
+                ctx = _ctx.slug_to_context.get(slug)
                 if ctx:
                     _ctx_task, source, _ctx_ref = ctx
                     if result.success:
@@ -7278,14 +7399,14 @@ def run_sprint(
                             except Exception as exc:
                                 _log(f"WARN on_escalate callback failed for {slug}: {exc}")
 
-                _print_worker_status(active, worker_phases, dag, total)
+                _print_worker_status(_sprint_state.active, worker_phases, _sprint_state.dag, total)
 
             # ── Overlap detection: check plan gates ────────────────────
             if use_plan_gates:
-                _service_plan_gates()
+                _service_plan_gates(_sprint_state)
 
-    if queued_prs:
-        for slug, (task, result, pr_url) in list(queued_prs.items()):
+    if _sprint_state.queued_prs:
+        for slug, (task, result, pr_url) in list(_sprint_state.queued_prs.items()):
             poll_result = _poll_queued_pr(
                 pr_url,
                 _ctx.config.project_root,
@@ -7294,10 +7415,10 @@ def run_sprint(
             )
             if poll_result["status"] == "merged":
                 _sprint_state.merged_slugs.add(slug)
-                dag.mark_complete(slug)
+                _sprint_state.dag.mark_complete(slug)
                 result.landing_status = "landed"
-                _set_outcome(slug, StoryOutcome.DONE, landed=True)
-                _resolve_batch_leader_landing(slug, "landed")
+                _set_outcome(_sprint_state, slug, StoryOutcome.DONE, landed=True)
+                _resolve_batch_leader_landing(_sprint_state, slug, "landed")
             else:
                 from ..coordinator.completion import (  # noqa: PLC0415
                     mark_merge_failed as _mark_mf,
@@ -7307,16 +7428,20 @@ def run_sprint(
                     poll_result, pr_url, _ctx.config.workspace.merge_wait_timeout_seconds
                 )
                 _mark_mf(result.state, result, _err, result.state.branch_name)
-                _set_outcome(slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name)
-                _resolve_batch_leader_landing(slug, "failed")
+                _set_outcome(
+                    _sprint_state, slug, StoryOutcome.MERGE_FAILED, phase=result.phase.name
+                )
+                _resolve_batch_leader_landing(_sprint_state, slug, "failed")
                 _log(f"✗ {slug}: queued PR {poll_result['status']} during sprint wrap-up")
-            _persist_story_landing(slug, result)
+            _persist_story_landing(_sprint_state, slug, result)
             _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
-            del queued_prs[slug]
+            del _sprint_state.queued_prs[slug]
             # The landing verdict is in: end the claim outright rather than
             # re-deriving it from the result, whose phase mark_merge_failed can
             # legitimately leave as ESCALATE (inherited-dev-residue).
-            _end_collision_claim(slug, f"queued PR {poll_result['status']} at wrap-up")
+            _end_collision_claim(
+                _sprint_state, slug, f"queued PR {poll_result['status']} at wrap-up"
+            )
 
     finished_at = datetime.datetime.now(datetime.timezone.utc)
     set_worker_slug("")
@@ -7333,10 +7458,10 @@ def run_sprint(
     # lands, `forge status` keeps rendering a running sprint next to stories it
     # already reports as failed (#2013). The file is removed further down on the
     # normal path; this is what a crash or a stop in between now finds.
-    if _state_writer is not None:
-        _stranded = _state_writer.terminalize_stories(
+    if _sprint_state.state_writer is not None:
+        _stranded = _sprint_state.state_writer.terminalize_stories(
             outcome=StoryOutcome.FAILED,
-            reason=_stop.reason or "sprint ended before this story reached a verdict",
+            reason=_sprint_state.stop.reason or "sprint ended before this story reached a verdict",
         )
         if _stranded:
             _log(
@@ -7345,13 +7470,13 @@ def run_sprint(
                 + ", ".join(_stranded)
             )
         _terminal_counts = _sprint_state.stories.counts()
-        if _stop.stopped:
+        if _sprint_state.stop.stopped:
             _terminal_sprint_phase = SPRINT_PHASE_STOPPED
         elif _terminal_counts["failed"]:
             _terminal_sprint_phase = SPRINT_PHASE_FAILED
         else:
             _terminal_sprint_phase = SPRINT_PHASE_DONE
-        _state_writer.set_phase(_terminal_sprint_phase)
+        _sprint_state.state_writer.set_phase(_terminal_sprint_phase)
 
     # Attribute intake remediation agent spend back to each story's canonical
     # cost_usd so per-story sums (used by sprint-summary.yaml) match the
@@ -7385,7 +7510,7 @@ def run_sprint(
     for _seed_slug, _seed_cost in seeded_prior_story_cost.items():
         # A seeded cost only needs restoring when the story re-ran; otherwise
         # the seed is still intact and adding it would double-count.
-        if _seed_slug in ran_this_generation:
+        if _seed_slug in _sprint_state.ran_this_generation:
             _carried_by_slug[_seed_slug] = _carried_by_slug.get(_seed_slug, 0.0) + _seed_cost
     for _carried_slug, _carried_cost in _carried_by_slug.items():
         _bump_story_cost(_carried_slug, _carried_cost)
@@ -7397,7 +7522,7 @@ def run_sprint(
             f"${_carried_total:.4f} ({_carried_detail})"
         )
 
-    _final_cost = _cost_ledger.snapshot()
+    _final_cost = _sprint_state.cost.snapshot()
     final_cost = _final_cost.spent
     # A sprint total is only a total when every story's cost was measured. When
     # any story ran on a transport that reported no cost, ``final_cost`` is a
@@ -7447,7 +7572,7 @@ def run_sprint(
         accepted_unmeasured_spend=tuple(r.as_dict() for r in _final_accepted),
         budget_verification_spend_usd=_budget_verification_usd,
         results=_sprint_state.results,
-        stopped_reason=_stop.reason,
+        stopped_reason=_sprint_state.stop.reason,
     )
 
     _sprint_elapsed = (datetime.datetime.now(datetime.timezone.utc) - started_at).total_seconds()
@@ -7459,7 +7584,7 @@ def run_sprint(
         f"Total: {_sprint_cost_str}"
         f"  {_sprint_dur}"
     )
-    _sprint_outcome = "done" if specs_failed == 0 and not _stop.stopped else "partial"
+    _sprint_outcome = "done" if specs_failed == 0 and not _sprint_state.stop.stopped else "partial"
     _sprint_logger.emit(
         "run_end",
         outcome=_sprint_outcome,
@@ -7487,8 +7612,8 @@ def run_sprint(
                 ),
                 f"Total cost: {_sprint_cost_str}   Duration: {_sprint_dur}",
             ]
-            if _stop.reason:
-                _ntfy_body_lines.append(f"Stopped: {_stop.reason}")
+            if _sprint_state.stop.reason:
+                _ntfy_body_lines.append(f"Stopped: {_sprint_state.stop.reason}")
             _ntfy_publish(
                 _ctx.config.notifications.ntfy.url,
                 _ntfy_title,
@@ -7506,13 +7631,13 @@ def run_sprint(
                 ),
                 f"Total cost: {_sprint_cost_str}   Duration: {_fmt_duration(_sprint_elapsed)}",
             ]
-            if _stop.reason:
-                _sc_body_lines.append(f"Stopped: {_stop.reason}")
+            if _sprint_state.stop.reason:
+                _sc_body_lines.append(f"Stopped: {_sprint_state.stop.reason}")
             send_notifications(_ctx.config, _sc_title, "\n".join(_sc_body_lines))
 
     # Build slug map and canonical_refs for audit writers
-    slug_map: dict[str, str] = {ctx[2]: slug for slug, ctx in slug_to_context.items()}
-    canonical_refs = [ctx[2] for ctx in slug_to_context.values()]
+    slug_map: dict[str, str] = {ctx[2]: slug for slug, ctx in _ctx.slug_to_context.items()}
+    canonical_refs = [ctx[2] for ctx in _ctx.slug_to_context.values()]
 
     # Write sprint-audit.yaml (existing format; kept for backward compatibility)
     _write_sprint_audit(
@@ -7526,12 +7651,12 @@ def run_sprint(
         story_times=_sprint_state.story_times,
         batch_assignments=_sprint_state.batch_assignments,
         slug_map=slug_map,
-        tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
-        ci_break_slug=_stop.halt_slug,
+        tasks_by_slug={slug: ctx[0] for slug, ctx in _ctx.slug_to_context.items()},
+        ci_break_slug=_sprint_state.stop.halt_slug,
         sprint_id=_ctx.sprint_id,
         dropped_slugs=_dropped_slugs,
         skipped_issues=_ctx.skipped_issues,
-        current_story_entries_by_ref=current_story_entries_by_ref,
+        current_story_entries_by_ref=_sprint_state.current_story_entries_by_ref,
         triage_actions_by_ref={
             canonical_ref: triage.action for canonical_ref, triage in triages.items()
         },
@@ -7553,8 +7678,8 @@ def run_sprint(
             batch_assignments=_sprint_state.batch_assignments,
             slug_map=slug_map,
             run_id=_ctx.run_id,
-            tasks_by_slug={slug: ctx[0] for slug, ctx in slug_to_context.items()},
-            ci_break_slug=_stop.halt_slug,
+            tasks_by_slug={slug: ctx[0] for slug, ctx in _ctx.slug_to_context.items()},
+            ci_break_slug=_sprint_state.stop.halt_slug,
             sprint_id=_ctx.sprint_id,
             project_root=_ctx.config.project_root,
             dropped_slugs=_dropped_slugs,
@@ -7562,7 +7687,7 @@ def run_sprint(
             triage_actions_by_ref={
                 canonical_ref: triage.action for canonical_ref, triage in triages.items()
             },
-            current_story_entries_by_ref=current_story_entries_by_ref,
+            current_story_entries_by_ref=_sprint_state.current_story_entries_by_ref,
             story_state=_sprint_state.stories,
             config=_ctx.config,
             live_telemetry_snapshots=_sprint_state.live_telemetry_snapshots,
@@ -7581,8 +7706,8 @@ def run_sprint(
         except Exception as _rca_exc:  # noqa: BLE001 — RCA is best-effort
             _log(f"Warning: sprint RCA generation failed: {_rca_exc}")
 
-    if _state_writer is not None:
-        _state_writer.remove()
+    if _sprint_state.state_writer is not None:
+        _sprint_state.state_writer.remove()
 
     # Runs after _state_writer.remove() so sprint state is cleaned up regardless,
     # but the failure is NOT swallowed: a local-only audit commit contaminates
@@ -7635,7 +7760,7 @@ def run_sprint(
         _ps_payload = build_post_sprint_payload(
             sprint_name=_ctx.resolved.name,
             stories=_stories,
-            run_id=_sprint_run_id,
+            run_id=_sprint_state.sprint_run_id,
             config=_ctx.config,
             total_cost_usd=final_cost if _cost_complete else None,
             duration_seconds=_sprint_elapsed,

@@ -11,6 +11,7 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+from sprint_test_helpers import stub_resolved
 
 from theforge.cli import cmd_run
 from theforge.config import (
@@ -240,6 +241,7 @@ class TestPidFileCleanupOnException:
         with (
             patch("theforge.cli.sprint.load_config", return_value=config),
             patch("theforge.cli.sprint.run_sprint", return_value=stub_result),
+            patch("theforge.sprint.runner.resolve_from_manifest", return_value=stub_resolved()),
             patch("theforge.cli.sprint.release_story_locks"),
             patch(
                 "theforge.cli.sprint._acquire_launch_locks",

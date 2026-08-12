@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from sprint_test_helpers import run_sprint_ctx
 
 from tests.test_sprint_parallel import (
     _make_config,
@@ -17,7 +18,6 @@ from tests.test_sprint_parallel import (
 from theforge.config import SprintConfig
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.coordinator.util import LARGE_HEADROOM_FACTOR, MEDIUM_HEADROOM_FACTOR
-from theforge.sprint import run_sprint
 from theforge.sprint.manifest import ResolvedSprint, load_sprint_manifest
 from theforge.sprint.runner import derive_worker_timeout
 
@@ -208,7 +208,7 @@ class TestWorkerTimeoutPrecedence:
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
             patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 0.0, 121.0]),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert any(t == pytest.approx(120.0) for t in wait_calls), (
             f"Expected a wait() call with timeout=120.0 but got: {wait_calls}"
@@ -258,7 +258,7 @@ class TestWorkerTimeoutPrecedence:
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
             patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 0.0, 3601.0]),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert any(t == pytest.approx(3600.0) for t in wait_calls), (
             f"Expected a wait() call with timeout=3600.0 but got: {wait_calls}"
@@ -312,7 +312,7 @@ class TestWorkerTimeoutPrecedence:
             patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert any(t == pytest.approx(round(3600 * LARGE_HEADROOM_FACTOR)) for t in wait_calls), (
             f"Expected wait() to use the derived large-story timeout, got: {wait_calls}"
@@ -373,7 +373,7 @@ class TestWorkerTimeoutPrecedence:
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
             patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 0.0, 61.0]),
         ):
-            run_sprint(config, resolved)
+            run_sprint_ctx(config, resolved)
 
         assert any(t == pytest.approx(60.0) for t in wait_calls), (
             f"Expected a wait() call with timeout=60.0 but got: {wait_calls}"
@@ -427,7 +427,7 @@ class TestWorkerTimeoutPrecedence:
             patch("theforge.sprint.runner.ThreadPoolExecutor", _FakeExecutor),
             patch("theforge.sprint.runner.wait", side_effect=_fake_wait),
         ):
-            run_sprint(config, manifest_path)
+            run_sprint_ctx(config, manifest_path)
 
         assert any(t == pytest.approx(7200.0) for t in wait_calls), (
             f"Expected manifest override timeout=7200.0 but got: {wait_calls}"
@@ -492,7 +492,7 @@ def test_timeout_error_message_uses_configured_value(tmp_path: Path) -> None:
         patch("theforge.sprint.runner.wait", return_value=(set(), set())),
         patch("theforge.sprint.runner.time.monotonic", side_effect=[0.0, 50.0, 50.0]),
     ):
-        result = run_sprint(config, manifest)
+        result = run_sprint_ctx(config, manifest)
 
     assert result.results
     _, story_result = result.results[0]
@@ -593,7 +593,7 @@ def test_per_story_deadline_expires_only_the_elapsed_future(tmp_path: Path, caps
             side_effect=[0.0, 0.0, 4000.0, 4000.0, 4001.0, 4001.0],
         ),
     ):
-        result = run_sprint(config, manifest)
+        result = run_sprint_ctx(config, manifest)
 
     stderr = capsys.readouterr().err
     # An elapsed deadline is exhausted time, not evidence the worker stopped
