@@ -13,11 +13,11 @@ from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import SprintRunContext, run_sprint
 from theforge.sprint.budget import evaluate_budget
+from theforge.sprint.carry import load_sprint_carry_budget_snapshot
 from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
 from theforge.sprint.preflight import reacquire_story_locks_in_daemon
-from theforge.sprint.query import load_sprint_carry_budget_snapshot
 from theforge.sprint.runner import parse_manifest_slugs
 
 # A run's reported disposition must be derived from how it actually ended, not

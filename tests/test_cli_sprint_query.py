@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 from unittest.mock import patch
 
@@ -315,6 +316,7 @@ class TestCmdSprintDryRunQuery:
         )
 
         with (
+            patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False),
             patch("theforge.cli.sprint.load_config", return_value=config),
             patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
             patch(
@@ -328,6 +330,45 @@ class TestCmdSprintDryRunQuery:
         out = capsys.readouterr().out
         assert rc == 0
         assert "budget=$150.00 carried=$64.56 usable_headroom=$85.44" in out
+
+    def test_query_mode_dry_run_without_previous_run_marker_does_not_fallback_to_audit_cost(
+        self, tmp_path: Path, capsys, monkeypatch
+    ) -> None:
+        config = _make_forge_config(tmp_path)
+        args = _make_query_args(tmp_path, parallel=2)
+        args.resume = True
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 64.56)
+        monkeypatch.delenv("FORGE_PREV_RUN_ID", raising=False)
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=150.0,
+            stories=[
+                (
+                    TaskStory(name="A", slug="issue-1", github_issue=1),
+                    GitHubIssueSource(),
+                    "issue:1",
+                )
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "budget=$150.00 carried=$0.00 usable_headroom=$150.00" in out
+        assert "cannot dispatch under the supplied ceiling" not in out
 
     def test_query_mode_dry_run_ignores_existing_spend_without_resume(
         self, tmp_path: Path, capsys
@@ -526,5 +567,57 @@ class TestCmdSprintDryRunQuery:
         out = capsys.readouterr().out
         assert rc == 0
         assert "usable_headroom=$14.00" in out
+        assert "(lower bound; carried unmeasured spend remains)" in out
+        assert "cannot dispatch under the supplied ceiling" in out
+
+    def test_query_mode_dry_run_non_resume_reports_carried_unmeasured_progressive_state(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        config = _make_forge_config(tmp_path)
+        args = _make_query_args(tmp_path, parallel=2)
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "v0.5.0",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:2",
+                    "slug": "issue-2",
+                    "path": "issue-2.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                }
+            ],
+        )
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=20.0,
+            stories=[
+                (
+                    TaskStory(name="A", slug="issue-1", github_issue=1),
+                    GitHubIssueSource(),
+                    "issue:1",
+                )
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "budget=$20.00 carried=$0.00 usable_headroom=$20.00" in out
         assert "(lower bound; carried unmeasured spend remains)" in out
         assert "cannot dispatch under the supplied ceiling" in out

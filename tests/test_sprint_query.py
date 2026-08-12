@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -293,6 +294,25 @@ class TestLoadSprintCarryBudgetSnapshot:
         sprint_id = _set_existing_sprint_id(tmp_path)
         _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
 
+        with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+            snapshot = load_sprint_carry_budget_snapshot(
+                project_root=tmp_path,
+                sprint_name="Test Sprint",
+                selected_slugs=["issue-1"],
+                resume=True,
+            )
+
+        assert snapshot.sprint_id == sprint_id
+        assert snapshot.carried_cost_usd == pytest.approx(6.0)
+        assert snapshot.verification_spend_usd == pytest.approx(6.0)
+
+    def test_resume_without_previous_run_marker_does_not_fallback_to_sprint_audit(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
+        monkeypatch.delenv("FORGE_PREV_RUN_ID", raising=False)
+
         snapshot = load_sprint_carry_budget_snapshot(
             project_root=tmp_path,
             sprint_name="Test Sprint",
@@ -301,8 +321,8 @@ class TestLoadSprintCarryBudgetSnapshot:
         )
 
         assert snapshot.sprint_id == sprint_id
-        assert snapshot.carried_cost_usd == pytest.approx(6.0)
-        assert snapshot.verification_spend_usd == pytest.approx(6.0)
+        assert snapshot.carried_cost_usd == 0.0
+        assert snapshot.verification_spend_usd == 0.0
 
     def test_resume_loads_accepted_unmeasured_ceiling_from_persisted_audit(
         self, tmp_path: Path
@@ -442,4 +462,38 @@ class TestLoadSprintCarryBudgetSnapshot:
 
         assert snapshot.sprint_id == sprint_id
         assert snapshot.carried_cost_usd == 0.0
+        assert snapshot.verification_spend_usd == 0.0
+
+    def test_non_resume_still_surfaces_carried_unmeasured_progressive_state(
+        self, tmp_path: Path
+    ) -> None:
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:2",
+                    "slug": "issue-2",
+                    "path": "issue-2.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                }
+            ],
+        )
+
+        snapshot = load_sprint_carry_budget_snapshot(
+            project_root=tmp_path,
+            sprint_name="Test Sprint",
+            selected_slugs=["issue-1"],
+            resume=False,
+            reexec=False,
+        )
+
+        assert snapshot.sprint_id == sprint_id
+        assert snapshot.carried_cost_usd == 0.0
+        assert snapshot.unresolved_unmeasured_sources == ("carried:issue-2",)
+        assert snapshot.headroom_is_lower_bound is True
         assert snapshot.verification_spend_usd == 0.0

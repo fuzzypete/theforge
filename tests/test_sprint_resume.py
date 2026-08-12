@@ -1068,6 +1068,34 @@ class TestResumeSprintIntegration:
             "budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
         )
 
+    def test_resume_without_previous_run_marker_does_not_refuse_from_audit_fallback(
+        self, tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=5.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+        full_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+        )
+        monkeypatch.delenv("FORGE_PREV_RUN_ID", raising=False)
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=full_triage):
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_run:
+                result = run_sprint_ctx(config, manifest_path, resume=True)
+
+        err = capsys.readouterr().err
+        mock_run.assert_called_once()
+        assert result.specs_succeeded == 1
+        assert result.stopped_reason is None
+        assert "Budget $5.00 · carried $0.00 · usable headroom $5.00" in err
+        assert "Selected run cannot dispatch under the supplied ceiling" not in err
+
     def test_resume_prior_state_cost_exceeds_budget_without_sprint_audit(
         self, tmp_path: Path, capsys
     ) -> None:
@@ -1692,6 +1720,41 @@ class TestResumeSprintIntegration:
         assert result.stopped_reason.startswith("Budget unverifiable")
         assert "Budget $20.00 · carried $6.00 · usable headroom $14.00 lower bound" in err
         assert "Selected run cannot dispatch under the supplied ceiling" in err
+
+    def test_no_resume_startup_discloses_carried_unmeasured_and_refuses_pre_dispatch(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=20.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-b.md",
+                    "slug": "feature-b",
+                    "path": "feature-b.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                }
+            ],
+        )
+
+        with patch("theforge.sprint.runner.run_task") as mock_task:
+            result = run_sprint_ctx(config, manifest_path, resume=False)
+
+        err = capsys.readouterr().err
+        mock_task.assert_not_called()
+        assert result.specs_skipped == 1
+        assert result.stopped_reason is not None
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        assert "Budget $20.00 · carried $0.00 · usable headroom $20.00 lower bound" in err
+        assert "Selected run cannot dispatch under the supplied ceiling" in err
+        assert "carried:feature-b" in err
 
 
 # ── _build_task_from_story depends_on parsing ─────────────────────────
