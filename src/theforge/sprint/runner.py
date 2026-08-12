@@ -6405,12 +6405,12 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             )
 
     def _skip_remaining_stories_for_budget(decision) -> None:
-        while not _sprint_state.dag.is_done():
-            _ready_now = list(_sprint_state.dag.ready())
-            if not _ready_now:
-                break
-            for _ready_task in _ready_now:
-                _skip_story_for_budget(_ready_task.slug, decision)
+        # A startup headroom refusal is global to the selected run: nothing has
+        # dispatched yet, so every remaining selected story is refused for the
+        # same reason rather than letting downstream dependents later degrade
+        # into "dependency failed" during the deadlock sweep.
+        for _remaining_task in list(_sprint_state.dag.remaining()):
+            _skip_story_for_budget(_remaining_task.slug, decision)
 
     if _startup_budget_decision is not None:
         _skip_remaining_stories_for_budget(_startup_budget_decision)

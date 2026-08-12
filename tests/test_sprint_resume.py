@@ -1068,6 +1068,58 @@ class TestResumeSprintIntegration:
             "budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
         )
 
+    def test_resume_prior_cost_exceeds_budget_skips_dependency_chain_for_budget(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Startup headroom refusal applies to downstream selected dependencies too."""
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        _make_spec_file(tmp_path, "Feature B", "feature-b", depends_on=["feature-a"])
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"], budget=5.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+
+        _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
+
+        triages = {
+            "feature-a.md": StoryTriage(
+                story_path="feature-a.md",
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+                slug="feature-a",
+            ),
+            "feature-b.md": StoryTriage(
+                story_path="feature-b.md",
+                action="full",
+                reason="no worktree found",
+                worktree_path=None,
+                slug="feature-b",
+            ),
+        }
+
+        def triage_side_effect(spec_path, config, project_root, *, task=None, **_progress):
+            return triages[Path(spec_path).name]
+
+        with patch("theforge.sprint.runner._triage_spec", side_effect=triage_side_effect):
+            with patch("theforge.sprint.runner.run_task") as mock_run:
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
+
+        err = capsys.readouterr().err
+        mock_run.assert_not_called()
+        assert result.specs_skipped == 2
+        assert (
+            result.stopped_reason
+            == "Budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        )
+        assert "Budget $5.00 · carried $6.00 · usable headroom $0.00" in err
+        audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+        audit_data = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+        errors_by_slug = {spec["slug"]: spec["error"] for spec in audit_data["specs"]}
+        expected = "budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
+        assert errors_by_slug == {"feature-a": expected, "feature-b": expected}
+        assert "dependency failed" not in err
+
     def test_resume_without_previous_run_marker_does_not_refuse_from_audit_fallback(
         self, tmp_path: Path, capsys, monkeypatch: pytest.MonkeyPatch
     ) -> None:
