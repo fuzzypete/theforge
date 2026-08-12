@@ -86,6 +86,24 @@ from .audit import (
 )
 from .auth_gate import enforce_sprint_auth_readiness
 from .budget import budget_verification_spend, evaluate_budget
+from .carry import (
+    load_sprint_carry_budget_snapshot,
+)
+from .carry import (
+    previous_run_marker_present as _previous_run_marker_present,
+)
+from .carry import (
+    prior_sprint_cost_incomplete as _query_prior_sprint_cost_incomplete,
+)
+from .carry import (
+    prior_unmeasured_spend_sources as _query_prior_unmeasured_spend_sources,
+)
+from .carry import (
+    read_prior_sprint_accounting as _query_read_prior_sprint_accounting,
+)
+from .carry import (
+    read_prior_sprint_audit_cost as _query_read_prior_sprint_audit_cost,
+)
 from .ci_checks import PrCheckState, poll_required_checks, required_pr_check_state
 from .collision import (
     batch_group_id,
@@ -120,7 +138,10 @@ from .manifest import (
     resolve_from_manifest,
 )
 from .prior_landing import landing_settled
-from .query import NormalizedDependencyPlan, normalize_dependency_plan
+from .query import (
+    NormalizedDependencyPlan,
+    normalize_dependency_plan,
+)
 from .sources import StorySource
 from .state_writer import (
     SPRINT_PHASE_DONE,
@@ -933,49 +954,14 @@ def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
     measured lower bound rather than dropping the prior spend entirely — the
     cost-unknown signal itself is carried by the per-story entries.
     """
-    if not sprint_id or not os.environ.get("FORGE_PREV_RUN_ID"):
+    if not sprint_id or not _previous_run_marker_present():
         return 0.0
-    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
-    if not audit_path.exists():
-        return 0.0
-    try:
-        with open(audit_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        sprint_block = data.get("sprint", {})
-        if sprint_block.get("sprint_id") != sprint_id:
-            return 0.0
-        total = sprint_block.get("total_cost_usd")
-        if total is None:
-            total = sprint_block.get("total_cost_measured_usd", 0.0)
-        return float(total or 0.0)
-    except (OSError, ValueError, TypeError):
-        return 0.0
-
-
-def _prior_sprint_block(project_root: Path, sprint_id: str | None) -> dict:
-    """Return this sprint's block from sprint-audit.yaml, or ``{}``."""
-    if not sprint_id:
-        return {}
-    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
-    if not audit_path.exists():
-        return {}
-    try:
-        with open(audit_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        sprint_block = data.get("sprint", {})
-        if not isinstance(sprint_block, dict):
-            return {}
-        if sprint_block.get("sprint_id") != sprint_id:
-            return {}
-        return sprint_block
-    except (OSError, yaml.YAMLError, AttributeError):
-        return {}
+    return _query_read_prior_sprint_audit_cost(project_root, sprint_id)
 
 
 def _prior_unmeasured_spend_sources(project_root: Path, sprint_id: str | None) -> list[str]:
     """The sources the prior generation recorded as unmeasured, if any."""
-    recorded = _prior_sprint_block(project_root, sprint_id).get("unmeasured_spend_sources") or []
-    return [str(s) for s in recorded if s] if isinstance(recorded, list) else []
+    return _query_prior_unmeasured_spend_sources(project_root, sprint_id)
 
 
 def _prior_sprint_cost_incomplete(
@@ -996,16 +982,7 @@ def _prior_sprint_cost_incomplete(
     the flag: there is no source there for an operator to have resolved, so the
     whole-generation carry remains the honest statement.
     """
-    sprint_block = _prior_sprint_block(project_root, sprint_id)
-    if sprint_block.get("cost_complete") is not False:
-        return False
-    if accepted:
-        recorded = sprint_block.get("unmeasured_spend_sources") or []
-        if isinstance(recorded, list) and unmeasured_spend_policy.all_sources_accepted(
-            [str(s) for s in recorded if s], accepted
-        ):
-            return False
-    return True
+    return _query_prior_sprint_cost_incomplete(project_root, sprint_id, dict(accepted or {}))
 
 
 def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
@@ -1023,36 +1000,13 @@ def _read_prior_sprint_accounting(
     sprint_id: str | None,
 ) -> tuple[float, datetime.datetime | None, dict[str, dict]]:
     """Recover prior same-sprint cost/timing from progressive story state."""
-    if not sprint_id:
-        return 0.0, None, {}
-
-    from .audit import _load_accumulated_stories  # noqa: PLC0415
-
-    recovered_entries: dict[str, dict] = {}
-    recovered_cost = 0.0
-    earliest_started_at: datetime.datetime | None = None
-    for raw_entry in _load_accumulated_stories(sprint_id, project_root):
-        if not isinstance(raw_entry, dict):
-            continue
-        canonical_ref = raw_entry.get("canonical_ref")
-        if not isinstance(canonical_ref, str) or not canonical_ref:
-            continue
-        entry = dict(raw_entry)
-        recovered_entries[canonical_ref] = entry
-        try:
-            recovered_cost += float(entry.get("cost_usd", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            pass
-        started_at = _parse_accumulated_story_timestamp(entry.get("started_at"))
-        if started_at is not None and (
-            earliest_started_at is None or started_at < earliest_started_at
-        ):
-            earliest_started_at = started_at
-
+    recovered_cost, earliest_started_at, recovered_entries = _query_read_prior_sprint_accounting(
+        project_root, sprint_id
+    )
     if recovered_entries:
-        return round(recovered_cost, 4), earliest_started_at, recovered_entries
+        return recovered_cost, earliest_started_at, recovered_entries
 
-    if os.environ.get("FORGE_PREV_RUN_ID"):
+    if _previous_run_marker_present():
         return _read_prior_sprint_cost(project_root, sprint_id), None, {}
 
     return 0.0, None, {}
@@ -5193,6 +5147,50 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         ).origin
         carried_occurrence_ids[_carried_raw] = _carried_origin.get("run_id")
 
+    _startup_budget_decision = None
+    if _ctx.resolved.budget_usd > 0.0:
+        _carry_snapshot = load_sprint_carry_budget_snapshot(
+            project_root=_ctx.config.project_root,
+            sprint_name=_ctx.resolved.name,
+            sprint_id=_ctx.sprint_id,
+            resume=_ctx.resume,
+            reexec=_ctx.reexec,
+            accepted_unmeasured=dict(accepted_unmeasured),
+        )
+        _headroom = _carry_snapshot.remaining_headroom_usd(_ctx.resolved.budget_usd)
+        _budget_line = f"Budget ${_ctx.resolved.budget_usd:.2f}"
+        _budget_line += f" · carried ${_carry_snapshot.carried_cost_usd:.2f}"
+        if _carry_snapshot.accepted_unmeasured_ceiling_usd > 0.0:
+            _budget_line += (
+                " · accepted unmeasured ceiling "
+                f"${_carry_snapshot.accepted_unmeasured_ceiling_usd:.2f}"
+            )
+        _budget_line += f" · usable headroom ${max(_headroom, 0.0):.2f}"
+        if _carry_snapshot.headroom_is_lower_bound:
+            _budget_line += " lower bound"
+        _log(_budget_line)
+        _startup_budget_details = (
+            {
+                raw: _describe_unmeasured_source(raw, occurrence=_OCCURRENCE_CARRIED).describe()
+                for raw in _carry_snapshot.unresolved_unmeasured_sources
+            }
+            if _carry_snapshot.unresolved_unmeasured_sources
+            else None
+        )
+        _startup_budget_decision = evaluate_budget(
+            accumulated_cost=0.0,
+            prior_cost=_carry_snapshot.carried_cost_usd,
+            budget_usd=_ctx.resolved.budget_usd,
+            unmeasured_spend=_carry_snapshot.unresolved_unmeasured_sources,
+            accepted_unmeasured_ceiling_usd=_carry_snapshot.accepted_unmeasured_ceiling_usd,
+            source_details=_startup_budget_details,
+        )
+        if _startup_budget_decision is not None:
+            _log(
+                "Selected run cannot dispatch under the supplied ceiling: "
+                f"{_startup_budget_decision.detail}"
+            )
+
     def _recorded_prior_done(slug: str, canonical_ref: str | None = None) -> bool:
         """True when this sprint already recorded the story as run-to-DONE.
 
@@ -5421,6 +5419,24 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         )
         _sprint_state.current_story_entries_by_ref[canonical_ref] = entry
         _persist_accumulated_story_entries(_sprint_state)
+
+    def _skip_story_for_budget(slug: str, decision) -> None:
+        _sprint_state.dag.mark_skipped(slug)
+        _budget_reason = decision.story_reason
+        _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_budget_reason)
+        if _sprint_state.stop.stop_if_unset(decision.stopped_reason):
+            if _ctx.notify and _ctx.config.notifications.backend not in ("ntfy", "none"):
+                from ..notify_backends import send_notifications
+
+                send_notifications(
+                    _ctx.config,
+                    decision.notification_title(_ctx.resolved.name),
+                    f"{decision.detail} — remaining stories skipped",
+                )
+        _log(f"SKIPPED {slug} ({_budget_reason})")
+        _record_current_story_entry(slug, "SKIPPED", error=_budget_reason)
+        if _sprint_state.state_writer is not None:
+            _sprint_state.state_writer.update(slug, status="skipped")
 
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
@@ -6388,6 +6404,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 detail=_sk_detail,
             )
 
+    def _skip_remaining_stories_for_budget(decision) -> None:
+        # A startup headroom refusal is global to the selected run: nothing has
+        # dispatched yet, so every remaining selected story is refused for the
+        # same reason rather than letting downstream dependents later degrade
+        # into "dependency failed" during the deadlock sweep.
+        for _remaining_task in list(_sprint_state.dag.remaining()):
+            _skip_story_for_budget(_remaining_task.slug, decision)
+
+    if _startup_budget_decision is not None:
+        _skip_remaining_stories_for_budget(_startup_budget_decision)
+
     # Parallel scheduling state
     story_deadlines: dict[str, float] = {}
     story_wait_started: set[str] = set()
@@ -6555,27 +6582,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     source_details=_budget_details,
                 )
                 if _budget_decision is not None:
-                    _sprint_state.dag.mark_skipped(task.slug)
-                    _budget_reason = _budget_decision.story_reason
-                    _set_outcome(
-                        _sprint_state, task.slug, StoryOutcome.SKIPPED, reason=_budget_reason
-                    )
-                    if _sprint_state.stop.stop_if_unset(_budget_decision.stopped_reason):
-                        if _ctx.notify and _ctx.config.notifications.backend not in (
-                            "ntfy",
-                            "none",
-                        ):
-                            from ..notify_backends import send_notifications
-
-                            send_notifications(
-                                _ctx.config,
-                                _budget_decision.notification_title(_ctx.resolved.name),
-                                f"{_budget_decision.detail} \u2014 remaining stories skipped",
-                            )
-                    _log(f"SKIPPED {task.slug} ({_budget_reason})")
-                    _record_current_story_entry(task.slug, "SKIPPED", error=_budget_reason)
-                    if _sprint_state.state_writer is not None:
-                        _sprint_state.state_writer.update(task.slug, status="skipped")
+                    _skip_story_for_budget(task.slug, _budget_decision)
                     continue
 
                 # Eager merge for sequential mode; disabled in parallel mode
