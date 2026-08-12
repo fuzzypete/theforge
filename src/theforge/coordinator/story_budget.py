@@ -96,6 +96,7 @@ class StoryAllocation:
     max_usd: float | None = None
     reason: str = ""
     excluded_for_taint: int = 0
+    excluded_for_unsuccessful_outcome: int = 0
     scaled_profiles: dict = field(default_factory=dict)
 
     @property
@@ -115,6 +116,7 @@ class StoryAllocation:
             "fallback_configured_usd": round(self.fallback_configured_usd, 2),
             "reason": self.reason,
             "excluded_for_taint": self.excluded_for_taint,
+            "excluded_for_unsuccessful_outcome": self.excluded_for_unsuccessful_outcome,
             **({"scaled_profiles": dict(self.scaled_profiles)} if self.scaled_profiles else {}),
         }
 
@@ -206,6 +208,7 @@ def allocation_from_samples(
     configured_usd: float,
     *,
     excluded_for_taint: int = 0,
+    excluded_for_unsuccessful_outcome: int = 0,
     min_samples: int = MIN_BAND_SAMPLES,
 ) -> StoryAllocation:
     """Return the allocation for ``complexity_score`` given its cost ``samples``.
@@ -223,6 +226,7 @@ def allocation_from_samples(
             sample_count=len(samples),
             reason="no preflight complexity score for this story",
             excluded_for_taint=excluded_for_taint,
+            excluded_for_unsuccessful_outcome=excluded_for_unsuccessful_outcome,
         )
     usable = [float(s) for s in samples if s is not None and float(s) > 0.0]
     if len(usable) < min_samples:
@@ -237,6 +241,7 @@ def allocation_from_samples(
                 f"run(s), below the {min_samples}-run floor"
             ),
             excluded_for_taint=excluded_for_taint,
+            excluded_for_unsuccessful_outcome=excluded_for_unsuccessful_outcome,
         )
     median = percentile(usable, 0.5)
     p90 = percentile(usable, 0.9)
@@ -256,6 +261,7 @@ def allocation_from_samples(
             f"{complexity_score} (max ${observed_max:.2f} x {BAND_HEADROOM})"
         ),
         excluded_for_taint=excluded_for_taint,
+        excluded_for_unsuccessful_outcome=excluded_for_unsuccessful_outcome,
     )
 
 
@@ -279,6 +285,7 @@ def derive_story_allocation(
 
     samples: list[float] = []
     excluded = 0
+    excluded_for_unsuccessful_outcome = 0
     reason_prefix = ""
     substrate = audit_substrate.substrate_path(project_root)
     if not substrate.exists() and not audit_substrate.has_audit_inputs(project_root):
@@ -293,6 +300,9 @@ def derive_story_allocation(
                 stats: dict = {}
                 by_score = audit_substrate.derive_cost_samples_by_score(conn, stats=stats)
                 excluded = int(stats.get("excluded_for_taint", 0))
+                excluded_for_unsuccessful_outcome = int(
+                    stats.get("excluded_for_unsuccessful_outcome", 0)
+                )
                 if complexity_score is not None:
                     samples = list(by_score.get(int(complexity_score), []))
             finally:
@@ -303,6 +313,7 @@ def derive_story_allocation(
         samples,
         configured_usd,
         excluded_for_taint=excluded,
+        excluded_for_unsuccessful_outcome=excluded_for_unsuccessful_outcome,
         min_samples=min_samples,
     )
     if reason_prefix:
