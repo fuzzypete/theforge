@@ -120,7 +120,10 @@ def _runtime_fail_result() -> AgentResult:
 def _capability_mismatch_result() -> AgentResult:
     return AgentResult(
         success=False,
-        output="CAPABILITY_MISMATCH: OpenAI model 'gpt-5.1' cannot satisfy required function-tools.",
+        output=(
+            "CAPABILITY_MISMATCH: OpenAI model 'gpt-5.1' cannot satisfy "
+            "required function-tools on the API transport."
+        ),
         session_id=None,
         cost_usd=None,
         exit_code=1,
