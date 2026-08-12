@@ -29,10 +29,12 @@ from theforge.cli import (
     cmd_init_hooks,
     cmd_secrets_init,
 )
+from theforge.cli.provider_readiness import READINESS_STATUS_COST_UNAVAILABLE
 from theforge.cli import hooks as hooks_module
 from theforge.cli.hooks import created_labels, static_issue_labels
 from theforge.cli.init_commands import _extract_forge_block
 from theforge.config import (
+    AgentDef,
     DEFAULT_VALIDATION,
     ForgeConfig,
     LogConfig,
@@ -41,6 +43,7 @@ from theforge.config import (
     PlanConfig,
     RetryPolicy,
     WorkspaceConfig,
+    transport_for,
 )
 from theforge.runners import AgentResult
 
@@ -581,7 +584,9 @@ class TestCmdCheckProviders:
             _make_pass_result("codex-reviewer"),
         ]
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch("theforge.cli.providers.run_api_agent", side_effect=side_effects):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects
+            ):
                 rc = cmd_check_providers(args)
 
         assert rc == 0
@@ -599,7 +604,9 @@ class TestCmdCheckProviders:
             _make_fail_result("codex-reviewer"),
         ]
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch("theforge.cli.providers.run_api_agent", side_effect=side_effects):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects
+            ):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -616,7 +623,7 @@ class TestCmdCheckProviders:
             raise RuntimeError("connection refused")
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch("theforge.cli.providers.run_api_agent", side_effect=_boom):
+            with patch("theforge.cli.provider_readiness.run_api_agent", side_effect=_boom):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -631,7 +638,7 @@ class TestCmdCheckProviders:
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
             with patch(
-                "theforge.cli.providers.run_api_agent",
+                "theforge.cli.provider_readiness.run_api_agent",
                 return_value=_make_pass_result("claude-reviewer"),
             ) as mock_api:
                 rc = cmd_check_providers(args)
@@ -647,7 +654,7 @@ class TestCmdCheckProviders:
         args = _make_args(profile="nonexistent", config=str(tmp_path / "forge.yaml"))
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch("theforge.cli.providers.run_api_agent") as mock_api:
+            with patch("theforge.cli.provider_readiness.run_api_agent") as mock_api:
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -669,7 +676,9 @@ class TestCmdCheckProviders:
             structured_data={"summary": "no verdict here"},
         )
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch("theforge.cli.providers.run_api_agent", return_value=bad_result):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent", return_value=bad_result
+            ):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -684,9 +693,8 @@ class TestCmdCheckProviders:
         assert rc == 1
 
     def test_deduplication(self, tmp_path, capsys):
-        """Same profile name appearing in multiple config slots is tested only once."""
+        """Exact duplicate probes in the same role collapse to one run."""
         shared = _api_profile("shared-reviewer")
-        # Place same profile in review_pool and also as synthesis_profile
         cfg = ForgeConfig(
             project="test",
             project_root=tmp_path,
@@ -712,8 +720,8 @@ class TestCmdCheckProviders:
                 timeout_seconds=120,
                 allowed_tools=("Read",),
             ),
-            review_pool=[shared],
-            synthesis_profile=shared,  # same object → same name → should be deduped
+            review_pool=[shared, shared],
+            synthesis_profile=None,
             retry=RetryPolicy(),
             plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
             log=LogConfig(enabled=False),
@@ -722,13 +730,113 @@ class TestCmdCheckProviders:
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
             with patch(
-                "theforge.cli.providers.run_api_agent",
+                "theforge.cli.provider_readiness.run_api_agent",
                 return_value=_make_pass_result("shared-reviewer"),
             ) as mock_api:
                 rc = cmd_check_providers(args)
 
         assert rc == 0
         assert mock_api.call_count == 1
+
+    def test_tool_bearing_profile_is_probed_with_original_allowlist(self, tmp_path):
+        cfg = _make_forge_config(tmp_path, review_pool=[_api_profile("reviewer")])
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent",
+                return_value=_make_pass_result("reviewer"),
+            ) as mock_api:
+                rc = cmd_check_providers(args)
+
+        assert rc == 0
+        assert mock_api.call_args.kwargs["profile"].allowed_tools == ("Read", "Grep")
+
+    def test_tool_bearing_agent_pool_failure_cannot_hide_behind_plain_probe(self, tmp_path, capsys):
+        cfg = _make_forge_config(tmp_path, review_pool=[])
+        cfg = ForgeConfig(
+            **{
+                **cfg.__dict__,
+                "agents": [
+                    AgentDef(
+                        name="agent-api",
+                        provider="openai",
+                        model="gpt-5.4",
+                        budget_usd=1.0,
+                        timeout_seconds=120,
+                        tier="mid",
+                        transport=transport_for("openai", "api"),
+                    )
+                ],
+            }
+        )
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        def _side_effect(*_, **kwargs):
+            profile = kwargs["profile"]
+            if profile.allowed_tools:
+                return _make_fail_result(profile.name)
+            return _make_pass_result(profile.name)
+
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent", side_effect=_side_effect
+            ):
+                rc = cmd_check_providers(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "agent-dev" in captured.out
+        assert "0/5 passed" in captured.out
+
+    def test_same_profile_can_render_distinct_role_rows(self, tmp_path, capsys):
+        shared = _api_profile("shared")
+        cfg = _make_forge_config(tmp_path, review_pool=[shared])
+        cfg = ForgeConfig(
+            **{
+                **cfg.__dict__,
+                "plan_agent_review": PlanAgentReviewConfig(enabled=True, pool=[shared]),
+            }
+        )
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent",
+                side_effect=[_make_pass_result("shared"), _make_pass_result("shared")],
+            ):
+                rc = cmd_check_providers(args)
+
+        assert rc == 0
+        captured = capsys.readouterr()
+        assert "review" in captured.out
+        assert "plan-review" in captured.out
+        assert "2/2 passed" in captured.out
+
+    def test_cost_unavailable_is_reported_and_fails(self, tmp_path, capsys):
+        cfg = _make_forge_config(tmp_path, review_pool=[_api_profile("reviewer")])
+        args = _make_args(config=str(tmp_path / "forge.yaml"))
+        unknown_cost = AgentResult(
+            success=True,
+            output='{"verdict":"APPROVE","summary":"ok"}',
+            session_id=None,
+            cost_usd=None,
+            exit_code=0,
+            raw={},
+            profile_name="reviewer",
+            structured_data={"verdict": "APPROVE", "summary": "ok"},
+        )
+
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent", return_value=unknown_cost
+            ):
+                rc = cmd_check_providers(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert READINESS_STATUS_COST_UNAVAILABLE in captured.out
+        assert "0/1 passed" in captured.out
 
 
 # ── TestCmdInitHooks ──────────────────────────────────────────────────
