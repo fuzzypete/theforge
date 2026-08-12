@@ -1180,6 +1180,8 @@ def _run_query_mode(
                 project_root=config.project_root,
                 sprint_name=sprint_name,
                 selected_slugs=[task.slug for task in tasks],
+                resume=resume,
+                reexec=reexec,
             )
             headroom = carry_snapshot.remaining_headroom_usd(resolved.budget_usd)
             budget_line = f"  budget=${resolved.budget_usd:.2f}"

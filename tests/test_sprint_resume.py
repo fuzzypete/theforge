@@ -1003,7 +1003,7 @@ class TestResumeSprintIntegration:
         assert result.total_cost_usd == pytest.approx(1.0)
         assert result.stopped_reason is None
 
-    def test_resume_prior_cost_exceeds_budget(self, tmp_path: Path) -> None:
+    def test_resume_prior_cost_exceeds_budget(self, tmp_path: Path, capsys) -> None:
         """When prior cost already meets/exceeds budget, first spec is skipped."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
         manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=5.0)
@@ -1025,6 +1025,7 @@ class TestResumeSprintIntegration:
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
                     result = run_sprint_ctx(config, manifest_path, resume=True)
 
+        err = capsys.readouterr().err
         # Spec should be skipped — prior cost alone exceeds budget
         mock_run.assert_not_called()
         assert result.specs_skipped == 1
@@ -1032,6 +1033,8 @@ class TestResumeSprintIntegration:
             result.stopped_reason
             == "Budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
         )
+        assert "Budget $5.00 · carried $6.00 · usable headroom $0.00" in err
+        assert "Selected run cannot dispatch under the supplied ceiling" in err
         audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         audit_data = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
         assert audit_data["specs"][0]["error"] == (
@@ -1494,6 +1497,41 @@ class TestResumeSprintIntegration:
         mock_triage.assert_not_called()
         mock_task.assert_called_once()
         assert result.specs_succeeded == 1
+
+    def test_no_resume_existing_sprint_does_not_disclose_or_charge_carried_spend(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=5.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                }
+            ],
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+
+        with patch("theforge.sprint.runner._triage_spec") as mock_triage:
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_task:
+                result = run_sprint_ctx(config, manifest_path, resume=False)
+
+        err = capsys.readouterr().err
+        mock_triage.assert_not_called()
+        mock_task.assert_called_once()
+        assert result.specs_succeeded == 1
+        assert "Budget $5.00 · carried $0.00 · usable headroom $5.00" in err
+        assert "Selected run cannot dispatch under the supplied ceiling" not in err
 
 
 # ── _build_task_from_story depends_on parsing ─────────────────────────

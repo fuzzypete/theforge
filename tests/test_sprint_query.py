@@ -7,11 +7,14 @@ from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
+from theforge.sprint.audit import persist_accumulated_story_state
 from theforge.sprint.query import (
     MilestoneNotFoundError,
     _get_milestone_number,
     _gh_api_paginate_issues,
+    load_sprint_carry_budget_snapshot,
     fetch_issues_for_label,
     fetch_issues_for_milestone,
 )
@@ -225,3 +228,78 @@ class TestFetchIssuesForLabel:
             fetch_issues_for_label("sprint", tmp_path)
         cmd = mock_run.call_args[0][0]
         assert "--paginate" in cmd
+
+
+def _set_existing_sprint_id(
+    tmp_path: Path,
+    sprint_name: str = "Test Sprint",
+    sprint_id: str = "sprint-123",
+) -> str:
+    sprint_dir = tmp_path / ".forge" / "logs" / sprint_name
+    sprint_dir.mkdir(parents=True, exist_ok=True)
+    (sprint_dir / ".sprint_id").write_text(sprint_id, encoding="utf-8")
+    return sprint_id
+
+
+def _write_prior_sprint_audit(tmp_path: Path, sprint_id: str, total_cost_usd: float) -> None:
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        yaml.safe_dump(
+            {
+                "sprint": {
+                    "sprint_id": sprint_id,
+                    "total_cost_usd": total_cost_usd,
+                    "cost_complete": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+class TestLoadSprintCarryBudgetSnapshot:
+    def test_resume_uses_sprint_audit_when_progressive_state_is_absent(self, tmp_path: Path) -> None:
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
+
+        snapshot = load_sprint_carry_budget_snapshot(
+            project_root=tmp_path,
+            sprint_name="Test Sprint",
+            selected_slugs=["issue-1"],
+            resume=True,
+        )
+
+        assert snapshot.sprint_id == sprint_id
+        assert snapshot.carried_cost_usd == pytest.approx(6.0)
+        assert snapshot.verification_spend_usd == pytest.approx(6.0)
+
+    def test_non_resume_ignores_existing_prior_spend(self, tmp_path: Path) -> None:
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:1",
+                    "slug": "issue-1",
+                    "path": "issue-1.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                }
+            ],
+        )
+
+        snapshot = load_sprint_carry_budget_snapshot(
+            project_root=tmp_path,
+            sprint_name="Test Sprint",
+            selected_slugs=["issue-1"],
+            resume=False,
+            reexec=False,
+        )
+
+        assert snapshot.sprint_id == sprint_id
+        assert snapshot.carried_cost_usd == 0.0
+        assert snapshot.verification_spend_usd == 0.0

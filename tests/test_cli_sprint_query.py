@@ -6,6 +6,8 @@ import argparse
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from theforge.cli import cmd_sprint
 from theforge.config import (
     DEFAULT_VALIDATION,
@@ -16,8 +18,8 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.sprint.audit import persist_accumulated_story_state
 from theforge.sprint.manifest import ResolvedSprint
-from theforge.sprint.query import SprintCarryBudgetSnapshot
 from theforge.sprint.sources import GitHubIssueSource
 from theforge.task import TaskStory
 
@@ -90,6 +92,34 @@ def _make_query_args(tmp_path: Path, *, parallel: int) -> argparse.Namespace:
         verbose=False,
         no_notify=True,
         no_pull=False,
+    )
+
+
+def _set_existing_sprint_id(
+    tmp_path: Path,
+    sprint_name: str = "v0.5.0",
+    sprint_id: str = "sprint-123",
+) -> str:
+    sprint_dir = tmp_path / ".forge" / "logs" / sprint_name
+    sprint_dir.mkdir(parents=True, exist_ok=True)
+    (sprint_dir / ".sprint_id").write_text(sprint_id, encoding="utf-8")
+    return sprint_id
+
+
+def _write_prior_sprint_audit(tmp_path: Path, sprint_id: str, total_cost_usd: float) -> None:
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        yaml.safe_dump(
+            {
+                "sprint": {
+                    "sprint_id": sprint_id,
+                    "total_cost_usd": total_cost_usd,
+                    "cost_complete": True,
+                }
+            }
+        ),
+        encoding="utf-8",
     )
 
 
@@ -239,6 +269,9 @@ class TestCmdSprintDryRunQuery:
     ) -> None:
         config = _make_forge_config(tmp_path)
         args = _make_query_args(tmp_path, parallel=2)
+        args.resume = True
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        _write_prior_sprint_audit(tmp_path, sprint_id, 64.56)
 
         resolved = ResolvedSprint(
             name="v0.5.0",
@@ -261,18 +294,6 @@ class TestCmdSprintDryRunQuery:
                 return_value=[{"number": 1, "title": "A"}],
             ),
             patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
-            patch(
-                "theforge.cli.sprint.load_sprint_carry_budget_snapshot",
-                return_value=SprintCarryBudgetSnapshot(
-                    sprint_id="sid",
-                    carried_cost_usd=64.56,
-                    selected_cost_by_slug={"issue-1": 64.56},
-                    unresolved_unmeasured_sources=(),
-                    accepted_unmeasured_spend=(),
-                    accepted_unmeasured_ceiling_usd=0.0,
-                    verification_spend_usd=64.56,
-                ),
-            ),
         ):
             rc = cmd_sprint(args)
 
@@ -280,11 +301,27 @@ class TestCmdSprintDryRunQuery:
         assert rc == 0
         assert "budget=$150.00 carried=$64.56 usable_headroom=$85.44" in out
 
-    def test_query_mode_dry_run_warns_when_carried_spend_consumes_budget(
+    def test_query_mode_dry_run_ignores_existing_spend_without_resume(
         self, tmp_path: Path, capsys
     ) -> None:
         config = _make_forge_config(tmp_path)
         args = _make_query_args(tmp_path, parallel=2)
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "v0.5.0",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:1",
+                    "slug": "issue-1",
+                    "path": "issue-1.md",
+                    "outcome": "DONE",
+                    "cost_usd": 64.56,
+                    "story_run_id": "run-prev",
+                }
+            ],
+        )
 
         resolved = ResolvedSprint(
             name="v0.5.0",
@@ -307,21 +344,10 @@ class TestCmdSprintDryRunQuery:
                 return_value=[{"number": 1, "title": "A"}],
             ),
             patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
-            patch(
-                "theforge.cli.sprint.load_sprint_carry_budget_snapshot",
-                return_value=SprintCarryBudgetSnapshot(
-                    sprint_id="sid",
-                    carried_cost_usd=64.56,
-                    selected_cost_by_slug={"issue-1": 64.56},
-                    unresolved_unmeasured_sources=(),
-                    accepted_unmeasured_spend=(),
-                    accepted_unmeasured_ceiling_usd=0.0,
-                    verification_spend_usd=64.56,
-                ),
-            ),
         ):
             rc = cmd_sprint(args)
 
         out = capsys.readouterr().out
         assert rc == 0
-        assert "cannot dispatch under the supplied ceiling" in out
+        assert "budget=$50.00 carried=$0.00 usable_headroom=$50.00" in out
+        assert "cannot dispatch under the supplied ceiling" not in out

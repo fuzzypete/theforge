@@ -55,7 +55,6 @@ class SprintCarryBudgetSnapshot:
 
     sprint_id: str | None
     carried_cost_usd: float
-    selected_cost_by_slug: dict[str, float]
     unresolved_unmeasured_sources: tuple[str, ...]
     accepted_unmeasured_spend: tuple["AcceptedUnmeasuredSpend", ...]
     accepted_unmeasured_ceiling_usd: float
@@ -87,6 +86,11 @@ def _existing_sprint_id(sprint_name: str, project_root: Path) -> str | None:
     except OSError:
         return None
     return None
+
+
+def sprint_invocation_carries_prior_spend(*, resume: bool, reexec: bool) -> bool:
+    """Whether this invocation should inherit prior same-sprint spend."""
+    return bool(resume or reexec)
 
 
 def _prior_sprint_block(project_root: Path, sprint_id: str | None) -> dict:
@@ -179,21 +183,44 @@ def read_prior_sprint_accounting(
     return round(recovered_cost, 4), earliest_started_at, recovered_entries
 
 
+def read_prior_sprint_audit_cost(project_root: Path, sprint_id: str | None) -> float:
+    """Read carry-forward cost for a same-sprint resume/re-exec from sprint-audit.yaml."""
+    sprint_block = _prior_sprint_block(project_root, sprint_id)
+    total = sprint_block.get("total_cost_usd")
+    if total is None:
+        total = sprint_block.get("total_cost_measured_usd", 0.0)
+    try:
+        return float(total or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
 def load_sprint_carry_budget_snapshot(
     *,
     project_root: Path,
     sprint_name: str,
     selected_slugs: list[str],
     sprint_id: str | None = None,
+    resume: bool = False,
+    reexec: bool = False,
     accepted_unmeasured: Mapping[str, "AcceptedUnmeasuredSpend"] | None = None,
 ) -> SprintCarryBudgetSnapshot:
     """Return the carried budget state the next dispatch will inherit."""
     resolved_sprint_id = sprint_id or _existing_sprint_id(sprint_name, project_root)
+    carries_prior_spend = sprint_invocation_carries_prior_spend(resume=resume, reexec=reexec)
     if not resolved_sprint_id:
         return SprintCarryBudgetSnapshot(
             sprint_id=None,
             carried_cost_usd=0.0,
-            selected_cost_by_slug={},
+            unresolved_unmeasured_sources=(),
+            accepted_unmeasured_spend=(),
+            accepted_unmeasured_ceiling_usd=0.0,
+            verification_spend_usd=0.0,
+        )
+    if not carries_prior_spend:
+        return SprintCarryBudgetSnapshot(
+            sprint_id=resolved_sprint_id,
+            carried_cost_usd=0.0,
             unresolved_unmeasured_sources=(),
             accepted_unmeasured_spend=(),
             accepted_unmeasured_ceiling_usd=0.0,
@@ -203,20 +230,14 @@ def load_sprint_carry_budget_snapshot(
     carried_cost_usd, _started_at, entries_by_ref = read_prior_sprint_accounting(
         project_root, resolved_sprint_id
     )
-    selected = set(selected_slugs)
-    selected_cost_by_slug: dict[str, float] = {}
+    if not entries_by_ref:
+        carried_cost_usd = read_prior_sprint_audit_cost(project_root, resolved_sprint_id)
     occurrence_ids: dict[str, str | None] = {}
     raw_unmeasured_sources: list[str] = []
     for entry in entries_by_ref.values():
         slug = entry.get("slug")
         if not isinstance(slug, str) or not slug:
             continue
-        try:
-            cost_usd = float(entry.get("cost_usd", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            cost_usd = 0.0
-        if slug in selected and cost_usd > 0.0:
-            selected_cost_by_slug[slug] = selected_cost_by_slug.get(slug, 0.0) + cost_usd
         if "cost_usd" in entry and entry.get("cost_usd") is None:
             raw_source = f"carried:{slug}"
             raw_unmeasured_sources.append(raw_source)
@@ -251,7 +272,6 @@ def load_sprint_carry_budget_snapshot(
     return SprintCarryBudgetSnapshot(
         sprint_id=resolved_sprint_id,
         carried_cost_usd=carried_cost_usd,
-        selected_cost_by_slug=dict(sorted(selected_cost_by_slug.items())),
         unresolved_unmeasured_sources=tuple(unresolved),
         accepted_unmeasured_spend=tuple(applied),
         accepted_unmeasured_ceiling_usd=accepted_ceiling_usd,

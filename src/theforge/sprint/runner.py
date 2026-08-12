@@ -125,6 +125,7 @@ from .query import (
     load_sprint_carry_budget_snapshot,
     normalize_dependency_plan,
 )
+from .query import read_prior_sprint_audit_cost as _query_read_prior_sprint_audit_cost
 from .query import prior_sprint_cost_incomplete as _query_prior_sprint_cost_incomplete
 from .query import prior_unmeasured_spend_sources as _query_prior_unmeasured_spend_sources
 from .query import read_prior_sprint_accounting as _query_read_prior_sprint_accounting
@@ -942,41 +943,7 @@ def _read_prior_sprint_cost(project_root: Path, sprint_id: str | None) -> float:
     """
     if not sprint_id or not os.environ.get("FORGE_PREV_RUN_ID"):
         return 0.0
-    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
-    if not audit_path.exists():
-        return 0.0
-    try:
-        with open(audit_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        sprint_block = data.get("sprint", {})
-        if sprint_block.get("sprint_id") != sprint_id:
-            return 0.0
-        total = sprint_block.get("total_cost_usd")
-        if total is None:
-            total = sprint_block.get("total_cost_measured_usd", 0.0)
-        return float(total or 0.0)
-    except (OSError, ValueError, TypeError):
-        return 0.0
-
-
-def _prior_sprint_block(project_root: Path, sprint_id: str | None) -> dict:
-    """Return this sprint's block from sprint-audit.yaml, or ``{}``."""
-    if not sprint_id:
-        return {}
-    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
-    if not audit_path.exists():
-        return {}
-    try:
-        with open(audit_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-        sprint_block = data.get("sprint", {})
-        if not isinstance(sprint_block, dict):
-            return {}
-        if sprint_block.get("sprint_id") != sprint_id:
-            return {}
-        return sprint_block
-    except (OSError, yaml.YAMLError, AttributeError):
-        return {}
+    return _query_read_prior_sprint_audit_cost(project_root, sprint_id)
 
 
 def _prior_unmeasured_spend_sources(project_root: Path, sprint_id: str | None) -> list[str]:
@@ -5170,6 +5137,8 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             sprint_name=_ctx.resolved.name,
             selected_slugs=list(_ctx.slug_to_context.keys()),
             sprint_id=_ctx.sprint_id,
+            resume=_ctx.resume,
+            reexec=_ctx.reexec,
             accepted_unmeasured=dict(accepted_unmeasured),
         )
         _headroom = _carry_snapshot.remaining_headroom_usd(_ctx.resolved.budget_usd)
