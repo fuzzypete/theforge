@@ -455,7 +455,8 @@ def build_plan_review_prompt(
                 description = entry.get("description", "")
                 mitigation = entry.get("mitigation", "")
                 risk_lines.append(f"- **Risk:** {description}")
-                risk_lines.append(f"  **Mitigation:** {mitigation}" if mitigation else "  **Mitigation:** (none stated)")
+                mitigation_text = mitigation if mitigation else "(none stated)"
+                risk_lines.append(f"  **Mitigation:** {mitigation_text}")
             criteria_mapping_section += "\n" + "\n".join(risk_lines) + "\n"
     else:
         plan_content_str = plan_content

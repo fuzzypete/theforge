@@ -449,27 +449,24 @@ def test_plan_review_prompt_no_risks_omits_risk_section(tmp_path):
     assert "Risks Stated By The Plan" not in prompt
 
 
-def test_plan_review_prompt_rules_require_risk_reporting():
+def test_plan_review_prompt_rules_require_risk_reporting(tmp_path):
     """The Rules section must mandate that unresolved AC-relevant risks become findings."""
     from theforge.task.plan_prompts import build_plan_review_prompt
     from theforge.task.story import TaskStory
-    import tempfile
-    from pathlib import Path
 
-    with tempfile.TemporaryDirectory() as td:
-        spec = Path(td) / "spec.md"
-        spec.write_text("# Spec\n", encoding="utf-8")
-        task = TaskStory(
-            name="Test Task",
-            story_path=spec,
-            slug="test-task",
-            test_target="tests/",
-        )
-        prompt = build_plan_review_prompt(
-            task,
-            story_content="## Spec\n- AC: something",
-            plan_content="## Plan\n- step 1",
-        )
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n", encoding="utf-8")
+    task = TaskStory(
+        name="Test Task",
+        story_path=spec,
+        slug="test-task",
+        test_target="tests/",
+    )
+    prompt = build_plan_review_prompt(
+        task,
+        story_content="## Spec\n- AC: something",
+        plan_content="## Plan\n- step 1",
+    )
     assert "reported as a P1 finding" in prompt
     assert "risk-silent" in prompt
 
