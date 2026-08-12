@@ -18,7 +18,10 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.sprint.audit import persist_accumulated_story_state
+from theforge.sprint.audit import (
+    persist_accumulated_story_state,
+    persist_accepted_unmeasured_spend,
+)
 from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.sources import GitHubIssueSource
 from theforge.task import TaskStory
@@ -116,6 +119,31 @@ def _write_prior_sprint_audit(tmp_path: Path, sprint_id: str, total_cost_usd: fl
                     "sprint_id": sprint_id,
                     "total_cost_usd": total_cost_usd,
                     "cost_complete": True,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_incomplete_prior_sprint_audit(
+    tmp_path: Path,
+    sprint_id: str,
+    *,
+    total_cost_measured_usd: float,
+    unmeasured_spend_sources: list[str],
+) -> None:
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        yaml.safe_dump(
+            {
+                "sprint": {
+                    "sprint_id": sprint_id,
+                    "total_cost_usd": None,
+                    "total_cost_measured_usd": total_cost_measured_usd,
+                    "cost_complete": False,
+                    "unmeasured_spend_sources": unmeasured_spend_sources,
                 }
             }
         ),
@@ -351,3 +379,152 @@ class TestCmdSprintDryRunQuery:
         assert rc == 0
         assert "budget=$50.00 carried=$0.00 usable_headroom=$50.00" in out
         assert "cannot dispatch under the supplied ceiling" not in out
+
+    def test_query_mode_dry_run_reports_accepted_unmeasured_ceiling(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        config = _make_forge_config(tmp_path)
+        args = _make_query_args(tmp_path, parallel=2)
+        args.resume = True
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "v0.5.0",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:2",
+                    "slug": "issue-2",
+                    "path": "issue-2.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                },
+                {
+                    "canonical_ref": "issue:1",
+                    "slug": "issue-1",
+                    "path": "issue-1.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                },
+            ],
+        )
+        _write_incomplete_prior_sprint_audit(
+            tmp_path,
+            sprint_id,
+            total_cost_measured_usd=6.0,
+            unmeasured_spend_sources=["carried:issue-1"],
+        )
+        assert (
+            persist_accepted_unmeasured_spend(
+                sprint_id,
+                "v0.5.0",
+                tmp_path,
+                [
+                    {
+                        "source": "issue-1",
+                        "accepted_ceiling_usd": 4.5,
+                        "accepted_at": "2026-08-08T00:00:00+00:00",
+                    }
+                ],
+            )
+            is True
+        )
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=20.0,
+            stories=[
+                (
+                    TaskStory(name="A", slug="issue-1", github_issue=1),
+                    GitHubIssueSource(),
+                    "issue:1",
+                )
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "accepted_unmeasured_ceiling=$4.50" in out
+        assert "usable_headroom=$9.50" in out
+        assert "lower bound" not in out
+
+    def test_query_mode_dry_run_marks_headroom_as_lower_bound_for_incomplete_prior_cost(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        config = _make_forge_config(tmp_path)
+        args = _make_query_args(tmp_path, parallel=2)
+        args.resume = True
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "v0.5.0",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:2",
+                    "slug": "issue-2",
+                    "path": "issue-2.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                },
+                {
+                    "canonical_ref": "issue:1",
+                    "slug": "issue-1",
+                    "path": "issue-1.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                },
+            ],
+        )
+        _write_incomplete_prior_sprint_audit(
+            tmp_path,
+            sprint_id,
+            total_cost_measured_usd=6.0,
+            unmeasured_spend_sources=["carried:issue-1"],
+        )
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=20.0,
+            stories=[
+                (
+                    TaskStory(name="A", slug="issue-1", github_issue=1),
+                    GitHubIssueSource(),
+                    "issue:1",
+                )
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "usable_headroom=$14.00" in out
+        assert "(lower bound; carried unmeasured spend remains)" in out
+        assert "cannot dispatch under the supplied ceiling" in out

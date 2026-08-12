@@ -11,6 +11,7 @@ from theforge.config import load_config
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
+from theforge.sprint.budget import evaluate_budget
 from theforge.sprint import SprintRunContext, run_sprint
 from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
@@ -1195,8 +1196,18 @@ def _run_query_mode(
             if carry_snapshot.headroom_is_lower_bound:
                 budget_line += " (lower bound; carried unmeasured spend remains)"
             print(budget_line)
-            if carry_snapshot.verification_spend_usd >= resolved.budget_usd:
-                print("  cannot dispatch under the supplied ceiling")
+            carry_budget_decision = evaluate_budget(
+                accumulated_cost=0.0,
+                prior_cost=carry_snapshot.carried_cost_usd,
+                budget_usd=resolved.budget_usd,
+                unmeasured_spend=carry_snapshot.unresolved_unmeasured_sources,
+                accepted_unmeasured_ceiling_usd=carry_snapshot.accepted_unmeasured_ceiling_usd,
+            )
+            if carry_budget_decision is not None:
+                print(
+                    "  cannot dispatch under the supplied ceiling: "
+                    f"{carry_budget_decision.detail}"
+                )
         for task, _src, _ref in resolved.stories:
             deps = ", ".join(task.depends_on) if task.depends_on else "-"
             if task.slug in batch_plan.blocked:

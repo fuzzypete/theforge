@@ -9,14 +9,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 import yaml
 
-from theforge.sprint.audit import persist_accumulated_story_state
+from theforge.sprint.audit import (
+    persist_accumulated_story_state,
+    persist_accepted_unmeasured_spend,
+)
 from theforge.sprint.query import (
     MilestoneNotFoundError,
     _get_milestone_number,
     _gh_api_paginate_issues,
-    load_sprint_carry_budget_snapshot,
     fetch_issues_for_label,
     fetch_issues_for_milestone,
+    load_sprint_carry_budget_snapshot,
 )
 
 
@@ -258,8 +261,35 @@ def _write_prior_sprint_audit(tmp_path: Path, sprint_id: str, total_cost_usd: fl
     )
 
 
+def _write_incomplete_prior_sprint_audit(
+    tmp_path: Path,
+    sprint_id: str,
+    *,
+    total_cost_measured_usd: float,
+    unmeasured_spend_sources: list[str],
+) -> None:
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    audit_path.parent.mkdir(parents=True, exist_ok=True)
+    audit_path.write_text(
+        yaml.safe_dump(
+            {
+                "sprint": {
+                    "sprint_id": sprint_id,
+                    "total_cost_usd": None,
+                    "total_cost_measured_usd": total_cost_measured_usd,
+                    "cost_complete": False,
+                    "unmeasured_spend_sources": unmeasured_spend_sources,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+
 class TestLoadSprintCarryBudgetSnapshot:
-    def test_resume_uses_sprint_audit_when_progressive_state_is_absent(self, tmp_path: Path) -> None:
+    def test_resume_uses_sprint_audit_when_progressive_state_is_absent(
+        self, tmp_path: Path
+    ) -> None:
         sprint_id = _set_existing_sprint_id(tmp_path)
         _write_prior_sprint_audit(tmp_path, sprint_id, 6.0)
 
@@ -272,6 +302,116 @@ class TestLoadSprintCarryBudgetSnapshot:
 
         assert snapshot.sprint_id == sprint_id
         assert snapshot.carried_cost_usd == pytest.approx(6.0)
+        assert snapshot.verification_spend_usd == pytest.approx(6.0)
+
+    def test_resume_loads_accepted_unmeasured_ceiling_from_persisted_audit(
+        self, tmp_path: Path
+    ) -> None:
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:2",
+                    "slug": "issue-2",
+                    "path": "issue-2.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                },
+                {
+                    "canonical_ref": "issue:1",
+                    "slug": "issue-1",
+                    "path": "issue-1.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                },
+            ],
+        )
+        _write_incomplete_prior_sprint_audit(
+            tmp_path,
+            sprint_id,
+            total_cost_measured_usd=6.0,
+            unmeasured_spend_sources=["carried:issue-1"],
+        )
+        assert (
+            persist_accepted_unmeasured_spend(
+                sprint_id,
+                "Test Sprint",
+                tmp_path,
+                [
+                    {
+                        "source": "issue-1",
+                        "accepted_ceiling_usd": 4.5,
+                        "accepted_at": "2026-08-08T00:00:00+00:00",
+                    }
+                ],
+            )
+            is True
+        )
+
+        snapshot = load_sprint_carry_budget_snapshot(
+            project_root=tmp_path,
+            sprint_name="Test Sprint",
+            selected_slugs=["issue-1"],
+            resume=True,
+        )
+
+        assert snapshot.carried_cost_usd == pytest.approx(6.0)
+        assert snapshot.accepted_unmeasured_ceiling_usd == pytest.approx(4.5)
+        assert snapshot.unresolved_unmeasured_sources == ()
+        assert snapshot.headroom_is_lower_bound is False
+        assert snapshot.verification_spend_usd == pytest.approx(10.5)
+
+    def test_resume_marks_incomplete_prior_cost_as_lower_bound(self, tmp_path: Path) -> None:
+        sprint_id = _set_existing_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "issue:2",
+                    "slug": "issue-2",
+                    "path": "issue-2.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                },
+                {
+                    "canonical_ref": "issue:1",
+                    "slug": "issue-1",
+                    "path": "issue-1.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                },
+            ],
+        )
+        _write_incomplete_prior_sprint_audit(
+            tmp_path,
+            sprint_id,
+            total_cost_measured_usd=6.0,
+            unmeasured_spend_sources=["carried:issue-1"],
+        )
+
+        snapshot = load_sprint_carry_budget_snapshot(
+            project_root=tmp_path,
+            sprint_name="Test Sprint",
+            selected_slugs=["issue-1"],
+            resume=True,
+        )
+
+        assert snapshot.carried_cost_usd == pytest.approx(6.0)
+        assert snapshot.accepted_unmeasured_ceiling_usd == 0.0
+        assert snapshot.unresolved_unmeasured_sources == (
+            "carried:issue-1",
+            "carried:prior-generation",
+        )
+        assert snapshot.headroom_is_lower_bound is True
         assert snapshot.verification_spend_usd == pytest.approx(6.0)
 
     def test_non_resume_ignores_existing_prior_spend(self, tmp_path: Path) -> None:

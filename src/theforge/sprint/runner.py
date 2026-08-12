@@ -5131,6 +5131,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         ).origin
         carried_occurrence_ids[_carried_raw] = _carried_origin.get("run_id")
 
+    _startup_budget_decision = None
     if _ctx.resolved.budget_usd > 0.0:
         _carry_snapshot = load_sprint_carry_budget_snapshot(
             project_root=_ctx.config.project_root,
@@ -5153,11 +5154,26 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         if _carry_snapshot.headroom_is_lower_bound:
             _budget_line += " lower bound"
         _log(_budget_line)
-        if _carry_snapshot.verification_spend_usd >= _ctx.resolved.budget_usd:
+        _startup_budget_details = (
+            {
+                raw: _describe_unmeasured_source(raw, occurrence=_OCCURRENCE_CARRIED).describe()
+                for raw in _carry_snapshot.unresolved_unmeasured_sources
+            }
+            if _carry_snapshot.unresolved_unmeasured_sources
+            else None
+        )
+        _startup_budget_decision = evaluate_budget(
+            accumulated_cost=0.0,
+            prior_cost=_carry_snapshot.carried_cost_usd,
+            budget_usd=_ctx.resolved.budget_usd,
+            unmeasured_spend=_carry_snapshot.unresolved_unmeasured_sources,
+            accepted_unmeasured_ceiling_usd=_carry_snapshot.accepted_unmeasured_ceiling_usd,
+            source_details=_startup_budget_details,
+        )
+        if _startup_budget_decision is not None:
             _log(
                 "Selected run cannot dispatch under the supplied ceiling: "
-                f"carried verification ${_carry_snapshot.verification_spend_usd:.2f} "
-                f">= budget ${_ctx.resolved.budget_usd:.2f}"
+                f"{_startup_budget_decision.detail}"
             )
 
     def _recorded_prior_done(slug: str, canonical_ref: str | None = None) -> bool:
@@ -5388,6 +5404,24 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         )
         _sprint_state.current_story_entries_by_ref[canonical_ref] = entry
         _persist_accumulated_story_entries(_sprint_state)
+
+    def _skip_story_for_budget(slug: str, decision) -> None:
+        _sprint_state.dag.mark_skipped(slug)
+        _budget_reason = decision.story_reason
+        _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_budget_reason)
+        if _sprint_state.stop.stop_if_unset(decision.stopped_reason):
+            if _ctx.notify and _ctx.config.notifications.backend not in ("ntfy", "none"):
+                from ..notify_backends import send_notifications
+
+                send_notifications(
+                    _ctx.config,
+                    decision.notification_title(_ctx.resolved.name),
+                    f"{decision.detail} — remaining stories skipped",
+                )
+        _log(f"SKIPPED {slug} ({_budget_reason})")
+        _record_current_story_entry(slug, "SKIPPED", error=_budget_reason)
+        if _sprint_state.state_writer is not None:
+            _sprint_state.state_writer.update(slug, status="skipped")
 
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
@@ -6355,6 +6389,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 detail=_sk_detail,
             )
 
+    def _skip_remaining_stories_for_budget(decision) -> None:
+        while not _sprint_state.dag.is_done():
+            _ready_now = list(_sprint_state.dag.ready())
+            if not _ready_now:
+                break
+            for _ready_task in _ready_now:
+                _skip_story_for_budget(_ready_task.slug, decision)
+
+    if _startup_budget_decision is not None:
+        _skip_remaining_stories_for_budget(_startup_budget_decision)
+
     # Parallel scheduling state
     story_deadlines: dict[str, float] = {}
     story_wait_started: set[str] = set()
@@ -6522,27 +6567,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     source_details=_budget_details,
                 )
                 if _budget_decision is not None:
-                    _sprint_state.dag.mark_skipped(task.slug)
-                    _budget_reason = _budget_decision.story_reason
-                    _set_outcome(
-                        _sprint_state, task.slug, StoryOutcome.SKIPPED, reason=_budget_reason
-                    )
-                    if _sprint_state.stop.stop_if_unset(_budget_decision.stopped_reason):
-                        if _ctx.notify and _ctx.config.notifications.backend not in (
-                            "ntfy",
-                            "none",
-                        ):
-                            from ..notify_backends import send_notifications
-
-                            send_notifications(
-                                _ctx.config,
-                                _budget_decision.notification_title(_ctx.resolved.name),
-                                f"{_budget_decision.detail} \u2014 remaining stories skipped",
-                            )
-                    _log(f"SKIPPED {task.slug} ({_budget_reason})")
-                    _record_current_story_entry(task.slug, "SKIPPED", error=_budget_reason)
-                    if _sprint_state.state_writer is not None:
-                        _sprint_state.state_writer.update(task.slug, status="skipped")
+                    _skip_story_for_budget(task.slug, _budget_decision)
                     continue
 
                 # Eager merge for sequential mode; disabled in parallel mode

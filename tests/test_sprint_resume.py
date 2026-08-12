@@ -23,7 +23,10 @@ from theforge.config import (
 )
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.sprint.audit import persist_accumulated_story_state
+from theforge.sprint.audit import (
+    persist_accumulated_story_state,
+    persist_accepted_unmeasured_spend,
+)
 from theforge.sprint.dag import StoryTriage, _triage_spec
 from theforge.sprint.lock import acquire_story_locks, release_story_locks
 from theforge.sprint.manifest import ResolvedSprint, _build_task_from_story
@@ -127,6 +130,30 @@ def _write_prior_sprint_audit(tmp_path: Path, sprint_id: str, total_cost_usd: fl
     audits_dir.mkdir(parents=True, exist_ok=True)
     with open(audits_dir / "sprint-audit.yaml", "w", encoding="utf-8") as f:
         yaml.dump({"sprint": {"sprint_id": sprint_id, "total_cost_usd": total_cost_usd}}, f)
+
+
+def _write_incomplete_prior_sprint_audit(
+    tmp_path: Path,
+    sprint_id: str,
+    *,
+    total_cost_measured_usd: float,
+    unmeasured_spend_sources: list[str],
+) -> None:
+    audits_dir = tmp_path / ".forge" / "audits"
+    audits_dir.mkdir(parents=True, exist_ok=True)
+    with open(audits_dir / "sprint-audit.yaml", "w", encoding="utf-8") as f:
+        yaml.dump(
+            {
+                "sprint": {
+                    "sprint_id": sprint_id,
+                    "total_cost_usd": None,
+                    "total_cost_measured_usd": total_cost_measured_usd,
+                    "cost_complete": False,
+                    "unmeasured_spend_sources": unmeasured_spend_sources,
+                }
+            },
+            f,
+        )
 
 
 def _make_coordinator_result(
@@ -1532,6 +1559,139 @@ class TestResumeSprintIntegration:
         assert result.specs_succeeded == 1
         assert "Budget $5.00 · carried $0.00 · usable headroom $5.00" in err
         assert "Selected run cannot dispatch under the supplied ceiling" not in err
+
+    def test_resume_startup_discloses_accepted_unmeasured_ceiling(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=20.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-b.md",
+                    "slug": "feature-b",
+                    "path": "feature-b.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                },
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                },
+            ],
+        )
+        _write_incomplete_prior_sprint_audit(
+            tmp_path,
+            sprint_id,
+            total_cost_measured_usd=6.0,
+            unmeasured_spend_sources=["carried:feature-a"],
+        )
+        assert (
+            persist_accepted_unmeasured_spend(
+                sprint_id,
+                "Test Sprint",
+                tmp_path,
+                [
+                    {
+                        "source": "feature-a",
+                        "accepted_ceiling_usd": 4.5,
+                        "accepted_at": "2026-08-08T00:00:00+00:00",
+                    }
+                ],
+            )
+            is True
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+        full_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+            slug="feature-a",
+        )
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=full_triage) as mock_triage:
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_task:
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
+
+        err = capsys.readouterr().err
+        mock_triage.assert_called_once()
+        mock_task.assert_called_once()
+        assert result.specs_succeeded == 2
+        assert result.stopped_reason is None
+        assert "Budget $20.00 · carried $6.00 · accepted unmeasured ceiling $4.50" in err
+        assert "usable headroom $9.50" in err
+        assert "lower bound" not in err
+
+    def test_resume_startup_marks_headroom_as_lower_bound_for_incomplete_prior_cost(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"], budget=20.0)
+        config = _make_config(tmp_path)
+        sprint_id = _set_sprint_id(tmp_path)
+        persist_accumulated_story_state(
+            sprint_id,
+            "Test Sprint",
+            tmp_path,
+            [
+                {
+                    "canonical_ref": "feature-b.md",
+                    "slug": "feature-b",
+                    "path": "feature-b.md",
+                    "outcome": "DONE",
+                    "cost_usd": 6.0,
+                    "story_run_id": "run-prev",
+                },
+                {
+                    "canonical_ref": "feature-a.md",
+                    "slug": "feature-a",
+                    "path": "feature-a.md",
+                    "outcome": "FAILED",
+                    "cost_usd": None,
+                    "story_run_id": "run-prev",
+                },
+            ],
+        )
+        _write_incomplete_prior_sprint_audit(
+            tmp_path,
+            sprint_id,
+            total_cost_measured_usd=6.0,
+            unmeasured_spend_sources=["carried:feature-a"],
+        )
+        coord_result = _make_coordinator_result(success=True, cost=1.0)
+        full_triage = StoryTriage(
+            story_path="feature-a.md",
+            action="full",
+            reason="no worktree found",
+            worktree_path=None,
+            slug="feature-a",
+        )
+
+        with patch("theforge.sprint.runner._triage_spec", return_value=full_triage) as mock_triage:
+            with patch("theforge.sprint.runner.run_task", return_value=coord_result) as mock_task:
+                with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
+                    result = run_sprint_ctx(config, manifest_path, resume=True)
+
+        err = capsys.readouterr().err
+        mock_triage.assert_called_once()
+        mock_task.assert_not_called()
+        assert result.specs_skipped == 1
+        assert result.stopped_reason is not None
+        assert result.stopped_reason.startswith("Budget unverifiable")
+        assert "Budget $20.00 · carried $6.00 · usable headroom $14.00 lower bound" in err
+        assert "Selected run cannot dispatch under the supplied ceiling" in err
 
 
 # ── _build_task_from_story depends_on parsing ─────────────────────────
