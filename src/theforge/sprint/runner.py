@@ -121,6 +121,12 @@ from .manifest import (
 )
 from .prior_landing import landing_settled
 from .query import NormalizedDependencyPlan, normalize_dependency_plan
+from .query import (
+    load_sprint_carry_budget_snapshot,
+    prior_sprint_cost_incomplete as _query_prior_sprint_cost_incomplete,
+    prior_unmeasured_spend_sources as _query_prior_unmeasured_spend_sources,
+    read_prior_sprint_accounting as _query_read_prior_sprint_accounting,
+)
 from .sources import StorySource
 from .state_writer import (
     SPRINT_PHASE_DONE,
@@ -974,8 +980,7 @@ def _prior_sprint_block(project_root: Path, sprint_id: str | None) -> dict:
 
 def _prior_unmeasured_spend_sources(project_root: Path, sprint_id: str | None) -> list[str]:
     """The sources the prior generation recorded as unmeasured, if any."""
-    recorded = _prior_sprint_block(project_root, sprint_id).get("unmeasured_spend_sources") or []
-    return [str(s) for s in recorded if s] if isinstance(recorded, list) else []
+    return _query_prior_unmeasured_spend_sources(project_root, sprint_id)
 
 
 def _prior_sprint_cost_incomplete(
@@ -996,26 +1001,14 @@ def _prior_sprint_cost_incomplete(
     the flag: there is no source there for an operator to have resolved, so the
     whole-generation carry remains the honest statement.
     """
-    sprint_block = _prior_sprint_block(project_root, sprint_id)
-    if sprint_block.get("cost_complete") is not False:
-        return False
-    if accepted:
-        recorded = sprint_block.get("unmeasured_spend_sources") or []
-        if isinstance(recorded, list) and unmeasured_spend_policy.all_sources_accepted(
-            [str(s) for s in recorded if s], accepted
-        ):
-            return False
-    return True
+    return _query_prior_sprint_cost_incomplete(project_root, sprint_id, dict(accepted or {}))
 
 
 def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
     """Parse timestamps persisted in accumulated sprint story state."""
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError:
-        return None
+    from .query import _parse_accumulated_story_timestamp as _query_parse  # noqa: PLC0415
+
+    return _query_parse(value)
 
 
 def _read_prior_sprint_accounting(
@@ -1023,34 +1016,11 @@ def _read_prior_sprint_accounting(
     sprint_id: str | None,
 ) -> tuple[float, datetime.datetime | None, dict[str, dict]]:
     """Recover prior same-sprint cost/timing from progressive story state."""
-    if not sprint_id:
-        return 0.0, None, {}
-
-    from .audit import _load_accumulated_stories  # noqa: PLC0415
-
-    recovered_entries: dict[str, dict] = {}
-    recovered_cost = 0.0
-    earliest_started_at: datetime.datetime | None = None
-    for raw_entry in _load_accumulated_stories(sprint_id, project_root):
-        if not isinstance(raw_entry, dict):
-            continue
-        canonical_ref = raw_entry.get("canonical_ref")
-        if not isinstance(canonical_ref, str) or not canonical_ref:
-            continue
-        entry = dict(raw_entry)
-        recovered_entries[canonical_ref] = entry
-        try:
-            recovered_cost += float(entry.get("cost_usd", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            pass
-        started_at = _parse_accumulated_story_timestamp(entry.get("started_at"))
-        if started_at is not None and (
-            earliest_started_at is None or started_at < earliest_started_at
-        ):
-            earliest_started_at = started_at
-
+    recovered_cost, earliest_started_at, recovered_entries = _query_read_prior_sprint_accounting(
+        project_root, sprint_id
+    )
     if recovered_entries:
-        return round(recovered_cost, 4), earliest_started_at, recovered_entries
+        return recovered_cost, earliest_started_at, recovered_entries
 
     if os.environ.get("FORGE_PREV_RUN_ID"):
         return _read_prior_sprint_cost(project_root, sprint_id), None, {}
@@ -5192,6 +5162,34 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             _carried_raw, occurrence=_OCCURRENCE_CARRIED
         ).origin
         carried_occurrence_ids[_carried_raw] = _carried_origin.get("run_id")
+
+    if _ctx.resolved.budget_usd > 0.0:
+        _carry_snapshot = load_sprint_carry_budget_snapshot(
+            project_root=_ctx.config.project_root,
+            sprint_name=_ctx.resolved.name,
+            selected_slugs=list(_ctx.slug_to_context.keys()),
+            sprint_id=_ctx.sprint_id,
+            accepted_unmeasured=dict(accepted_unmeasured),
+        )
+        _headroom = _carry_snapshot.remaining_headroom_usd(_ctx.resolved.budget_usd)
+        _budget_line = (
+            f"Budget ${_ctx.resolved.budget_usd:.2f} · carried ${_carry_snapshot.carried_cost_usd:.2f}"
+        )
+        if _carry_snapshot.accepted_unmeasured_ceiling_usd > 0.0:
+            _budget_line += (
+                " · accepted unmeasured ceiling "
+                f"${_carry_snapshot.accepted_unmeasured_ceiling_usd:.2f}"
+            )
+        _budget_line += f" · usable headroom ${max(_headroom, 0.0):.2f}"
+        if _carry_snapshot.headroom_is_lower_bound:
+            _budget_line += " lower bound"
+        _log(_budget_line)
+        if _carry_snapshot.verification_spend_usd >= _ctx.resolved.budget_usd:
+            _log(
+                "Selected run cannot dispatch under the supplied ceiling: "
+                f"carried verification ${_carry_snapshot.verification_spend_usd:.2f} "
+                f">= budget ${_ctx.resolved.budget_usd:.2f}"
+            )
 
     def _recorded_prior_done(slug: str, canonical_ref: str | None = None) -> bool:
         """True when this sprint already recorded the story as run-to-DONE.

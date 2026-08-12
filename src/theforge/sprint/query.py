@@ -6,6 +6,7 @@ and to assemble a ResolvedSprint from the resulting issue list.
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import re
@@ -18,8 +19,11 @@ from urllib.parse import quote
 if TYPE_CHECKING:
     from ..task import TaskStory
     from .manifest import ResolvedSprint
+    from .unmeasured import AcceptedUnmeasuredSpend
 
 from ..log_util import _log_line
+from . import unmeasured as unmeasured_spend_policy
+from .budget import budget_verification_spend
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +48,214 @@ class NormalizedDependencyPlan:
     blocked: dict[str, list[str]]
 
 
+@dataclass(frozen=True)
+class SprintCarryBudgetSnapshot:
+    """Budget-relevant spend already attached to a logical sprint before dispatch."""
+
+    sprint_id: str | None
+    carried_cost_usd: float
+    selected_cost_by_slug: dict[str, float]
+    unresolved_unmeasured_sources: tuple[str, ...]
+    accepted_unmeasured_spend: tuple["AcceptedUnmeasuredSpend", ...]
+    accepted_unmeasured_ceiling_usd: float
+    verification_spend_usd: float
+
+    @property
+    def headroom_is_lower_bound(self) -> bool:
+        return bool(self.unresolved_unmeasured_sources)
+
+    def remaining_headroom_usd(self, budget_usd: float) -> float:
+        return round(float(budget_usd) - self.verification_spend_usd, 4)
+
+
 def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
 
 
 def _is_issue_slug(slug: str) -> bool:
     return re.fullmatch(r"issue-\d+", slug) is not None
+
+
+def _existing_sprint_id(sprint_name: str, project_root: Path) -> str | None:
+    """Return the stable sprint id when one already exists, else ``None``."""
+    sprint_id_path = project_root / ".forge" / "logs" / sprint_name / ".sprint_id"
+    try:
+        if sprint_id_path.exists():
+            sprint_id = sprint_id_path.read_text(encoding="utf-8").strip()
+            return sprint_id or None
+    except OSError:
+        return None
+    return None
+
+
+def _prior_sprint_block(project_root: Path, sprint_id: str | None) -> dict:
+    """Return this sprint's block from sprint-audit.yaml, or ``{}``."""
+    if not sprint_id:
+        return {}
+    audit_path = project_root / ".forge" / "audits" / "sprint-audit.yaml"
+    if not audit_path.exists():
+        return {}
+    try:
+        import yaml  # noqa: PLC0415
+
+        with open(audit_path, encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+        sprint_block = data.get("sprint", {})
+        if not isinstance(sprint_block, dict):
+            return {}
+        if sprint_block.get("sprint_id") != sprint_id:
+            return {}
+        return sprint_block
+    except Exception:
+        return {}
+
+
+def prior_unmeasured_spend_sources(project_root: Path, sprint_id: str | None) -> list[str]:
+    """The sources the prior generation recorded as unmeasured, if any."""
+    recorded = _prior_sprint_block(project_root, sprint_id).get("unmeasured_spend_sources") or []
+    return [str(source) for source in recorded if source] if isinstance(recorded, list) else []
+
+
+def prior_sprint_cost_incomplete(
+    project_root: Path,
+    sprint_id: str | None,
+    accepted: Mapping[str, "AcceptedUnmeasuredSpend"] | None = None,
+) -> bool:
+    """Return True when the prior generation recorded an incomplete sprint cost."""
+    sprint_block = _prior_sprint_block(project_root, sprint_id)
+    if sprint_block.get("cost_complete") is not False:
+        return False
+    if accepted:
+        recorded = sprint_block.get("unmeasured_spend_sources") or []
+        if isinstance(recorded, list) and unmeasured_spend_policy.all_sources_accepted(
+            [str(source) for source in recorded if source], accepted
+        ):
+            return False
+    return True
+
+
+def _parse_accumulated_story_timestamp(value: object) -> datetime.datetime | None:
+    """Parse timestamps persisted in accumulated sprint story state."""
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+
+
+def read_prior_sprint_accounting(
+    project_root: Path,
+    sprint_id: str | None,
+) -> tuple[float, datetime.datetime | None, dict[str, dict]]:
+    """Recover prior same-sprint cost/timing from progressive story state."""
+    if not sprint_id:
+        return 0.0, None, {}
+
+    from .audit import _load_accumulated_stories  # noqa: PLC0415
+
+    recovered_entries: dict[str, dict] = {}
+    recovered_cost = 0.0
+    earliest_started_at: datetime.datetime | None = None
+    for raw_entry in _load_accumulated_stories(sprint_id, project_root):
+        if not isinstance(raw_entry, dict):
+            continue
+        canonical_ref = raw_entry.get("canonical_ref")
+        if not isinstance(canonical_ref, str) or not canonical_ref:
+            continue
+        entry = dict(raw_entry)
+        recovered_entries[canonical_ref] = entry
+        try:
+            recovered_cost += float(entry.get("cost_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            pass
+        started_at = _parse_accumulated_story_timestamp(entry.get("started_at"))
+        if started_at is not None and (
+            earliest_started_at is None or started_at < earliest_started_at
+        ):
+            earliest_started_at = started_at
+
+    return round(recovered_cost, 4), earliest_started_at, recovered_entries
+
+
+def load_sprint_carry_budget_snapshot(
+    *,
+    project_root: Path,
+    sprint_name: str,
+    selected_slugs: list[str],
+    sprint_id: str | None = None,
+    accepted_unmeasured: Mapping[str, "AcceptedUnmeasuredSpend"] | None = None,
+) -> SprintCarryBudgetSnapshot:
+    """Return the carried budget state the next dispatch will inherit."""
+    resolved_sprint_id = sprint_id or _existing_sprint_id(sprint_name, project_root)
+    if not resolved_sprint_id:
+        return SprintCarryBudgetSnapshot(
+            sprint_id=None,
+            carried_cost_usd=0.0,
+            selected_cost_by_slug={},
+            unresolved_unmeasured_sources=(),
+            accepted_unmeasured_spend=(),
+            accepted_unmeasured_ceiling_usd=0.0,
+            verification_spend_usd=0.0,
+        )
+
+    carried_cost_usd, _started_at, entries_by_ref = read_prior_sprint_accounting(
+        project_root, resolved_sprint_id
+    )
+    selected = set(selected_slugs)
+    selected_cost_by_slug: dict[str, float] = {}
+    occurrence_ids: dict[str, str | None] = {}
+    raw_unmeasured_sources: list[str] = []
+    for entry in entries_by_ref.values():
+        slug = entry.get("slug")
+        if not isinstance(slug, str) or not slug:
+            continue
+        try:
+            cost_usd = float(entry.get("cost_usd", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            cost_usd = 0.0
+        if slug in selected and cost_usd > 0.0:
+            selected_cost_by_slug[slug] = selected_cost_by_slug.get(slug, 0.0) + cost_usd
+        if "cost_usd" in entry and entry.get("cost_usd") is None:
+            raw_source = f"carried:{slug}"
+            raw_unmeasured_sources.append(raw_source)
+            origin = unmeasured_spend_policy.build_source(
+                raw_source,
+                unmeasured_spend_policy.read_story_audit(project_root, sprint_name, slug),
+            ).origin
+            occurrence_ids[raw_source] = origin.get("run_id")
+
+    if accepted_unmeasured is not None:
+        accepted_index = dict(accepted_unmeasured)
+    else:
+        from .audit import _load_accepted_unmeasured_spend  # noqa: PLC0415
+
+        accepted_index = unmeasured_spend_policy.accepted_by_source(
+            _load_accepted_unmeasured_spend(resolved_sprint_id, project_root)
+        )
+    if prior_sprint_cost_incomplete(project_root, resolved_sprint_id, accepted_index):
+        raw_unmeasured_sources.append("carried:prior-generation")
+    unresolved, applied = unmeasured_spend_policy.partition(
+        raw_unmeasured_sources,
+        accepted_index,
+        current_generation=set(),
+        occurrence_ids=occurrence_ids,
+    )
+    accepted_ceiling_usd = unmeasured_spend_policy.accepted_ceiling_total(applied)
+    verification_spend_usd = budget_verification_spend(
+        accumulated_cost=0.0,
+        prior_cost=carried_cost_usd,
+        accepted_unmeasured_ceiling_usd=accepted_ceiling_usd,
+    )
+    return SprintCarryBudgetSnapshot(
+        sprint_id=resolved_sprint_id,
+        carried_cost_usd=carried_cost_usd,
+        selected_cost_by_slug=dict(sorted(selected_cost_by_slug.items())),
+        unresolved_unmeasured_sources=tuple(unresolved),
+        accepted_unmeasured_spend=tuple(applied),
+        accepted_unmeasured_ceiling_usd=accepted_ceiling_usd,
+        verification_spend_usd=verification_spend_usd,
+    )
 
 
 def _gh_api_paginate_issues(

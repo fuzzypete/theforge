@@ -1039,7 +1039,7 @@ class TestResumeSprintIntegration:
         )
 
     def test_resume_prior_state_cost_exceeds_budget_without_sprint_audit(
-        self, tmp_path: Path
+        self, tmp_path: Path, capsys
     ) -> None:
         """Budget checks use progressive prior story state during re-exec."""
         _make_spec_file(tmp_path, "Feature A", "feature-a")
@@ -1077,12 +1077,15 @@ class TestResumeSprintIntegration:
                 with patch.dict(os.environ, {"FORGE_PREV_RUN_ID": "run-prev-123"}, clear=False):
                     result = run_sprint_ctx(config, manifest_path, resume=True)
 
+        err = capsys.readouterr().err
         mock_run.assert_not_called()
         assert result.specs_skipped == 1
         assert (
             result.stopped_reason
             == "Budget exhausted (sprint $0.00 + carried $6.00 = $6.00 >= $5.00)"
         )
+        assert "Budget $5.00 · carried $6.00 · usable headroom $0.00" in err
+        assert "Selected run cannot dispatch under the supplied ceiling" in err
         audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
         audit_data = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
         assert audit_data["specs"][0]["error"] == (

@@ -16,6 +16,7 @@ from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
 from theforge.sprint.preflight import reacquire_story_locks_in_daemon
+from theforge.sprint.query import load_sprint_carry_budget_snapshot
 from theforge.sprint.runner import parse_manifest_slugs
 
 # A run's reported disposition must be derived from how it actually ended, not
@@ -1174,6 +1175,27 @@ def _run_query_mode(
             satisfied=satisfied,
         )
         print(f"[dry-run] {query_desc}  {len(tasks)} issue(s)  sprint='{sprint_name}'")
+        if resolved.budget_usd > 0.0:
+            carry_snapshot = load_sprint_carry_budget_snapshot(
+                project_root=config.project_root,
+                sprint_name=sprint_name,
+                selected_slugs=[task.slug for task in tasks],
+            )
+            headroom = carry_snapshot.remaining_headroom_usd(resolved.budget_usd)
+            budget_line = (
+                f"  budget=${resolved.budget_usd:.2f} carried=${carry_snapshot.carried_cost_usd:.2f}"
+            )
+            if carry_snapshot.accepted_unmeasured_ceiling_usd > 0.0:
+                budget_line += (
+                    " accepted_unmeasured_ceiling="
+                    f"${carry_snapshot.accepted_unmeasured_ceiling_usd:.2f}"
+                )
+            budget_line += f" usable_headroom=${max(headroom, 0.0):.2f}"
+            if carry_snapshot.headroom_is_lower_bound:
+                budget_line += " (lower bound; carried unmeasured spend remains)"
+            print(budget_line)
+            if carry_snapshot.verification_spend_usd >= resolved.budget_usd:
+                print("  cannot dispatch under the supplied ceiling")
         for task, _src, _ref in resolved.stories:
             deps = ", ".join(task.depends_on) if task.depends_on else "-"
             if task.slug in batch_plan.blocked:

@@ -17,6 +17,7 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.sprint.manifest import ResolvedSprint
+from theforge.sprint.query import SprintCarryBudgetSnapshot
 from theforge.sprint.sources import GitHubIssueSource
 from theforge.task import TaskStory
 
@@ -232,3 +233,95 @@ class TestCmdSprintDryRunQuery:
         assert "blocked=[issue-9]" in out
         assert "issue-3" in out
         assert "blocked=[issue-1]" in out
+
+    def test_query_mode_dry_run_prints_budget_carry_and_headroom(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        config = _make_forge_config(tmp_path)
+        args = _make_query_args(tmp_path, parallel=2)
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=150.0,
+            stories=[
+                (
+                    TaskStory(name="A", slug="issue-1", github_issue=1),
+                    GitHubIssueSource(),
+                    "issue:1",
+                )
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            patch(
+                "theforge.cli.sprint.load_sprint_carry_budget_snapshot",
+                return_value=SprintCarryBudgetSnapshot(
+                    sprint_id="sid",
+                    carried_cost_usd=64.56,
+                    selected_cost_by_slug={"issue-1": 64.56},
+                    unresolved_unmeasured_sources=(),
+                    accepted_unmeasured_spend=(),
+                    accepted_unmeasured_ceiling_usd=0.0,
+                    verification_spend_usd=64.56,
+                ),
+            ),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "budget=$150.00 carried=$64.56 usable_headroom=$85.44" in out
+
+    def test_query_mode_dry_run_warns_when_carried_spend_consumes_budget(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        config = _make_forge_config(tmp_path)
+        args = _make_query_args(tmp_path, parallel=2)
+
+        resolved = ResolvedSprint(
+            name="v0.5.0",
+            budget_usd=50.0,
+            stories=[
+                (
+                    TaskStory(name="A", slug="issue-1", github_issue=1),
+                    GitHubIssueSource(),
+                    "issue:1",
+                )
+            ],
+            max_parallel=2,
+        )
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.cli.sprint._find_config", return_value=tmp_path / "forge.yaml"),
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 1, "title": "A"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            patch(
+                "theforge.cli.sprint.load_sprint_carry_budget_snapshot",
+                return_value=SprintCarryBudgetSnapshot(
+                    sprint_id="sid",
+                    carried_cost_usd=64.56,
+                    selected_cost_by_slug={"issue-1": 64.56},
+                    unresolved_unmeasured_sources=(),
+                    accepted_unmeasured_spend=(),
+                    accepted_unmeasured_ceiling_usd=0.0,
+                    verification_spend_usd=64.56,
+                ),
+            ),
+        ):
+            rc = cmd_sprint(args)
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "cannot dispatch under the supplied ceiling" in out
