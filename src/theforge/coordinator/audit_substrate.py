@@ -2535,8 +2535,12 @@ def derive_cost_samples_by_score(
     projected into columns at upsert time — and routes admissibility through the
     same centralized taint gate every other history consumer uses (ADR-0006
     clause 4): a run that failed its own trust checks does not teach what a
-    story of its kind costs. When ``stats`` is provided its
-    ``"excluded_for_taint"`` key is incremented by the number of rows set aside.
+    story of its kind costs. Runs that did not end successfully are excluded
+    before the taint gate: an unsuccessful spend observation is a lower bound
+    on what the work needed, not a measurement of what the work costs. When
+    ``stats`` is provided its ``"excluded_for_taint"`` and
+    ``"excluded_for_unsuccessful_outcome"`` keys are incremented by the number
+    of rows set aside for those reasons.
 
     Rows with a null score, a null cost (cost-unknown runs, which are a lower
     bound rather than a measurement), or a non-positive cost are skipped: none
@@ -2545,15 +2549,19 @@ def derive_cost_samples_by_score(
     from .trust_status import filter_tainted_records  # noqa: PLC0415
 
     rows = conn.execute(
-        "SELECT complexity_score, total_cost_usd, raw_json FROM audit_records "
+        "SELECT complexity_score, total_cost_usd, outcome_success, raw_json FROM audit_records "
         "WHERE complexity_score IS NOT NULL AND total_cost_usd IS NOT NULL"
     ).fetchall()
     candidates: list[dict] = []
+    excluded_for_unsuccessful_outcome = 0
     for row in rows:
         if isinstance(row, sqlite3.Row):
-            score, cost, raw = row["complexity_score"], row["total_cost_usd"], row["raw_json"]
+            score = row["complexity_score"]
+            cost = row["total_cost_usd"]
+            outcome_success = row["outcome_success"]
+            raw = row["raw_json"]
         else:
-            score, cost, raw = row[0], row[1], row[2]
+            score, cost, outcome_success, raw = row[0], row[1], row[2], row[3]
         try:
             cost_value = float(cost)
         except (TypeError, ValueError):
@@ -2562,6 +2570,9 @@ def derive_cost_samples_by_score(
             continue
         score_value = _coerce_complexity_score(score)
         if score_value is None:
+            continue
+        if outcome_success != 1:
+            excluded_for_unsuccessful_outcome += 1
             continue
         trust: str | None = None
         try:
@@ -2578,6 +2589,10 @@ def derive_cost_samples_by_score(
     admissible, excluded = filter_tainted_records(candidates)
     if stats is not None:
         stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
+        stats["excluded_for_unsuccessful_outcome"] = (
+            int(stats.get("excluded_for_unsuccessful_outcome", 0))
+            + excluded_for_unsuccessful_outcome
+        )
     out: dict[int, list[float]] = {}
     for entry in admissible:
         out.setdefault(int(entry["complexity_score"]), []).append(float(entry["total_cost_usd"]))

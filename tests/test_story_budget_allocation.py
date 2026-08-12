@@ -75,13 +75,15 @@ def _record(
     score: int | None,
     cost: float | None,
     trust_status: str | None = None,
+    outcome_success: bool | None = True,
+    error_type: str | None = None,
     review_cycle_costs: list[float | None] | None = None,
     review_pools: list[list[str] | None] | None = None,
 ) -> dict:
     rec: dict = {
         "run_id": run_id,
         "task": {"slug": f"story-{run_id}", "name": run_id},
-        "outcome": {"success": True, "final_phase": "DONE"},
+        "outcome": {"success": outcome_success, "final_phase": "DONE", "error_type": error_type},
         "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
         "cost": {"total_usd": cost},
         "totals": {"cost_usd": cost, "duration_s": 60.0},
@@ -262,6 +264,37 @@ class TestSubstrateCostSamples:
         assert samples[5] == [2.0]
         assert stats["excluded_for_taint"] == 1
 
+    def test_unsuccessful_runs_are_lower_bounds_not_measurements(self, tmp_path: Path) -> None:
+        _seed_substrate(
+            tmp_path,
+            [
+                _record(run_id="r1", score=5, cost=2.0),
+                _record(
+                    run_id="r2",
+                    score=5,
+                    cost=99.0,
+                    outcome_success=False,
+                    error_type="allocation_exhausted",
+                ),
+                _record(
+                    run_id="r3",
+                    score=5,
+                    cost=77.0,
+                    outcome_success=None,
+                    error_type="timeout",
+                ),
+            ],
+        )
+        conn = sub.require_substrate(tmp_path)
+        try:
+            stats: dict = {}
+            samples = sub.derive_cost_samples_by_score(conn, stats=stats)
+        finally:
+            conn.close()
+
+        assert samples[5] == [2.0]
+        assert stats["excluded_for_unsuccessful_outcome"] == 2
+
 
 class TestDeriveStoryAllocation:
     def test_derives_from_the_substrate_for_the_story_score(self, tmp_path: Path) -> None:
@@ -295,6 +328,38 @@ class TestDeriveStoryAllocation:
         assert allocation.basis == sb.BASIS_CONFIGURED_FALLBACK
         assert allocation.allocation_usd == 50.0
         assert allocation.reason.startswith("no audit substrate; ")
+
+    def test_unsuccessful_reentry_history_does_not_raise_the_next_ceiling(
+        self, tmp_path: Path
+    ) -> None:
+        successful_band = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 30.0]
+        _seed_substrate(
+            tmp_path,
+            [_record(run_id=f"s{i}", score=8, cost=cost) for i, cost in enumerate(successful_band)]
+            + [
+                _record(
+                    run_id="fail-1",
+                    score=8,
+                    cost=64.56,
+                    outcome_success=False,
+                    error_type="allocation_exhausted",
+                ),
+                _record(
+                    run_id="fail-2",
+                    score=8,
+                    cost=105.38,
+                    outcome_success=False,
+                    error_type="allocation_exhausted",
+                ),
+            ],
+        )
+
+        allocation = sb.derive_story_allocation(tmp_path, complexity_score=8, configured_usd=50.0)
+
+        assert allocation.basis == sb.BASIS_SUBSTRATE_BAND
+        assert allocation.max_usd == 30.0
+        assert allocation.allocation_usd == round(30.0 * sb.BAND_HEADROOM, 2)
+        assert allocation.excluded_for_unsuccessful_outcome == 2
 
 
 class TestReviewCyclePlanningPrice:
@@ -670,6 +735,14 @@ class TestScaleRoleBudgets:
 
         assert scaled["dev"] == 20.0
         assert scaled["review_pool[0]"] > 0
+
+    def test_locked_roles_preserve_an_operator_raised_budget(self) -> None:
+        current = {"preflight": 1.0, "dev": 20.0, "review_pool[0]": 4.0, "review_pool[1]": 4.0}
+        scaled = sb.scale_role_budgets(current, 12.0, locked={"dev"})
+
+        assert scaled["dev"] == 20.0
+        assert scaled["preflight"] < current["preflight"]
+        assert scaled["review_pool[0]"] < current["review_pool[0]"]
 
 
 class TestPhaseFundingShortfall:
