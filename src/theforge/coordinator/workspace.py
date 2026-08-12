@@ -949,6 +949,36 @@ def _assert_base_branch_published(
     )
 
 
+def _current_checked_out_branch(project_root: Path) -> str:
+    """Return the currently checked-out branch for ``project_root``.
+
+    Raises ``RuntimeError`` when the branch cannot be determined. Callers that
+    mutate the project-root checkout use this as a fail-closed guard rather than
+    acting on whichever ref HEAD happens to resolve to.
+    """
+    ok_branch, branch_out = _cu._run_shell("git rev-parse --abbrev-ref HEAD", project_root)
+    current_branch = branch_out.strip()
+    if ok_branch and current_branch:
+        return current_branch
+    detail = current_branch or branch_out.strip() or "unknown branch state"
+    raise RuntimeError(
+        f"WORKSPACE abort: could not determine the checked-out branch in {project_root}: {detail}"
+    )
+
+
+def assert_base_branch_checked_out(config: ForgeConfig, *, operation: str) -> str:
+    """Fail closed when the live project-root checkout is not ``base_branch``."""
+    base_branch = config.workspace.base_branch
+    current_branch = _current_checked_out_branch(config.project_root)
+    if current_branch != base_branch:
+        raise RuntimeError(
+            f"WORKSPACE abort: {operation} requires the project root to have base branch "
+            f"'{base_branch}' checked out, but '{current_branch}' is checked out. "
+            f"Check out {base_branch} and rerun."
+        )
+    return current_branch
+
+
 def _recover_base_branch_sync(
     config: ForgeConfig,
     *,

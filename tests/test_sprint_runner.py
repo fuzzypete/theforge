@@ -6,6 +6,7 @@ main (not present in the current sprint manifest).
 
 from __future__ import annotations
 
+import subprocess
 import threading
 from dataclasses import FrozenInstanceError, replace
 from pathlib import Path
@@ -95,6 +96,17 @@ def _make_result_with_dev_runs(*dev_results: AgentResult) -> CoordinatorResult:
         state=state,
         message="done",
     )
+
+
+def _git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout.strip()
 
 
 def test_build_intake_agent_caller_uses_configured_runner(tmp_path: Path) -> None:
@@ -347,6 +359,7 @@ def test_run_sprint_pulls_base_branch_before_baseline_by_default(tmp_path: Path)
         patch("theforge.sprint.runner.sweep_orphan_worktrees"),
         patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
         patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch(
             "theforge.coordinator.workspace.pull_base_branch",
             side_effect=_fake_pull,
@@ -412,6 +425,7 @@ def test_run_sprint_pull_base_branch_failure_aborts_before_baseline(tmp_path: Pa
         patch("theforge.sprint.runner.sweep_orphan_worktrees"),
         patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
         patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch(
             "theforge.coordinator.workspace.pull_base_branch",
             side_effect=RuntimeError("WORKSPACE abort: pull failed"),
@@ -421,6 +435,35 @@ def test_run_sprint_pull_base_branch_failure_aborts_before_baseline(tmp_path: Pa
         with pytest.raises(RuntimeError, match="WORKSPACE abort: pull failed"):
             run_sprint_ctx(config, resolved)
 
+    mock_baseline.assert_not_called()
+
+
+def test_run_sprint_refuses_launch_when_project_root_is_on_the_wrong_branch(
+    tmp_path: Path,
+) -> None:
+    config = _make_runner_config(tmp_path)
+    resolved = _make_empty_resolved()
+    _git(tmp_path, "init", "--initial-branch", "feature/wrong-branch")
+    _git(tmp_path, "config", "user.email", "forge@example.com")
+    _git(tmp_path, "config", "user.name", "Forge Test")
+    (tmp_path / "README.md").write_text("seed\n", encoding="utf-8")
+    _git(tmp_path, "add", "README.md")
+    _git(tmp_path, "commit", "-m", "seed")
+
+    with (
+        patch("theforge.sprint.runner.enforce_sprint_auth_readiness"),
+        patch("theforge.sprint.runner._scrub_root_forge_artifacts"),
+        patch("theforge.sprint.runner.sweep_orphan_worktrees"),
+        patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
+        patch("theforge.sprint.runner._run_baseline_gate") as mock_baseline,
+    ):
+        with pytest.raises(RuntimeError) as excinfo:
+            run_sprint_ctx(config, resolved)
+
+    message = str(excinfo.value)
+    assert "main" in message
+    assert "feature/wrong-branch" in message
+    assert "Check out main and rerun" in message
     mock_baseline.assert_not_called()
 
 

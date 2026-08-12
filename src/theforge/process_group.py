@@ -926,7 +926,19 @@ def group_members(pgid: int) -> dict[int, str]:
     not be obtained" must use `group_members_checked` — the two are the same
     value here and only one of them is safe to act on.
     """
-    return group_members_checked(pgid)[0]
+    members, enumerated = group_members_checked(pgid)
+    if members or enumerated:
+        return members
+    # A single unreadable pass is not evidence the group is empty; on Darwin the
+    # kernel can momentarily refuse ``KERN_PROC_PGRP`` under table churn. The
+    # checked API still reports that uncertainty to safety-critical callers, but
+    # this convenience helper retries a few times so transient read failures do
+    # not masquerade as missing members in observational paths and tests.
+    for _ in range(2):
+        members, enumerated = group_members_checked(pgid)
+        if members or enumerated:
+            return members
+    return members
 
 
 def group_members_checked(pgid: int) -> tuple[dict[int, str], bool]:

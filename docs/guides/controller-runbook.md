@@ -206,10 +206,12 @@ Fixed by #1928: `_step_cleanup` now checks the checked-out branch first and
 not match configured base …`; fetch/merge failures warn instead of being
 swallowed.
 
-Standing hygiene (still good practice): keep `--base-branch` matching the
-branch you have checked out — the guard only skips the local sync, while PR
-targets and the collision DAG still follow the configured base. Symptom of the
-pre-fix corruption, if auditing old history: `git show
+Standing hygiene: keep `--base-branch` matching the branch you have checked
+out. Forge now refuses sprint launch and end-of-sprint audit publish when the
+project-root checkout and configured base branch differ, and still skips the
+post-merge local sync if you somehow hit the mismatch in older runs. PR targets
+and the collision DAG still follow the configured base. Symptom of the pre-fix
+corruption, if auditing old history: `git show
 release/vX.Y:pyproject.toml` reads main's dev version instead of the branch's
 `rc` version.
 
@@ -260,6 +262,7 @@ of the failure modes you hit — the `state` field says which:
 | `clean` | Nothing was pending this run. | none |
 | `local_only` | Publish deliberately skipped (`auto_push` off on a locally-landing run). | push `<base>` yourself before any run that diffs against `origin/<base>` |
 | `committed_unpublished` | The run died between the commit and the push. | fetch, rebase, push |
+| `branch_mismatch` | Publish refused because the project-root checkout was on a different branch than `<base>`. | check out `<base>` and rerun publish, or move the pending audit records off the unrelated branch first |
 | `push_refused` | Remote refused the push through all retries; `detail` has git's output. | inspect the remote, then fetch/rebase/push |
 | `reconcile_failed` | The fetch or rebase itself failed (e.g. conflicting audit records); any partial rebase was aborted. | resolve by hand |
 | `verify_failed` | Push reported success but `<base>` is still ahead. | fetch, rebase, push |
