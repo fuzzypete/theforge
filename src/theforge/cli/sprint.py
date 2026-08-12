@@ -12,6 +12,8 @@ from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
 from theforge.sprint import SprintRunContext, run_sprint
+from theforge.sprint.budget import evaluate_budget
+from theforge.sprint.carry import load_sprint_carry_budget_snapshot
 from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
@@ -1174,6 +1176,36 @@ def _run_query_mode(
             satisfied=satisfied,
         )
         print(f"[dry-run] {query_desc}  {len(tasks)} issue(s)  sprint='{sprint_name}'")
+        if resolved.budget_usd > 0.0:
+            carry_snapshot = load_sprint_carry_budget_snapshot(
+                project_root=config.project_root,
+                sprint_name=sprint_name,
+                resume=resume,
+                reexec=reexec,
+            )
+            headroom = carry_snapshot.remaining_headroom_usd(resolved.budget_usd)
+            budget_line = f"  budget=${resolved.budget_usd:.2f}"
+            budget_line += f" carried=${carry_snapshot.carried_cost_usd:.2f}"
+            if carry_snapshot.accepted_unmeasured_ceiling_usd > 0.0:
+                budget_line += (
+                    " accepted_unmeasured_ceiling="
+                    f"${carry_snapshot.accepted_unmeasured_ceiling_usd:.2f}"
+                )
+            budget_line += f" usable_headroom=${max(headroom, 0.0):.2f}"
+            if carry_snapshot.headroom_is_lower_bound:
+                budget_line += " (lower bound; carried unmeasured spend remains)"
+            print(budget_line)
+            carry_budget_decision = evaluate_budget(
+                accumulated_cost=0.0,
+                prior_cost=carry_snapshot.carried_cost_usd,
+                budget_usd=resolved.budget_usd,
+                unmeasured_spend=carry_snapshot.unresolved_unmeasured_sources,
+                accepted_unmeasured_ceiling_usd=carry_snapshot.accepted_unmeasured_ceiling_usd,
+            )
+            if carry_budget_decision is not None:
+                print(
+                    f"  cannot dispatch under the supplied ceiling: {carry_budget_decision.detail}"
+                )
         for task, _src, _ref in resolved.stories:
             deps = ", ".join(task.depends_on) if task.depends_on else "-"
             if task.slug in batch_plan.blocked:
