@@ -276,7 +276,13 @@ class TestSubstrateCostSamples:
                     outcome_success=False,
                     error_type="allocation_exhausted",
                 ),
-                _record(run_id="r3", score=5, cost=77.0, outcome_success=None, error_type="timeout"),
+                _record(
+                    run_id="r3",
+                    score=5,
+                    cost=77.0,
+                    outcome_success=None,
+                    error_type="timeout",
+                ),
             ],
         )
         conn = sub.require_substrate(tmp_path)
@@ -323,7 +329,9 @@ class TestDeriveStoryAllocation:
         assert allocation.allocation_usd == 50.0
         assert allocation.reason.startswith("no audit substrate; ")
 
-    def test_unsuccessful_reentry_history_does_not_raise_the_next_ceiling(self, tmp_path: Path) -> None:
+    def test_unsuccessful_reentry_history_does_not_raise_the_next_ceiling(
+        self, tmp_path: Path
+    ) -> None:
         successful_band = [10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 30.0]
         _seed_substrate(
             tmp_path,

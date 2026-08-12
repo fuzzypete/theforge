@@ -237,6 +237,7 @@ class TestPreflightInstallsTheAllocation:
     def test_unsuccessful_reentries_do_not_raise_the_installed_allocation(
         self, tmp_path: Path
     ) -> None:
+        started_at = "2026-03-01T10:00:00+00:00"
         _seed_story_runs(
             tmp_path,
             [
@@ -244,13 +245,18 @@ class TestPreflightInstallsTheAllocation:
                     "run_id": f"seed-8-{index}",
                     "task": {"slug": f"seed-8-{index}", "name": "seed"},
                     "outcome": {"success": True, "final_phase": "DONE"},
-                    "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
+                    "timing": {
+                        "started_at": started_at,
+                        "duration_seconds": 60.0,
+                    },
                     "cost": {"total_usd": cost},
                     "totals": {"cost_usd": cost, "duration_s": 60.0},
                     "preflight": {"complexity": "large", "complexity_score": 8},
                     "reviews": [],
                 }
-                for index, cost in enumerate([10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 30.0])
+                for index, cost in enumerate(
+                    [10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 30.0]
+                )
             ]
             + [
                 {
@@ -261,7 +267,10 @@ class TestPreflightInstallsTheAllocation:
                         "final_phase": "ESCALATE",
                         "error_type": "allocation_exhausted",
                     },
-                    "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
+                    "timing": {
+                        "started_at": started_at,
+                        "duration_seconds": 60.0,
+                    },
                     "cost": {"total_usd": 64.56},
                     "totals": {"cost_usd": 64.56, "duration_s": 60.0},
                     "preflight": {"complexity": "large", "complexity_score": 8},
@@ -275,7 +284,10 @@ class TestPreflightInstallsTheAllocation:
                         "final_phase": "ESCALATE",
                         "error_type": "allocation_exhausted",
                     },
-                    "timing": {"started_at": "2026-03-01T10:00:00+00:00", "duration_seconds": 60.0},
+                    "timing": {
+                        "started_at": started_at,
+                        "duration_seconds": 60.0,
+                    },
                     "cost": {"total_usd": 105.38},
                     "totals": {"cost_usd": 105.38, "duration_s": 60.0},
                     "preflight": {"complexity": "large", "complexity_score": 8},
