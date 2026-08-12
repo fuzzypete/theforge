@@ -447,6 +447,16 @@ def build_plan_review_prompt(
                 steps_str = ", ".join(f"Step {s}" for s in steps)
                 mapping_lines.append(f"- **{criterion}** → {steps_str}")
             criteria_mapping_section = "\n" + "\n".join(mapping_lines) + "\n"
+
+        risks = plan_content.get("risks")
+        if risks:
+            risk_lines = ["## Risks Stated By The Plan (from structured plan)", ""]
+            for entry in risks:
+                description = entry.get("description", "")
+                mitigation = entry.get("mitigation", "")
+                risk_lines.append(f"- **Risk:** {description}")
+                risk_lines.append(f"  **Mitigation:** {mitigation}" if mitigation else "  **Mitigation:** (none stated)")
+            criteria_mapping_section += "\n" + "\n".join(risk_lines) + "\n"
     else:
         plan_content_str = plan_content
 
@@ -506,6 +516,25 @@ def build_plan_review_prompt(
            callers accounted for?
         3. **Feasibility** — are the proposed APIs, function signatures, and module
            paths real? Use your tools to verify against the actual codebase.
+        4. **Risk reconciliation** — if the plan states a "Risks" list (rendered
+           above), you MUST resolve every stated risk against the plan's coverage
+           before you can APPROVE. For each risk, determine one of:
+           - **Retired**: the plan's steps or mitigation actually enumerate the
+             affected surface, or add a test that would fail if the risk
+             materialized. Cite where.
+           - **Carried**: the risk is real and NOT resolved by the plan as
+             written. You MUST report it as a `findings` entry (severity
+             `P1-impl` unless it threatens an acceptance criterion, in which
+             case `P1`) so the carried risk is visible in the review output —
+             not silently dropped. A risk on a surface an acceptance criterion
+             depends on (e.g. "some paths may not reach the code this story
+             must fix") is a P1: the plan cannot be said to cover that
+             criterion while the risk is unaddressed.
+           - **Does not apply**: record in `summary` why the risk is moot for
+             this plan.
+           A stated risk with no mention anywhere in your output is not a
+           valid review — every risk the plan names must show up as retired,
+           carried, or explicitly dismissed.
 
         Do NOT evaluate: code style, plan verbosity, alternative approaches,
         or hypothetical edge cases that the dev agent can handle at implementation time.
@@ -530,6 +559,16 @@ def build_plan_review_prompt(
           (P1-impl findings do NOT count as blockers)
         - verdict MUST be REJECT if any P0 or P1 finding exists
         - REJECT MUST include at least one P0 or P1 finding
+        - A plan risk that names a coverage gap on a surface an acceptance
+          criterion depends on, and that the plan does not retire (no
+          enumeration, no test, no recorded "does not apply" judgement), MUST
+          be reported as a P1 finding. You cannot APPROVE a plan while such a
+          risk is unaddressed and unreported — an approval with an empty or
+          risk-silent `findings` list is invalid if the plan's own risk list
+          named an unresolved gap on AC-relevant surface.
+        - A carried risk that does NOT threaten an acceptance criterion still
+          MUST be reported (as `P1-impl` or `P2`) so it is visible in the
+          approval rather than dropped.
         - **List ALL issues in a single pass.** Multiple findings in one REJECT
           is far better than discovering new issues across multiple cycles.
         - APPROVE with P1-impl and P2 suggestions is valid and encouraged

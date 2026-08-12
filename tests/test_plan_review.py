@@ -370,6 +370,110 @@ def test_plan_review_prompt_api_mode_uses_submit_tool(tmp_path):
     assert "```yaml" not in prompt
 
 
+def test_plan_review_prompt_renders_plan_risks(tmp_path):
+    """build_plan_review_prompt must surface the plan's stated risks to the reviewer."""
+    from theforge.task.plan_prompts import build_plan_review_prompt
+    from theforge.task.story import TaskStory
+
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n", encoding="utf-8")
+    task = TaskStory(
+        name="Test Task",
+        story_path=spec,
+        slug="test-task",
+        test_target="tests/",
+    )
+    plan_content = {
+        "approach": "Thread pricing data through to schema_utils._estimate_cost.",
+        "steps": [
+            {
+                "id": 1,
+                "description": "Pass pricing data down",
+                "files": ["src/theforge/schema_utils.py"],
+                "action": "modify",
+                "details": "...",
+            },
+        ],
+        "criteria_mapping": [],
+        "risks": [
+            {
+                "description": (
+                    "Some runner paths may not currently carry AgentSpec/ModelProfile "
+                    "pricing data down to schema_utils._estimate_cost."
+                ),
+                "mitigation": "",
+            }
+        ],
+    }
+    prompt = build_plan_review_prompt(
+        task,
+        story_content="## Spec\n- AC: something",
+        plan_content=plan_content,
+    )
+    assert "Risks Stated By The Plan" in prompt
+    assert "Some runner paths may not currently carry" in prompt
+    assert "Risk reconciliation" in prompt
+
+
+def test_plan_review_prompt_no_risks_omits_risk_section(tmp_path):
+    """When the plan has no risks list, no risk section is rendered into plan content."""
+    from theforge.task.plan_prompts import build_plan_review_prompt
+    from theforge.task.story import TaskStory
+
+    spec = tmp_path / "spec.md"
+    spec.write_text("# Spec\n", encoding="utf-8")
+    task = TaskStory(
+        name="Test Task",
+        story_path=spec,
+        slug="test-task",
+        test_target="tests/",
+    )
+    plan_content = {
+        "approach": "Do the thing.",
+        "steps": [
+            {
+                "id": 1,
+                "description": "Step one",
+                "files": ["src/theforge/foo.py"],
+                "action": "modify",
+                "details": "...",
+            },
+        ],
+        "criteria_mapping": [],
+    }
+    prompt = build_plan_review_prompt(
+        task,
+        story_content="## Spec\n- AC: something",
+        plan_content=plan_content,
+    )
+    assert "Risks Stated By The Plan" not in prompt
+
+
+def test_plan_review_prompt_rules_require_risk_reporting():
+    """The Rules section must mandate that unresolved AC-relevant risks become findings."""
+    from theforge.task.plan_prompts import build_plan_review_prompt
+    from theforge.task.story import TaskStory
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as td:
+        spec = Path(td) / "spec.md"
+        spec.write_text("# Spec\n", encoding="utf-8")
+        task = TaskStory(
+            name="Test Task",
+            story_path=spec,
+            slug="test-task",
+            test_target="tests/",
+        )
+        prompt = build_plan_review_prompt(
+            task,
+            story_content="## Spec\n- AC: something",
+            plan_content="## Plan\n- step 1",
+        )
+    assert "reported as a P1 finding" in prompt
+    assert "risk-silent" in prompt
+
+
 def test_plan_review_prompt_cli_mode_uses_yaml_block(tmp_path):
     """build_plan_review_prompt with mode='cli' includes YAML block, omits submit_plan_review."""
     from theforge.task.plan_prompts import build_plan_review_prompt
