@@ -113,7 +113,7 @@ def test_build_readiness_probes_includes_config_plan_and_advisor_shapes(tmp_path
     assert ("review", "reviewer", "review") in labels
     assert ("plan", "plan", None) in labels
     assert ("plan-review", "plan-reviewer", "plan_review") in labels
-    assert ("advisor", "preflight", "advisor") in labels
+    assert ("advisor", "preflight", "preflight") in labels
 
 
 def test_build_readiness_probes_dedupes_exact_duplicates_but_not_roles(tmp_path):

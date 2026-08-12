@@ -75,7 +75,6 @@ def build_readiness_probes(config: ForgeConfig) -> list[ReadinessProbe]:
     advisor_profile = dataclasses.replace(
         config.preflight_profile,
         allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
-        phase="advisor",
     )
     probes.append(_probe_for_profile("advisor", advisor_profile))
 
