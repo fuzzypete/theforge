@@ -835,9 +835,7 @@ def _run_loop_openai(
                     ),
                 )
             chat_extra_kwargs = tool_shape.chat_extra_kwargs()
-        adapter = _make_openai_chat_adapter(
-            profile, secrets, extra_kwargs=chat_extra_kwargs
-        )
+        adapter = _make_openai_chat_adapter(profile, secrets, extra_kwargs=chat_extra_kwargs)
         finalizer = _make_openai_chat_finalizer(profile, secrets) if is_review else noop_finalizer
 
     manager = AgentLoopManager(
