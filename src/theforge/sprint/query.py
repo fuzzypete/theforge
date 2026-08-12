@@ -23,6 +23,7 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
 class MilestoneNotFoundError(RuntimeError):
     """Raised when a milestone title is absent from the repository."""
 
