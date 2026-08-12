@@ -10,8 +10,8 @@ import pytest
 import yaml
 
 from theforge.sprint.audit import (
-    persist_accumulated_story_state,
     persist_accepted_unmeasured_spend,
+    persist_accumulated_story_state,
 )
 from theforge.sprint.query import (
     MilestoneNotFoundError,
