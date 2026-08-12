@@ -311,6 +311,8 @@ withdrawal: 48 advisory findings, 0 blocking.
 - #2314 — implementation
 - #2309 — the story that paid for the ratchet; evidence for Amendment 3
 - #2325 — first reduction unit (naming `run_sprint`'s execution context)
+- #2349 — the same unit for `assignment.py`: naming the routing evidence its
+  routing pass accumulates (`theforge/routing_evidence.py`)
 - #1617 — cold-start starvation, closed v0.12.0; ruled out as a cause of the model-mix shift
 - Amendment figures: `.forge/audits/index.sqlite` (`audit_records`, `invocation_identities`,
   `reviews`); `git log --merges --shortstat` for the per-merge columns
