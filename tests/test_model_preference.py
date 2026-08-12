@@ -117,6 +117,22 @@ def _runtime_fail_result() -> AgentResult:
     )
 
 
+def _capability_mismatch_result() -> AgentResult:
+    return AgentResult(
+        success=False,
+        output=(
+            "CAPABILITY_MISMATCH: OpenAI model 'gpt-5.1' cannot satisfy "
+            "required function-tools on the API transport."
+        ),
+        session_id=None,
+        cost_usd=None,
+        exit_code=1,
+        raw={},
+        profile_name="test",
+        failure_code="capability_mismatch",
+    )
+
+
 # ── Config parsing ─────────────────────────────────────────────────────
 
 
@@ -280,6 +296,10 @@ class TestClassifyApiModelFallback:
         )
         assert _classify_api_model_fallback(result) is not None
 
+    def test_capability_mismatch_failure_code_triggers_fallback(self):
+        reason = _classify_api_model_fallback(_capability_mismatch_result())
+        assert reason == "matched failure_code 'capability_mismatch'"
+
 
 class TestRunApiAgentPreferenceList:
     """run_api_agent iterates through models in preference order."""
@@ -403,6 +423,30 @@ class TestRunApiAgentPreferenceList:
         assert not result.success
         # Only first model was attempted
         assert call_log == ["gpt-4o"]
+
+    def test_capability_mismatch_triggers_fallback_to_second(self, tmp_path):
+        """Fail-closed capability mismatches still honor the configured model list."""
+        profile = _make_api_profile(model="gpt-5.1", fallback_models=("gpt-5.1-codex",))
+        capability_mismatch = _capability_mismatch_result()
+        success = _success_result("gpt-5.1-codex")
+
+        call_log: list[str] = []
+
+        def mock_runner(prompt, prof, secrets):
+            call_log.append(prof.model)
+            return capability_mismatch if prof.model == "gpt-5.1" else success
+
+        with patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"openai": mock_runner}):
+            result = run_api_agent(
+                prompt="test",
+                profile=profile,
+                working_dir=tmp_path,
+                quiet=True,
+            )
+
+        assert result.success
+        assert call_log == ["gpt-5.1", "gpt-5.1-codex"]
+        assert result.model_config == ("gpt-5.1", "gpt-5.1-codex")
 
     def test_single_model_no_model_config(self, tmp_path):
         """Scalar model (no fallbacks) does not set model_config."""
