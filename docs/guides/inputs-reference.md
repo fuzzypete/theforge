@@ -735,6 +735,16 @@ retry:
                              # finding the coordinator raises itself in VALIDATE
                              # (gate failure, hard convention violation) also
                              # spends one, once the dev attempts above are gone.
+                             # This is a CEILING, not a quota: a review loop that
+                             # is walking a topology — each cycle resolving its
+                             # predecessor's finding and raising the same concern
+                             # at a new location — escalates at the third such
+                             # cycle, before the ceiling, so the operator decision
+                             # is about the story's framing rather than about the
+                             # latest finding. Detection is deterministic and
+                             # conservative (any ambiguity spends another cycle);
+                             # the evidence is recorded under the audit record's
+                             # `review_topology_signal` key.
   max_review_parse_retries: 2  # reviewer output parse/schema error retries
   max_diagnose_parse_retries: 2 # `forge diagnose` reformat-only retries when the
                              # investigative agent finishes but emits unparseable

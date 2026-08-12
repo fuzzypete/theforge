@@ -34,6 +34,7 @@ from theforge.review import (
     _best_individual_result,
     review_to_dev_handoff,
 )
+from theforge.review_topology import detect_topology_walk
 from theforge.symptom_test_classifier import escalate_symptom_test_findings
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
@@ -339,6 +340,7 @@ def _run_escalate_gate(
     notify: bool,
     logger: "StructuredLogger | None",
     run_id: str = "",
+    history_already_appended: bool = False,
 ) -> "CoordinatorResult | None":
     """HITL decision gate at review-related ESCALATE exit points.
 
@@ -347,6 +349,13 @@ def _run_escalate_gate(
     and rendered to the operator, and the runs that reach this gate are the ones
     least likely to end through a normal finalization — so the record must not
     depend on this process surviving to write it (#2155).
+
+    ``history_already_appended`` is set by callers that appended the triggering
+    cycle to ``state.cycle_history`` themselves — the topology-walk route does,
+    so the advisor's evidence packet contains the cycle that caused the
+    escalation. The history window holds three entries, so appending it twice
+    would evict an earlier cycle and hand the advisor a shorter churn pattern
+    than the run actually produced.
 
     Returns:
         CoordinatorResult — approve or reject decision (caller should return it).
@@ -365,6 +374,7 @@ def _run_escalate_gate(
             notify=notify,
             logger=logger,
             run_id=run_id,
+            history_already_appended=history_already_appended,
         )
     finally:
         save_resume_record(
@@ -388,6 +398,7 @@ def _run_escalate_gate_inner(
     notify: bool,
     logger: "StructuredLogger | None",
     run_id: str = "",
+    history_already_appended: bool = False,
 ) -> "CoordinatorResult | None":
     """Body of :func:`_run_escalate_gate`; see there for the contract."""
     escalate_policy = config.retry.escalate_policy
@@ -436,7 +447,8 @@ def _run_escalate_gate_inner(
                 state.escalate_decision = "approve"
                 state.escalate_reason = escalate_reason
                 state.escalate_decision_source = ESCALATE_SOURCE_POLICY_AUTO_APPROVE
-                _append_cycle_history(state, state.review_results[-1])
+                if not history_already_appended:
+                    _append_cycle_history(state, state.review_results[-1])
                 _release_review_reservation(
                     state, retained_cycles=0, reason="approve_escalate_gate"
                 )
@@ -576,7 +588,8 @@ def _run_escalate_gate_inner(
                 ),
             )
         state.escalate_decision = norm if norm in ACTION_TAXONOMY else "approve"
-        _append_cycle_history(state, approvable)
+        if not history_already_appended:
+            _append_cycle_history(state, approvable)
         _release_review_reservation(state, retained_cycles=0, reason="approve_escalate_gate")
         return _finalize_approve(
             state,
@@ -1874,6 +1887,25 @@ def _run_review_phase(
     else:
         state.surviving_families = []
 
+    # ── Topology-walk detection (#2372) ────────────────────────────────────
+    # Counting findings cannot separate a change that is converging from one
+    # that resolves each finding correctly and then discovers the same concern
+    # somewhere new. The detector reads the family trajectory just classified
+    # plus the registry dispositions and returns evidence only when the
+    # sequence unambiguously shows the second shape; every ambiguity returns
+    # None, so the failure mode is one more dev cycle rather than halting work
+    # that was about to finish. Routing on it happens below, at the
+    # REQUEST_CHANGES branch — this is only the computation, done here so the
+    # signal reaches the trajectory sidecar and the audit record even on the
+    # cycles it does not route.
+    state.review_topology_signal = detect_topology_walk(
+        trajectory_cycle=state.trajectory_cycle,
+        review_cycle_findings=state.review_cycle_findings,
+        finding_trajectory=state.finding_trajectory,
+        finding_registry=state.finding_registry,
+        review_cycle=state.review_cycle,
+    )
+
     save_trajectory_state(workspace_path, state)
     _adaptive_review_max = state.adaptive_review_max or config.retry.max_review_cycles
     _record_review_iteration_telemetry(
@@ -2164,6 +2196,91 @@ def _run_review_phase(
                 f"You are now running on an upgraded model ({_new_model_name}). "
                 f"Persistent finding(s): {'; '.join(_persistent_descs)}"
             )
+
+    # ── Topology walk detected before the ceiling (#2372) ──────────────────
+    # The loop is not converging: each cycle has resolved its predecessor and
+    # raised the same concern somewhere new. Another dev pass would price
+    # discovery as implementation and arrive at the same operator decision
+    # several cycles later, so route to the escalate gate NOW and let the
+    # advisor reason about the framing rather than about the latest finding.
+    #
+    # Guarded on review_cycle (the budget counter) staying below the ceiling:
+    # at or above it the exhausted-cycles branch below is already the right
+    # exit, and firing here too would escalate the same cycle twice. The family
+    # span is measured in trajectory_cycle, which is a different counter — it
+    # is never decremented by extend/reject/gate-continue — so the two are
+    # never compared to each other.
+    #
+    # Routed once per run: a gate "continue" is the operator choosing to keep
+    # going with the pattern in hand, and re-raising it on the very next cycle
+    # would spend the decision they just made.
+    if (
+        state.review_topology_signal
+        and not state.review_topology_escalated
+        and state.review_cycle < _adaptive_review_max
+    ):
+        _signal = state.review_topology_signal
+        _cycle_seq = ", ".join(str(c) for c in _signal.get("cycles", []))
+        state.review_topology_escalated = True
+        # Names THIS escalation as the detector's, so the advisor is told the
+        # ceiling was not reached. Cleared on the continue path below, so a
+        # later ceiling-triggered escalation is not misdescribed as early.
+        state.review_topology_triggered = True
+        state.phase = Phase.ESCALATE
+        state.escalate_kind = "content"
+        state.error = (
+            f"Topology walk detected at review cycle {state.review_cycle} of "
+            f"{_adaptive_review_max}: cycles {_cycle_seq} each resolved the previous "
+            f"cycle's findings and raised a new instance of the same concern "
+            f"({_signal.get('seed_anchor')!r}) at a location not previously flagged. "
+            f"The loop is inventorying a surface, not converging — escalating for a "
+            f"decision about the story's framing instead of spending another "
+            f"development cycle."
+        )
+        _log(f"✗ ESCALATE   {state.error}")
+        if logger:
+            logger._safe_emit("phase_end", phase="REVIEW", outcome="escalate")
+            logger._safe_emit(
+                "escalate",
+                reason=state.error,
+                phase="REVIEW",
+                topology_signal=_signal,
+            )
+        # Append BEFORE the gate so the advisor's evidence packet contains the
+        # cycle that triggered the escalation; the gate is told not to append it
+        # again on its approve paths.
+        _append_cycle_history(state, parsed_review)
+        # Persist the routed flag with the signal, so a --resume does not
+        # re-escalate a pattern the operator has already decided on.
+        save_trajectory_state(workspace_path, state)
+        _gate_result = _run_escalate_gate(
+            state,
+            config,
+            task,
+            workspace_path,
+            branch_name,
+            task_start,
+            auto_merge=auto_merge,
+            notify=notify,
+            logger=logger,
+            run_id=run_id,
+            history_already_appended=True,
+        )
+        if _gate_result is not None:
+            return _ReviewOutcome.ESCALATE, _gate_result, config
+        # Gate said "continue". Unlike the exhausted-cycles branch below there is
+        # no review_cycle increment to undo — this escalation happened with
+        # budget still available, so the cycles already run stay run and the loop
+        # resumes from where it is rather than replaying them.
+        state.error = None
+        state.escalate_kind = None
+        state.review_topology_triggered = False
+        state.last_review_findings = review_to_dev_handoff(parsed_review)
+        state.budget.reset_cycle()
+        state.human_feedback = None
+        state.retry_reason = RetryReason.REVIEW_CHANGES
+        save_trajectory_state(workspace_path, state)
+        return _ReviewOutcome.RETRY_DEV, None, config
 
     if state.review_cycle >= _adaptive_review_max:
         if interactive:

@@ -425,3 +425,166 @@ options:
         # The required constrained-output contract is spelled out.
         assert "recommendation" in prompt
         assert "<advisory_report>" in prompt
+
+
+# ── Topology-walk evidence (#2372) ────────────────────────────────────────────
+
+
+_TOPOLOGY_SIGNAL = {
+    "pattern": "topology_walk",
+    "seed_anchor": "unpriced_dispatch",
+    "cycles": [1, 2, 3],
+    "trajectory_cycle": 3,
+    "review_cycle": 3,
+    "sequence": [
+        {
+            "cycle": 1,
+            "file": "src/routing/dispatch.py",
+            "line": 10,
+            "description": "unpriced_dispatch: seated primaries",
+        },
+        {
+            "cycle": 2,
+            "file": "src/routing/fallback.py",
+            "line": 22,
+            "description": "unpriced_dispatch: fallback_models",
+        },
+        {
+            "cycle": 3,
+            "file": "src/routing/transport.py",
+            "line": 44,
+            "description": "unpriced_dispatch: transport_fallback",
+        },
+    ],
+    "rationale": "each cycle resolved its predecessor and found a new sibling",
+}
+
+
+class TestTopologySignalReachesTheAdvisor:
+    """A pre-ceiling escalation must tell the advisor WHY it happened early.
+
+    Without the signal the advisor sees a short cycle history and a story that
+    stopped for no stated reason — the very framing question it exists to answer
+    would be invisible.
+    """
+
+    def test_packet_carries_the_signal_from_state(self, tmp_path):
+        config = _config(tmp_path)
+        task = TaskStory(name="Pricing", slug="issue-2372", github_issue=2372)
+        state = CoordinatorState()
+        state.story_content = "body\n\n## Acceptance criteria\n\n- every dispatch is priced\n"
+        state.review_results = [_review("REQUEST_CHANGES", "still unpriced", ["transport"])]
+        state.review_topology_signal = dict(_TOPOLOGY_SIGNAL)
+
+        packet = build_evidence_packet(state, task, config, tmp_path / "nonexistent")
+        assert packet.topology_signal is not None
+        assert packet.topology_signal["seed_anchor"] == "unpriced_dispatch"
+        # Serialised for the audit trail alongside the rest of the packet.
+        assert packet.to_dict()["topology_signal"]["cycles"] == [1, 2, 3]
+
+    def test_packet_signal_is_none_when_no_walk_was_detected(self, tmp_path):
+        config = _config(tmp_path)
+        task = TaskStory(name="Pricing", slug="issue-2372", github_issue=2372)
+        state = CoordinatorState()
+        state.story_content = "body"
+        packet = build_evidence_packet(state, task, config, tmp_path / "nope")
+        assert packet.topology_signal is None
+        assert packet.to_dict()["topology_signal"] is None
+
+    def _packet(self, signal, *, triggered=True, reason=None):
+        from theforge.escalation_advisor import CycleEvidence
+
+        return EvidencePacket(
+            story_name="price every dispatch",
+            issue_ref="#2372",
+            issue_body="Every dispatch path must be priced.",
+            acceptance_criteria=["every dispatch is priced"],
+            cycles=[
+                CycleEvidence(
+                    cycle=i,
+                    verdict="REQUEST_CHANGES",
+                    summary=f"cycle {i}",
+                    findings=[f"finding {i}"],
+                )
+                for i in (1, 2, 3)
+            ],
+            reviewer_verdicts={"reviewer-a": "REQUEST_CHANGES"},
+            final_verdict="REQUEST_CHANGES",
+            dev_diff="",
+            test_failures="",
+            escalation_reason=reason or "Topology walk detected at review cycle 3 of 5.",
+            topology_signal=signal,
+            topology_triggered=triggered,
+        )
+
+    def test_prompt_renders_the_detected_pattern_and_its_sequence(self):
+        from theforge.task.advisor_prompts import build_advisor_prompt
+
+        prompt = build_advisor_prompt(self._packet(dict(_TOPOLOGY_SIGNAL)))
+
+        assert "TOPOLOGY WALK" in prompt
+        assert "unpriced_dispatch" in prompt
+        # Every location in the sequence is named, so the advisor reasons about
+        # the surface being inventoried rather than the latest finding.
+        assert "src/routing/dispatch.py:10" in prompt
+        assert "src/routing/fallback.py:22" in prompt
+        assert "src/routing/transport.py:44" in prompt
+        # The cycle history section is intact — this evidence is additive.
+        assert "Review cycle history" in prompt
+        assert "Cycle 3" in prompt
+
+    def test_prompt_does_not_claim_cycles_were_exhausted_on_an_early_escalation(self):
+        from theforge.task.advisor_prompts import build_advisor_prompt
+
+        early = build_advisor_prompt(self._packet(dict(_TOPOLOGY_SIGNAL)))
+        # The false premise — that the budget ran out — must not be stated.
+        assert "the review cycles were exhausted" not in early
+        assert "BEFORE its review cycles were exhausted" in early
+        assert "Review cycles remain available" in early
+
+        # The ceiling-triggered escalation keeps its original framing.
+        exhausted = build_advisor_prompt(self._packet(None))
+        assert "the review cycles were exhausted" in exhausted
+        assert "TOPOLOGY WALK" not in exhausted
+
+    def test_ceiling_triggered_escalation_carrying_a_signal_is_not_called_early(self):
+        """A signal is recorded on every cycle it is detected, including cycles
+        that escalate for another reason. Only the detector's own route may tell
+        the advisor the ceiling was not reached."""
+        from theforge.task.advisor_prompts import build_advisor_prompt
+
+        prompt = build_advisor_prompt(
+            self._packet(
+                dict(_TOPOLOGY_SIGNAL),
+                triggered=False,
+                reason="Review requested changes after 5 cycles. Max cycles (5) exhausted.",
+            )
+        )
+
+        # The budget DID run out, so the introduction must say so.
+        assert "the review cycles were exhausted" in prompt
+        assert "BEFORE its review cycles were exhausted" not in prompt
+        assert "Review cycles remain available" not in prompt
+        # The pattern is still shown — as supporting evidence, not as the cause.
+        assert "TOPOLOGY WALK" in prompt
+        assert "NOT triggered by the detector" in prompt
+        assert "This escalation fired BEFORE the cycle ceiling." not in prompt
+        assert "unpriced_dispatch" in prompt
+
+    def test_packet_records_whether_the_detector_caused_the_escalation(self, tmp_path):
+        config = _config(tmp_path)
+        task = TaskStory(name="Pricing", slug="issue-2372", github_issue=2372)
+        state = CoordinatorState()
+        state.story_content = "body"
+        state.review_topology_signal = dict(_TOPOLOGY_SIGNAL)
+
+        # Signal recorded, but the detector did not route this escalation.
+        packet = build_evidence_packet(state, task, config, tmp_path / "nope")
+        assert packet.topology_signal is not None
+        assert packet.topology_triggered is False
+        assert packet.to_dict()["topology_triggered"] is False
+
+        state.review_topology_triggered = True
+        packet = build_evidence_packet(state, task, config, tmp_path / "nope")
+        assert packet.topology_triggered is True
+        assert packet.to_dict()["topology_triggered"] is True

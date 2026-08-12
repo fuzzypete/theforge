@@ -949,6 +949,23 @@ class CoordinatorState:
     # Families from the most recent classification that are present in 2+ cycles.
     # Consumed by build_fix_prompt on the RETRY_DEV path.  Reset each classification.
     surviving_families: list[dict] = field(default_factory=list)
+    # Topology-walk evidence from review_topology.detect_topology_walk(), or None
+    # when the latest cycle's trajectory does not unambiguously say the loop is
+    # inventorying a surface rather than converging (#2372).  A plain dict so it
+    # serialises straight into the trajectory sidecar, the audit record, and the
+    # escalation advisor's evidence packet.  Recomputed every merged cycle.
+    review_topology_signal: dict | None = None
+    # True once a detected topology walk has been routed to the escalate gate.
+    # The gate's "continue" is an operator decision to keep going; re-escalating
+    # the same pattern on the very next cycle would spend the decision it just
+    # made, so detection routes at most once per run.
+    review_topology_escalated: bool = False
+    # True while the escalation currently in force is the one the detector
+    # routed. Distinct from the latch above, which stays set for the rest of the
+    # run: after a gate "continue" this clears, so a later ceiling-triggered
+    # escalation is not described to the operator as having fired early. The
+    # signal itself is still carried as supporting evidence either way (#2372).
+    review_topology_triggered: bool = False
     # Challenger-sampling exploration (#325, ADR-0006 clause 8). When the router
     # ran a challenger instead of the winner for this story's dev slot, this
     # holds the decision (routing_key/challenger/winner) so the coordinator can

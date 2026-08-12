@@ -1746,6 +1746,7 @@ PRIOR_GENERATION_WORK_KEYS = (
     "convention_violations",
     "validate_blocks",
     "finding_registry",
+    "review_topology_signal",
     "non_blocking_p1s",
     "routing_decision",
     "trust_checks",
