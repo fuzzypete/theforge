@@ -254,9 +254,7 @@ class TestPreflightInstallsTheAllocation:
                     "preflight": {"complexity": "large", "complexity_score": 8},
                     "reviews": [],
                 }
-                for index, cost in enumerate(
-                    [10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 30.0]
-                )
+                for index, cost in enumerate([10.0, 12.0, 14.0, 16.0, 18.0, 20.0, 24.0, 30.0])
             ]
             + [
                 {
