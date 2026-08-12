@@ -277,6 +277,7 @@ def test_run_sprint_dirty_root_aborts_before_pull_and_baseline(tmp_path: Path) -
         patch("theforge.sprint.runner.sweep_orphan_worktrees"),
         patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
         patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch("theforge.coordinator.workspace._cu._run_shell", side_effect=_shell(DIRTY)),
         patch("theforge.coordinator.workspace.pull_base_branch") as mock_pull,
         patch("theforge.sprint.runner._run_baseline_gate") as mock_baseline,
@@ -298,6 +299,7 @@ def test_run_sprint_clean_root_proceeds(tmp_path: Path) -> None:
         patch("theforge.sprint.runner.sweep_orphan_worktrees"),
         patch("theforge.sprint.runner._get_or_create_sprint_id", return_value=None),
         patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch("theforge.coordinator.workspace._cu._run_shell", side_effect=_shell("")),
         patch("theforge.coordinator.workspace.pull_base_branch") as mock_pull,
         patch(
@@ -377,6 +379,7 @@ def test_parallel_dependency_parent_dispatched_with_landing_obligation(tmp_path:
     captured: dict[str, bool | None] = {}
 
     with (
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
         patch(
             "theforge.sprint.runner._run_baseline_gate",
@@ -435,6 +438,7 @@ def _entry_patches(satisfied: set[str]):
         patch("theforge.sprint.runner._scrub_root_forge_artifacts"),
         patch("theforge.sprint.runner.sweep_orphan_worktrees"),
         patch("theforge.sprint.runner._project_root_is_git_checkout", return_value=True),
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch("theforge.coordinator.workspace._cu._run_shell", side_effect=_shell(DIRTY)),
         patch("theforge.coordinator.workspace.pull_base_branch", return_value=True),
         patch(
