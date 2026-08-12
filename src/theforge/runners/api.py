@@ -61,6 +61,7 @@ from theforge.runners.schema_utils import (
     _estimate_cost,
     cache_reads_are_subset_of_input,
     noop_finalizer,
+    openai_function_tool_request_shape,
     rate_card_confirmed,
     uses_openai_responses_api,
 )
@@ -761,6 +762,36 @@ def _build_registry_tools(profile: "ModelProfile") -> list[ToolDef]:
     return result
 
 
+def _capability_mismatch_result(
+    profile: "ModelProfile", provider: str, reason: str
+) -> AgentResult:
+    """Return a fail-closed runner result for a missing required capability."""
+    usage = _UsageAccumulator().to_model_usage(profile.model, provider)
+    if _is_local_endpoint(profile.base_url):
+        usage = dataclasses.replace(usage, cost_usd=0.0)
+        cost = 0.0
+    else:
+        cost = usage.cost_usd
+    return AgentResult(
+        success=False,
+        output=reason,
+        session_id=None,
+        cost_usd=cost,
+        exit_code=1,
+        raw={},
+        profile_name=profile.name,
+        model_usage=(usage,),
+        failure_code="capability_mismatch",
+    )
+
+
+def _openai_function_tools_mismatch_text(model: str, detail: str) -> str:
+    return (
+        f"CAPABILITY_MISMATCH: OpenAI model {model!r} cannot satisfy required "
+        f"function-tools on the API transport. {detail}"
+    )
+
+
 # ── Loop-mode entry points ────────────────────────────────────────────
 
 
@@ -778,6 +809,7 @@ def _run_loop_openai(
     tools = _build_registry_tools(profile)
     is_responses = uses_openai_responses_api(profile.model)
     is_review = profile.phase not in _NO_SUBMIT_PHASES
+    chat_extra_kwargs: dict[str, Any] | None = None
 
     if is_responses:
         tool_schemas = [t.to_openai_responses_function() for t in tools] + (
@@ -791,7 +823,21 @@ def _run_loop_openai(
         tool_schemas = [t.to_openai_function() for t in tools] + (
             _build_submit_tools_openai(responses_api=False) if is_review else []
         )
-        adapter = _make_openai_chat_adapter(profile, secrets)
+        if tool_schemas and not _is_local_endpoint(profile.base_url):
+            tool_shape = openai_function_tool_request_shape(profile.model)
+            if tool_shape.transport == "unsupported":
+                return _capability_mismatch_result(
+                    profile,
+                    "openai",
+                    _openai_function_tools_mismatch_text(
+                        profile.model,
+                        "No supported tool-bearing request shape is configured for this model.",
+                    ),
+                )
+            chat_extra_kwargs = tool_shape.chat_extra_kwargs()
+        adapter = _make_openai_chat_adapter(
+            profile, secrets, extra_kwargs=chat_extra_kwargs
+        )
         finalizer = _make_openai_chat_finalizer(profile, secrets) if is_review else noop_finalizer
 
     manager = AgentLoopManager(
@@ -809,23 +855,13 @@ def _run_loop_openai(
             tool_schemas=tool_schemas,
         )
     except Exception as exc:
-        if isinstance(exc, openai.BadRequestError) and "tool" in str(exc).lower():
-            # The provider's own error body names the offending parameter and
-            # the working alternative (e.g. "use /v1/responses or set
-            # reasoning_effort to 'none'"). Without it here, the fallback
-            # absorbs the rejection into an untraceable "tool-call 400" line
-            # and diagnosing the cause requires reproducing the request by
-            # hand against the live provider (#2379).
-            _log(
-                f"  ⚠ {profile.name or profile.model} tool-call 400 — "
-                f"falling back to single-shot text mode: {exc}"
+        if tool_schemas and isinstance(exc, openai.BadRequestError) and "tool" in str(exc).lower():
+            message = _openai_function_tools_mismatch_text(
+                profile.model,
+                f"Provider response: {exc}",
             )
-            fallback_prompt = (
-                prompt
-                + "\n\n[SYSTEM] Respond with a JSON object matching the review output schema. "
-                "Do not use tool calls."
-            )
-            return PROVIDER_RUNNERS["openai"](fallback_prompt, profile, secrets)
+            _log(f"  ⚠ {profile.name or profile.model} capability mismatch: {message}")
+            return _capability_mismatch_result(profile, "openai", message)
         raise
 
     if _is_local_endpoint(profile.base_url):

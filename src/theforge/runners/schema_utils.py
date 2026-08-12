@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import date
-from typing import TYPE_CHECKING, Any, Protocol
+from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from theforge.agent_types import ModelUsage
 from theforge.runners.rate_registry import (
@@ -82,6 +82,54 @@ _RESPONSES_ONLY_MODELS: set[str] = {
 def uses_openai_responses_api(model: str) -> bool:
     """Return True when this OpenAI model should be sent to /v1/responses."""
     return model in _RESPONSES_ONLY_MODELS
+
+
+_CHAT_COMPLETIONS_TOOL_REASONING_NONE_MODELS: frozenset[str] = frozenset(
+    {
+        "gpt-5.4",
+        "gpt-5.4-mini",
+        "gpt-5.4-pro",
+        "gpt-5.5",
+        "gpt-5.6-sol",
+        "gpt-5.6-terra",
+    }
+)
+
+_CHAT_COMPLETIONS_TOOL_UNSUPPORTED_MODELS: frozenset[str] = frozenset()
+
+
+@dataclass(frozen=True)
+class OpenAIFunctionToolRequestShape:
+    """How an OpenAI model can satisfy a required function-tools request.
+
+    ``transport`` is the request surface that can carry function tools for this
+    model. ``"responses"`` means the model should be sent to ``/v1/responses``;
+    ``"chat"`` means Chat Completions can carry the request, optionally with a
+    provider-required override such as ``reasoning_effort='none'``; and
+    ``"unsupported"`` means the shipped metadata has no supported tool-bearing
+    shape for this model, so the run must fail closed instead of discarding the
+    required capability.
+    """
+
+    transport: Literal["responses", "chat", "unsupported"]
+    chat_reasoning_effort: str | None = None
+
+    def chat_extra_kwargs(self) -> dict[str, Any]:
+        """Return Chat Completions kwargs required for a tool-bearing request."""
+        if self.chat_reasoning_effort is None:
+            return {}
+        return {"reasoning_effort": self.chat_reasoning_effort}
+
+
+def openai_function_tool_request_shape(model: str) -> OpenAIFunctionToolRequestShape:
+    """Return the supported OpenAI request shape for required function tools."""
+    if uses_openai_responses_api(model):
+        return OpenAIFunctionToolRequestShape("responses")
+    if model in _CHAT_COMPLETIONS_TOOL_UNSUPPORTED_MODELS:
+        return OpenAIFunctionToolRequestShape("unsupported")
+    if model in _CHAT_COMPLETIONS_TOOL_REASONING_NONE_MODELS:
+        return OpenAIFunctionToolRequestShape("chat", chat_reasoning_effort="none")
+    return OpenAIFunctionToolRequestShape("chat")
 
 
 def sampling_control_kwargs() -> dict[str, Any]:
