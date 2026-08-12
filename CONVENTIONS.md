@@ -195,6 +195,51 @@ not fire instead of defaulting to manual `depends_on`.
 
 Sources: `feedback_dag_discoverable.md`, `project_collision_dag.md`
 
+### Logical dependencies are declared at filing; scheduling dependencies are inferred
+
+The convention above is about *scheduling* — do not hand-declare an edge to keep
+two issues off the same files, because collision inference already does that from
+`likely_files` and does it better. It is not a reason to leave a dependency
+undeclared.
+
+A **logical dependency** is a different thing and is never inferable. It exists
+when one issue produces something another consumes: an interface, a contract, a
+recorded fact, a vocabulary. The clearest case is one issue specifying an API and
+another building against it, but it is the same relationship whenever the second
+issue would have to invent, re-derive, or assume the first issue's output in
+order to proceed. Nothing in the file set reveals this — two issues can share no
+files at all and still stand in this relationship.
+
+**Issues filed together must state their logical dependencies in the body at
+creation.** Declare with YAML frontmatter at the very start of the body, and say
+in prose what the downstream issue consumes and what goes wrong if it is built
+first:
+
+```
+---
+depends_on:
+  - issue-2377
+---
+```
+
+The prose half is the point. The edge is documentation of a development
+relationship first and a scheduling input second — a reader picking up either
+issue needs to know the relationship exists, and a reader deciding whether the
+edge still holds needs to know what it was for. A bare frontmatter block orders
+the work without explaining it, and is the first thing to go stale silently.
+
+Two mechanical notes: comments are never parsed, so an edge added as a
+`gh issue comment` is invisible to the scheduler no matter how clearly it is
+worded; and fenced blocks, blockquotes and inline code are stripped before the
+prose scan, so an edge mentioned only inside an example does not count. Prove the
+result with `forge sprint --dry-run` and confirm more than one `batch=` value
+before calling a queue ready.
+
+Where a relationship is real but not a dependency — two issues that are halves of
+one concern, or a fix that would make another easier to diagnose without being
+required by it — cross-reference them in prose and do not declare an edge.
+Ordering work that does not need ordering serialises it for nothing.
+
 ### Contract changes may require test updates
 
 The default "do not modify unrelated tests" rule is correct, but prompt and
