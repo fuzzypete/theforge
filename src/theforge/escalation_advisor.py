@@ -136,6 +136,13 @@ class EvidencePacket:
     dev_diff: str
     test_failures: str
     escalation_reason: str
+    # Deterministic topology-walk evidence (#2372), or None when the loop showed
+    # no such pattern. Present when the escalation happened BEFORE the cycle
+    # ceiling because successive cycles resolved their predecessor and raised the
+    # same concern somewhere new — the advisor needs it to know it is being asked
+    # about the framing, not about the latest finding. Defaulted so packets
+    # assembled by paths that predate the detector remain constructible.
+    topology_signal: dict | None = None
 
     def to_dict(self) -> dict:
         """Serialise the packet for the audit trail."""
@@ -158,6 +165,7 @@ class EvidencePacket:
             "dev_diff": self.dev_diff,
             "test_failures": self.test_failures,
             "escalation_reason": self.escalation_reason,
+            "topology_signal": dict(self.topology_signal) if self.topology_signal else None,
         }
 
 

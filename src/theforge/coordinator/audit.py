@@ -1126,6 +1126,12 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             }
             for r in state.finding_registry
         ],
+        # Topology-walk detection (#2372). Null on every run whose review cycles
+        # did not show the pattern. When present it carries the family anchor, the
+        # cycle sequence, and the per-cycle locations/descriptions that produced
+        # it — the detector is deterministic, so a reader must be able to re-derive
+        # the decision from the record rather than trust the log line.
+        "review_topology_signal": state.review_topology_signal,
         # Non-blocking / suppressed P1s: findings that were set aside without
         # blocking approval. Both net_new (latent, single-reviewer) and
         # gate_contradicted (mechanically disproven by a PASS gate) belong here so

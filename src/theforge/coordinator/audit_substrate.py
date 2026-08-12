@@ -86,7 +86,7 @@ SUBSTRATE_SCHEMA_VERSION = 8
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 26
+CURRENT_RECORD_SCHEMA_VERSION = 27
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1554,6 +1554,21 @@ def _migrate_v25_to_v26(record: dict) -> dict:
     return {**record, "iterations": {**iterations, "dev_timeout_clamps": []}}
 
 
+def _migrate_v26_to_v27(record: dict) -> dict:
+    """Backfill the absent topology-walk signal (issue #2372).
+
+    v27 records, per run, the deterministic topology-walk evidence that routed a
+    review loop to the escalate gate before its cycle ceiling — or ``null`` when
+    the pattern was not detected. A v26 record predates the detector, so ``null``
+    is the honest backfill: not "unknown", but known not to have been detected,
+    because nothing could detect it. The stored record is never rewritten
+    (ADR-0002 refusal-to-forget); this is the reader-side lift applied on load.
+    """
+    if "review_topology_signal" in record:
+        return record
+    return {**record, "review_topology_signal": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1588,6 +1603,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     23: _migrate_v23_to_v24,
     24: _migrate_v24_to_v25,
     25: _migrate_v25_to_v26,
+    26: _migrate_v26_to_v27,
 }
 
 

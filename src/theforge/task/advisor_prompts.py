@@ -74,6 +74,27 @@ def _render_packet(packet: EvidencePacket) -> str:
     else:
         lines.append("(none extracted)")
     lines.append("")
+    if packet.topology_signal:
+        lines.append("### Detected pattern: TOPOLOGY WALK (deterministic detector)")
+        sig = packet.topology_signal
+        cycles = ", ".join(str(c) for c in (sig.get("cycles") or []))
+        lines.append(
+            "This escalation fired BEFORE the cycle ceiling. A deterministic detector "
+            "found that successive review cycles each resolved their predecessor's "
+            "findings and then raised a NEW instance of the same underlying concern at "
+            "a location nobody had enumerated. The loop was not converging — it was "
+            "inventorying a surface one development pass at a time."
+        )
+        lines.append(f"shared concern (anchor): {sig.get('seed_anchor')}")
+        lines.append(f"cycles in the pattern: {cycles}")
+        for item in sig.get("sequence") or []:
+            loc = item.get("file") or "(unknown file)"
+            if item.get("line"):
+                loc = f"{loc}:{item['line']}"
+            lines.append(f"  - cycle {item.get('cycle')} @ {loc} — {item.get('description')}")
+        if sig.get("rationale"):
+            lines.append(f"detector rationale: {sig['rationale']}")
+        lines.append("")
     lines.append("### Review cycle history (the churn pattern — the key signal)")
     if packet.cycles:
         for c in packet.cycles:
@@ -111,12 +132,28 @@ def build_advisor_prompt(packet: EvidencePacket) -> str:
     taxonomy = _render_taxonomy()
     packet_text = _render_packet(packet)
     example_action = ACTION_TAXONOMY[2]  # "redirect"
+    # An escalation no longer implies the cycle budget ran out: a detected
+    # topology walk routes here with cycles still available, precisely so the
+    # decision is made while it is still worth something. Saying "exhausted"
+    # there would hand the advisor a false premise about what the run spent.
+    if packet.topology_signal:
+        situation = (
+            "A story has escalated BEFORE its review cycles were exhausted: a "
+            "deterministic detector found the loop walking a topology rather than "
+            "converging (see the detected-pattern section of the packet). Review "
+            "cycles remain available — the loop stopped early on purpose, so the "
+            "decision could be about the framing instead of about the latest finding."
+        )
+    else:
+        situation = (
+            "A story has escalated: the dev agent could not converge and the review "
+            "cycles were exhausted."
+        )
 
     return f"""You are the ESCALATION ADVISOR for an autonomous software-development \
 orchestrator.
 
-A story has escalated: the dev agent could not converge and the review cycles \
-were exhausted. You did NOT run those cycles. Your job is to read the prepared \
+{situation} You did NOT run those cycles. Your job is to read the prepared \
 evidence packet BELOW with fresh eyes and route this escalation into a small, \
 constrained menu of evidence-backed action choices for a human operator.
 
