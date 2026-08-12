@@ -82,6 +82,11 @@ _PINNED_LIST_ELEMENTS: tuple[str, ...] = (
     # attributable cost with it, and the guard would never see it if only the
     # outer list were pinned.
     "cost.agents[].ledger.billed_components",
+    # The run's changed-file set (#2347). Pinned because each entry is the unit
+    # the audit index joins cost to code on: a field dropped from an entry would
+    # silently narrow what spend can be attributed to, and the outer list alone
+    # would not show it.
+    "changed_files.files",
 )
 
 
@@ -260,6 +265,21 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
         )
     )
     state.dev_durations.append(12.0)
+    # The changed-file snapshot a real run captures before landing (#2347), so
+    # the guard pins the populated block rather than the null a workspace-less
+    # fixture would otherwise produce.
+    state.changed_files = {
+        "base_ref": "0" * 40,
+        "head_ref": "1" * 40,
+        "files": [
+            {
+                "path": "src/theforge/process_group.py",
+                "insertions": 540,
+                "deletions": 312,
+                "binary": False,
+            }
+        ],
+    }
 
 
 def _build_canonical_record(tmp_path: Path) -> dict:

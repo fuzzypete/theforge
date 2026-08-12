@@ -22,15 +22,26 @@ def _parse_dirty_files(raw_output: str) -> list[str]:
     Skips untracked (``??``) and ignored (``!!``) entries using the standard
     porcelain v1 two-character prefix only.
     For renames (``R`` status) returns the destination filename.
+
+    The XY prefix is normally two columns wide, but every caller reads git
+    through ``_run_shell``, which strips the combined output — so a first line
+    whose index column is blank (`` M path``, the shape of an unstaged
+    modification) arrives one character short. Slicing at a fixed offset then
+    ate the first character of the path and the caller staged a pathspec that
+    does not exist. Detect the short prefix instead of assuming the width.
     """
     dirty: list[str] = []
     for line in raw_output.splitlines():
         if len(line) < 4:
             continue
-        xy = line[:2]
+        if line[2] == " ":
+            xy, rest = line[:2], line[3:]
+        elif line[1] == " ":
+            xy, rest = " " + line[0], line[2:]
+        else:
+            continue
         if xy in ("??", "!!"):
             continue
-        rest = line[3:]
         if " -> " in rest:
             rest = rest.split(" -> ", 1)[1]
         dirty.append(rest.strip())

@@ -573,6 +573,14 @@ class CoordinatorState:
     # Sticky "the dev agent was told it inherited superseded work". Set when the
     # note is injected into a dev prompt, never cleared.
     workspace_inherited_work_surfaced_to_dev: bool = False
+    # Immutable snapshot of the file set this run changed against its base ref
+    # (#2347): ``{base_ref, head_ref, files: [{path, insertions, deletions,
+    # binary}]}``. Captured by ``changed_files.capture_changed_files`` at the
+    # last seam before the worktree and branch are destroyed, because landing
+    # removes both and the comparison cannot be recomputed afterwards. None
+    # means no comparison has been captured — distinct from a captured
+    # comparison whose ``files`` list is empty.
+    changed_files: dict[str, Any] | None = None
     dev_session_id: str | None = None
     pending_dev_transport_retry_count: int = 0
     pending_dev_transport_retry_events: list[dict[str, Any]] = field(default_factory=list)

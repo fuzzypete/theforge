@@ -204,6 +204,40 @@ The substrate evolves over the project's lifetime. The contract that keeps that 
 - Per-cycle reviewer attribution is recorded on the cycle (`reviews[*].resolved_by_reviewer`), not reconstructed from the per-invocation attempt log. A code-review parse retry supersedes the initial invocation's output and can be served by a different concrete version, and nothing in the attempt log says which of its entries the cycle ended up using. The cycle-denominated findings/cost fold and its version breakdown therefore read the same source (`meta.successful` + `meta.resolved_by_reviewer`) and cannot disagree.
 - `SUBSTRATE_SCHEMA_VERSION` is 8. Opening a version-7 substrate derives `invocation_identities` from each row's `raw_json`, so the new query surface — including `alias_resolution_timeline()`, behind `forge audits alias-drift` — covers already-indexed history. This is a DB-schema change only: no `CURRENT_RECORD_SCHEMA_VERSION` bump and no record-level migration helper, because the table is derived from record fields readers already parse.
 
+**Landed in #2347 (changed-file set per run):**
+
+- A run recorded what it cost and never what it changed, so spend could not be
+  attributed to code. Reconstructing the join afterwards from `git log` recovers
+  a small minority of it — a third of commits name more than one issue, so
+  commit-to-run attribution is ambiguous, and no parsing recovers what was never
+  recorded. The record now carries a top-level `changed_files` block:
+  `{base_ref, head_ref, files: [{path, insertions, deletions, binary}]}`.
+- The comparison is named by resolved SHAs, not by the base-branch ref, so it can
+  be re-derived from the record alone. The snapshot is captured at the
+  pre-cleanup seam (`coordinator.changed_files.capture_changed_files`, called
+  from `land_story` before the merge removes the worktree and deletes the
+  branch); a run that terminates before landing — escalated or failed, the runs
+  most worth attributing — is covered by a collection from the worktree it still
+  has. `null` means no comparison could be made and is deliberately distinct
+  from `{"files": []}`, a comparison that found nothing.
+- `CURRENT_RECORD_SCHEMA_VERSION` is 28 with reader-side helper
+  `_migrate_v27_to_v28`, which backfills `null` — an older run's file set is not
+  recoverable after the fact, and claiming it changed nothing would be a
+  fabrication.
+- `SUBSTRATE_SCHEMA_VERSION` is 9. The `audit_changed_files` table indexes the
+  block one row per `(run_id, path)` with an index on `path`, so per-file spend
+  is a join rather than a scan that deserializes every `raw_json`:
+
+  ```sql
+  SELECT c.path, COUNT(*) AS runs, SUM(r.total_cost_usd) AS cost_usd
+  FROM audit_changed_files c JOIN audit_records r ON r.run_id = c.run_id
+  GROUP BY c.path ORDER BY cost_usd DESC;
+  ```
+
+  `audit_substrate.runs_touching_path(conn, path)` is the same join for one file.
+  Opening a version-8 substrate derives the table from each row's `raw_json`, so
+  already-indexed records that carry the block are backfilled.
+
 **Writer-side guard (tracked in #1528):**
 
 - A CI check refuses a `schema_version` bump on the writer side without a matching migration-helper entry. This is the writer-side counterpart to #1522's reader-side dispatch; the two issues are sized to land independently.
