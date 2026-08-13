@@ -32,7 +32,10 @@ from theforge.cli import (
 from theforge.cli import hooks as hooks_module
 from theforge.cli.hooks import created_labels, static_issue_labels
 from theforge.cli.init_commands import _extract_forge_block
-from theforge.cli.provider_readiness import READINESS_STATUS_COST_UNAVAILABLE
+from theforge.cli.provider_readiness import (
+    READINESS_STATUS_COST_UNAVAILABLE,
+    READINESS_STATUS_UNVERIFIED,
+)
 from theforge.config import (
     DEFAULT_VALIDATION,
     AgentDef,
@@ -66,9 +69,14 @@ def _api_profile(
 def _make_forge_config(
     tmp_path: Path,
     review_pool: list[ModelProfile] | None = None,
+    *,
+    include_test_secrets: bool = False,
 ) -> ForgeConfig:
     if review_pool is None:
-        review_pool = [_api_profile("claude-reviewer"), _api_profile("codex-reviewer", "openai")]
+        review_pool = [
+            _api_profile("claude-reviewer"),
+            _api_profile("deepseek-reviewer", "deepseek", "deepseek-chat"),
+        ]
     return ForgeConfig(
         project="test",
         project_root=tmp_path,
@@ -78,27 +86,26 @@ def _make_forge_config(
             branch_pattern="feat/{slug}",
         ),
         validation=DEFAULT_VALIDATION,
-        dev_profile=ModelProfile(
-            name="dev",
-            cli="claude",
-            model="sonnet",
-            budget_usd=2.0,
-            timeout_seconds=300,
-            allowed_tools=("Read",),
-        ),
-        preflight_profile=ModelProfile(
-            name="preflight",
-            cli="claude",
-            model="sonnet",
-            budget_usd=0.5,
-            timeout_seconds=120,
-            allowed_tools=("Read",),
+        dev_profile=_api_profile("dev", provider="anthropic", model="claude-sonnet-4-6"),
+        preflight_profile=_api_profile(
+            "preflight",
+            provider="anthropic",
+            model="claude-sonnet-4-6",
         ),
         review_pool=review_pool,
         synthesis_profile=None,
         retry=RetryPolicy(),
         plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
         log=LogConfig(enabled=False),
+        secrets=(
+            {
+                "ANTHROPIC_API_KEY": "test-key",
+                "DEEPSEEK_API_KEY": "test-key",
+                "OPENAI_API_KEY": "test-key",
+            }
+            if include_test_secrets
+            else {}
+        ),
     )
 
 
@@ -118,7 +125,7 @@ def _make_pass_result(profile_name: str = "test") -> AgentResult:
 def _make_fail_result(profile_name: str = "test") -> AgentResult:
     return AgentResult(
         success=False,
-        output="AuthenticationError: invalid key",
+        output="provider returned malformed tool response",
         session_id=None,
         cost_usd=None,
         exit_code=1,
@@ -576,12 +583,15 @@ class TestCmdCheckProviders:
 
     def test_all_pass_exits_zero(self, tmp_path, capsys):
         """All profiles passing → exit code 0, table shows checkmarks."""
-        cfg = _make_forge_config(tmp_path)
+        cfg = _make_forge_config(tmp_path, include_test_secrets=True)
         args = _make_args(config=str(tmp_path / "forge.yaml"))
 
         side_effects = [
+            _make_pass_result("dev"),
+            _make_pass_result("preflight"),
             _make_pass_result("claude-reviewer"),
-            _make_pass_result("codex-reviewer"),
+            _make_pass_result("deepseek-reviewer"),
+            _make_pass_result("preflight"),
         ]
         with patch("theforge.cli.providers.load_config", return_value=cfg):
             with patch("theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects):
@@ -590,16 +600,20 @@ class TestCmdCheckProviders:
         assert rc == 0
         captured = capsys.readouterr()
         assert "✓" in captured.out
-        assert "2/2 passed" in captured.out
+        assert "5/5 passed" in captured.out
+        assert "declared transport:" not in captured.out
 
     def test_partial_fail_exits_one(self, tmp_path, capsys):
         """One profile failing → exit code 1, failure shown inline."""
-        cfg = _make_forge_config(tmp_path)
+        cfg = _make_forge_config(tmp_path, include_test_secrets=True)
         args = _make_args(config=str(tmp_path / "forge.yaml"))
 
         side_effects = [
+            _make_pass_result("dev"),
+            _make_pass_result("preflight"),
             _make_pass_result("claude-reviewer"),
-            _make_fail_result("codex-reviewer"),
+            _make_fail_result("deepseek-reviewer"),
+            _make_pass_result("preflight"),
         ]
         with patch("theforge.cli.providers.load_config", return_value=cfg):
             with patch("theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects):
@@ -608,11 +622,12 @@ class TestCmdCheckProviders:
         assert rc == 1
         captured = capsys.readouterr()
         assert "✗" in captured.out
-        assert "1/2 passed" in captured.out
+        assert "4/5 passed" in captured.out
+        assert "declared transport:" in captured.out
 
     def test_exception_counts_as_failure(self, tmp_path, capsys):
         """run_api_agent raising an exception → exit code 1, error shown inline."""
-        cfg = _make_forge_config(tmp_path)
+        cfg = _make_forge_config(tmp_path, include_test_secrets=True)
         args = _make_args(config=str(tmp_path / "forge.yaml"))
 
         def _boom(*_, **__):
@@ -629,7 +644,7 @@ class TestCmdCheckProviders:
 
     def test_profile_filter(self, tmp_path, capsys):
         """--profile <name> tests only the named profile."""
-        cfg = _make_forge_config(tmp_path)
+        cfg = _make_forge_config(tmp_path, include_test_secrets=True)
         args = _make_args(profile="claude-reviewer", config=str(tmp_path / "forge.yaml"))
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
@@ -646,7 +661,7 @@ class TestCmdCheckProviders:
 
     def test_profile_filter_unknown_exits_one(self, tmp_path):
         """--profile with unknown name → exit code 1, no API calls."""
-        cfg = _make_forge_config(tmp_path)
+        cfg = _make_forge_config(tmp_path, include_test_secrets=True)
         args = _make_args(profile="nonexistent", config=str(tmp_path / "forge.yaml"))
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
@@ -658,7 +673,7 @@ class TestCmdCheckProviders:
 
     def test_no_verdict_in_structured_data_counts_as_failure(self, tmp_path, capsys):
         """structured_data without 'verdict' key → failure."""
-        cfg = _make_forge_config(tmp_path)
+        cfg = _make_forge_config(tmp_path, include_test_secrets=True)
         args = _make_args(config=str(tmp_path / "forge.yaml"))
 
         bad_result = AgentResult(
@@ -698,27 +713,18 @@ class TestCmdCheckProviders:
                 branch_pattern="feat/{slug}",
             ),
             validation=DEFAULT_VALIDATION,
-            dev_profile=ModelProfile(
-                name="dev",
-                cli="claude",
-                model="sonnet",
-                budget_usd=2.0,
-                timeout_seconds=300,
-                allowed_tools=("Read",),
-            ),
-            preflight_profile=ModelProfile(
-                name="preflight",
-                cli="claude",
-                model="sonnet",
-                budget_usd=0.5,
-                timeout_seconds=120,
-                allowed_tools=("Read",),
+            dev_profile=_api_profile("dev", provider="anthropic", model="claude-sonnet-4-6"),
+            preflight_profile=_api_profile(
+                "preflight",
+                provider="anthropic",
+                model="claude-sonnet-4-6",
             ),
             review_pool=[shared, shared],
             synthesis_profile=None,
             retry=RetryPolicy(),
             plan_agent_review=PlanAgentReviewConfig.of(enabled=False),
             log=LogConfig(enabled=False),
+            secrets={"ANTHROPIC_API_KEY": "test-key"},
         )
         args = _make_args(config=str(tmp_path / "forge.yaml"))
 
@@ -730,10 +736,14 @@ class TestCmdCheckProviders:
                 rc = cmd_check_providers(args)
 
         assert rc == 0
-        assert mock_api.call_count == 1
+        assert mock_api.call_count == 4
 
     def test_tool_bearing_profile_is_probed_with_original_allowlist(self, tmp_path):
-        cfg = _make_forge_config(tmp_path, review_pool=[_api_profile("reviewer")])
+        cfg = _make_forge_config(
+            tmp_path,
+            review_pool=[_api_profile("reviewer")],
+            include_test_secrets=True,
+        )
         args = _make_args(config=str(tmp_path / "forge.yaml"))
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
@@ -744,12 +754,15 @@ class TestCmdCheckProviders:
                 rc = cmd_check_providers(args)
 
         assert rc == 0
-        assert mock_api.call_args.kwargs["profile"].allowed_tools == ("Read", "Grep")
+        reviewer_call = next(
+            call for call in mock_api.call_args_list if call.kwargs["profile"].name == "reviewer"
+        )
+        assert reviewer_call.kwargs["profile"].allowed_tools == ("Read", "Grep")
 
     def test_tool_bearing_agent_pool_failure_cannot_hide_behind_plain_probe(
         self, tmp_path, capsys
     ):
-        cfg = _make_forge_config(tmp_path, review_pool=[])
+        cfg = _make_forge_config(tmp_path, review_pool=[], include_test_secrets=True)
         cfg = ForgeConfig(
             **{
                 **cfg.__dict__,
@@ -781,11 +794,11 @@ class TestCmdCheckProviders:
         assert rc == 1
         captured = capsys.readouterr()
         assert "agent-dev" in captured.out
-        assert "0/5 passed" in captured.out
+        assert "0/8 passed" in captured.out
 
     def test_same_profile_can_render_distinct_role_rows(self, tmp_path, capsys):
         shared = _api_profile("shared")
-        cfg = _make_forge_config(tmp_path, review_pool=[shared])
+        cfg = _make_forge_config(tmp_path, review_pool=[shared], include_test_secrets=True)
         cfg = ForgeConfig(
             **{
                 **cfg.__dict__,
@@ -797,7 +810,13 @@ class TestCmdCheckProviders:
         with patch("theforge.cli.providers.load_config", return_value=cfg):
             with patch(
                 "theforge.cli.provider_readiness.run_api_agent",
-                side_effect=[_make_pass_result("shared"), _make_pass_result("shared")],
+                side_effect=[
+                    _make_pass_result("dev"),
+                    _make_pass_result("preflight"),
+                    _make_pass_result("shared"),
+                    _make_pass_result("shared"),
+                    _make_pass_result("preflight"),
+                ],
             ):
                 rc = cmd_check_providers(args)
 
@@ -805,10 +824,14 @@ class TestCmdCheckProviders:
         captured = capsys.readouterr()
         assert "review" in captured.out
         assert "plan-review" in captured.out
-        assert "2/2 passed" in captured.out
+        assert "5/5 passed" in captured.out
 
     def test_cost_unavailable_is_reported_and_fails(self, tmp_path, capsys):
-        cfg = _make_forge_config(tmp_path, review_pool=[_api_profile("reviewer")])
+        cfg = _make_forge_config(
+            tmp_path,
+            review_pool=[_api_profile("reviewer")],
+            include_test_secrets=True,
+        )
         args = _make_args(config=str(tmp_path / "forge.yaml"))
         unknown_cost = AgentResult(
             success=True,
@@ -828,7 +851,66 @@ class TestCmdCheckProviders:
         assert rc == 1
         captured = capsys.readouterr()
         assert READINESS_STATUS_COST_UNAVAILABLE in captured.out
-        assert "0/1 passed" in captured.out
+        assert "0/4 passed" in captured.out
+
+    def test_declared_api_failure_names_ready_cli_alternate(self, tmp_path, capsys):
+        cfg = _make_forge_config(
+            tmp_path,
+            review_pool=[_api_profile("openai-reviewer", "openai", "gpt-5.4")],
+            include_test_secrets=True,
+        )
+        args = _make_args(profile="openai-reviewer", config=str(tmp_path / "forge.yaml"))
+
+        with (
+            patch("theforge.cli.providers.load_config", return_value=cfg),
+            patch(
+                "theforge.cli.provider_readiness.run_api_agent",
+                return_value=_make_fail_result("openai-reviewer"),
+            ),
+            patch(
+                "theforge.cli.provider_readiness.run_agent",
+                return_value=AgentResult(
+                    success=True,
+                    output='{"verdict":"APPROVE","summary":"ok"}',
+                    session_id=None,
+                    cost_usd=0.003,
+                    exit_code=0,
+                    raw={},
+                    profile_name="openai-reviewer",
+                    structured_data={"verdict": "APPROVE", "summary": "ok"},
+                    transport_used="cli",
+                ),
+            ),
+            patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+        ):
+            rc = cmd_check_providers(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert "declared transport: api" in captured.out
+        assert "api      tool-structured" in captured.out
+        assert "cli      tool-structured" in captured.out
+        assert "ready alternate transport: cli" in captured.out
+
+    def test_unverified_alternate_transport_reason_is_rendered(self, tmp_path, capsys):
+        cfg = _make_forge_config(
+            tmp_path,
+            review_pool=[_api_profile("deepseek-reviewer", "deepseek", "deepseek-chat")],
+            include_test_secrets=True,
+        )
+        args = _make_args(profile="deepseek-reviewer", config=str(tmp_path / "forge.yaml"))
+
+        with patch("theforge.cli.providers.load_config", return_value=cfg):
+            with patch(
+                "theforge.cli.provider_readiness.run_api_agent",
+                return_value=_make_fail_result("deepseek-reviewer"),
+            ):
+                rc = cmd_check_providers(args)
+
+        assert rc == 1
+        captured = capsys.readouterr()
+        assert READINESS_STATUS_UNVERIFIED in captured.out
+        assert "No CLI runner for provider 'deepseek'" in captured.out
 
 
 # ── TestCmdInitHooks ──────────────────────────────────────────────────

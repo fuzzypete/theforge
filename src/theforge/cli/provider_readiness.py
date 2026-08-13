@@ -16,22 +16,29 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     ForgeConfig,
+    TransportSpec,
     resolve_preflight_tools,
+    transport_for,
 )
+from theforge.config.auth import check_agent_auth
+from theforge.config.models import mirror_fields_for_transport
 from theforge.config.profiles import iter_config_profiles, iter_plan_phase_profiles
 from theforge.config.types import ModelProfile
 from theforge.runners.api import run_api_agent
+from theforge.runners.cli import run_agent
 from theforge.runners.schema_utils import openai_function_tool_request_shape
 
 READINESS_STATUS_READY = "ready"
 READINESS_STATUS_FAILED = "failed"
 READINESS_STATUS_UNSUPPORTED = "unsupported"
+READINESS_STATUS_UNVERIFIED = "unverified"
 READINESS_STATUS_COST_UNAVAILABLE = "cost-unavailable"
 
 READINESS_STATUSES: tuple[str, ...] = (
     READINESS_STATUS_READY,
     READINESS_STATUS_FAILED,
     READINESS_STATUS_UNSUPPORTED,
+    READINESS_STATUS_UNVERIFIED,
     READINESS_STATUS_COST_UNAVAILABLE,
 )
 
@@ -44,6 +51,19 @@ _READINESS_PROMPT = (
     "and a 'summary' field with a one-line explanation."
 )
 
+_AUTH_FAILURE_HINTS: tuple[str, ...] = (
+    "authenticationerror",
+    "unauthorized",
+    "invalid key",
+    "invalid api key",
+    "api key",
+    "not logged in",
+    "login required",
+    "credentials",
+    "oauth",
+    "401",
+)
+
 
 @dataclass(frozen=True)
 class ReadinessProbe:
@@ -53,12 +73,18 @@ class ReadinessProbe:
     capability: str
     profile: ModelProfile
 
+    @property
+    def declared_transport_kind(self) -> str:
+        return self.profile.mode
+
 
 @dataclass(frozen=True)
-class ReadinessResult:
-    """Outcome of one readiness probe."""
+class ReadinessAttempt:
+    """Outcome of exercising one transport for a readiness probe."""
 
     probe: ReadinessProbe
+    attempted_transport_kind: str
+    declared_transport_kind: str
     elapsed: float
     status: str
     detail: str
@@ -68,9 +94,56 @@ class ReadinessResult:
     def ready(self) -> bool:
         return self.status == READINESS_STATUS_READY
 
+    @property
+    def is_declared_transport(self) -> bool:
+        return self.attempted_transport_kind == self.declared_transport_kind
+
+
+@dataclass(frozen=True)
+class ReadinessResult:
+    """Grouped readiness evidence for one declared profile/capability probe."""
+
+    probe: ReadinessProbe
+    attempts: tuple[ReadinessAttempt, ...]
+
+    @property
+    def declared_attempt(self) -> ReadinessAttempt:
+        for attempt in self.attempts:
+            if attempt.is_declared_transport:
+                return attempt
+        raise ValueError("readiness result is missing the declared transport attempt")
+
+    @property
+    def elapsed(self) -> float:
+        return self.declared_attempt.elapsed
+
+    @property
+    def status(self) -> str:
+        return self.declared_attempt.status
+
+    @property
+    def detail(self) -> str:
+        return self.declared_attempt.detail
+
+    @property
+    def outcome(self) -> AgentResult | Exception | None:
+        return self.declared_attempt.outcome
+
+    @property
+    def ready(self) -> bool:
+        return self.declared_attempt.ready
+
+    @property
+    def ready_alternate_transport_kinds(self) -> tuple[str, ...]:
+        return tuple(
+            attempt.attempted_transport_kind
+            for attempt in self.attempts
+            if not attempt.is_declared_transport and attempt.ready
+        )
+
 
 def build_readiness_probes(config: ForgeConfig) -> list[ReadinessProbe]:
-    """Derive the API capability probes production can actually dispatch."""
+    """Derive the capability probes production can actually dispatch."""
     probes: list[ReadinessProbe] = []
 
     for role, profile in iter_config_profiles(config):
@@ -90,17 +163,16 @@ def build_readiness_probes(config: ForgeConfig) -> list[ReadinessProbe]:
         probes.extend(_agent_role_probes(agent))
 
     deduped: list[ReadinessProbe] = []
-    seen: set[tuple[str, str, str, str, str | None, tuple[str, ...], str | None]] = set()
+    seen: set[tuple[str, str, str, str | None, str, str, tuple[str, ...], str | None]] = set()
     for probe in probes:
         profile = probe.profile
-        if profile.mode != "api":
-            continue
         key = (
             probe.role,
             probe.capability,
             profile.name,
+            profile.provider_family,
+            probe.declared_transport_kind,
             profile.model,
-            profile.provider,
             profile.allowed_tools,
             profile.phase,
         )
@@ -116,8 +188,67 @@ def run_readiness_probe(
     *,
     secrets: dict[str, str] | None,
 ) -> ReadinessResult:
-    """Exercise one capability probe and classify the outcome."""
-    profile = probe.profile
+    """Exercise one capability probe on its declared and alternate transports."""
+    attempts: list[ReadinessAttempt] = []
+    for transport_attempt in _transport_attempts_for_probe(probe):
+        if isinstance(transport_attempt, ReadinessAttempt):
+            attempts.append(transport_attempt)
+            continue
+        attempts.append(
+            _run_transport_attempt(
+                probe,
+                transport=transport_attempt,
+                secrets=secrets,
+            )
+        )
+    return ReadinessResult(probe=probe, attempts=tuple(attempts))
+
+
+def _transport_attempts_for_probe(probe: ReadinessProbe) -> list[TransportSpec | ReadinessAttempt]:
+    provider = probe.profile.provider_family
+    if not provider:
+        return [
+            _unverified_attempt(
+                probe,
+                attempted_transport_kind=probe.declared_transport_kind,
+                detail="not exercised: provider identity is unavailable for this profile",
+            )
+        ]
+
+    attempts: list[TransportSpec | ReadinessAttempt] = []
+    for transport_kind in (probe.declared_transport_kind, _alternate_transport_kind(probe)):
+        try:
+            attempts.append(transport_for(provider, transport_kind))
+        except ValueError as exc:
+            attempts.append(
+                _unverified_attempt(
+                    probe,
+                    attempted_transport_kind=transport_kind,
+                    detail=f"not exercised: {exc}",
+                )
+            )
+    return attempts
+
+
+def _alternate_transport_kind(probe: ReadinessProbe) -> str:
+    return "cli" if probe.declared_transport_kind == "api" else "api"
+
+
+def _run_transport_attempt(
+    probe: ReadinessProbe,
+    *,
+    transport: TransportSpec,
+    secrets: dict[str, str] | None,
+) -> ReadinessAttempt:
+    profile = _profile_for_transport(probe.profile, transport)
+    unavailable = _preflight_unverified_reason(profile, secrets)
+    if unavailable is not None:
+        return _unverified_attempt(
+            probe,
+            attempted_transport_kind=transport.kind,
+            detail=f"not exercised: {unavailable}",
+        )
+
     if (
         probe.capability == READINESS_CAPABILITY_TOOL_STRUCTURED
         and profile.provider == "openai"
@@ -125,8 +256,10 @@ def run_readiness_probe(
     ):
         tool_shape = openai_function_tool_request_shape(profile.model)
         if tool_shape.transport == "unsupported":
-            return ReadinessResult(
+            return ReadinessAttempt(
                 probe=probe,
+                attempted_transport_kind=transport.kind,
+                declared_transport_kind=probe.declared_transport_kind,
                 elapsed=0.0,
                 status=READINESS_STATUS_UNSUPPORTED,
                 detail=(
@@ -138,59 +271,234 @@ def run_readiness_probe(
     t0 = time.perf_counter()
     try:
         with tempfile.TemporaryDirectory(prefix="forge-check-providers-") as probe_dir:
-            result = run_api_agent(
+            result = _dispatch_probe_attempt(
                 prompt=_READINESS_PROMPT,
                 profile=profile,
                 working_dir=Path(probe_dir),
-                quiet=True,
                 secrets=secrets,
             )
     except Exception as exc:
-        return ReadinessResult(
+        elapsed = time.perf_counter() - t0
+        detail = _runtime_unverified_reason(profile, secrets=secrets, exc=exc)
+        if detail is not None:
+            return _unverified_attempt(
+                probe,
+                attempted_transport_kind=transport.kind,
+                detail=f"not exercised: {detail}",
+                elapsed=elapsed,
+                outcome=exc,
+            )
+        return ReadinessAttempt(
             probe=probe,
-            elapsed=time.perf_counter() - t0,
+            attempted_transport_kind=transport.kind,
+            declared_transport_kind=probe.declared_transport_kind,
+            elapsed=elapsed,
             status=READINESS_STATUS_FAILED,
             detail=f"{type(exc).__name__}: {exc}",
             outcome=exc,
         )
 
     elapsed = time.perf_counter() - t0
-    if not result.success:
-        short_err = (result.output or "unknown error")[:120]
-        return ReadinessResult(
-            probe=probe,
+
+    identity_mismatch = _identity_mismatch_reason(profile, result)
+    if identity_mismatch is not None:
+        return _unverified_attempt(
+            probe,
+            attempted_transport_kind=transport.kind,
+            detail=f"not exercised: {identity_mismatch}",
             elapsed=elapsed,
-            status=READINESS_STATUS_FAILED,
-            detail=short_err,
+            outcome=result,
+        )
+
+    if not result.success:
+        unverified_reason = _runtime_unverified_reason(profile, secrets=secrets, result=result)
+        short_err = (result.output or "unknown error")[:120]
+        return ReadinessAttempt(
+            probe=probe,
+            attempted_transport_kind=transport.kind,
+            declared_transport_kind=probe.declared_transport_kind,
+            elapsed=elapsed,
+            status=(
+                READINESS_STATUS_UNVERIFIED
+                if unverified_reason is not None
+                else READINESS_STATUS_FAILED
+            ),
+            detail=unverified_reason or short_err,
             outcome=result,
         )
 
     if _requires_structured_verdict(probe):
         payload = _structured_payload(result)
         if payload is None or "verdict" not in payload:
-            return ReadinessResult(
+            return ReadinessAttempt(
                 probe=probe,
+                attempted_transport_kind=transport.kind,
+                declared_transport_kind=probe.declared_transport_kind,
                 elapsed=elapsed,
                 status=READINESS_STATUS_FAILED,
                 detail="no valid verdict in structured output",
                 outcome=result,
             )
 
-    if not _is_local_endpoint(getattr(profile, "base_url", None)) and result.cost_usd is None:
-        return ReadinessResult(
-            probe=probe,
-            elapsed=elapsed,
-            status=READINESS_STATUS_COST_UNAVAILABLE,
-            detail="structured result returned but cost is unavailable",
-            outcome=result,
-        )
+    if result.cost_usd is None:
+        if transport.kind == "cli":
+            return _unverified_attempt(
+                probe,
+                attempted_transport_kind=transport.kind,
+                detail="not exercised: structured result returned but CLI cost is unavailable",
+                elapsed=elapsed,
+                outcome=result,
+            )
+        if not _is_local_endpoint(getattr(profile, "base_url", None)):
+            return ReadinessAttempt(
+                probe=probe,
+                attempted_transport_kind=transport.kind,
+                declared_transport_kind=probe.declared_transport_kind,
+                elapsed=elapsed,
+                status=READINESS_STATUS_COST_UNAVAILABLE,
+                detail="structured result returned but cost is unavailable",
+                outcome=result,
+            )
 
-    return ReadinessResult(
+    return ReadinessAttempt(
         probe=probe,
+        attempted_transport_kind=transport.kind,
+        declared_transport_kind=probe.declared_transport_kind,
         elapsed=elapsed,
         status=READINESS_STATUS_READY,
         detail=_success_suffix(profile=profile, result=result, elapsed=elapsed),
         outcome=result,
+    )
+
+
+def _dispatch_probe_attempt(
+    *,
+    prompt: str,
+    profile: ModelProfile,
+    working_dir: Path,
+    secrets: dict[str, str] | None,
+) -> AgentResult:
+    if profile.mode == "api":
+        return run_api_agent(
+            prompt=prompt,
+            profile=profile,
+            working_dir=working_dir,
+            quiet=True,
+            secrets=secrets,
+        )
+    return run_agent(
+        prompt=prompt,
+        profile=profile,
+        working_dir=working_dir,
+        quiet=True,
+        secrets=secrets,
+    )
+
+
+def _profile_for_transport(profile: ModelProfile, transport: TransportSpec) -> ModelProfile:
+    cli, provider = mirror_fields_for_transport(transport, profile.cli, profile.provider)
+    return dataclasses.replace(
+        profile,
+        transport=transport,
+        cli=cli,
+        provider=provider,
+        api_fallback=None,
+        fallback_models=(),
+    )
+
+
+def _preflight_unverified_reason(
+    profile: ModelProfile,
+    secrets: dict[str, str] | None,
+) -> str | None:
+    if profile.mode != "cli":
+        return None
+    ready, reason = check_agent_auth(
+        profile,
+        secrets,
+        include_sandbox_readiness=False,
+        include_credential_probe=True,
+    )
+    if ready:
+        return None
+    return reason
+
+
+def _runtime_unverified_reason(
+    profile: ModelProfile,
+    *,
+    secrets: dict[str, str] | None,
+    result: AgentResult | None = None,
+    exc: Exception | None = None,
+) -> str | None:
+    ready, reason = _safe_auth_check(profile, secrets)
+    if not ready:
+        return reason
+
+    if result is not None and result.startup_failure:
+        return (result.output or "startup failure")[:120]
+
+    message = ""
+    if result is not None:
+        message = result.output or ""
+    if exc is not None:
+        message = f"{type(exc).__name__}: {exc}"
+        if isinstance(exc, (ImportError, ModuleNotFoundError, FileNotFoundError)):
+            return message
+
+    lowered = message.lower()
+    if any(hint in lowered for hint in _AUTH_FAILURE_HINTS):
+        return message[:120]
+    return None
+
+
+def _safe_auth_check(
+    profile: ModelProfile,
+    secrets: dict[str, str] | None,
+) -> tuple[bool, str]:
+    try:
+        return check_agent_auth(
+            profile,
+            secrets,
+            include_sandbox_readiness=False,
+            include_credential_probe=True,
+        )
+    except ValueError as exc:
+        return (False, str(exc))
+
+
+def _identity_mismatch_reason(profile: ModelProfile, result: AgentResult) -> str | None:
+    expected_transport = profile.mode
+    observed_transport = result.transport_used or expected_transport
+    if observed_transport != expected_transport:
+        return (
+            "requested transport "
+            f"{expected_transport!r} but runner reported {observed_transport!r}"
+        )
+
+    expected_model = profile.model
+    observed_model = result.model_used or expected_model
+    if observed_model != expected_model:
+        return f"requested model {expected_model!r} but runner reported {observed_model!r}"
+    return None
+
+
+def _unverified_attempt(
+    probe: ReadinessProbe,
+    *,
+    attempted_transport_kind: str,
+    detail: str,
+    elapsed: float = 0.0,
+    outcome: AgentResult | Exception | None = None,
+) -> ReadinessAttempt:
+    return ReadinessAttempt(
+        probe=probe,
+        attempted_transport_kind=attempted_transport_kind,
+        declared_transport_kind=probe.declared_transport_kind,
+        elapsed=elapsed,
+        status=READINESS_STATUS_UNVERIFIED,
+        detail=detail,
+        outcome=outcome,
     )
 
 

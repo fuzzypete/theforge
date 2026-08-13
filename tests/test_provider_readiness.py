@@ -7,6 +7,7 @@ from theforge.cli.provider_readiness import (
     READINESS_CAPABILITY_TOOL_STRUCTURED,
     READINESS_STATUS_READY,
     READINESS_STATUS_UNSUPPORTED,
+    READINESS_STATUS_UNVERIFIED,
     build_readiness_probes,
     run_readiness_probe,
 )
@@ -42,6 +43,27 @@ def _api_profile(
         timeout_seconds=120,
         allowed_tools=allowed_tools,
         phase=phase,
+    )
+
+
+def _cli_profile(
+    name: str,
+    *,
+    cli: str = "claude",
+    model: str = "sonnet",
+    allowed_tools: tuple[str, ...] = ("Read", "Grep"),
+    phase: str | None = None,
+    fallback_models: tuple[str, ...] = (),
+) -> ModelProfile:
+    return ModelProfile(
+        name=name,
+        cli=cli,
+        model=model,
+        budget_usd=1.0,
+        timeout_seconds=120,
+        allowed_tools=allowed_tools,
+        phase=phase,
+        fallback_models=fallback_models,
     )
 
 
@@ -90,16 +112,35 @@ def _config(tmp_path: Path) -> ForgeConfig:
     )
 
 
-def _pass_result(profile_name: str = "test", *, cost_usd: float | None = 0.003) -> AgentResult:
+def _pass_result(
+    profile_name: str = "test",
+    *,
+    cost_usd: float | None = 0.003,
+    structured: bool = True,
+    transport_used: str | None = None,
+    model_used: str | None = None,
+) -> AgentResult:
+    structured_data = {"verdict": "APPROVE", "summary": "ok"} if structured else None
+    output = '{"verdict":"APPROVE","summary":"ok"}' if structured else "Capability probe complete."
     return AgentResult(
         success=True,
-        output='{"verdict":"APPROVE","summary":"ok"}',
+        output=output,
         session_id=None,
         cost_usd=cost_usd,
         exit_code=0,
         raw={},
         profile_name=profile_name,
-        structured_data={"verdict": "APPROVE", "summary": "ok"},
+        structured_data=structured_data,
+        transport_used=transport_used,
+        model_used=model_used,
+    )
+
+
+def _attempt(result, transport_kind: str):
+    return next(
+        attempt
+        for attempt in result.attempts
+        if attempt.attempted_transport_kind == transport_kind
     )
 
 
@@ -109,6 +150,7 @@ def test_build_readiness_probes_includes_config_plan_and_advisor_shapes(tmp_path
     probes = build_readiness_probes(config)
     labels = {(probe.role, probe.profile.name, probe.profile.phase) for probe in probes}
 
+    assert ("dev", "dev", "dev") in labels
     assert ("preflight", "preflight", "preflight") in labels
     assert ("review", "reviewer", "review") in labels
     assert ("plan", "plan", "plan") in labels
@@ -197,16 +239,23 @@ def test_run_readiness_probe_marks_openai_unsupported_shape_not_ready(tmp_path):
         probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
     )
 
-    with patch(
-        "theforge.cli.provider_readiness.openai_function_tool_request_shape",
-        return_value=OpenAIFunctionToolRequestShape("unsupported"),
+    with (
+        patch(
+            "theforge.cli.provider_readiness.openai_function_tool_request_shape",
+            return_value=OpenAIFunctionToolRequestShape("unsupported"),
+        ),
+        patch("theforge.cli.provider_readiness.run_api_agent") as mock_api,
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(transport_used="cli"),
+        ),
     ):
-        with patch("theforge.cli.provider_readiness.run_api_agent") as mock_api:
-            result = run_readiness_probe(probe, secrets={})
+        result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_UNSUPPORTED
     assert not result.ready
     mock_api.assert_not_called()
+    assert _attempt(result, "api").status == READINESS_STATUS_UNSUPPORTED
 
 
 def test_run_readiness_probe_marks_successful_probe_ready(tmp_path):
@@ -214,11 +263,18 @@ def test_run_readiness_probe_marks_successful_probe_ready(tmp_path):
         probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
     )
 
-    with patch("theforge.cli.provider_readiness.run_api_agent", return_value=_pass_result()):
+    with (
+        patch("theforge.cli.provider_readiness.run_api_agent", return_value=_pass_result()),
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(transport_used="cli"),
+        ),
+    ):
         result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_READY
     assert result.ready is True
+    assert {attempt.attempted_transport_kind for attempt in result.attempts} == {"api", "cli"}
 
 
 def test_run_readiness_probe_uses_throwaway_working_dir(tmp_path):
@@ -226,10 +282,16 @@ def test_run_readiness_probe_uses_throwaway_working_dir(tmp_path):
         probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
     )
 
-    with patch(
-        "theforge.cli.provider_readiness.run_api_agent",
-        return_value=_pass_result(),
-    ) as mock_api:
+    with (
+        patch(
+            "theforge.cli.provider_readiness.run_api_agent",
+            return_value=_pass_result(),
+        ) as mock_api,
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(transport_used="cli"),
+        ),
+    ):
         result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_READY
@@ -242,19 +304,137 @@ def test_run_readiness_probe_no_submit_phase_accepts_unstructured_success(tmp_pa
     probe = next(
         probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "preflight"
     )
-    unstructured = AgentResult(
-        success=True,
-        output="Capability probe completed successfully.",
-        session_id=None,
-        cost_usd=0.002,
-        exit_code=0,
-        raw={},
-        profile_name=probe.profile.name,
-        structured_data=None,
-    )
 
-    with patch("theforge.cli.provider_readiness.run_api_agent", return_value=unstructured):
+    with (
+        patch(
+            "theforge.cli.provider_readiness.run_api_agent",
+            side_effect=[
+                _pass_result(structured=False),
+                _pass_result(transport_used="api"),
+            ],
+        ),
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(structured=False, transport_used="cli"),
+        ),
+    ):
         result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_READY
     assert result.ready is True
+
+
+def test_run_readiness_probe_exercises_declared_cli_profile_and_api_alternate(tmp_path):
+    probe = next(
+        probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "dev"
+    )
+
+    with (
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(structured=False, transport_used="cli"),
+        ) as mock_cli,
+        patch(
+            "theforge.cli.provider_readiness.run_api_agent",
+            return_value=_pass_result(structured=False, transport_used="api"),
+        ) as mock_api,
+        patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+    ):
+        result = run_readiness_probe(probe, secrets={})
+
+    assert result.status == READINESS_STATUS_READY
+    assert {attempt.attempted_transport_kind for attempt in result.attempts} == {"cli", "api"}
+    assert mock_cli.call_args.kwargs["profile"].mode == "cli"
+    assert mock_cli.call_args.kwargs["profile"].api_fallback is None
+    assert mock_cli.call_args.kwargs["profile"].fallback_models == ()
+    assert mock_api.call_args.kwargs["profile"].mode == "api"
+    assert mock_api.call_args.kwargs["profile"].api_fallback is None
+    assert mock_api.call_args.kwargs["profile"].fallback_models == ()
+
+
+def test_run_readiness_probe_reports_unavailable_alternate_transport_unverified(tmp_path):
+    config = _config(tmp_path)
+    config = ForgeConfig(
+        **{
+            **config.__dict__,
+            "review_pool": [
+                _api_profile(
+                    "deepseek-reviewer",
+                    provider="deepseek",
+                    model="deepseek-chat",
+                    phase="review",
+                )
+            ],
+        }
+    )
+    probe = next(probe for probe in build_readiness_probes(config) if probe.role == "review")
+
+    with patch("theforge.cli.provider_readiness.run_api_agent", return_value=_pass_result()):
+        result = run_readiness_probe(probe, secrets={})
+
+    alternate = _attempt(result, "cli")
+    assert result.status == READINESS_STATUS_READY
+    assert alternate.status == READINESS_STATUS_UNVERIFIED
+    assert "No CLI runner for provider 'deepseek'" in alternate.detail
+
+
+def test_run_readiness_probe_rejects_transport_or_model_fallback_mismatch(tmp_path):
+    config = _config(tmp_path)
+    config = ForgeConfig(
+        **{
+            **config.__dict__,
+            "dev_profile": _cli_profile(
+                "dev",
+                model="sonnet",
+                fallback_models=("haiku",),
+            ),
+        }
+    )
+    probe = next(probe for probe in build_readiness_probes(config) if probe.role == "dev")
+
+    with (
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(
+                structured=False,
+                transport_used="api",
+                model_used="haiku",
+            ),
+        ),
+        patch(
+            "theforge.cli.provider_readiness.run_api_agent",
+            return_value=_pass_result(structured=False, transport_used="api"),
+        ),
+        patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+    ):
+        result = run_readiness_probe(probe, secrets={})
+
+    assert result.status == READINESS_STATUS_UNVERIFIED
+    assert "requested transport 'cli'" in result.detail
+
+
+def test_run_readiness_probe_marks_cli_cost_unavailable_unverified(tmp_path):
+    config = _config(tmp_path)
+    config = ForgeConfig(
+        **{
+            **config.__dict__,
+            "review_pool": [_cli_profile("review-cli", phase="review")],
+        }
+    )
+    probe = next(probe for probe in build_readiness_probes(config) if probe.role == "review")
+
+    with (
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(cost_usd=None, transport_used="cli"),
+        ),
+        patch(
+            "theforge.cli.provider_readiness.run_api_agent",
+            return_value=_pass_result(transport_used="api"),
+        ),
+        patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+    ):
+        result = run_readiness_probe(probe, secrets={})
+
+    assert result.status == READINESS_STATUS_UNVERIFIED
+    assert "CLI cost is unavailable" in result.detail
