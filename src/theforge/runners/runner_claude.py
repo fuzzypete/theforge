@@ -19,6 +19,7 @@ from theforge.agent_types import (
     COST_ESTIMATED,
     COST_PROVIDER_REPORTED,
     COST_UNKNOWN,
+    FAILURE_ENDED_WITHOUT_RESULT,
     AgentResult,
     ModelUsage,
 )
@@ -1085,9 +1086,17 @@ def _run_claude(
         _noresult_cost, _noresult_usage = _partial_cost_or_warn(
             lines, profile, kill_reason="ended without a result event"
         )
+        # Name the ending, the way the timeout and stuck-pattern branches above
+        # already do (#2427). Without a failure_code the only fact that reached
+        # the coordinator was the exit status — a signal number records what was
+        # done to the process, not what went wrong — so the agent's captured last
+        # words were dropped and a run that had stated its own cause was reported
+        # as unexplained. A clean exit that merely lacked a result event is not a
+        # failure and gets no code.
         return AgentResult(
             success=proc.returncode == 0,
             output=_noresult_output,
+            failure_code=(None if proc.returncode == 0 else FAILURE_ENDED_WITHOUT_RESULT),
             session_id=_get_claude_session_id(
                 "".join(lines) or stderr_text,
                 working_dir,
