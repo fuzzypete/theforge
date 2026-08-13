@@ -90,6 +90,35 @@ class TestRetryBudgetResetCycle:
         assert entry.total_count == 2  # cumulative
 
 
+class TestRetryBudgetReleaseUnused:
+    def test_release_unused_decrements_counters_and_log(self) -> None:
+        budget = RetryBudget(max_iterations=3)
+        budget.consume(review_cycle=0)
+        budget.consume(review_cycle=0)
+
+        assert budget.release_unused() is True
+        assert budget.cycle_count == 1
+        assert budget.total_count == 1
+        assert len(budget.consumption_log) == 1
+
+    def test_release_unused_updates_remaining(self) -> None:
+        budget = RetryBudget(max_iterations=2)
+        budget.consume(review_cycle=0)
+        budget.consume(review_cycle=0)
+
+        budget.release_unused()
+
+        assert budget.remaining() == 1
+
+    def test_release_unused_on_empty_budget_is_noop(self) -> None:
+        budget = RetryBudget(max_iterations=2)
+
+        assert budget.release_unused() is False
+        assert budget.cycle_count == 0
+        assert budget.total_count == 0
+        assert budget.consumption_log == []
+
+
 class TestRetryBudgetIsExhausted:
     def test_not_exhausted_when_below_max(self) -> None:
         budget = RetryBudget(max_iterations=3)

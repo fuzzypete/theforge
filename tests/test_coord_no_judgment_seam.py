@@ -18,6 +18,8 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import subprocess
+from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -30,6 +32,7 @@ from coord_test_helpers import (
     patch_gate_shell,
 )
 
+from theforge.agent_types import ModelUsage
 from theforge.config.types import ModelProfile, PlanAgentReviewConfig, PlanConfig
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.agent_failure import (
@@ -41,8 +44,9 @@ from theforge.coordinator.agent_failure import (
     produced_model_output,
 )
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.dev_phase import _run_dev_phase
 from theforge.coordinator.engine import run_task
-from theforge.coordinator.state import Phase
+from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.coordinator.trust_status import TRUST_TAINTED
 from theforge.runners import AgentResult
 
@@ -63,6 +67,43 @@ def _auth_failure(profile_name: str = "", cost_usd: float = 0.0) -> AgentResult:
         raw={},
         profile_name=profile_name,
     )
+
+
+def _generic_process_failure(profile_name: str = "dev") -> AgentResult:
+    return AgentResult(
+        success=False,
+        output="runner exited before agent output was available",
+        session_id=None,
+        cost_usd=0.0,
+        exit_code=1,
+        raw={},
+        profile_name=profile_name,
+    )
+
+
+def _transient_transport_failure(
+    *, profile_name: str = "dev", cost_usd: float | None = 0.42
+) -> AgentResult:
+    return AgentResult(
+        success=False,
+        output="http 429 rate limited",
+        session_id=None,
+        cost_usd=cost_usd,
+        exit_code=1,
+        raw={},
+        profile_name=profile_name,
+        failure_code="rate_limit",
+    )
+
+
+def _init_repo(path: Path) -> None:
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / ".gitignore").write_text(".forge/\nspec.md\n", encoding="utf-8")
+    (path / "README.md").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
 
 
 # ── Classification unit coverage ─────────────────────────────────────────
@@ -91,6 +132,38 @@ class TestClassification:
             profile_name="dev",
             failure_code="timeout",
             partial_output="I refactored the coordinator loop.",
+        )
+        assert produced_model_output(result) is True
+        assert classify_agent_failure(result, phase="DEV") is None
+
+    def test_zero_charge_process_failure_without_model_artifacts_is_process(self):
+        result = _generic_process_failure()
+        assert produced_model_output(result) is False
+        failure = classify_agent_failure(result, phase="DEV")
+        assert failure is not None
+        assert failure.category == "process"
+        assert failure.exit_code == 1
+
+    def test_zero_cost_local_model_usage_still_counts_as_model_output(self):
+        result = AgentResult(
+            success=False,
+            output="Agent loop terminated: max iterations reached after 3 iterations.",
+            session_id=None,
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="dev",
+            failure_code="max_iterations_reached",
+            model_usage=(
+                ModelUsage(
+                    model="codestral",
+                    input_tokens=100,
+                    output_tokens=25,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=0.0,
+                ),
+            ),
         )
         assert produced_model_output(result) is True
         assert classify_agent_failure(result, phase="DEV") is None
@@ -151,6 +224,82 @@ class TestClassification:
 
 
 class TestDevNoJudgment:
+    @pytest.mark.parametrize(
+        ("retry_cost", "expected_dev_usd"),
+        [
+            pytest.param(0.42, 0.42, id="measured"),
+            pytest.param(None, None, id="unmeasured"),
+        ],
+    )
+    @patch("theforge.coordinator.model_profiles_bridge.update_profiles_from_run")
+    @patch("theforge.coordinator.dev_phase.time.sleep", return_value=None)
+    @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False)
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_transport_retry_cost_survives_discounted_zero_charge_abort(
+        self,
+        mock_shell,
+        mock_dev,
+        mock_preflight,
+        mock_pool,
+        _mock_commits,
+        _mock_sleep,
+        mock_profiles,
+        tmp_path,
+        retry_cost,
+        expected_dev_usd,
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=_PREFLIGHT_PROCEED, cost_usd=0.05
+        )
+        mock_dev.side_effect = [
+            _transient_transport_failure(cost_usd=retry_cost),
+            _generic_process_failure("dev"),
+        ]
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is False
+        assert result.infrastructure_failure is True
+        assert result.unused_dev_iteration is True
+        assert len(result.state.dev_results) == 1
+        assert len(result.state.dev_durations) == 1
+        assert result.state.dev_results[0].failure_code == "rate_limit"
+        assert result.state.dev_results[0].cost_usd == retry_cost
+        assert result.state.dev_iteration_telemetry == []
+        assert result.state.budget.consumption_log == []
+        assert result.state.budget.total_count == 0
+        assert result.state.budget.cycle_count == 0
+        assert result.state.budget.remaining() == config.retry.max_dev_iterations
+        failure_extra = result.state.infrastructure_failure["extra"]
+        assert failure_extra["transport_retry_count"] == 1
+        assert len(failure_extra["transport_retry_events"]) == 1
+        assert failure_extra["transport_retry_events"][0]["iteration"] == 1
+        assert failure_extra["transport_retry_events"][0]["retry"] == 1
+        assert "rate_limit" in failure_extra["transport_retry_events"][0]["error"]
+        assert "429" in failure_extra["transport_retry_events"][0]["error"]
+
+        audit = generate_audit_log(config, task, result)
+        assert audit["iterations"]["usage_summary"]["dev"]["used"] == 0
+        assert audit["cost"]["dev_invocations"] == 1
+        assert audit["cost"]["dev_usd"] == expected_dev_usd
+        assert (
+            audit["agent_invocation"]["infrastructure_failure"]["extra"]["transport_retry_events"]
+            == failure_extra["transport_retry_events"]
+        )
+        assert mock_profiles.call_count == 0
+
     @patch("theforge.coordinator.model_profiles_bridge.update_profiles_from_run")
     @patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False)
     @patch("theforge.coordinator.review_pool.run_agent_pool")
@@ -188,10 +337,15 @@ class TestDevNoJudgment:
         # ...but the run is classified as an infrastructure abort, not as a
         # story whose framing an agent found invalid.
         assert result.infrastructure_failure is True
+        assert result.unused_dev_iteration is True
         assert result.state.error_type == "infrastructure_abort"
         assert result.state.infrastructure_failure["phase"] == "DEV"
         assert result.state.infrastructure_failure["category"] == CATEGORY_AUTH
         assert "no judgment was obtained" in (result.message or "")
+        assert result.state.dev_results == []
+        assert result.state.dev_durations == []
+        assert result.state.dev_iteration_telemetry == []
+        assert result.state.dev_iteration == 0
 
         # Nothing durable was written about the story.
         assert mock_profiles.call_count == 0
@@ -199,6 +353,8 @@ class TestDevNoJudgment:
         assert audit["trust_status"] == TRUST_TAINTED
         assert audit["agent_invocation"]["infrastructure_failure"]["category"] == CATEGORY_AUTH
         assert audit["agent_invocation"]["no_judgment_failures"][0]["phase"] == "DEV"
+        assert audit["iterations"]["usage_summary"]["dev"]["used"] == 0
+        assert audit["cost"]["dev_invocations"] == 0
 
         # End-to-end: once persisted, this run contributes no escalation memory.
         # (Spec fix-success criterion: the story must not appear in escalation
@@ -281,6 +437,96 @@ class TestDevNoJudgment:
         assert "escalating to avoid an empty-diff APPROVE" in (result.message or "")
         # A real (if failed) judgment still teaches the adaptive substrate.
         assert mock_profiles.call_count == 1
+
+    def test_preexisting_branch_work_unchanged_by_zero_charge_failure_aborts(self, tmp_path):
+        _init_repo(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/test-task"], cwd=tmp_path, check=True)
+        (tmp_path / "feature.txt").write_text("preserved work\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "preserved"], cwd=tmp_path, check=True)
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        state.adaptive_dev_max = config.retry.max_dev_iterations
+        state.budget.max_iterations = config.retry.max_dev_iterations
+        state.budget.consume(review_cycle=0)
+
+        with (
+            patch(
+                "theforge.coordinator.dev_phase.run_agent",
+                return_value=_generic_process_failure(),
+            ),
+            patch("theforge.coordinator.dev_phase.log_agent_result"),
+            patch_gate_shell(side_effect=_shell_with_gate(tmp_path, "PASS")),
+        ):
+            result = _run_dev_phase(
+                state,
+                config,
+                task,
+                "# Test Spec\n",
+                tmp_path,
+                "feat/test-task",
+                notify=False,
+                logger=None,
+            )
+
+        assert result is not None
+        assert result.infrastructure_failure is True
+        assert result.unused_dev_iteration is True
+        assert result.state.infrastructure_failure["category"] == "process"
+        assert "left the preserved branch unchanged" in (result.message or "")
+        assert result.state.dev_results == []
+        assert result.state.dev_iteration_telemetry == []
+
+    def test_preexisting_branch_work_with_model_output_is_not_reclassified_as_infrastructure(
+        self, tmp_path
+    ):
+        _init_repo(tmp_path)
+        subprocess.run(["git", "checkout", "-q", "-b", "feat/test-task"], cwd=tmp_path, check=True)
+        (tmp_path / "feature.txt").write_text("preserved work\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", "preserved"], cwd=tmp_path, check=True)
+
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = CoordinatorState()
+        state.adaptive_dev_max = config.retry.max_dev_iterations
+        state.budget.max_iterations = config.retry.max_dev_iterations
+        state.budget.consume(review_cycle=0)
+
+        with (
+            patch(
+                "theforge.coordinator.dev_phase.run_agent",
+                return_value=AgentResult(
+                    success=False,
+                    output="I checked the preserved branch state and it already contains the fix.",
+                    session_id="sess-1",
+                    cost_usd=0.5,
+                    exit_code=1,
+                    raw={},
+                    profile_name="dev",
+                ),
+            ),
+            patch("theforge.coordinator.dev_phase.log_agent_result"),
+            patch_gate_shell(side_effect=_shell_with_gate(tmp_path, "PASS")),
+        ):
+            result = _run_dev_phase(
+                state,
+                config,
+                task,
+                "# Test Spec\n",
+                tmp_path,
+                "feat/test-task",
+                notify=False,
+                logger=None,
+            )
+
+        assert result is None
+        assert state.infrastructure_failure is None
+        assert len(state.dev_results) == 1
+        assert state.dev_results[0].cost_usd == 0.5
+        assert state.dev_iteration_telemetry == []
 
 
 # ── PLAN_REVIEW: degraded pool vs. genuine rejection ─────────────────────

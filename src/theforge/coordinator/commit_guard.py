@@ -103,6 +103,37 @@ def _worktree_has_changes(workspace_path: Path) -> bool:
     return bool(proc.stdout.strip())
 
 
+def _worktree_changed_since_commit(workspace_path: Path, base_commit: str | None) -> bool | None:
+    """Return whether the worktree changed since ``base_commit``.
+
+    ``base_commit`` is the HEAD captured immediately before the dev iteration
+    started. Comparing against it answers a different question from
+    ``_has_commits_ahead_of_base``: whether *this invocation* changed the
+    workspace, even when preserved commits from an earlier run already leave the
+    branch ahead of base.
+
+    Returns ``None`` when git cannot answer safely (invalid/missing commit,
+    non-repo path, command failure) so callers can fail open to their broader
+    branch-level guard instead of falsely claiming "no changes".
+    """
+    if not isinstance(base_commit, str) or not base_commit.strip():
+        return None
+    try:
+        diff = subprocess.run(
+            ["git", "diff", "--quiet", base_commit, "HEAD"],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=10,
+        )
+    except Exception:  # noqa: BLE001
+        return None
+    if diff.returncode == 1:
+        return True
+    if diff.returncode != 0:
+        return None
+    return _worktree_has_changes(workspace_path)
+
+
 def _checkpoint_commit(workspace_path: Path, reason: str) -> bool:
     """Commit the worktree's uncommitted changes as a coordinator checkpoint.
 

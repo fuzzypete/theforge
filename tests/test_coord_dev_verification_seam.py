@@ -416,6 +416,66 @@ class TestDevLoopConsumesCoordinatorVerification:
         assert record["refusal_reason"] == "cancelled_at_iteration_end"
         assert state.pending_dev_verification_requests == state.dev_verification_requests
 
+    def test_discounted_no_judgment_abort_keeps_served_verification_records_visible(
+        self, tmp_path
+    ):
+        """A discounted DEV abort should not erase the verification it actually ran."""
+        from theforge.coordinator.dev_phase import _run_dev_phase
+        from theforge.coordinator.state import CoordinatorState
+
+        config = _config_with_verification(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+        state = CoordinatorState()
+        state.dev_iteration = 1
+
+        gate = _gate_side_effect(workspace, "PASS")
+
+        def shell(cmd, cwd, **kwargs):
+            if cmd == VERIFY_WATCH.command:
+                return (True, VERIFY_OUTPUT, 0, False)
+            return gate(cmd, cwd, **kwargs)
+
+        def run_agent(*, prompt, **kwargs):
+            request_dir = Path(_extract_dir(prompt, "requests"))
+            response_dir = Path(_extract_dir(prompt, "responses"))
+            tmp = request_dir / "r1.json.tmp"
+            tmp.write_text(json.dumps({"command": "verify-watch"}), encoding="utf-8")
+            tmp.rename(request_dir / "r1.json")
+            final = response_dir / "r1.json"
+            for _ in range(400):
+                if final.exists():
+                    break
+                _sleep()
+            assert final.exists(), "verification response was not written"
+            return dataclasses.replace(
+                _make_agent_result(
+                    success=False,
+                    output="runner exited before agent output was available",
+                ),
+                cost_usd=0.0,
+                session_id=None,
+                raw={},
+            )
+
+        with (
+            patch_gate_shell(side_effect=shell),
+            patch("theforge.coordinator.dev_phase.run_agent", side_effect=run_agent),
+            patch("theforge.coordinator.dev_phase.log_agent_result"),
+            patch("theforge.coordinator.dev_phase._has_commits_ahead_of_base", return_value=False),
+        ):
+            result = _run_dev_phase(
+                state, config, task, "# t\n", workspace, "feat/x", notify=False, logger=None
+            )
+
+        assert result is not None
+        assert result.infrastructure_failure is True
+        assert result.unused_dev_iteration is True
+        (record,) = state.dev_verification_requests
+        assert record["command_name"] == "verify-watch"
+        assert state.pending_dev_verification_requests == state.dev_verification_requests
+
     def test_project_declaring_nothing_sees_no_channel_and_no_prompt_section(self, tmp_path):
         config = _make_config(tmp_path)
         task = _make_task(tmp_path)
