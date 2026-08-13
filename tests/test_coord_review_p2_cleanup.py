@@ -23,7 +23,7 @@ from theforge.config import load_config
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.review_phase import _maybe_enter_p2_cleanup
 from theforge.coordinator.state import CoordinatorState, Phase, RetryReason
-from theforge.coordinator.validate_phase import _ValidateOutcome
+from theforge.coordinator.validate_phase import _ValidateOutcome, _blocking_finding_route
 from theforge.review import ReviewFinding, ReviewResult
 
 APPROVE_WITH_P2 = """\
@@ -307,6 +307,40 @@ class TestP2CleanupConfigLoading:
         with patch("importlib.import_module"):
             cfg = load_config(config_path)
         assert cfg.retry.p2_cleanup_max_iterations == 3
+
+
+class TestValidateCleanupRouting:
+    """Validate-phase seam tests for cleanup reserve and repair routing."""
+
+    def test_cleanup_breakage_uses_reserved_repair_iteration_when_budget_remains(
+        self, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.p2_cleanup_active = True
+        state.budget.max_iterations = 3
+        state.budget.cycle_count = 2
+        # remaining()==1: cleanup is active, but one in-cycle repair attempt remains.
+
+        route = _blocking_finding_route(state, config)
+
+        assert route.outcome == _ValidateOutcome.RETRY_DEV
+        assert route.reason == "dev_budget_remains"
+
+    def test_cleanup_breakage_escalates_when_reserved_repair_iteration_is_spent(
+        self, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.p2_cleanup_active = True
+        state.budget.max_iterations = 3
+        state.budget.cycle_count = 3
+        # remaining()==0: cleanup may not buy a new cycle once the reserved repair is gone.
+
+        route = _blocking_finding_route(state, config)
+
+        assert route.outcome == _ValidateOutcome.ESCALATE
+        assert route.reason == "p2_cleanup"
 
 
 class TestP2CleanupLoop:
