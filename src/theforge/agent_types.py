@@ -46,6 +46,21 @@ COST_PROVENANCE_VALUES = (
 # about computed-vs-billed rather than about the confidence within computed.
 COST_ESTIMATED_VALUES = (COST_ESTIMATED, COST_ESTIMATED_UNCONFIRMED)
 
+# ── Failure codes (#2427) ─────────────────────────────────────────────────
+FAILURE_ENDED_WITHOUT_RESULT = "agent_ended_without_result"
+"""The agent process ended before emitting its terminal result event.
+
+The shape this names: an agent stops producing output — a dev agent that
+delegates to a subagent and then announces it will wait to be notified is the
+observed case — and its process is later killed or exits nonzero without ever
+reporting a result. The stream it did produce is captured, so the run holds the
+agent's own last words about how it ended. Naming the ending gives every
+consumer downstream something to receive: without a code, the only fact that
+survived was the signal number, which records what was done to the process and
+not what went wrong, and a run whose cause was sitting in its own log was
+reported as unexplained.
+"""
+
 
 @dataclass(frozen=True)
 class ModelUsage:

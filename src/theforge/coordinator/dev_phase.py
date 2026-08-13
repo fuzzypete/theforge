@@ -15,6 +15,7 @@ from pathlib import Path
 import yaml
 
 from theforge import worker_budget as _worker_budget
+from theforge.agent_types import FAILURE_ENDED_WITHOUT_RESULT
 from theforge.config import ForgeConfig, apply_model_info
 from theforge.config.auth import sandbox_available_for_profile, sandbox_containment_mode
 from theforge.config.sandbox_capabilities import SandboxCapabilityError, resolve_capabilities
@@ -37,6 +38,7 @@ from theforge.traces import write_trace
 from .agent_failure import (
     CATEGORY_TRANSPORT,
     AgentInvocationFailure,
+    carries_agent_text,
     classify_agent_failure,
     mark_infrastructure_abort,
     record_invocation_failure,
@@ -106,6 +108,24 @@ _RUNNER_FAILURE_SIGNATURES: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 _SHELL_ERROR_PREFIXES = ("bash:", "sh:", "zsh:")
 _DEV_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS = 2
+
+# How much captured agent text a failure message quotes. Long enough to carry
+# the statement an agent ended on, short enough that the message stays usable as
+# a log line, a checkpoint commit subject, and the audit's outcome.message.
+_AGENT_TEXT_MAX_CHARS = 400
+
+# Forge-emitted phrase naming an ``agent_ended_without_result`` ending (#2427).
+# Sprint RCA matches it when a run's per-iteration telemetry is unavailable —
+# keep it in sync with ``sprint.rca._ENDED_WITHOUT_RESULT_PHRASE``.
+ENDED_WITHOUT_RESULT_PHRASE = (
+    "stopped producing output and its process ended without a result event"
+)
+
+# Marker introducing the captured agent text inside that message. RCA reads it
+# to quote the agent's words rather than the sentence wrapped around them —
+# keep it in sync with ``sprint.rca._LAST_SAID_MARKER``.
+LAST_SAID_MARKER = "it last said: "
+
 _TRANSIENT_DEV_ERROR_PATTERNS = (
     "rate limit",
     "rate-limited",
@@ -335,6 +355,64 @@ def _summarize_dev_transport_failure(result: object) -> str:
     if output:
         parts.append(output[:200])
     return ": ".join((parts[0], " | ".join(parts[1:]))) if len(parts) > 1 else parts[0]
+
+
+def _clip_agent_text(output: str | None) -> str:
+    """One-line, length-capped rendering of runner output for a failure message."""
+    text = " ".join(str(output or "").split())
+    if len(text) > _AGENT_TEXT_MAX_CHARS:
+        text = text[:_AGENT_TEXT_MAX_CHARS].rstrip() + "…"
+    return text
+
+
+def _captured_agent_text(result: object) -> str | None:
+    """Return the agent text a failed invocation left behind, or ``None`` (#2427).
+
+    Only real agent words: a runner marker standing in for output that never
+    existed (``TIMEOUT: ...``, ``CLAUDE_STREAM_NO_TEXT: ...``) is a statement by
+    the runner about the process, and recording one as what the agent said would
+    describe a silent run as having spoken.
+    """
+    from theforge.agent_types import AgentResult as _AgentResult  # noqa: PLC0415
+
+    if not isinstance(result, _AgentResult) or result.success:
+        return None
+    if not carries_agent_text(result.output):
+        return None
+    return _clip_agent_text(result.output)
+
+
+def _describe_dev_failure(result: object, *, is_timeout: bool) -> str:
+    """Name a failed dev invocation the way the run already recorded it (#2427).
+
+    The exit status records what was done to the process, not what went wrong,
+    so it is the last resort rather than the default. Two failures arrive
+    already explained and are reported in those words:
+
+    * a timeout, whose runner output states the limit that was exceeded;
+    * an agent that ended without a result event, whose captured stream holds
+      the agent's own last words about how it stopped.
+
+    An ending the run cannot account for still reads ``exit=<code>`` — the
+    distinction between "the run stated why it ended" and "the run has no
+    recorded cause" is exactly what a caller downstream needs to keep, and a
+    runner marker standing in for text that never existed is not a statement.
+    """
+    from theforge.agent_types import AgentResult as _AgentResult  # noqa: PLC0415
+
+    if not isinstance(result, _AgentResult):
+        raise TypeError(f"Expected AgentResult, got {type(result)}")
+    exit_detail = f"exit={result.exit_code}"
+    if is_timeout:
+        # The runner's own words state the limit that was exceeded. They are a
+        # marker rather than agent text, and they are still the explanation.
+        return _clip_agent_text(result.output) or exit_detail
+    captured = _captured_agent_text(result)
+    if captured and result.failure_code == FAILURE_ENDED_WITHOUT_RESULT:
+        return (
+            f"{exit_detail}: the agent {ENDED_WITHOUT_RESULT_PHRASE}; {LAST_SAID_MARKER}{captured}"
+        )
+    return exit_detail
 
 
 def _dev_transport_retry_backoff_seconds(retry_count: int) -> int:
@@ -1526,11 +1604,7 @@ def _run_dev_phase(
         # (e.g. "TIMEOUT: Agent exceeded 900s limit"), surface that instead of
         # the raw exit code so the operator is not left to reconstruct a fact
         # the system already had.
-        _failure_detail = (
-            dev_result.output.strip()
-            if _is_timeout and dev_result.output and dev_result.output.strip()
-            else f"exit={dev_result.exit_code}"
-        )
+        _failure_detail = _describe_dev_failure(dev_result, is_timeout=_is_timeout)
         _log_verbose(f"Dev agent failed ({_failure_detail})")
         # ── Checkpoint-commit stranded work (#1746) ──────────────────────
         # A killed/failed dev iteration may leave correct work as uncommitted
@@ -1721,6 +1795,11 @@ def _run_dev_phase(
                 workspace_path,
                 max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
                 gate_result="DEV_FAILURE",
+                # What the agent last said, recorded as its own field rather than
+                # left only inside the sentence built around it (#2427). Sprint
+                # RCA quotes it, so the operator reads the run's stated ending
+                # without opening the dev-iteration log.
+                runner_failure_summary=_captured_agent_text(dev_result),
             )
             _log(f"✗ ESCALATE   {state.error}")
             if logger:
