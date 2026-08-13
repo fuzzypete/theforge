@@ -13,7 +13,8 @@ from theforge.cli.provider_readiness import (
 )
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
-from theforge.runners.api import run_api_agent as run_api_agent
+
+_MAX_READINESS_WORKERS = 4
 
 
 def cmd_check_providers(args: object) -> int:
@@ -41,12 +42,18 @@ def cmd_check_providers(args: object) -> int:
             )
             return 1
 
-    print(f"[check-providers] forge.yaml: {len(probes)} capability probe(s) found\n")
+    max_workers = min(len(probes), _MAX_READINESS_WORKERS) or 1
+    print(
+        "[check-providers] "
+        "forge.yaml: "
+        f"{len(probes)} capability probe(s) found; "
+        f"running up to {max_workers} at a time\n"
+    )
 
     working_dir = config_path.parent
 
     results = []
-    with ThreadPoolExecutor(max_workers=len(probes) or 1) as pool:
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(
                 run_readiness_probe,

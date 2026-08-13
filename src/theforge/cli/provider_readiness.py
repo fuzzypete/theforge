@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,6 +16,7 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     ForgeConfig,
+    resolve_preflight_tools,
 )
 from theforge.config.profiles import iter_config_profiles, iter_plan_phase_profiles
 from theforge.config.types import ModelProfile
@@ -138,13 +140,14 @@ def run_readiness_probe(
 
     t0 = time.perf_counter()
     try:
-        result = run_api_agent(
-            prompt=_READINESS_PROMPT,
-            profile=profile,
-            working_dir=working_dir,
-            quiet=True,
-            secrets=secrets,
-        )
+        with tempfile.TemporaryDirectory(prefix="forge-check-providers-") as probe_dir:
+            result = run_api_agent(
+                prompt=_READINESS_PROMPT,
+                profile=profile,
+                working_dir=Path(probe_dir),
+                quiet=True,
+                secrets=secrets,
+            )
     except Exception as exc:
         return ReadinessResult(
             probe=probe,
@@ -165,15 +168,16 @@ def run_readiness_probe(
             outcome=result,
         )
 
-    payload = _structured_payload(result)
-    if payload is None or "verdict" not in payload:
-        return ReadinessResult(
-            probe=probe,
-            elapsed=elapsed,
-            status=READINESS_STATUS_FAILED,
-            detail="no valid verdict in structured output",
-            outcome=result,
-        )
+    if _requires_structured_verdict(probe):
+        payload = _structured_payload(result)
+        if payload is None or "verdict" not in payload:
+            return ReadinessResult(
+                probe=probe,
+                elapsed=elapsed,
+                status=READINESS_STATUS_FAILED,
+                detail="no valid verdict in structured output",
+                outcome=result,
+            )
 
     if not _is_local_endpoint(getattr(profile, "base_url", None)) and result.cost_usd is None:
         return ReadinessResult(
@@ -194,6 +198,7 @@ def run_readiness_probe(
 
 
 def _probe_for_profile(role: str, profile: ModelProfile) -> ReadinessProbe:
+    profile = _project_probe_profile(role, profile)
     allowed_tools = tuple(profile.allowed_tools or ())
     capability = (
         READINESS_CAPABILITY_TOOL_STRUCTURED
@@ -240,6 +245,19 @@ def _agent_role_probes(agent: object) -> list[ReadinessProbe]:
             _agent_to_profile(agent, role="review", allowed_tools=review_tools),
         ),
     ]
+
+
+def _project_probe_profile(role: str, profile: ModelProfile) -> ModelProfile:
+    if role != "agent-dev":
+        return profile
+    return dataclasses.replace(
+        profile,
+        allowed_tools=resolve_preflight_tools(profile.allowed_tools),
+    )
+
+
+def _requires_structured_verdict(probe: ReadinessProbe) -> bool:
+    return probe.profile.phase not in {"dev", "preflight"}
 
 
 def _structured_payload(result: AgentResult) -> dict | None:

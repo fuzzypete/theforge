@@ -165,6 +165,7 @@ def test_build_readiness_probes_projects_agent_pool_roles_with_tools(tmp_path):
         "agent-code-review",
     }
     assert all(agent_probes[role].profile.allowed_tools for role in agent_probes)
+    assert agent_probes["agent-dev"].profile.allowed_tools == ("Read", "Glob", "Grep")
     assert agent_probes["agent-dev"].capability == READINESS_CAPABILITY_TOOL_STRUCTURED
     assert agent_probes["agent-planner"].profile.phase == "plan"
     assert agent_probes["agent-plan-review"].profile.phase == "plan_review"
@@ -195,6 +196,45 @@ def test_run_readiness_probe_marks_successful_probe_ready(tmp_path):
     )
 
     with patch("theforge.cli.provider_readiness.run_api_agent", return_value=_pass_result()):
+        result = run_readiness_probe(probe, working_dir=tmp_path, secrets={})
+
+    assert result.status == READINESS_STATUS_READY
+    assert result.ready is True
+
+
+def test_run_readiness_probe_uses_throwaway_working_dir(tmp_path):
+    probe = next(
+        probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
+    )
+
+    with patch(
+        "theforge.cli.provider_readiness.run_api_agent",
+        return_value=_pass_result(),
+    ) as mock_api:
+        result = run_readiness_probe(probe, working_dir=tmp_path, secrets={})
+
+    assert result.status == READINESS_STATUS_READY
+    called_dir = mock_api.call_args.kwargs["working_dir"]
+    assert called_dir != tmp_path
+    assert called_dir.name.startswith("forge-check-providers-")
+
+
+def test_run_readiness_probe_no_submit_phase_accepts_unstructured_success(tmp_path):
+    probe = next(
+        probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "preflight"
+    )
+    unstructured = AgentResult(
+        success=True,
+        output="Capability probe completed successfully.",
+        session_id=None,
+        cost_usd=0.002,
+        exit_code=0,
+        raw={},
+        profile_name=probe.profile.name,
+        structured_data=None,
+    )
+
+    with patch("theforge.cli.provider_readiness.run_api_agent", return_value=unstructured):
         result = run_readiness_probe(probe, working_dir=tmp_path, secrets={})
 
     assert result.status == READINESS_STATUS_READY
