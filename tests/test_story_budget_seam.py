@@ -1216,7 +1216,7 @@ class TestTheSeatedReviewReservationIsHeldAcrossPhases:
     later dev attempt is refused once the rest of the allocation is gone.
     """
 
-    def _config(self, tmp_path: Path):
+    def _config(self, tmp_path: Path, *, max_dev_iterations: int = 3):
         from coord_test_helpers import _make_config, _make_review_profile
 
         from theforge.config.types import AssignmentConfig, RetryPolicy
@@ -1231,7 +1231,7 @@ class TestTheSeatedReviewReservationIsHeldAcrossPhases:
             review_pool=[_make_review_profile("openai-gpt-5.5-cli", budget_usd=1.01)],
             synthesis_profile=None,
             retry=RetryPolicy(
-                max_dev_iterations=3,
+                max_dev_iterations=max_dev_iterations,
                 max_review_cycles=5,
                 max_dev_iterations_cap=6,
                 max_review_cycles_cap=5,
@@ -1584,7 +1584,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
     stay protected, and the run audit shows what was let go.
     """
 
-    def _config(self, tmp_path: Path):
+    def _config(self, tmp_path: Path, *, max_dev_iterations: int = 3):
         from coord_test_helpers import _make_config, _make_review_profile
 
         from theforge.config.types import AssignmentConfig, RetryPolicy
@@ -1596,7 +1596,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
             review_pool=[_make_review_profile("openai-gpt-5.5-cli", budget_usd=1.01)],
             synthesis_profile=None,
             retry=RetryPolicy(
-                max_dev_iterations=3,
+                max_dev_iterations=max_dev_iterations,
                 max_review_cycles=5,
                 max_dev_iterations_cap=6,
                 max_review_cycles_cap=5,
@@ -1638,6 +1638,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         review_output: str | None = None,
         human_decision: tuple[str, str | None] | None = None,
         zero_findings_stop: int = 0,
+        max_dev_iterations: int = 3,
     ):
         """Drive DEV → VALIDATE → REVIEW round the loop the review verdict picks.
 
@@ -1660,7 +1661,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         from theforge.coordinator.validate_phase import _ValidateOutcome
 
         review_output = APPROVE_WITH_P2 if review_output is None else review_output
-        config = self._config(tmp_path)
+        config = self._config(tmp_path, max_dev_iterations=max_dev_iterations)
         if zero_findings_stop:
             config = dataclasses.replace(
                 config,
@@ -1818,38 +1819,53 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         assert state.allocation_exhausted["reserved_review_remaining_usd"] == 1.01
         assert state.allocation_exhausted["reserved_review_released"] is True
 
-    def test_a_retained_cycle_that_runs_funds_the_next_cleanup_attempt(
+    def test_a_retained_cycle_that_runs_releases_the_reserve_when_cleanup_is_declined(
         self, tmp_path: Path
     ) -> None:
-        """The retained cycle is protected until it runs — and not one dollar longer.
+        """Once the retained review runs, the reserve is settled if cleanup stops.
 
-        Two cleanup passes: the first release retains one $1.01 cycle, that cycle
-        then actually runs, and the dev attempt after it must be funded from the
-        allocation the retained cycle no longer needs. Holding the retained
-        figure flat refuses this attempt against money already spent.
+        Under the reserve rule, the first cleanup pass may consume the second of
+        three dev iterations, leaving one repair iteration. The re-review spends
+        the retained $1.01 cycle, and the next APPROVE+P2 declines cleanup on
+        reserve grounds rather than spending the last repair iteration. That
+        decline must still re-release the reservation to zero instead of
+        continuing to withhold the already-spent retained cycle.
         """
         state, result, dev_calls = self._run_loop(tmp_path, dev_costs=[6.95, 2.53])
 
-        # Three dev dispatches: the seated one and two cleanup passes.
-        assert len(dev_calls) == 3
-        assert result is None
+        assert len(dev_calls) == 2
+        assert result is not None
+        assert result.phase == Phase.DONE
         assert state.allocation_exhausted is None
         assert state.review_cycle == 2
         assert state.total_review_cost_measured == 2.02
-        # Total spend at this dispatch is $11.50 of a $12.00 allocation, so the
-        # story genuinely has money left — but only once the retained cycle's
-        # $1.01 stops being withheld: holding it flat leaves $12.00 - $11.50 -
-        # $1.01 = -$0.51 and refuses the attempt.
-        assert dev_calls[2] == 11.50
-        assert dev_calls[2] < 12.00
+        assert state.p2_cleanup_audit[-1]["action"] == "skip_budget_reserve"
 
         reservation = state.review_funding_reservation
         assert reservation["release_count"] == 2
+        assert reservation["release_reason"] == "approve_final"
         assert reservation["retained_review_usd"] == 0.0
         assert reservation["review_observed_at_release_usd"] == 2.02
         assert sb.remaining_reserved_review_usd(reservation, 2.02) == 0.0
-        # The audit shows the re-release, not the first one.
         assert state.adaptive_limits_audit["review_funding_reservation"]["release_count"] == 2
+
+    def test_a_rereleased_retained_cycle_funds_the_next_dev_dispatch(self, tmp_path: Path) -> None:
+        """The retained re-review dollar is returned in time to fund the repair attempt."""
+        state, result, dev_calls = self._run_loop(
+            tmp_path,
+            dev_costs=[6.95, 2.53],
+            max_dev_iterations=4,
+        )
+
+        assert result is None
+        assert len(dev_calls) == 3
+        assert dev_calls[-1] == 11.50
+        assert state.p2_cleanup_active is True
+        assert state.p2_cleanup_iterations == 2
+        reservation = state.review_funding_reservation
+        assert reservation["release_count"] == 2
+        assert reservation["release_reason"] == "approve_p2_cleanup"
+        assert reservation["retained_review_usd"] == 0.0
 
     def test_a_finalized_approval_releases_the_whole_reserve(self, tmp_path: Path) -> None:
         """The approve_final path, end to end: nothing is reachable, nothing is held.
@@ -1935,7 +1951,10 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         # Identical APPROVE+P2 cycles: cycles 2 and 3 bring zero new findings,
         # so the run converges and finalizes through early termination.
         state, result, dev_calls = self._run_loop(
-            tmp_path, dev_costs=[1.00, 0.50, 0.50], zero_findings_stop=2
+            tmp_path,
+            dev_costs=[1.00, 0.50, 0.50],
+            zero_findings_stop=2,
+            max_dev_iterations=4,
         )
 
         assert result is not None
