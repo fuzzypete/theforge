@@ -6,6 +6,7 @@ Covers: prompt routing (fix vs dev prompt) and session resume/carry-through.
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -813,6 +814,58 @@ class TestCoordinatorSessionResume:
         assert result.success is True
         assert dev_session_ids == [None, "sess-timeout"]
         assert result.state.dev_session_id == "sess-resumed"
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_failed_textless_dev_result_does_not_poison_resume_session(
+        self, mock_shell, mock_agent, mock_preflight, mock_pool, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        failed_result = AgentResult(
+            success=False,
+            output=(
+                "CLAUDE_STREAM_NO_TEXT: reason=result_missing_text subtype=error_during_execution"
+            ),
+            session_id="sess-poisoned",
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="dev",
+        )
+        resumed_result = _make_agent_result(
+            success=True,
+            output="Implemented after fresh session.",
+            session_id="sess-fresh",
+            profile_name="dev",
+        )
+        dev_session_ids: list[str | None] = []
+
+        def fake_run_agent(prompt, profile, working_dir, session_id=None, **kwargs):
+            dev_session_ids.append(session_id)
+            if len(dev_session_ids) == 1:
+                return failed_result
+            return resumed_result
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_preflight.return_value = _PREFLIGHT_RESULT
+        mock_agent.side_effect = fake_run_agent
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert dev_session_ids == [None, None]
+        assert result.state.dev_session_id == "sess-fresh"
+        sessions_data = json.loads((workspace / ".forge/sessions.json").read_text())
+        assert sessions_data["dev_session_id"] == "sess-fresh"
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.preflight_flow.run_agent")
