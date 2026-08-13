@@ -616,6 +616,63 @@ class TestReviewPromptEvidenceRules:
         assert "active P2 policy (`in_scope`)" in prompt
 
 
+class TestReviewPromptGateEvidence:
+    def test_review_prompt_surfaces_authoritative_gate_verdict_and_commit(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            authoritative_gate_decision="PASS",
+            authoritative_gate_commit="abc1234deadbeef",
+        )
+
+        assert "Authoritative gate verdict: PASS" in prompt
+        assert "Authoritative gate commit: abc1234deadbeef" in prompt
+        assert "coordinator's authoritative gate verdict for the reviewed HEAD" in prompt
+
+    def test_review_prompt_forbids_redundant_full_gate_when_evidence_matches(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+
+        assert "Full-gate ownership is coordinator-only" in prompt
+        assert "Do NOT run the full" in prompt
+        assert "authoritative gate yourself" in prompt
+        assert "supplied `Authoritative gate commit`" in prompt
+        assert "still matches the HEAD you are reviewing" in prompt
+
+    def test_review_prompt_allows_refresh_only_when_gate_evidence_missing_or_stale(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+
+        assert "You MAY run the full authoritative gate only when the supplied gate" in prompt
+        assert "`Authoritative gate commit` is `UNAVAILABLE`" in prompt
+        assert "`git rev-parse HEAD`" in prompt
+        assert "note the mismatch in `summary`" in prompt
+
+    def test_review_prompt_handles_current_non_pass_gate_without_rerunning(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            authoritative_gate_decision="SKIPPED",
+            authoritative_gate_commit="abc1234deadbeef",
+        )
+
+        assert "authoritative verdict is a non-`PASS` value such as `FAIL`," in prompt
+        assert "`ERROR`, or `SKIPPED`" in prompt
+        assert "do NOT rerun the full gate" in prompt
+        review_on_merits = (
+            "Review the diff on\n          its merits" in prompt
+            or "Review the diff on its merits" in prompt
+        )
+        assert review_on_merits
+        assert "say so explicitly in `summary`" in prompt
+
+
 class TestNotesConventionInReviewPrompt:
     """Verify review prompt includes Notes guidance."""
 
