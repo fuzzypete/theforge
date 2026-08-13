@@ -705,6 +705,43 @@ class TestCmdCheckProviders:
         assert mock_api.call_count == 5
         mock_cli.assert_not_called()
 
+    def test_declared_only_skips_alternate_api_probe_for_cli_declared_profile(self, tmp_path):
+        cfg = _make_forge_config(
+            tmp_path,
+            review_pool=[_cli_profile("review-ghaw", cli="ghaw", model="sonnet")],
+            include_test_secrets=True,
+        )
+        args = _make_args(
+            profile="review-ghaw",
+            config=str(tmp_path / "forge.yaml"),
+            declared_only=True,
+        )
+
+        with (
+            patch("theforge.cli.providers.load_config", return_value=cfg),
+            patch(
+                "theforge.cli.provider_readiness.run_agent",
+                return_value=AgentResult(
+                    success=True,
+                    output='{"verdict":"APPROVE","summary":"ok"}',
+                    session_id=None,
+                    cost_usd=0.003,
+                    exit_code=0,
+                    raw={},
+                    profile_name="review-ghaw",
+                    structured_data={"verdict": "APPROVE", "summary": "ok"},
+                    transport_used="cli",
+                ),
+            ) as mock_cli,
+            patch("theforge.cli.provider_readiness.run_api_agent") as mock_api,
+            patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+        ):
+            rc = cmd_check_providers(args)
+
+        assert rc == 0
+        assert mock_cli.call_count == 1
+        mock_api.assert_not_called()
+
     def test_no_verdict_in_structured_data_counts_as_failure(self, tmp_path, capsys):
         """structured_data without 'verdict' key → failure."""
         cfg = _make_forge_config(tmp_path, include_test_secrets=True)
