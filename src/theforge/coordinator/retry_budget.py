@@ -52,6 +52,15 @@ class RetryBudget:
             )
         )
 
+    def release_unused(self) -> bool:
+        """Undo the most recent consume() when that reserved slot was never used."""
+        if not self.consumption_log or self.total_count <= 0:
+            return False
+        self.consumption_log.pop()
+        self.total_count = max(0, self.total_count - 1)
+        self.cycle_count = max(0, self.cycle_count - 1)
+        return True
+
     def reset_cycle(self) -> None:
         """Zero the per-cycle counter. Call when a new review cycle starts."""
         self.cycle_count = 0

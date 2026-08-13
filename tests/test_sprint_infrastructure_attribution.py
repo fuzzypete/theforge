@@ -108,3 +108,54 @@ def test_advisory_persistence_failure_classifies_as_shared_infrastructure(
     actions = " ".join(story["recommended_next_actions"])
     assert "forge diagnose" not in actions
     assert "shared run infrastructure" in actions
+
+
+def test_infrastructure_abort_suppresses_iteration_budget_advice(tmp_path: Path) -> None:
+    """A run that only *looks* iteration-exhausted still follows its infra cause."""
+    sprint_dir = tmp_path / ".forge" / "logs" / "issues-2443"
+    story_dir = sprint_dir / "issue-2443"
+    story_dir.mkdir(parents=True, exist_ok=True)
+    summary = {
+        "sprint": {"name": "s", "run_id": "r1", "finished_at": "2026-08-13T03:00:00Z"},
+        "stories": [
+            {
+                "slug": "issue-2443",
+                "outcome": "FAILED",
+                "error": "dev exhausted iterations",
+                "error_type": ERROR_TYPE_INFRASTRUCTURE_ABORT,
+                "iteration_usage": {
+                    "dev": {"used": 3, "max": 3, "hit_limit": True, "early_finish": False},
+                    "review": {
+                        "used": 0,
+                        "max": 2,
+                        "hit_limit": False,
+                        "early_finish": False,
+                        "early_terminated": False,
+                    },
+                },
+                "contributing_factors": ["dev_iteration_limit"],
+            }
+        ],
+    }
+    audit = {
+        "outcome": {"error_type": ERROR_TYPE_INFRASTRUCTURE_ABORT},
+        "agent_invocation": {
+            "infrastructure_failure": {
+                "category": "process",
+                "detail": "runner exited before agent output was available",
+            }
+        },
+        "iterations": {"usage_summary": summary["stories"][0]["iteration_usage"]},
+    }
+    (sprint_dir / "sprint-summary.yaml").write_text(yaml.safe_dump(summary), encoding="utf-8")
+    (story_dir / "audit.yaml").write_text(yaml.safe_dump(audit), encoding="utf-8")
+
+    payload = build_sprint_rca(sprint_dir / "sprint-summary.yaml")
+    story = payload["stories"]["issue-2443"]
+    actions = " ".join(story["recommended_next_actions"]).lower()
+
+    assert story["primary_failure_class"] == "shared_infrastructure"
+    assert any(e["rule_id"] == "shared_infrastructure_abort" for e in story["evidence"])
+    assert any("process" in e["excerpt"] for e in story["evidence"])
+    assert "iteration budget" not in actions
+    assert "narrow" not in actions
