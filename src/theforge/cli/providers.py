@@ -59,6 +59,7 @@ def cmd_check_providers(args: object) -> int:
                 run_readiness_probe,
                 probe,
                 secrets=config.secrets,
+                include_alternate_transports=not getattr(args, "declared_only", False),
             ): probe
             for probe in probes
         }
@@ -124,6 +125,11 @@ def register_parser(subparsers: object) -> None:
         "--profile",
         metavar="NAME",
         help="Test only the named provider capability probe (default: all probes)",
+    )
+    check_providers_parser.add_argument(
+        "--declared-only",
+        action="store_true",
+        help="Exercise only each probe's declared transport and skip alternate transport checks",
     )
     check_providers_parser.add_argument(
         "--config",

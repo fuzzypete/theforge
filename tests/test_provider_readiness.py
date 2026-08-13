@@ -5,6 +5,7 @@ from unittest.mock import patch
 
 from theforge.cli.provider_readiness import (
     READINESS_CAPABILITY_TOOL_STRUCTURED,
+    READINESS_STATUS_FAILED,
     READINESS_STATUS_READY,
     READINESS_STATUS_UNSUPPORTED,
     READINESS_STATUS_UNVERIFIED,
@@ -352,6 +353,37 @@ def test_run_readiness_probe_exercises_declared_cli_profile_and_api_alternate(tm
     assert mock_api.call_args.kwargs["profile"].fallback_models == ()
 
 
+def test_run_readiness_probe_preserves_declared_explicit_cli_runner(tmp_path):
+    config = _config(tmp_path)
+    config = ForgeConfig(
+        **{
+            **config.__dict__,
+            "dev_profile": _cli_profile("dev", cli="ghaw", model="sonnet"),
+        }
+    )
+    probe = next(probe for probe in build_readiness_probes(config) if probe.role == "dev")
+
+    with (
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(structured=False, transport_used="cli"),
+        ) as mock_cli,
+        patch(
+            "theforge.cli.provider_readiness.run_api_agent",
+            return_value=_pass_result(structured=False, transport_used="api"),
+        ),
+        patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+    ):
+        result = run_readiness_probe(probe, secrets={})
+
+    declared_profile = mock_cli.call_args.kwargs["profile"]
+    assert result.status == READINESS_STATUS_READY
+    assert declared_profile.cli == "ghaw"
+    assert declared_profile.transport is not None
+    assert declared_profile.transport.runner == "ghaw"
+    assert declared_profile.transport.executable == "gh"
+
+
 def test_run_readiness_probe_reports_unavailable_alternate_transport_unverified(tmp_path):
     config = _config(tmp_path)
     config = ForgeConfig(
@@ -438,3 +470,31 @@ def test_run_readiness_probe_marks_cli_cost_unavailable_unverified(tmp_path):
 
     assert result.status == READINESS_STATUS_UNVERIFIED
     assert "CLI cost is unavailable" in result.detail
+
+
+def test_run_readiness_probe_does_not_treat_plain_401_reference_as_auth_unverified(tmp_path):
+    probe = next(
+        probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
+    )
+    numbered_failure = AgentResult(
+        success=False,
+        output="I updated src/theforge/coordinator/engine.py:401 to guard the branch.",
+        session_id=None,
+        cost_usd=None,
+        exit_code=1,
+        raw={},
+        profile_name="reviewer",
+    )
+
+    with (
+        patch("theforge.cli.provider_readiness.run_api_agent", return_value=numbered_failure),
+        patch(
+            "theforge.cli.provider_readiness.run_agent",
+            return_value=_pass_result(transport_used="cli"),
+        ),
+        patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+    ):
+        result = run_readiness_probe(probe, secrets={})
+
+    assert result.status == READINESS_STATUS_FAILED
+    assert result.detail == numbered_failure.output[:120]

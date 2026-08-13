@@ -66,6 +66,17 @@ def _api_profile(
     )
 
 
+def _cli_profile(name: str, cli: str = "claude", model: str = "sonnet") -> ModelProfile:
+    return ModelProfile(
+        name=name,
+        cli=cli,
+        model=model,
+        budget_usd=1.0,
+        timeout_seconds=120,
+        allowed_tools=("Read", "Grep"),
+    )
+
+
 def _make_forge_config(
     tmp_path: Path,
     review_pool: list[ModelProfile] | None = None,
@@ -134,8 +145,13 @@ def _make_fail_result(profile_name: str = "test") -> AgentResult:
     )
 
 
-def _make_args(profile: str | None = None, config: str | None = None) -> argparse.Namespace:
-    return argparse.Namespace(profile=profile, config=config)
+def _make_args(
+    profile: str | None = None,
+    config: str | None = None,
+    *,
+    declared_only: bool = False,
+) -> argparse.Namespace:
+    return argparse.Namespace(profile=profile, config=config, declared_only=declared_only)
 
 
 # ── TestParseFrontmatter ──────────────────────────────────────────────
@@ -671,6 +687,24 @@ class TestCmdCheckProviders:
         assert rc == 1
         mock_api.assert_not_called()
 
+    def test_declared_only_skips_alternate_transport_probe(self, tmp_path):
+        cfg = _make_forge_config(tmp_path, include_test_secrets=True)
+        args = _make_args(config=str(tmp_path / "forge.yaml"), declared_only=True)
+
+        with (
+            patch("theforge.cli.providers.load_config", return_value=cfg),
+            patch(
+                "theforge.cli.provider_readiness.run_api_agent",
+                return_value=_make_pass_result("declared-only"),
+            ) as mock_api,
+            patch("theforge.cli.provider_readiness.run_agent") as mock_cli,
+        ):
+            rc = cmd_check_providers(args)
+
+        assert rc == 0
+        assert mock_api.call_count == 5
+        mock_cli.assert_not_called()
+
     def test_no_verdict_in_structured_data_counts_as_failure(self, tmp_path, capsys):
         """structured_data without 'verdict' key → failure."""
         cfg = _make_forge_config(tmp_path, include_test_secrets=True)
@@ -911,6 +945,54 @@ class TestCmdCheckProviders:
         captured = capsys.readouterr()
         assert READINESS_STATUS_UNVERIFIED in captured.out
         assert "No CLI runner for provider 'deepseek'" in captured.out
+
+    def test_declared_explicit_cli_runner_is_exercised(self, tmp_path):
+        cfg = _make_forge_config(
+            tmp_path,
+            review_pool=[_cli_profile("review-ghaw", cli="ghaw", model="sonnet")],
+            include_test_secrets=True,
+        )
+        args = _make_args(profile="review-ghaw", config=str(tmp_path / "forge.yaml"))
+
+        with (
+            patch("theforge.cli.providers.load_config", return_value=cfg),
+            patch(
+                "theforge.cli.provider_readiness.run_agent",
+                return_value=AgentResult(
+                    success=True,
+                    output='{"verdict":"APPROVE","summary":"ok"}',
+                    session_id=None,
+                    cost_usd=0.003,
+                    exit_code=0,
+                    raw={},
+                    profile_name="review-ghaw",
+                    structured_data={"verdict": "APPROVE", "summary": "ok"},
+                    transport_used="cli",
+                ),
+            ) as mock_cli,
+            patch(
+                "theforge.cli.provider_readiness.run_api_agent",
+                return_value=AgentResult(
+                    success=True,
+                    output='{"verdict":"APPROVE","summary":"ok"}',
+                    session_id=None,
+                    cost_usd=0.003,
+                    exit_code=0,
+                    raw={},
+                    profile_name="review-ghaw",
+                    structured_data={"verdict": "APPROVE", "summary": "ok"},
+                    transport_used="api",
+                ),
+            ),
+            patch("theforge.cli.provider_readiness.check_agent_auth", return_value=(True, "")),
+        ):
+            rc = cmd_check_providers(args)
+
+        assert rc == 0
+        declared_profile = mock_cli.call_args.kwargs["profile"]
+        assert declared_profile.cli == "ghaw"
+        assert declared_profile.transport is not None
+        assert declared_profile.transport.runner == "ghaw"
 
 
 # ── TestCmdInitHooks ──────────────────────────────────────────────────

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import re
 import tempfile
 import time
 from dataclasses import dataclass
@@ -51,17 +52,29 @@ _READINESS_PROMPT = (
     "and a 'summary' field with a one-line explanation."
 )
 
-_AUTH_FAILURE_HINTS: tuple[str, ...] = (
+_AUTH_FAILURE_PATTERNS: tuple[str, ...] = (
+    "failed to authenticate",
+    "oauth access token has been revoked",
+    "authentication_error",
     "authenticationerror",
-    "unauthorized",
-    "invalid key",
     "invalid api key",
-    "api key",
+    "invalid_api_key",
+    "invalid x-api-key",
+    "unauthorized",
     "not logged in",
     "login required",
-    "credentials",
-    "oauth",
-    "401",
+    "bad credentials",
+    "permission_error",
+)
+_AUTH_STATUS_CODE_CONTEXT = (
+    r"\b(?:http|https|status|statuscode|status[ _-]code|error|errors|err|code|response)\b"
+    r"[^0-9a-z]{0,8}"
+)
+_AUTH_STATUS_CODES = r"401|403"
+_AUTH_STATUS_REASONS = r"unauthorized|forbidden|permission denied"
+_AUTH_CODE_RE = re.compile(
+    rf"{_AUTH_STATUS_CODE_CONTEXT}(?:{_AUTH_STATUS_CODES})\b"
+    rf"|\b(?:{_AUTH_STATUS_CODES})\s+(?:{_AUTH_STATUS_REASONS})\b"
 )
 
 
@@ -187,10 +200,14 @@ def run_readiness_probe(
     probe: ReadinessProbe,
     *,
     secrets: dict[str, str] | None,
+    include_alternate_transports: bool = True,
 ) -> ReadinessResult:
     """Exercise one capability probe on its declared and alternate transports."""
     attempts: list[ReadinessAttempt] = []
-    for transport_attempt in _transport_attempts_for_probe(probe):
+    for transport_attempt in _transport_attempts_for_probe(
+        probe,
+        include_alternate_transports=include_alternate_transports,
+    ):
         if isinstance(transport_attempt, ReadinessAttempt):
             attempts.append(transport_attempt)
             continue
@@ -204,7 +221,11 @@ def run_readiness_probe(
     return ReadinessResult(probe=probe, attempts=tuple(attempts))
 
 
-def _transport_attempts_for_probe(probe: ReadinessProbe) -> list[TransportSpec | ReadinessAttempt]:
+def _transport_attempts_for_probe(
+    probe: ReadinessProbe,
+    *,
+    include_alternate_transports: bool,
+) -> list[TransportSpec | ReadinessAttempt]:
     provider = probe.profile.provider_family
     if not provider:
         return [
@@ -215,19 +236,33 @@ def _transport_attempts_for_probe(probe: ReadinessProbe) -> list[TransportSpec |
             )
         ]
 
-    attempts: list[TransportSpec | ReadinessAttempt] = []
-    for transport_kind in (probe.declared_transport_kind, _alternate_transport_kind(probe)):
-        try:
-            attempts.append(transport_for(provider, transport_kind))
-        except ValueError as exc:
-            attempts.append(
-                _unverified_attempt(
-                    probe,
-                    attempted_transport_kind=transport_kind,
-                    detail=f"not exercised: {exc}",
-                )
-            )
+    attempts = [_transport_attempt_for_probe(probe, probe.declared_transport_kind)]
+    if include_alternate_transports:
+        attempts.append(_transport_attempt_for_probe(probe, _alternate_transport_kind(probe)))
     return attempts
+
+
+def _transport_attempt_for_probe(
+    probe: ReadinessProbe,
+    transport_kind: str,
+) -> TransportSpec | ReadinessAttempt:
+    provider = probe.profile.provider_family
+    if transport_kind == probe.declared_transport_kind and probe.profile.transport is not None:
+        return probe.profile.transport
+    if not provider:
+        return _unverified_attempt(
+            probe,
+            attempted_transport_kind=transport_kind,
+            detail="not exercised: provider identity is unavailable for this profile",
+        )
+    try:
+        return transport_for(provider, transport_kind)
+    except ValueError as exc:
+        return _unverified_attempt(
+            probe,
+            attempted_transport_kind=transport_kind,
+            detail=f"not exercised: {exc}",
+        )
 
 
 def _alternate_transport_kind(probe: ReadinessProbe) -> str:
@@ -447,7 +482,7 @@ def _runtime_unverified_reason(
             return message
 
     lowered = message.lower()
-    if any(hint in lowered for hint in _AUTH_FAILURE_HINTS):
+    if _looks_like_auth_failure(lowered):
         return message[:120]
     return None
 
@@ -465,6 +500,12 @@ def _safe_auth_check(
         )
     except ValueError as exc:
         return (False, str(exc))
+
+
+def _looks_like_auth_failure(message: str) -> bool:
+    return any(pattern in message for pattern in _AUTH_FAILURE_PATTERNS) or bool(
+        _AUTH_CODE_RE.search(message)
+    )
 
 
 def _identity_mismatch_reason(profile: ModelProfile, result: AgentResult) -> str | None:
