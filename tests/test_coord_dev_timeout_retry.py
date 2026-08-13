@@ -169,6 +169,23 @@ def test_timeout_with_iterations_remaining_retries_not_escalates(tmp_path: Path)
     assert state.dev_iteration_telemetry[-1].is_timeout is True
 
 
+def test_timeout_retry_preserves_existing_gate_feedback(tmp_path: Path) -> None:
+    """A timeout retry keeps prior gate feedback and appends timeout guidance once."""
+    config, task, state = _setup(tmp_path)
+    state.budget.max_iterations = 3
+    state.budget.consume(review_cycle=0)
+    state.human_feedback = "Gate output:\nFAIL\nFix formatting before retrying."
+
+    result = _run_dev(config, task, state, tmp_path, _timeout_agent_result())
+
+    assert result is None
+    assert state.retry_reason == RetryReason.TIMEOUT_RESUME
+    assert state.human_feedback is not None
+    assert "Gate output:\nFAIL" in state.human_feedback
+    assert "cut off by a timeout" in state.human_feedback
+    assert state.human_feedback.count("Additional retry guidance:") == 1
+
+
 def test_timeout_kill_sets_sticky_state_flag_on_retry_path(tmp_path: Path) -> None:
     """A dev wall-clock timeout sets state.dev_process_timeout_killed at kill time,
     independent of which downstream branch (retry here) runs. This is the signal
