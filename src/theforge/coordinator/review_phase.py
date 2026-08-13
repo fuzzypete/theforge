@@ -2421,6 +2421,8 @@ def _run_review_only_phase(
         assembled_context=review_context,
         sandboxed=state.sandboxed,
         containment=state.dev_containment,
+        authoritative_gate_decision=state.last_gate_decision,
+        authoritative_gate_commit=state.last_gate_commit,
         p2_policy=config.dev.p2_policy,
     )
 
