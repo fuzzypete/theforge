@@ -10,19 +10,27 @@ from pathlib import Path
 
 from theforge.agent_types import AgentResult
 from theforge.assignment import _agent_to_profile
-from theforge.config import DEFAULT_INVESTIGATION_TOOLS, DEFAULT_PREFLIGHT_PROFILE, ForgeConfig
+from theforge.config import (
+    DEFAULT_INVESTIGATION_TOOLS,
+    DEFAULT_PREFLIGHT_PROFILE,
+    DEFAULT_REVIEW_PROFILE,
+    ForgeConfig,
+)
 from theforge.config.profiles import iter_config_profiles, iter_plan_phase_profiles
+from theforge.config.types import ModelProfile
 from theforge.runners.api import run_api_agent
 from theforge.runners.schema_utils import openai_function_tool_request_shape
 
 READINESS_STATUS_READY = "ready"
 READINESS_STATUS_FAILED = "failed"
+READINESS_STATUS_UNTESTED = "untested"
 READINESS_STATUS_UNSUPPORTED = "unsupported"
 READINESS_STATUS_COST_UNAVAILABLE = "cost-unavailable"
 
 READINESS_STATUSES: tuple[str, ...] = (
     READINESS_STATUS_READY,
     READINESS_STATUS_FAILED,
+    READINESS_STATUS_UNTESTED,
     READINESS_STATUS_UNSUPPORTED,
     READINESS_STATUS_COST_UNAVAILABLE,
 )
@@ -43,7 +51,7 @@ class ReadinessProbe:
 
     role: str
     capability: str
-    profile: object
+    profile: ModelProfile
 
 
 @dataclass(frozen=True)
@@ -70,7 +78,7 @@ def build_readiness_probes(config: ForgeConfig) -> list[ReadinessProbe]:
             continue
         probes.append(_probe_for_profile(role, profile))
     for role, profile in iter_plan_phase_profiles(config):
-        probes.append(_probe_for_profile(role, profile))
+        probes.append(_probe_for_profile(role, _stamp_phase(profile, role)))
 
     advisor_profile = dataclasses.replace(
         config.preflight_profile,
@@ -79,30 +87,23 @@ def build_readiness_probes(config: ForgeConfig) -> list[ReadinessProbe]:
     probes.append(_probe_for_profile("advisor", advisor_profile))
 
     for agent in config.agents:
-        probes.extend(
-            [
-                _probe_for_profile("agent-dev", _agent_to_profile(agent, role="dev")),
-                _probe_for_profile(
-                    "agent-preflight",
-                    _agent_to_profile(
-                        agent,
-                        role="preflight",
-                        allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
-                    ),
-                ),
-                _probe_for_profile("agent-planner", _agent_to_profile(agent, role="review")),
-                _probe_for_profile("agent-plan-review", _agent_to_profile(agent, role="review")),
-                _probe_for_profile("agent-code-review", _agent_to_profile(agent, role="review")),
-            ]
-        )
+        probes.extend(_agent_role_probes(agent))
 
     deduped: list[ReadinessProbe] = []
-    seen: set[tuple[str, str, object]] = set()
+    seen: set[tuple[str, str, str, str, str | None, tuple[str, ...], str | None]] = set()
     for probe in probes:
         profile = probe.profile
-        if getattr(profile, "mode", None) != "api":
+        if profile.mode != "api":
             continue
-        key = (probe.role, probe.capability, profile)
+        key = (
+            probe.role,
+            probe.capability,
+            profile.name,
+            profile.model,
+            profile.provider,
+            profile.allowed_tools,
+            profile.phase,
+        )
         if key in seen:
             continue
         seen.add(key)
@@ -120,8 +121,8 @@ def run_readiness_probe(
     profile = probe.profile
     if (
         probe.capability == READINESS_CAPABILITY_TOOL_STRUCTURED
-        and getattr(profile, "provider", None) == "openai"
-        and not _is_local_endpoint(getattr(profile, "base_url", None))
+        and profile.provider == "openai"
+        and not _is_local_endpoint(profile.base_url)
     ):
         tool_shape = openai_function_tool_request_shape(profile.model)
         if tool_shape.transport == "unsupported":
@@ -192,14 +193,53 @@ def run_readiness_probe(
     )
 
 
-def _probe_for_profile(role: str, profile: object) -> ReadinessProbe:
-    allowed_tools = tuple(getattr(profile, "allowed_tools", ()) or ())
+def _probe_for_profile(role: str, profile: ModelProfile) -> ReadinessProbe:
+    allowed_tools = tuple(profile.allowed_tools or ())
     capability = (
         READINESS_CAPABILITY_TOOL_STRUCTURED
         if allowed_tools
         else READINESS_CAPABILITY_PLAIN_STRUCTURED
     )
     return ReadinessProbe(role=role, capability=capability, profile=profile)
+
+
+def _stamp_phase(profile: ModelProfile, role: str) -> ModelProfile:
+    phase = profile.phase
+    if role == "plan":
+        phase = "plan"
+    elif role == "plan-review":
+        phase = "plan_review"
+    return dataclasses.replace(profile, phase=phase)
+
+
+def _agent_role_probes(agent: object) -> list[ReadinessProbe]:
+    planner_profile = _agent_to_profile(
+        agent,
+        role="plan",
+        allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
+    )
+    review_tools = DEFAULT_REVIEW_PROFILE.allowed_tools
+    plan_review_profile = dataclasses.replace(
+        _agent_to_profile(agent, role="review", allowed_tools=review_tools),
+        phase="plan_review",
+    )
+    return [
+        _probe_for_profile("agent-dev", _agent_to_profile(agent, role="dev")),
+        _probe_for_profile(
+            "agent-preflight",
+            _agent_to_profile(
+                agent,
+                role="preflight",
+                allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
+            ),
+        ),
+        _probe_for_profile("agent-planner", planner_profile),
+        _probe_for_profile("agent-plan-review", plan_review_profile),
+        _probe_for_profile(
+            "agent-code-review",
+            _agent_to_profile(agent, role="review", allowed_tools=review_tools),
+        ),
+    ]
 
 
 def _structured_payload(result: AgentResult) -> dict | None:
@@ -216,10 +256,10 @@ def _is_local_endpoint(base_url: str | None) -> bool:
     return bool(base_url and ("localhost" in base_url or "127.0.0.1" in base_url))
 
 
-def _success_suffix(*, profile: object, result: AgentResult, elapsed: float) -> str:
-    if _is_local_endpoint(getattr(profile, "base_url", None)) or result.cost_usd == 0.0:
+def _success_suffix(*, profile: ModelProfile, result: AgentResult, elapsed: float) -> str:
+    if _is_local_endpoint(profile.base_url) or result.cost_usd == 0.0:
         cost_str = "$0.000"
     else:
         cost_str = f"${result.cost_usd:.3f}"
-    local_tag = " [local]" if _is_local_endpoint(getattr(profile, "base_url", None)) else ""
+    local_tag = " [local]" if _is_local_endpoint(profile.base_url) else ""
     return f"{elapsed:.1f}s  {cost_str}{local_tag}"

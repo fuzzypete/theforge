@@ -3,9 +3,16 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from theforge.cli.provider_readiness import (
+    READINESS_CAPABILITY_TOOL_STRUCTURED,
+    READINESS_STATUS_READY,
+    READINESS_STATUS_UNSUPPORTED,
+    build_readiness_probes,
+    run_readiness_probe,
+)
 from theforge.config import (
-    AgentDef,
     DEFAULT_VALIDATION,
+    AgentDef,
     ForgeConfig,
     LogConfig,
     ModelProfile,
@@ -14,13 +21,6 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
     transport_for,
-)
-from theforge.cli.provider_readiness import (
-    READINESS_CAPABILITY_TOOL_STRUCTURED,
-    READINESS_STATUS_READY,
-    READINESS_STATUS_UNSUPPORTED,
-    build_readiness_probes,
-    run_readiness_probe,
 )
 from theforge.runners import AgentResult
 from theforge.runners.schema_utils import OpenAIFunctionToolRequestShape
@@ -111,7 +111,7 @@ def test_build_readiness_probes_includes_config_plan_and_advisor_shapes(tmp_path
 
     assert ("preflight", "preflight", "preflight") in labels
     assert ("review", "reviewer", "review") in labels
-    assert ("plan", "plan", None) in labels
+    assert ("plan", "plan", "plan") in labels
     assert ("plan-review", "plan-reviewer", "plan_review") in labels
     assert ("advisor", "preflight", "preflight") in labels
 
@@ -166,13 +166,15 @@ def test_build_readiness_probes_projects_agent_pool_roles_with_tools(tmp_path):
     }
     assert all(agent_probes[role].profile.allowed_tools for role in agent_probes)
     assert agent_probes["agent-dev"].capability == READINESS_CAPABILITY_TOOL_STRUCTURED
+    assert agent_probes["agent-planner"].profile.phase == "plan"
+    assert agent_probes["agent-plan-review"].profile.phase == "plan_review"
+    assert agent_probes["agent-code-review"].profile.phase == "review"
+    assert agent_probes["agent-planner"].profile != agent_probes["agent-code-review"].profile
 
 
 def test_run_readiness_probe_marks_openai_unsupported_shape_not_ready(tmp_path):
     probe = next(
-        probe
-        for probe in build_readiness_probes(_config(tmp_path))
-        if probe.role == "review"
+        probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
     )
 
     with patch(
@@ -189,9 +191,7 @@ def test_run_readiness_probe_marks_openai_unsupported_shape_not_ready(tmp_path):
 
 def test_run_readiness_probe_marks_successful_probe_ready(tmp_path):
     probe = next(
-        probe
-        for probe in build_readiness_probes(_config(tmp_path))
-        if probe.role == "review"
+        probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
     )
 
     with patch("theforge.cli.provider_readiness.run_api_agent", return_value=_pass_result()):

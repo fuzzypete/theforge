@@ -13,6 +13,7 @@ from theforge.cli.provider_readiness import (
 )
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
+from theforge.runners.api import run_api_agent as run_api_agent
 
 
 def cmd_check_providers(args: object) -> int:

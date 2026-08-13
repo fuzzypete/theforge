@@ -29,13 +29,13 @@ from theforge.cli import (
     cmd_init_hooks,
     cmd_secrets_init,
 )
-from theforge.cli.provider_readiness import READINESS_STATUS_COST_UNAVAILABLE
 from theforge.cli import hooks as hooks_module
 from theforge.cli.hooks import created_labels, static_issue_labels
 from theforge.cli.init_commands import _extract_forge_block
+from theforge.cli.provider_readiness import READINESS_STATUS_COST_UNAVAILABLE
 from theforge.config import (
-    AgentDef,
     DEFAULT_VALIDATION,
+    AgentDef,
     ForgeConfig,
     LogConfig,
     ModelProfile,
@@ -584,9 +584,7 @@ class TestCmdCheckProviders:
             _make_pass_result("codex-reviewer"),
         ]
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch(
-                "theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects
-            ):
+            with patch("theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects):
                 rc = cmd_check_providers(args)
 
         assert rc == 0
@@ -604,9 +602,7 @@ class TestCmdCheckProviders:
             _make_fail_result("codex-reviewer"),
         ]
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch(
-                "theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects
-            ):
+            with patch("theforge.cli.provider_readiness.run_api_agent", side_effect=side_effects):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -676,9 +672,7 @@ class TestCmdCheckProviders:
             structured_data={"summary": "no verdict here"},
         )
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch(
-                "theforge.cli.provider_readiness.run_api_agent", return_value=bad_result
-            ):
+            with patch("theforge.cli.provider_readiness.run_api_agent", return_value=bad_result):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -752,7 +746,9 @@ class TestCmdCheckProviders:
         assert rc == 0
         assert mock_api.call_args.kwargs["profile"].allowed_tools == ("Read", "Grep")
 
-    def test_tool_bearing_agent_pool_failure_cannot_hide_behind_plain_probe(self, tmp_path, capsys):
+    def test_tool_bearing_agent_pool_failure_cannot_hide_behind_plain_probe(
+        self, tmp_path, capsys
+    ):
         cfg = _make_forge_config(tmp_path, review_pool=[])
         cfg = ForgeConfig(
             **{
@@ -779,9 +775,7 @@ class TestCmdCheckProviders:
             return _make_pass_result(profile.name)
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch(
-                "theforge.cli.provider_readiness.run_api_agent", side_effect=_side_effect
-            ):
+            with patch("theforge.cli.provider_readiness.run_api_agent", side_effect=_side_effect):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
@@ -828,9 +822,7 @@ class TestCmdCheckProviders:
         )
 
         with patch("theforge.cli.providers.load_config", return_value=cfg):
-            with patch(
-                "theforge.cli.provider_readiness.run_api_agent", return_value=unknown_cost
-            ):
+            with patch("theforge.cli.provider_readiness.run_api_agent", return_value=unknown_cost):
                 rc = cmd_check_providers(args)
 
         assert rc == 1
