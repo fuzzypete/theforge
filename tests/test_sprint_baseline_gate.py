@@ -589,3 +589,193 @@ def test_every_baseline_record_answers_whether_it_left_processes(tmp_path: Path)
     early = _run_baseline_gate(replace(config, project_root=not_a_checkout), resolved)
     assert early["passed"] is False
     assert early["process_teardowns"] == []
+
+
+# --- confirmation of a failing baseline gate (#2434) -------------------------
+
+
+def _flaky_gate_command(marker: Path) -> str:
+    """A gate that fails its first invocation and passes every one after.
+
+    Stands in for the process-teardown/sandbox flakes that fail one run of an
+    8,000-test suite and pass the next against the identical commit.
+    """
+    return (
+        'python -c "import pathlib, sys; '
+        f"m = pathlib.Path(r'{marker}'); first = not m.exists(); m.write_text('ran'); "
+        "print('FLAKE-FAILURE' if first else 'CLEAN-RERUN'); "
+        'sys.exit(1 if first else 0)"'
+    )
+
+
+def _counting_gate_command(counter: Path, *, exit_code: int) -> str:
+    return (
+        'python -c "import pathlib, sys; '
+        f"c = pathlib.Path(r'{counter}'); "
+        "c.write_text(str(int(c.read_text() or 0) + 1) if c.exists() else '1'); "
+        "print('GATE-RAN'); "
+        f'sys.exit({exit_code})"'
+    )
+
+
+def test_baseline_gate_failure_that_does_not_reproduce_does_not_break_the_baseline(
+    tmp_path: Path,
+) -> None:
+    """One failing invocation is not evidence about the merge base (#2434).
+
+    The gate fails, an immediate re-run of the identical command against the
+    identical worktree passes, and the sprint is allowed to start — the verdict
+    that decides whether work may begin is the one that reproduced.
+    """
+    config, resolved, base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command=_flaky_gate_command(tmp_path / "flake.marker"),
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved, run_id="abc123")
+
+    assert baseline["passed"] is True
+    assert baseline["status"] == "pass_unreproduced_failure"
+    assert baseline["merge_base"] == base_commit
+    # The ambiguity is on the record, not smoothed away into a plain pass.
+    assert baseline["confirmation_attempted"] is True
+    assert baseline["failure_reproduced"] is False
+    assert baseline["initial_result"]["exit_code"] == 1
+    assert baseline["confirmation_result"]["decision"] == "PASS"
+    assert "did not reproduce" in str(baseline["message"])
+
+
+def test_an_unreproduced_baseline_failure_leaves_no_preserved_worktree(
+    tmp_path: Path,
+) -> None:
+    """Nothing halted, so nothing is preserved — but the failure is still recorded.
+
+    Preservation exists so a halting failure can be reproduced in the workspace
+    that produced it. A first run that vanished on re-run halts nothing; leaking
+    a worktree per flake would spend disk on every one of them. Its output is
+    still written, under a filename that cannot be read as a halting verdict's
+    evidence.
+    """
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command=_flaky_gate_command(tmp_path / "flake.marker"),
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved, run_id="abc123")
+
+    assert baseline.get("worktree") is None
+    assert _preserved_temp_roots(tmp_path) == []
+    assert "forge-baseline-" not in _git(tmp_path, "worktree", "list")
+
+    evidence_path = Path(str(baseline["evidence_path"]))
+    assert evidence_path.name == "run-abc123-baseline-gate-unreproduced-failure.txt"
+    evidence = evidence_path.read_text(encoding="utf-8")
+    assert "FLAKE-FAILURE" in evidence
+    assert "NOT REPRODUCED" in evidence
+
+
+def test_a_baseline_failure_is_re_run_once_before_it_is_believed(tmp_path: Path) -> None:
+    """Exactly two runs on a failure, exactly one on a pass.
+
+    The confirmation doubles a many-minute gate's wall time, so it is spent only
+    where the answer could change the sprint's fate.
+    """
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    failing_counter = tmp_path / "failing.count"
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command=_counting_gate_command(failing_counter, exit_code=1),
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is False
+    assert failing_counter.read_text(encoding="utf-8") == "2"
+
+    passing_counter = tmp_path / "passing.count"
+    passing_config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command=_counting_gate_command(passing_counter, exit_code=0),
+        ),
+    )
+
+    passing = _run_baseline_gate(passing_config, resolved)
+
+    assert passing["passed"] is True
+    assert passing["confirmation_attempted"] is False
+    assert passing["failure_reproduced"] is None
+    assert passing_counter.read_text(encoding="utf-8") == "1"
+
+
+def test_a_reproduced_baseline_failure_still_breaks_the_baseline(tmp_path: Path) -> None:
+    """A failure that repeats is the merge base's verdict and halts the sprint."""
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(config.validation, gate_command=_LONG_FAILING_GATE),
+    )
+
+    baseline = _run_baseline_gate(config, resolved, run_id="abc123")
+
+    assert baseline["passed"] is False
+    assert baseline["status"] == "fail"
+    assert baseline["confirmation_attempted"] is True
+    assert baseline["failure_reproduced"] is True
+    assert baseline["initial_result"]["exit_code"] == 1
+    assert baseline["confirmation_result"]["decision"] == "FAIL"
+    assert "reproduced" in str(baseline["message"])
+    # The halting outcome keeps everything it kept before the re-run existed.
+    assert Path(str(baseline["worktree"])).is_dir()
+    assert _EARLY_MARKER in Path(str(baseline["evidence_path"])).read_text(encoding="utf-8")
+
+
+def test_an_unreproduced_baseline_failure_lets_the_sprint_run_its_stories(
+    tmp_path: Path,
+) -> None:
+    """Seam test: the sprint that would have aborted now starts its work.
+
+    Exercises the whole path — gate, confirmation, run_sprint's abort branch —
+    rather than _run_baseline_gate's return value alone, because the abort is
+    what cost the overnight window in the reported occurrence.
+    """
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            gate_command=_flaky_gate_command(tmp_path / "flake.marker"),
+        ),
+    )
+
+    with (
+        patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
+        patch("theforge.sprint.runner.run_task", return_value=_fake_result()) as mock_run_task,
+        patch("theforge.sprint.runner._write_sprint_summary"),
+        # The fixture repo sits on the feature branch, which the audit publish
+        # refuses; unrelated to what this test pins.
+        patch("theforge.sprint.runner._commit_story_run_audits"),
+    ):
+        result = run_sprint_ctx(config, resolved, no_pull=True, run_id="abc123")
+
+    assert mock_run_task.called
+    assert result.specs_succeeded == 1
+
+    audit_path = tmp_path / ".forge" / "audits" / "sprint-audit.yaml"
+    audit = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+    baseline_check = audit["baseline_check"]
+    assert baseline_check["passed"] is True
+    assert baseline_check["failure_reproduced"] is False
+    assert baseline_check["initial_result"]["exit_code"] == 1

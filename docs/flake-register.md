@@ -24,6 +24,14 @@ for the rules that govern entries here.
 - **A green-on-re-run after a same-SHA red is a flake signal, not a pass.** When
   a gate goes red and a plain re-run of the same commit goes green, the test that
   flipped is a flake candidate — add it here rather than merging on the green.
+- **The sprint baseline gate confirms a failure before refusing work, and says
+  so.** A failing baseline gate is re-run once against the same worktree and
+  commit; only a failure that reproduces halts the sprint (#2434). This is not
+  retry-until-green — the first run's full output is written to
+  `.forge/logs/<sprint>/…-unreproduced-failure.txt`, the sprint log records
+  `baseline_gate_failure_not_reproduced`, and the audit's `baseline_check`
+  carries `failure_reproduced: false`. Each of those is a flake candidate for
+  this register, not a pass to be forgotten.
 
 ## Status legend
 
