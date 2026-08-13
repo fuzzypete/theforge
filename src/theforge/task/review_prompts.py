@@ -515,6 +515,11 @@ def build_review_prompt(
         - **Full-gate ownership is coordinator-only.** Do NOT run the full
           authoritative gate yourself when the supplied `Authoritative gate commit`
           still matches the HEAD you are reviewing; rely on the supplied verdict.
+        - When the supplied gate evidence is current for the reviewed HEAD but
+          the authoritative verdict is a non-`PASS` value such as `FAIL`,
+          `ERROR`, or `SKIPPED`, do NOT rerun the full gate. Review the diff on
+          its merits, and if your conclusion depends on the non-`PASS` gate
+          state, say so explicitly in `summary`.
         - You MAY run the full authoritative gate only when the supplied gate
           evidence is missing or stale for the current HEAD — for example, if
           `Authoritative gate commit` is `UNAVAILABLE` or no longer matches

@@ -652,6 +652,26 @@ class TestReviewPromptGateEvidence:
         assert "`git rev-parse HEAD`" in prompt
         assert "note the mismatch in `summary`" in prompt
 
+    def test_review_prompt_handles_current_non_pass_gate_without_rerunning(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(
+            review_task,
+            **_REVIEW_COMMON_KWARGS,
+            authoritative_gate_decision="SKIPPED",
+            authoritative_gate_commit="abc1234deadbeef",
+        )
+
+        assert "authoritative verdict is a non-`PASS` value such as `FAIL`," in prompt
+        assert "`ERROR`, or `SKIPPED`" in prompt
+        assert "do NOT rerun the full gate" in prompt
+        review_on_merits = (
+            "Review the diff on\n          its merits" in prompt
+            or "Review the diff on its merits" in prompt
+        )
+        assert review_on_merits
+        assert "say so explicitly in `summary`" in prompt
+
 
 class TestNotesConventionInReviewPrompt:
     """Verify review prompt includes Notes guidance."""

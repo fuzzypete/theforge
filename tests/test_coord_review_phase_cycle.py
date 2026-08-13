@@ -32,7 +32,7 @@ from theforge.config import (
 )
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_from_review, run_review_only, run_task
-from theforge.coordinator.state import Phase
+from theforge.coordinator.state import CoordinatorState, Phase
 
 
 class TestReviewOnly:
@@ -158,6 +158,39 @@ class TestReviewOnly:
             result = run_review_only(config, task, workspace)
             assert result.state.dev_iteration == 0
             assert len(result.state.dev_results) == 0
+
+    @patch("theforge.coordinator.review_phase.build_review_prompt")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.engine._fresh_run_state")
+    @patch_gate_shell()
+    def test_review_only_prompt_builder_receives_authoritative_gate_evidence(
+        self, mock_shell, mock_fresh_state, mock_pool, mock_prompt_builder, tmp_path
+    ):
+        """Review-only prompt construction keeps coordinator-owned gate evidence."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.return_value = (True, "", 0, False)
+        seeded_state = CoordinatorState()
+        seeded_state.last_gate_decision = "PASS"
+        seeded_state.last_gate_commit = "abc1234deadbeef"
+        mock_fresh_state.return_value = seeded_state
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+        mock_prompt_builder.return_value = "review prompt"
+
+        result = run_review_only(config, task, workspace)
+
+        assert result.success is True
+        mock_prompt_builder.assert_called_once()
+        call_args = mock_prompt_builder.call_args
+        assert call_args.kwargs["mode"] == config.review_pool[0].mode
+        assert call_args.kwargs["p2_policy"] == "in_scope"
+        assert call_args.kwargs["authoritative_gate_decision"] == "PASS"
+        assert call_args.kwargs["authoritative_gate_commit"] == "abc1234deadbeef"
 
 
 class TestRunFromReview:
