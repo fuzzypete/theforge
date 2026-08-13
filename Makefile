@@ -1,4 +1,4 @@
-.PHONY: fmt lint test test-parallel gate gate-strict gate-serial test-integration clean
+.PHONY: fmt lint test test-parallel dev-check gate gate-strict gate-serial test-integration clean
 
 SCRUBBED_ENV_VARS := OPENAI_API_KEY ANTHROPIC_API_KEY GOOGLE_API_KEY GEMINI_API_KEY DEEPSEEK_API_KEY XAI_API_KEY GROQ_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN OPENAI_BASE_URL DOTENV_PATH DOTENV_FILE PYTHON_DOTENV_DISABLED
 GATE_PYTEST_CMD = PYTHONPATH=src python -m pytest tests/ -q -n auto --dist worksteal
@@ -16,6 +16,18 @@ lint:
 
 test:
 	PYTHONPATH=src python -m pytest tests/ -v -n auto --dist worksteal
+
+# Dev inner loop. Runs the same lint and format checks `gate` applies, first, so
+# a formatting violation costs seconds instead of surviving to the authoritative
+# gate — four stories in three days stalled or died on ruff rules their dev loop
+# never ran (E501, I001, and an unformatted signature). Then the gate's own
+# pytest invocation, so a pass here means the same tests passed the same way.
+#
+# NOT authoritative: `gate` remains the only verdict that gates merge, and this
+# target deliberately omits the env scrubbing and forge index/config steps that
+# make `gate` trustworthy rather than merely informative.
+dev-check: lint
+	$(GATE_PYTEST_CMD)
 
 # Opt-in parallel run: useful for local iteration when not running a sprint.
 # Uses worksteal for even distribution — tests are fully parallel-safe.

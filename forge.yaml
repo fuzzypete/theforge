@@ -186,8 +186,20 @@ validation:
   # Gate pass/fail is exit-code only. v0.8 removed handoff_file and
   # gate_decision_key; do not add them back under validation:.
   gate_command: "make gate"
-  # Canonical intermediate test command dev agents should use while working.
-  test_command: ".venv/bin/python -m pytest tests/ -v -n auto --dist worksteal"
+  # Canonical intermediate command dev agents should use while working.
+  #
+  # 2026-08-13: was the bare pytest suite, which ran no lint at all — so the dev
+  # loop could not see the ruff rules the gate would reject it on. Four stories
+  # in three days stalled or died on that gap (E501, I001, an unformatted
+  # signature), each burning dev iterations against a violation its own
+  # intermediate command never checked. `make dev-check` runs the gate's lint and
+  # format checks first (0.4s) and then the gate's own pytest invocation, so a
+  # pass here means the same tests passed the same way.
+  #
+  # Still not authoritative — `make gate` remains the only verdict that gates
+  # merge, and dev-check omits the env scrubbing and forge index/config steps
+  # that make the gate trustworthy rather than merely informative.
+  test_command: "make dev-check"
   # 45→60 (2026-07-11): story #1243 hit identical 45s gate timeouts twice under
   # --parallel 3 load, then passed instantly when resumed solo. Modest bump to
   # absorb parallel contention; revisit if timeouts persist at 60.
