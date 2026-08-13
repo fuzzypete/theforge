@@ -42,11 +42,13 @@ from .agent_failure import (
     classify_agent_failure,
     mark_infrastructure_abort,
     record_invocation_failure,
+    zero_charge_no_model_artifacts,
 )
 from .commit_guard import (
     _checkpoint_commit,
     _commits_exist_strict,
     _has_commits_ahead_of_base,
+    _worktree_changed_since_commit,
     _worktree_has_changes,
 )
 from .dev_verification import DevVerificationBroker
@@ -812,6 +814,22 @@ def _capture_dev_handoff(
         return None
 
 
+def _rollback_recorded_dev_attempt(
+    state: CoordinatorState,
+    *,
+    dev_results_len: int,
+    dev_durations_len: int,
+    dev_handoff_len: int,
+) -> None:
+    """Remove the just-recorded DEV attempt from ordinary iteration accounting."""
+    del state.dev_results[dev_results_len:]
+    del state.dev_durations[dev_durations_len:]
+    del state.dev_handoff_snapshots[dev_handoff_len:]
+    state.pending_dev_transport_retry_count = 0
+    state.pending_dev_transport_retry_events = []
+    state.pending_dev_verification_requests = []
+
+
 def _resolve_dev_sandbox_capabilities(config: ForgeConfig) -> dict:
     """Resolve the project's sandbox capability profile for audit + logging (#1947).
 
@@ -1295,6 +1313,9 @@ def _run_dev_phase(
     _dev_total_start = time.monotonic()
     _dev_results_this_iteration = []
     _dev_durations_this_iteration = []
+    _dev_results_before = len(state.dev_results)
+    _dev_durations_before = len(state.dev_durations)
+    _dev_handoff_before = len(state.dev_handoff_snapshots)
     _runner_failure = None
     _current_session_id = state.dev_session_id
     _dev_retry_events: list[dict] = []
@@ -1746,7 +1767,14 @@ def _run_dev_phase(
         # If the dev agent exited with failure (non-zero or signal-killed) and
         # the worktree has no new commits ahead of base, escalate immediately
         # rather than letting an empty diff flow through to a fake APPROVE.
-        if not _has_commits_ahead_of_base(workspace_path, config.workspace.base_branch):
+        _has_branch_commits = _has_commits_ahead_of_base(
+            workspace_path, config.workspace.base_branch
+        )
+        _changed_since_start = _worktree_changed_since_commit(
+            workspace_path, state.last_dev_start_commit
+        )
+        _left_no_observable_work = (not _has_branch_commits) or (_changed_since_start is False)
+        if _left_no_observable_work:
             # ── Infrastructure abort vs. genuine escalation (#1951) ──────
             # Refusing to APPROVE an empty diff is right either way. What
             # differs is what the run is entitled to CLAIM about the story.
@@ -1765,23 +1793,37 @@ def _run_dev_phase(
             )
             if _invocation_failure is not None:
                 record_invocation_failure(state, _invocation_failure)
+                _unused_dev_iteration = zero_charge_no_model_artifacts(dev_result)
+                if _unused_dev_iteration:
+                    _rollback_recorded_dev_attempt(
+                        state,
+                        dev_results_len=_dev_results_before,
+                        dev_durations_len=_dev_durations_before,
+                        dev_handoff_len=_dev_handoff_before,
+                    )
                 state.phase = Phase.ESCALATE
                 # Name the failure the way the phase already names it
                 # (_failure_detail states a timeout and its limit rather than the
                 # signal number, per #1216) and add the substrate category.
+                _work_clause = (
+                    "and no commits ahead of base"
+                    if not _has_branch_commits
+                    else "and left the preserved branch unchanged"
+                )
                 state.error = (
                     f"Dev agent produced no model output "
-                    f"(category={_invocation_failure.category}: {_failure_detail}) and "
-                    "no commits ahead of base — aborting as an infrastructure failure; "
+                    f"(category={_invocation_failure.category}: {_failure_detail}) {_work_clause} "
+                    "— aborting as an infrastructure failure; "
                     "no judgment was obtained about this story"
                 )
                 mark_infrastructure_abort(state, _invocation_failure, message=state.error)
-                record_dev_iteration_telemetry(
-                    state,
-                    workspace_path,
-                    max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
-                    gate_result="DEV_INFRA_FAILURE",
-                )
+                if not _unused_dev_iteration:
+                    record_dev_iteration_telemetry(
+                        state,
+                        workspace_path,
+                        max_iterations=state.adaptive_dev_max or config.retry.max_dev_iterations,
+                        gate_result="DEV_INFRA_FAILURE",
+                    )
                 _log(f"✗ ABORT   infrastructure failure: {state.error}")
                 if logger:
                     logger._safe_emit(
@@ -1798,6 +1840,7 @@ def _run_dev_phase(
                     state=state,
                     message=state.error,
                     infrastructure_failure=True,
+                    unused_dev_iteration=_unused_dev_iteration,
                 )
             state.phase = Phase.ESCALATE
             state.error = (

@@ -1346,3 +1346,7 @@ class CoordinatorResult:
     # still ESCALATE, but this run made no statement about the story and must
     # not be reported, notified, or persisted as if it had.
     infrastructure_failure: bool = False
+    # True when the reserved DEV slot returned a no-charge, no-artifact failure
+    # before any actual development attempt began, so engine.py should release
+    # the just-consumed RetryBudget slot.
+    unused_dev_iteration: bool = False
