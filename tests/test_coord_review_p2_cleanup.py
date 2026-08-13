@@ -23,6 +23,7 @@ from theforge.config import load_config
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.review_phase import _maybe_enter_p2_cleanup
 from theforge.coordinator.state import CoordinatorState, Phase, RetryReason
+from theforge.coordinator.validate_phase import _blocking_finding_route, _ValidateOutcome
 from theforge.review import ReviewFinding, ReviewResult
 
 APPROVE_WITH_P2 = """\
@@ -100,8 +101,9 @@ class TestMaybeEnterP2Cleanup:
     def test_enters_cleanup_when_p2s_present_and_budget_remains(self, tmp_path):
         config = _make_config(tmp_path)  # max_dev_iterations=2
         state = CoordinatorState()
-        state.budget.max_iterations = config.retry.max_dev_iterations
-        # cycle_count=0 → remaining=2
+        state.budget.max_iterations = 3
+        state.budget.cycle_count = 1
+        # remaining=2: one iteration for cleanup, one reserved for repair
 
         entered = _maybe_enter_p2_cleanup(state, config, _approve_with_p2_review())
 
@@ -138,6 +140,20 @@ class TestMaybeEnterP2Cleanup:
         assert entered is False
         assert state.p2_cleanup_active is False
         assert state.p2_cleanup_audit[-1]["action"] == "skip_budget"
+
+    def test_does_not_enter_when_only_repair_reserve_remains(self, tmp_path):
+        """Cleanup must not spend the final iteration reserved for repair."""
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.budget.max_iterations = 2
+        state.budget.cycle_count = 1
+        # remaining()==1: enough for one more dev call, but not for cleanup plus repair.
+
+        entered = _maybe_enter_p2_cleanup(state, config, _approve_with_p2_review())
+
+        assert entered is False
+        assert state.p2_cleanup_active is False
+        assert state.p2_cleanup_audit[-1]["action"] == "skip_budget_reserve"
 
     def test_does_not_enter_when_disabled(self, tmp_path):
         """AC: operator may disable cleanup via config."""
@@ -293,6 +309,36 @@ class TestP2CleanupConfigLoading:
         assert cfg.retry.p2_cleanup_max_iterations == 3
 
 
+class TestValidateCleanupRouting:
+    """Validate-phase seam tests for cleanup reserve and repair routing."""
+
+    def test_cleanup_breakage_uses_reserved_repair_iteration_when_budget_remains(self, tmp_path):
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.p2_cleanup_active = True
+        state.budget.max_iterations = 3
+        state.budget.cycle_count = 2
+        # remaining()==1: cleanup is active, but one in-cycle repair attempt remains.
+
+        route = _blocking_finding_route(state, config)
+
+        assert route.outcome == _ValidateOutcome.RETRY_DEV
+        assert route.reason == "dev_budget_remains"
+
+    def test_cleanup_breakage_escalates_when_reserved_repair_iteration_is_spent(self, tmp_path):
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.p2_cleanup_active = True
+        state.budget.max_iterations = 3
+        state.budget.cycle_count = 3
+        # remaining()==0: cleanup may not buy a new cycle once the reserved repair is gone.
+
+        route = _blocking_finding_route(state, config)
+
+        assert route.outcome == _ValidateOutcome.ESCALATE
+        assert route.reason == "p2_cleanup"
+
+
 class TestP2CleanupLoop:
     """Integration tests for the cleanup loop through run_from_review."""
 
@@ -419,22 +465,16 @@ class TestP2CleanupLoop:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_cleanup_budget_exhaustion_exits_done_not_escalate(
+    def test_cleanup_reserve_decline_exits_done_not_escalate(
         self, mock_shell, mock_dev, mock_pool, tmp_path
     ):
-        """AC: budget exhaustion with P2s still open exits DONE, not ESCALATE.
-
-        max_dev_iterations=1 + cleanup cap=1: after one cleanup pass that still
-        leaves P2s open, the next review pass cannot start another cleanup
-        iteration; the run must terminate as DONE.
-        """
+        """AC: reserve protection declines cleanup and exits DONE, not ESCALATE."""
         config = _make_config(tmp_path)
         config = dataclasses.replace(
             config,
             retry=dataclasses.replace(
                 config.retry,
                 max_dev_iterations=1,
-                p2_cleanup_max_iterations=1,
             ),
         )
         task = _make_task(tmp_path)
@@ -453,9 +493,54 @@ class TestP2CleanupLoop:
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert result.state.p2_cleanup_iterations == 1
-        # Audit shows the second pass refused another cleanup iteration.
+        assert result.state.p2_cleanup_iterations == 0
+        assert mock_dev.call_count == 0
         actions = [entry["action"] for entry in result.state.p2_cleanup_audit]
-        assert "enter" in actions
-        # Either cap or budget exhaustion blocked the second pass.
-        assert any(a in {"skip_cap", "skip_budget"} for a in actions)
+        assert actions == ["skip_budget_reserve"]
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_cleanup_breakage_uses_reserved_repair_iteration_before_rereview(
+        self, mock_shell, mock_dev, mock_pool, tmp_path
+    ):
+        """A cleanup regression spends the reserved repair attempt instead of escalating."""
+        config = _make_config(tmp_path)
+        config = dataclasses.replace(
+            config,
+            retry=dataclasses.replace(
+                config.retry,
+                max_dev_iterations=3,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_dev.return_value = _make_agent_result(success=True, output="Polished.")
+
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [
+                    _make_agent_result(success=True, output=APPROVE_WITH_P2, profile_name="review")
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.p2_cleanup_iterations == 1
+        assert result.state.p2_cleanup_active is False
+        assert mock_dev.call_count == 2
+        assert pool_calls["n"] == 2
+        assert result.state.gate_decisions[-2:] == ["FAIL", "PASS"]
+        assert result.state.validate_blocks == []
+        actions = [entry["action"] for entry in result.state.p2_cleanup_audit]
+        assert actions == ["enter", "exit_clean"]

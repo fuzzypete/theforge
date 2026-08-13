@@ -857,7 +857,8 @@ def _maybe_enter_p2_cleanup(
     Returns False when:
       - the feature is disabled,
       - no carried P2 findings remain (or none existed),
-      - the dev iteration budget for this cycle is exhausted, or
+      - the dev iteration budget for this cycle is exhausted,
+      - entering cleanup would consume the final iteration reserved for repair, or
       - the configured cleanup-iteration cap has been reached.
     """
     current_p2s = _open_p2_findings(parsed_review)
@@ -890,6 +891,10 @@ def _maybe_enter_p2_cleanup(
         return False
     if state.budget.remaining() <= 0:
         state.p2_cleanup_audit.append({"action": "skip_budget", **audit_base})
+        _clear_p2_cleanup_state(state)
+        return False
+    if state.budget.remaining() < 2:
+        state.p2_cleanup_audit.append({"action": "skip_budget_reserve", **audit_base})
         _clear_p2_cleanup_state(state)
         return False
     cap = config.retry.p2_cleanup_max_iterations
