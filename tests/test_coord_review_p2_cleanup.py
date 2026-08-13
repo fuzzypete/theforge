@@ -312,9 +312,7 @@ class TestP2CleanupConfigLoading:
 class TestValidateCleanupRouting:
     """Validate-phase seam tests for cleanup reserve and repair routing."""
 
-    def test_cleanup_breakage_uses_reserved_repair_iteration_when_budget_remains(
-        self, tmp_path
-    ):
+    def test_cleanup_breakage_uses_reserved_repair_iteration_when_budget_remains(self, tmp_path):
         config = _make_config(tmp_path)
         state = CoordinatorState()
         state.p2_cleanup_active = True
@@ -327,9 +325,7 @@ class TestValidateCleanupRouting:
         assert route.outcome == _ValidateOutcome.RETRY_DEV
         assert route.reason == "dev_budget_remains"
 
-    def test_cleanup_breakage_escalates_when_reserved_repair_iteration_is_spent(
-        self, tmp_path
-    ):
+    def test_cleanup_breakage_escalates_when_reserved_repair_iteration_is_spent(self, tmp_path):
         config = _make_config(tmp_path)
         state = CoordinatorState()
         state.p2_cleanup_active = True
