@@ -354,6 +354,64 @@ class TestResumeReloadsIntakeCost:
         assert sprint_result.specs_succeeded == 2
 
 
+class TestBrokenBaselineAbortCost:
+    """An abort before any story starts has still spent money (#2434).
+
+    Entry-level intake remediation runs before the baseline gate does. When the
+    gate then refuses the sprint, the audit is the only place that spend is ever
+    reported — an operator deciding whether to retry reads it there or nowhere.
+    """
+
+    def test_broken_baseline_audit_reports_pre_gate_remediation_spend(
+        self, tmp_path: Path
+    ) -> None:
+        import yaml
+
+        _make_spec_file(tmp_path, "Feature A", "feature-a")
+        manifest_path = _make_manifest(tmp_path, ["feature-a.md"])
+        config = _make_config(tmp_path)
+
+        broken_baseline = {
+            "passed": False,
+            "status": "fail",
+            "exit_code": 1,
+            "duration_seconds": 2.5,
+            "confirmation_attempted": True,
+            "failure_reproduced": True,
+            "message": "Broken baseline: configured gate failed on sprint merge base abc123",
+        }
+        entry_outcomes = {
+            12345: _passed_outcome_with_cost("issue-12345", INTAKE_REMEDIATION_COST_USD)
+        }
+
+        with (
+            patch(
+                "theforge.sprint.runner._run_baseline_gate",
+                return_value=broken_baseline,
+            ),
+            patch("theforge.sprint.runner.run_batch_preflight") as mock_preflight,
+            patch("theforge.sprint.runner.run_task") as mock_run_task,
+            pytest.raises(RuntimeError, match="Broken baseline"),
+        ):
+            run_sprint_ctx(
+                config,
+                manifest_path,
+                no_pull=True,
+                entry_intake_outcomes=entry_outcomes,
+            )
+
+        assert not mock_preflight.called
+        assert not mock_run_task.called
+
+        audit = yaml.safe_load(
+            (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+        )
+        assert audit["sprint"]["stopped_reason"] == "broken_baseline"
+        assert audit["sprint"]["total_cost_usd"] == pytest.approx(
+            INTAKE_REMEDIATION_COST_USD, abs=1e-6
+        ), "a broken-baseline abort must report what reaching it cost, not 0.0"
+
+
 class TestAllSkippedQueryModeIntakeCost:
     """Query-mode all-skipped path bypasses run_sprint and writes the audit
     via _emit_all_skipped_audit. Entry intake remediation may have spent
