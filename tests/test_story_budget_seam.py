@@ -1849,6 +1849,26 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         assert sb.remaining_reserved_review_usd(reservation, 2.02) == 0.0
         assert state.adaptive_limits_audit["review_funding_reservation"]["release_count"] == 2
 
+    def test_a_rereleased_retained_cycle_funds_the_next_dev_dispatch(
+        self, tmp_path: Path
+    ) -> None:
+        """The retained re-review dollar is returned in time to fund the repair attempt."""
+        state, result, dev_calls = self._run_loop(
+            tmp_path,
+            dev_costs=[6.95, 2.53],
+            max_dev_iterations=4,
+        )
+
+        assert result is None
+        assert len(dev_calls) == 3
+        assert dev_calls[-1] == 11.50
+        assert state.p2_cleanup_active is True
+        assert state.p2_cleanup_iterations == 2
+        reservation = state.review_funding_reservation
+        assert reservation["release_count"] == 2
+        assert reservation["release_reason"] == "approve_p2_cleanup"
+        assert reservation["retained_review_usd"] == 0.0
+
     def test_a_finalized_approval_releases_the_whole_reserve(self, tmp_path: Path) -> None:
         """The approve_final path, end to end: nothing is reachable, nothing is held.
 

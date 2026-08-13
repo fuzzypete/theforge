@@ -23,6 +23,7 @@ from theforge.config import load_config
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.review_phase import _maybe_enter_p2_cleanup
 from theforge.coordinator.state import CoordinatorState, Phase, RetryReason
+from theforge.coordinator.validate_phase import _ValidateOutcome
 from theforge.review import ReviewFinding, ReviewResult
 
 APPROVE_WITH_P2 = """\
@@ -466,3 +467,54 @@ class TestP2CleanupLoop:
         assert mock_dev.call_count == 0
         actions = [entry["action"] for entry in result.state.p2_cleanup_audit]
         assert actions == ["skip_budget_reserve"]
+
+    @patch("theforge.coordinator.engine._run_validate_phase")
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_cleanup_breakage_uses_reserved_repair_iteration_before_rereview(
+        self, mock_shell, mock_dev, mock_pool, mock_validate, tmp_path
+    ):
+        """A cleanup regression spends the reserved repair attempt instead of escalating."""
+        config = _make_config(tmp_path)
+        config = dataclasses.replace(
+            config,
+            retry=dataclasses.replace(
+                config.retry,
+                max_dev_iterations=3,
+            ),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_dev.return_value = _make_agent_result(success=True, output="Polished.")
+        mock_validate.side_effect = [
+            (_ValidateOutcome.RETRY_DEV, None),
+            (_ValidateOutcome.PASS, None),
+        ]
+
+        pool_calls = {"n": 0}
+
+        def pool_side_effect(**kwargs):
+            pool_calls["n"] += 1
+            if pool_calls["n"] == 1:
+                return [
+                    _make_agent_result(success=True, output=APPROVE_WITH_P2, profile_name="review")
+                ]
+            return [_make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")]
+
+        mock_pool.side_effect = pool_side_effect
+
+        result = run_from_review(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.p2_cleanup_iterations == 1
+        assert result.state.p2_cleanup_active is False
+        assert mock_dev.call_count == 2
+        assert mock_validate.call_count == 2
+        assert pool_calls["n"] == 2
+        actions = [entry["action"] for entry in result.state.p2_cleanup_audit]
+        assert actions == ["enter", "exit_clean"]
