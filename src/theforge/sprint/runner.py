@@ -1055,6 +1055,12 @@ def _refuse_dirty_root_before_spend(
 #: ``GateLabel.purpose`` for the pre-sprint merge-base gate.
 BASELINE_GATE_PURPOSE = "baseline gate"
 
+#: ``GateLabel.purpose`` for the immediate re-run that decides whether a failing
+#: baseline gate is evidence about the merge base or about one noisy invocation
+#: (#2434). A distinct purpose keeps the two runs distinguishable in the log,
+#: where the resolved command is identical.
+BASELINE_GATE_CONFIRM_PURPOSE = "baseline gate confirmation"
+
 #: Top-level ``sprint_phase`` values for the pre-story window. Both gates below
 #: can run for many minutes; without their own phases the whole window reports
 #: as ``starting`` with every story ``waiting`` (#2014).
@@ -1271,6 +1277,7 @@ def _run_baseline_gate(
     resolved: ResolvedSprint,
     *,
     run_id: str | None = None,
+    on_confirmation_start: Callable[[], None] | None = None,
 ) -> dict[str, object]:
     """Run the configured gate on the sprint merge base before any agent work starts.
 
@@ -1281,6 +1288,15 @@ def _run_baseline_gate(
     worktree the gate ran in, which is the only environment the failure can be
     reproduced in. Cleanup of the worktree happens after that capture, never
     before, and only on outcomes that did not halt the sprint (#2160).
+
+    A gate that fails is re-run once against the same worktree and commit before
+    its FAIL is treated as the baseline's verdict; only a failure that reproduces
+    halts the sprint (#2434). Every record produced by an executed gate carries
+    ``confirmation_attempted`` and ``failure_reproduced`` so a reader — and the
+    audit — can tell a confirmed broken baseline from a failure that vanished on
+    re-run. ``on_confirmation_start``, when given, is called just before that
+    second run so a caller can say so on its live progress surface: the re-run
+    doubles the gate's wall time and would otherwise look like a stuck sprint.
     """
 
     # Declared before the first return so *every* baseline record carries the
@@ -1514,15 +1530,136 @@ def _run_baseline_gate(
                 "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "decision": decision,
                 "output_tail": output_tail,
+                # Nothing failed, so nothing needed confirming; the keys are
+                # present on every executed-gate record so a reader never has to
+                # ask whether this is one of the kinds that says.
+                "confirmation_attempted": False,
+                "failure_reproduced": None,
                 "message": (
                     "Baseline gate passed on sprint merge base "
                     f"{merge_base_ref} before dev iterations started"
                 ),
             }
 
+        # A verdict that decides whether work may begin is evidence about the
+        # merge base only if it reproduces. Process-teardown and sandbox flakes
+        # fail one invocation and pass the next against the identical tree, and
+        # this gate's FAIL ends the sprint before any story starts — so the
+        # failure is re-run once, immediately, in the same worktree at the same
+        # commit, and only a failure that repeats is treated as the baseline's
+        # answer (#2434). The re-run happens *before* the evidence capture and
+        # worktree preservation below: a first run that does not reproduce
+        # returns through the ordinary cleanup path and leaves nothing behind.
+        initial_result = {
+            "decision": decision,
+            "error": error,
+            "exit_code": exit_code,
+            "output_tail": output_tail,
+            "duration_seconds": round(duration, 2),
+        }
+        if on_confirmation_start is not None:
+            on_confirmation_start()
+        _log(
+            f"Baseline gate failed on merge base {merge_base_ref}; re-running the identical "
+            "gate once to confirm the failure reproduces before refusing the sprint"
+        )
+        confirm_full_output: list[str] = []
+        (
+            confirm_decision,
+            confirm_error,
+            confirm_tail,
+            confirm_cmd,
+            confirm_exit,
+        ) = run_gate_full(
+            config,
+            baseline_worktree,
+            full_output=confirm_full_output,
+            process_teardowns=gate_teardowns,
+            label=GateLabel(
+                purpose=BASELINE_GATE_CONFIRM_PURPOSE,
+                target="merge base",
+                commit=merge_base_ref,
+                worktree_path=str(baseline_worktree),
+            ),
+        )
+        duration = time.monotonic() - started_monotonic
+        finished_at = datetime.datetime.now(datetime.timezone.utc)
+        confirmation_passed = confirm_decision == "PASS" and confirm_error is None
+        confirm_exit_code = (
+            confirm_exit if confirm_exit is not None else (0 if confirmation_passed else 1)
+        )
+        confirmation_result = {
+            "decision": confirm_decision,
+            "error": confirm_error,
+            "exit_code": confirm_exit_code,
+            "output_tail": confirm_tail,
+        }
+        if confirmation_passed:
+            # The first run's output is still the only record of what failed, and
+            # the operator has no other way to see it — the sprint is about to
+            # proceed as though the failure never happened. Written under its own
+            # filename so it can never be mistaken for a halting verdict's
+            # evidence, and the worktree is *not* preserved: nothing halted.
+            unreproduced_filename = (
+                f"{evidence_filename.removesuffix('.txt')}-unreproduced-failure.txt"
+            )
+            evidence_path, evidence_unavailable = _write_baseline_gate_evidence(
+                log_dir=sprint_log_dir,
+                filename=unreproduced_filename,
+                header_lines=[
+                    f"# baseline gate {decision or 'ERROR'} on merge base {merge_base_ref}",
+                    "# NOT REPRODUCED: an immediate re-run of the identical gate passed",
+                    f"# gate command: {resolved_gate_cmd}",
+                    f"# exit code: {exit_code}",
+                    f"# worktree: {baseline_worktree}",
+                ],
+                full_output=gate_full_output[0] if gate_full_output else None,
+            )
+            message = (
+                "Baseline gate failed and then passed on an immediate re-run of the identical "
+                f"gate against merge base {merge_base_ref}; the failure did not reproduce, so "
+                "it is not treated as evidence about the merge base and the sprint proceeds "
+                f"(first run exit {exit_code}: {error or 'Gate returned FAIL'})"
+            )
+            message += _baseline_evidence_footer(
+                worktree=None,
+                evidence_path=evidence_path,
+                evidence_unavailable=evidence_unavailable,
+            )
+            return {
+                "status": "pass_unreproduced_failure",
+                "passed": True,
+                "exit_code": confirm_exit_code,
+                "duration_seconds": round(duration, 2),
+                "started_at": baseline_started_at,
+                "finished_at": finished_at,
+                "merge_base": merge_base_ref,
+                "command": confirm_cmd,
+                "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
+                "decision": confirm_decision,
+                "output_tail": confirm_tail,
+                "confirmation_attempted": True,
+                "failure_reproduced": False,
+                "initial_result": initial_result,
+                "confirmation_result": confirmation_result,
+                "evidence_path": evidence_path,
+                "evidence_unavailable": evidence_unavailable,
+                "message": message,
+            }
+
+        # Reproduced: the confirmation run is the verdict, and its output is what
+        # the operator investigates.
+        decision = confirm_decision
+        error = confirm_error
+        output_tail = confirm_tail
+        resolved_gate_cmd = confirm_cmd
+        exit_code = confirm_exit_code
+        if confirm_full_output:
+            gate_full_output = confirm_full_output
         message = (
             "Broken baseline: configured gate failed on sprint merge base "
             f"{merge_base_ref} before any dev work started ({error or 'Gate returned FAIL'})"
+            " (failure reproduced on an immediate re-run of the identical gate)"
         )
         try:
             local_sha = subprocess.check_output(
@@ -1585,6 +1722,10 @@ def _run_baseline_gate(
             "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "decision": decision,
             "output_tail": output_tail,
+            "confirmation_attempted": True,
+            "failure_reproduced": True,
+            "initial_result": initial_result,
+            "confirmation_result": confirmation_result,
             "worktree": preserved_worktree,
             "evidence_path": evidence_path,
             "evidence_unavailable": evidence_unavailable,
@@ -4350,6 +4491,32 @@ def _attempt_integration(
     return True
 
 
+def _fold_entry_intake_cost(
+    context: SprintRunContext,
+    state: SprintExecutionState,
+    log: Callable[[str], None],
+) -> None:
+    """Roll pre-``run_sprint`` intake remediation spend into the sprint ledger.
+
+    Entry-level intake remediation runs in the CLI before the sprint starts and
+    spends the same sprint-authorized budget, so the sprint total is wrong
+    without it. Called once, before the baseline-gate abort branch, because an
+    abort before any story starts has still spent this money and an operator
+    deciding whether to retry needs the figure (#2434).
+    """
+    if not context.entry_intake_outcomes:
+        return
+    for issue_num, outcome in context.entry_intake_outcomes.items():
+        if _intake_outcome_cost_measured(outcome) is None:
+            state.cost.flag_unmeasured_here(f"entry-intake:issue-{issue_num}")
+    entry_intake_cost = sum(
+        _intake_outcome_cost(o) for o in context.entry_intake_outcomes.values()
+    )
+    if entry_intake_cost > 0.0:
+        state.cost.add(entry_intake_cost)
+        log(f"Entry-intake remediation cost: ${entry_intake_cost:.4f} (rolled into sprint total)")
+
+
 def run_sprint(context: SprintRunContext) -> SprintResult:
     """Run all stories in a sprint with optional concurrency.
 
@@ -4745,11 +4912,45 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             started_at=baseline_started_at.isoformat(),
         )
         try:
-            baseline_gate = _run_baseline_gate(_ctx.config, _ctx.resolved, run_id=_ctx.run_id)
+            baseline_gate = _run_baseline_gate(
+                _ctx.config,
+                _ctx.resolved,
+                run_id=_ctx.run_id,
+                # The confirmation re-run doubles the gate's wall time, and the
+                # phase started when the *first* run did — without this the
+                # second half of the window reads as a stuck gate (#2434).
+                on_confirmation_start=lambda: _publish_sprint_phase(
+                    SPRINT_PHASE_BASELINE_GATE,
+                    detail=(
+                        f"re-running gate to confirm failure on merge base of "
+                        f"{_ctx.config.workspace.base_branch}"
+                    ),
+                    started_at=baseline_started_at.isoformat(),
+                ),
+            )
         finally:
             _publish_sprint_phase(SPRINT_PHASE_STARTING)
     _ctx.resolved.baseline_gate = baseline_gate
     _log(str(baseline_gate.get("message", "Baseline gate check completed")))
+    if baseline_gate.get("failure_reproduced") is False:
+        # The sprint is about to proceed past a gate that said FAIL. That is the
+        # right call — the failure was not reproducible against the same commit —
+        # but it is an ambiguity an operator should be able to see without
+        # reading the audit JSON afterwards.
+        _initial = baseline_gate.get("initial_result")
+        _sprint_logger.emit(
+            "baseline_gate_failure_not_reproduced",
+            merge_base=baseline_gate.get("merge_base"),
+            initial_exit_code=_initial.get("exit_code") if isinstance(_initial, dict) else None,
+            evidence_path=baseline_gate.get("evidence_path"),
+        )
+    # Entry-level intake remediation runs in the CLI before run_sprint and
+    # spends the same sprint-authorized budget. The fold happens here, ahead of
+    # the baseline-gate abort below, because an abort before any story starts
+    # has still spent that money and an operator deciding whether to retry needs
+    # the figure (#2434). Folding once, on every path, is what keeps the abort's
+    # audit and the completed sprint's total the same number.
+    _fold_entry_intake_cost(_ctx, _sprint_state, _log)
     if not bool(baseline_gate.get("passed", False)):
         _write_sprint_audit(
             manifest=_ctx.resolved,
@@ -4759,7 +4960,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 specs_succeeded=0,
                 specs_failed=total,
                 specs_skipped=0,
-                total_cost_usd=0.0,
+                # Spend reaching the abort, not a placeholder: the pre-gate
+                # entry-intake remediation folded above is real money and the
+                # operator sees it here or nowhere (#2434).
+                total_cost_usd=_sprint_state.cost.spent,
                 budget_usd=_ctx.resolved.budget_usd,
                 results=[],
                 stopped_reason="broken_baseline",
@@ -4789,22 +4993,8 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # inheriting under a ``carried:`` prefix, so an operator acceptance made for
     # an earlier occurrence never absorbs a new unknown nobody has bounded
     # (#2310).
-    # Entry-level intake remediation runs in the CLI before run_sprint and
-    # spends the same sprint-authorized budget; fold its agent cost into
-    # the sprint total so operator-visible accounting matches actual spend.
-    if _ctx.entry_intake_outcomes:
-        for _issue_num, _entry_outcome in _ctx.entry_intake_outcomes.items():
-            if _intake_outcome_cost_measured(_entry_outcome) is None:
-                _sprint_state.cost.flag_unmeasured_here(f"entry-intake:issue-{_issue_num}")
-        _entry_intake_cost = sum(
-            _intake_outcome_cost(o) for o in _ctx.entry_intake_outcomes.values()
-        )
-        if _entry_intake_cost > 0.0:
-            _sprint_state.cost.add(_entry_intake_cost)
-            _log(
-                f"Entry-intake remediation cost: ${_entry_intake_cost:.4f} "
-                "(rolled into sprint total)"
-            )
+    # Entry-intake remediation spend is folded in above, before the baseline-gate
+    # abort, so an abort reports it too (#2434).
     if _ctx.notify and _ctx.config.notifications.backend not in ("ntfy", "none"):
         from ..notify_backends import send_notifications
 
