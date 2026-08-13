@@ -35,6 +35,7 @@ from theforge.traces import write_trace
 
 from . import story_budget as _story_budget
 from . import util as _cu
+from .agent_failure import produced_model_output
 from .agent_identity import resolved_identity_for_result
 from .log_tee import _write_log_artifact
 from .review_context import (
@@ -410,7 +411,7 @@ def _retry_transient_review_failures(
                 stop_event=stop_event,
                 progress_cb=progress_channel.cb if progress_channel is not None else None,
             )
-            if retried.session_id:
+            if retried.session_id and produced_model_output(retried):
                 state.reviewer_session_ids[profile.name] = retried.session_id
             state.review_agent_results.append(retried)
             log_agent_result(retried, f"REVIEW/{retried.profile_name}")
@@ -840,7 +841,7 @@ def _run_review_pool(
     )
     _pool_elapsed = time.monotonic() - _pool_start
     for profile, result in zip(pool, pool_results):
-        if result.session_id:
+        if result.session_id and produced_model_output(result):
             state.reviewer_session_ids[profile.name] = result.session_id
     save_sessions(
         workspace_path,

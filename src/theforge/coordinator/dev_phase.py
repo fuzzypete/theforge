@@ -41,6 +41,7 @@ from .agent_failure import (
     carries_agent_text,
     classify_agent_failure,
     mark_infrastructure_abort,
+    produced_model_output,
     record_invocation_failure,
     zero_charge_no_model_artifacts,
 )
@@ -1426,8 +1427,8 @@ def _run_dev_phase(
     _capture_dev_handoff(state, config, task, workspace_path, dev_result)
     if _dev_profile.mode == "cli" and dev_result.transport_used == "api":
         state.dev_session_id = None
-    else:
-        state.dev_session_id = dev_result.session_id or state.dev_session_id
+    elif dev_result.session_id and produced_model_output(dev_result):
+        state.dev_session_id = dev_result.session_id
     save_sessions(workspace_path, state.dev_session_id, state.reviewer_session_ids)
     log_agent_result(dev_result, "DEV")
     _dev_cost_total = sum_costs(result.cost_usd for result in _dev_results_this_iteration)

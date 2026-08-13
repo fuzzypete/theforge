@@ -65,6 +65,7 @@ from .agent_failure import (
     AgentInvocationFailure,
     classify_agent_failure,
     mark_infrastructure_abort,
+    produced_model_output,
     record_degraded_pool,
     record_invocation_failure,
 )
@@ -323,7 +324,7 @@ def _retry_transient_plan_review_failures(
                 session_id=current.session_id if profile.mode == "cli" else None,
                 progress_cb=progress_channel.cb if progress_channel is not None else None,
             )
-            if retried.session_id:
+            if retried.session_id and produced_model_output(retried):
                 state.plan_review_session_ids[profile.name] = retried.session_id
             _write_log_artifact(
                 state.log_dir,
@@ -514,7 +515,7 @@ def _retry_parse_failed_plan_reviews(
                 secrets=config.secrets,
                 session_id=retry_session_id,
             )
-            if retried.session_id:
+            if retried.session_id and produced_model_output(retried):
                 state.plan_review_session_ids[profile.name] = retried.session_id
             _write_log_artifact(
                 state.log_dir,
@@ -1233,7 +1234,7 @@ def _run_plan_agent_review(
         state.plan_review_durations.append(_pr_elapsed)
 
         for _prof, _res in zip(par_profiles, pr_results):
-            if _res.session_id:
+            if _res.session_id and produced_model_output(_res):
                 state.plan_review_session_ids[_prof.name] = _res.session_id
         state.plan_review_results.extend(pr_results)
         save_sessions(

@@ -168,6 +168,33 @@ class TestClassification:
         assert produced_model_output(result) is True
         assert classify_agent_failure(result, phase="DEV") is None
 
+    def test_no_text_marker_beats_usage_telemetry(self):
+        result = AgentResult(
+            success=False,
+            output=(
+                "CLAUDE_STREAM_NO_TEXT: reason=result_missing_text subtype=error_during_execution"
+            ),
+            session_id="sess-poisoned",
+            cost_usd=0.0,
+            exit_code=1,
+            raw={},
+            profile_name="dev",
+            model_usage=(
+                ModelUsage(
+                    model="claude-sonnet-4-5",
+                    input_tokens=321,
+                    output_tokens=0,
+                    cache_read_tokens=0,
+                    cache_creation_tokens=0,
+                    cost_usd=0.0,
+                ),
+            ),
+        )
+        assert produced_model_output(result) is False
+        failure = classify_agent_failure(result, phase="DEV")
+        assert failure is not None
+        assert failure.category == "process"
+
     def test_unrecognized_failure_text_is_not_reclassified(self):
         """Errs toward the pre-existing path when it cannot identify a substrate event."""
         result = _make_agent_result(success=False, output="The plan is wrong because ...")
