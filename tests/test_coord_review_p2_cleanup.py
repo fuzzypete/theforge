@@ -100,8 +100,9 @@ class TestMaybeEnterP2Cleanup:
     def test_enters_cleanup_when_p2s_present_and_budget_remains(self, tmp_path):
         config = _make_config(tmp_path)  # max_dev_iterations=2
         state = CoordinatorState()
-        state.budget.max_iterations = config.retry.max_dev_iterations
-        # cycle_count=0 → remaining=2
+        state.budget.max_iterations = 3
+        state.budget.cycle_count = 1
+        # remaining=2: one iteration for cleanup, one reserved for repair
 
         entered = _maybe_enter_p2_cleanup(state, config, _approve_with_p2_review())
 
@@ -138,6 +139,20 @@ class TestMaybeEnterP2Cleanup:
         assert entered is False
         assert state.p2_cleanup_active is False
         assert state.p2_cleanup_audit[-1]["action"] == "skip_budget"
+
+    def test_does_not_enter_when_only_repair_reserve_remains(self, tmp_path):
+        """Cleanup must not spend the final iteration reserved for repair."""
+        config = _make_config(tmp_path)
+        state = CoordinatorState()
+        state.budget.max_iterations = 2
+        state.budget.cycle_count = 1
+        # remaining()==1: enough for one more dev call, but not for cleanup plus repair.
+
+        entered = _maybe_enter_p2_cleanup(state, config, _approve_with_p2_review())
+
+        assert entered is False
+        assert state.p2_cleanup_active is False
+        assert state.p2_cleanup_audit[-1]["action"] == "skip_budget_reserve"
 
     def test_does_not_enter_when_disabled(self, tmp_path):
         """AC: operator may disable cleanup via config."""
@@ -419,22 +434,16 @@ class TestP2CleanupLoop:
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.dev_phase.run_agent")
     @patch_gate_shell()
-    def test_cleanup_budget_exhaustion_exits_done_not_escalate(
+    def test_cleanup_reserve_decline_exits_done_not_escalate(
         self, mock_shell, mock_dev, mock_pool, tmp_path
     ):
-        """AC: budget exhaustion with P2s still open exits DONE, not ESCALATE.
-
-        max_dev_iterations=1 + cleanup cap=1: after one cleanup pass that still
-        leaves P2s open, the next review pass cannot start another cleanup
-        iteration; the run must terminate as DONE.
-        """
+        """AC: reserve protection declines cleanup and exits DONE, not ESCALATE."""
         config = _make_config(tmp_path)
         config = dataclasses.replace(
             config,
             retry=dataclasses.replace(
                 config.retry,
                 max_dev_iterations=1,
-                p2_cleanup_max_iterations=1,
             ),
         )
         task = _make_task(tmp_path)
@@ -453,9 +462,7 @@ class TestP2CleanupLoop:
 
         assert result.success is True
         assert result.phase == Phase.DONE
-        assert result.state.p2_cleanup_iterations == 1
-        # Audit shows the second pass refused another cleanup iteration.
+        assert result.state.p2_cleanup_iterations == 0
+        assert mock_dev.call_count == 0
         actions = [entry["action"] for entry in result.state.p2_cleanup_audit]
-        assert "enter" in actions
-        # Either cap or budget exhaustion blocked the second pass.
-        assert any(a in {"skip_cap", "skip_budget"} for a in actions)
+        assert actions == ["skip_budget_reserve"]

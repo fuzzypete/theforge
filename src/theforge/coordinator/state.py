@@ -1087,8 +1087,9 @@ class CoordinatorState:
     # Audit trail for cleanup decisions: one entry per cleanup transition with
     # action ("enter" | "continue" | "exit_clean" | "exit_budget" | "exit_cap"
     # | "exit_regression" | "skip_disabled" | "skip_no_p2" | "skip_budget"
-    # | "skip_cap"), pre-pass P2 count, post-pass P2 count, budget remaining,
-    # review_cycle, and dev_iteration at the decision point.
+    # | "skip_budget_reserve" | "skip_cap"), pre-pass P2 count, post-pass P2
+    # count, budget remaining, review_cycle, and dev_iteration at the decision
+    # point.
     p2_cleanup_audit: list[dict] = field(default_factory=list)
     # ── Symptom-verification test escalations (#1560) ─────────────────────────
     # One entry per P2→P1 escalation applied because a bug-fix PR's reviewer
