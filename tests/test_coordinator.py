@@ -281,6 +281,8 @@ class TestCoordinatorHybridRunner:
         call_args = mock_prompt_builder.call_args_list[0]
         assert call_args.kwargs["mode"] == "api"
         assert call_args.kwargs["p2_policy"] == "in_scope"
+        assert call_args.kwargs["authoritative_gate_decision"] == "PASS"
+        assert call_args.kwargs["authoritative_gate_commit"]
 
     @patch("theforge.coordinator.review_pool.build_review_prompt")
     @patch("theforge.coordinator.review_pool.run_agent_pool")

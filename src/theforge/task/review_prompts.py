@@ -171,6 +171,8 @@ def build_review_prompt(
     assembled_context: ContextPack | None = None,
     sandboxed: bool = True,
     containment: str | None = None,
+    authoritative_gate_decision: str | None = None,
+    authoritative_gate_commit: str | None = None,
     fix_claim_flags: list[str] | None = None,
     p2_policy: str = "in_scope",
 ) -> str:
@@ -417,6 +419,8 @@ def build_review_prompt(
         )
     else:
         sandbox_label = "enabled" if sandboxed else _containment_labels["none"]
+    gate_decision_label = authoritative_gate_decision or "UNAVAILABLE"
+    gate_commit_label = authoritative_gate_commit or "UNAVAILABLE"
     _hard_block = render_hard_conventions_block(
         stack=stack,
         allowed_root_files=allowed_root_files,
@@ -440,6 +444,8 @@ def build_review_prompt(
         Treat it as authoritative over any self-reported handoff claims.
 
         Sandbox isolation: {sandbox_label}
+        Authoritative gate verdict: {gate_decision_label}
+        Authoritative gate commit: {gate_commit_label}
 
         Verified commit log (`git log --oneline main..HEAD`):
         ```
@@ -502,9 +508,23 @@ def build_review_prompt(
         ## Rules
 
         - **Default to APPROVE.** If the code satisfies every acceptance criterion
-          and the gate passes, it should be approved even if you'd do it differently.
+          and the coordinator's authoritative gate verdict for the reviewed HEAD is
+          `PASS`, it should be approved even if you'd do it differently.
         - verdict MUST be `APPROVE` if there are zero P1 findings
         - verdict MUST be `REQUEST_CHANGES` if any P1 finding exists
+        - **Full-gate ownership is coordinator-only.** Do NOT run the full
+          authoritative gate yourself when the supplied `Authoritative gate commit`
+          still matches the HEAD you are reviewing; rely on the supplied verdict.
+        - When the supplied gate evidence is current for the reviewed HEAD but
+          the authoritative verdict is a non-`PASS` value such as `FAIL`,
+          `ERROR`, or `SKIPPED`, do NOT rerun the full gate. Review the diff on
+          its merits, and if your conclusion depends on the non-`PASS` gate
+          state, say so explicitly in `summary`.
+        - You MAY run the full authoritative gate only when the supplied gate
+          evidence is missing or stale for the current HEAD — for example, if
+          `Authoritative gate commit` is `UNAVAILABLE` or no longer matches
+          `git rev-parse HEAD`. When that happens, note the mismatch in `summary`
+          so the coordinator can refresh the authoritative result.
         - A P1 must cite a concrete failure: file + line + what breaks. "Could be
           improved" or "might cause issues" is P2, not P1.
         - **Verify before asserting.** Before filing a P1 about a runtime behavior,
