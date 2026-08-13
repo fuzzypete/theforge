@@ -25,14 +25,12 @@ from theforge.runners.schema_utils import openai_function_tool_request_shape
 
 READINESS_STATUS_READY = "ready"
 READINESS_STATUS_FAILED = "failed"
-READINESS_STATUS_UNTESTED = "untested"
 READINESS_STATUS_UNSUPPORTED = "unsupported"
 READINESS_STATUS_COST_UNAVAILABLE = "cost-unavailable"
 
 READINESS_STATUSES: tuple[str, ...] = (
     READINESS_STATUS_READY,
     READINESS_STATUS_FAILED,
-    READINESS_STATUS_UNTESTED,
     READINESS_STATUS_UNSUPPORTED,
     READINESS_STATUS_COST_UNAVAILABLE,
 )
@@ -116,7 +114,6 @@ def build_readiness_probes(config: ForgeConfig) -> list[ReadinessProbe]:
 def run_readiness_probe(
     probe: ReadinessProbe,
     *,
-    working_dir: Path,
     secrets: dict[str, str] | None,
 ) -> ReadinessResult:
     """Exercise one capability probe and classify the outcome."""
@@ -198,7 +195,7 @@ def run_readiness_probe(
 
 
 def _probe_for_profile(role: str, profile: ModelProfile) -> ReadinessProbe:
-    profile = _project_probe_profile(role, profile)
+    profile = _project_probe_profile(_stamp_phase(profile, role))
     allowed_tools = tuple(profile.allowed_tools or ())
     capability = (
         READINESS_CAPABILITY_TOOL_STRUCTURED
@@ -209,11 +206,22 @@ def _probe_for_profile(role: str, profile: ModelProfile) -> ReadinessProbe:
 
 
 def _stamp_phase(profile: ModelProfile, role: str) -> ModelProfile:
-    phase = profile.phase
-    if role == "plan":
-        phase = "plan"
-    elif role == "plan-review":
-        phase = "plan_review"
+    phase_by_role = {
+        "dev": "dev",
+        "preflight": "preflight",
+        "preflight-fallback": "preflight",
+        "review": "review",
+        "synthesis": "synthesis",
+        "plan": "plan",
+        "plan-review": "plan_review",
+        "advisor": "preflight",
+        "agent-dev": "dev",
+        "agent-preflight": "preflight",
+        "agent-planner": "plan",
+        "agent-plan-review": "plan_review",
+        "agent-code-review": "review",
+    }
+    phase = phase_by_role.get(role, profile.phase)
     return dataclasses.replace(profile, phase=phase)
 
 
@@ -247,8 +255,8 @@ def _agent_role_probes(agent: object) -> list[ReadinessProbe]:
     ]
 
 
-def _project_probe_profile(role: str, profile: ModelProfile) -> ModelProfile:
-    if role != "agent-dev":
+def _project_probe_profile(profile: ModelProfile) -> ModelProfile:
+    if profile.phase != "dev":
         return profile
     return dataclasses.replace(
         profile,

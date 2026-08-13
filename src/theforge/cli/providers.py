@@ -50,15 +50,12 @@ def cmd_check_providers(args: object) -> int:
         f"running up to {max_workers} at a time\n"
     )
 
-    working_dir = config_path.parent
-
     results = []
     with ThreadPoolExecutor(max_workers=max_workers) as pool:
         futures = {
             pool.submit(
                 run_readiness_probe,
                 probe,
-                working_dir=working_dir,
                 secrets=config.secrets,
             ): probe
             for probe in probes

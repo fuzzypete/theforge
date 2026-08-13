@@ -173,6 +173,25 @@ def test_build_readiness_probes_projects_agent_pool_roles_with_tools(tmp_path):
     assert agent_probes["agent-planner"].profile != agent_probes["agent-code-review"].profile
 
 
+def test_build_readiness_probes_narrows_configured_dev_api_tools_by_phase(tmp_path):
+    config = _config(tmp_path)
+    config = ForgeConfig(
+        **{
+            **config.__dict__,
+            "dev_profile": _api_profile(
+                "dev-api",
+                allowed_tools=("Read", "Write", "Bash", "Glob", "Grep"),
+            ),
+        }
+    )
+
+    probes = build_readiness_probes(config)
+    dev_probe = next(probe for probe in probes if probe.role == "dev")
+
+    assert dev_probe.profile.phase == "dev"
+    assert dev_probe.profile.allowed_tools == ("Read", "Glob", "Grep")
+
+
 def test_run_readiness_probe_marks_openai_unsupported_shape_not_ready(tmp_path):
     probe = next(
         probe for probe in build_readiness_probes(_config(tmp_path)) if probe.role == "review"
@@ -183,7 +202,7 @@ def test_run_readiness_probe_marks_openai_unsupported_shape_not_ready(tmp_path):
         return_value=OpenAIFunctionToolRequestShape("unsupported"),
     ):
         with patch("theforge.cli.provider_readiness.run_api_agent") as mock_api:
-            result = run_readiness_probe(probe, working_dir=tmp_path, secrets={})
+            result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_UNSUPPORTED
     assert not result.ready
@@ -196,7 +215,7 @@ def test_run_readiness_probe_marks_successful_probe_ready(tmp_path):
     )
 
     with patch("theforge.cli.provider_readiness.run_api_agent", return_value=_pass_result()):
-        result = run_readiness_probe(probe, working_dir=tmp_path, secrets={})
+        result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_READY
     assert result.ready is True
@@ -211,7 +230,7 @@ def test_run_readiness_probe_uses_throwaway_working_dir(tmp_path):
         "theforge.cli.provider_readiness.run_api_agent",
         return_value=_pass_result(),
     ) as mock_api:
-        result = run_readiness_probe(probe, working_dir=tmp_path, secrets={})
+        result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_READY
     called_dir = mock_api.call_args.kwargs["working_dir"]
@@ -235,7 +254,7 @@ def test_run_readiness_probe_no_submit_phase_accepts_unstructured_success(tmp_pa
     )
 
     with patch("theforge.cli.provider_readiness.run_api_agent", return_value=unstructured):
-        result = run_readiness_probe(probe, working_dir=tmp_path, secrets={})
+        result = run_readiness_probe(probe, secrets={})
 
     assert result.status == READINESS_STATUS_READY
     assert result.ready is True
