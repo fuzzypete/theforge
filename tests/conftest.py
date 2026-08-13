@@ -427,6 +427,10 @@ def _block_real_coordinator_runners():
             side_effect=_unexpected_call("theforge.cli.provider_readiness.run_api_agent"),
         ),
         patch(
+            "theforge.cli.provider_readiness.run_agent",
+            side_effect=_unexpected_call("theforge.cli.provider_readiness.run_agent"),
+        ),
+        patch(
             "theforge.runners.run_agent",
             side_effect=_unexpected_call("theforge.runners.run_agent"),
         ),
