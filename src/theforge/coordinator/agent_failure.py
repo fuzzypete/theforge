@@ -153,6 +153,18 @@ _TRANSPORT_FAILURE_CODES: frozenset[str] = frozenset(
     {"rate_limit", "provider_internal_error", "connection_reset"}
 )
 _AUTH_FAILURE_CODES: frozenset[str] = frozenset({"auth_error", "authentication_error"})
+_MODEL_EXECUTION_FAILURE_CODES: frozenset[str] = frozenset(
+    {
+        # Keep in sync with the API/CLI loop runners: these codes mean the
+        # model executed and the run reached a work-ending condition, even if
+        # the final failure text is a runner-authored summary line and the
+        # transport billed $0.00 (e.g. a localhost endpoint).
+        "agent_ended_without_result",
+        "max_iterations_reached",
+        "no_submit_completion",
+        "stuck_pattern",
+    }
+)
 
 
 def _text_of(result: Any) -> str:
@@ -171,6 +183,59 @@ def _looks_like_auth_failure(text: str) -> bool:
 def _looks_like_transport_failure(text: str) -> bool:
     """True when ``text`` is a transport drop / provider outage (phrase or 5xx/429)."""
     return _matches(text, _TRANSPORT_PATTERNS) or bool(_TRANSPORT_CODE_RE.search(text))
+
+
+def _has_model_usage_evidence(result: Any) -> bool:
+    """True when token/cost telemetry proves a model actually ran."""
+    for usage in tuple(getattr(result, "model_usage", ()) or ()):
+        for usage_field in (
+            "input_tokens",
+            "output_tokens",
+            "cache_read_tokens",
+            "cache_creation_tokens",
+            "thinking_tokens",
+        ):
+            value = getattr(usage, usage_field, 0)
+            if isinstance(value, int) and value > 0:
+                return True
+        cost = getattr(usage, "cost_usd", None)
+        if isinstance(cost, (int, float)) and cost > 0.0:
+            return True
+    return False
+
+
+def _has_runner_artifacts(result: Any) -> bool:
+    """True when the runner captured provider/session artifacts for the call."""
+    if getattr(result, "session_id", None):
+        return True
+    raw = getattr(result, "raw", None)
+    return isinstance(raw, dict) and bool(raw)
+
+
+def zero_charge_no_model_artifacts(result: Any) -> bool:
+    """True when the failed invocation billed nothing and shows no model artifacts."""
+    if result is None or getattr(result, "success", False):
+        return False
+    exit_code = getattr(result, "exit_code", None)
+    if not isinstance(exit_code, int) or exit_code == 0:
+        return False
+    cost = getattr(result, "cost_usd", None)
+    if cost != 0.0:
+        return False
+    if str(getattr(result, "partial_output", "") or "").strip():
+        return False
+    if getattr(result, "tool_trace", ()):
+        return False
+    if getattr(result, "structured_data", None):
+        return False
+    if getattr(result, "dev_handoff", None):
+        return False
+    if _has_runner_artifacts(result):
+        return False
+    if _has_model_usage_evidence(result):
+        return False
+    failure_code = str(getattr(result, "failure_code", "") or "").lower()
+    return failure_code not in _MODEL_EXECUTION_FAILURE_CODES
 
 
 def carries_agent_text(output: str | None) -> bool:
@@ -195,9 +260,10 @@ def produced_model_output(result: Any) -> bool:
     judgment. A failed invocation whose only content is a recognized substrate
     marker (auth rejection, transport drop, runner no-output marker) did not.
 
-    Unrecognized failure text is treated as model output: this predicate gates a
-    behavior change, so it errs toward the pre-existing path rather than
-    reclassifying failures it cannot positively identify as substrate events.
+    Unrecognized failure text is ordinarily treated as model output. The one
+    extra no-judgment heuristic is a failed non-zero process result that billed
+    exactly $0.00 and carries no runner/provider/model artifacts at all: that
+    shape is a runner/process failure, not a silent model judgment.
     """
     if result is None:
         return False
@@ -211,6 +277,11 @@ def produced_model_output(result: Any) -> bool:
         return True
     if getattr(result, "dev_handoff", None):
         return True
+    if _has_model_usage_evidence(result):
+        return True
+    failure_code = str(getattr(result, "failure_code", "") or "").lower()
+    if failure_code in _MODEL_EXECUTION_FAILURE_CODES:
+        return True
     text = _text_of(result)
     if not text:
         return False
@@ -219,6 +290,10 @@ def produced_model_output(result: Any) -> bool:
     if _matches(text, _NO_OUTPUT_MARKERS):
         return False
     if _looks_like_auth_failure(text) or _looks_like_transport_failure(text):
+        return False
+    if _has_runner_artifacts(result):
+        return True
+    if zero_charge_no_model_artifacts(result):
         return False
     return True
 

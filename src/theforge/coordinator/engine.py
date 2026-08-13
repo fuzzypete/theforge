@@ -696,6 +696,8 @@ def _coordinator_loop(
                 stop_event=stop_event,
             )
             if escalation is not None:
+                if escalation.unused_dev_iteration:
+                    state.budget.release_unused()
                 # ── Failed-challenger recovery (#325, ADR-0006 clause 8) ──────
                 # If this dev slot ran an exploration challenger and it failed,
                 # the failure must NOT be the story's final routing outcome:

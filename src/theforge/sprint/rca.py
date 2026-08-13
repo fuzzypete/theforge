@@ -2502,6 +2502,10 @@ def _recommend_actions(
         # The story stopped on money, not on iterations. Raising an iteration
         # budget buys attempts the allocation will not fund (#2292).
         "allocation_exhaustion",
+        # The run stopped on shared infrastructure before the story was judged,
+        # so iteration-budget advice points at a lever the evidence says had no
+        # bearing on the outcome.
+        "shared_infrastructure",
         # The iteration limit is how a capability gap *presents*; the budget was
         # never the constraint, so budget advice here would restate the wrong
         # cause the class exists to replace (#2029).
