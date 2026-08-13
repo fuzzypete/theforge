@@ -165,6 +165,56 @@ def test_followup_after_max_iterations_no_submit_preserves_gate_failure_feedback
     assert result.state.gate_decisions == ["FAIL", "PASS"]
 
 
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch("theforge.coordinator.dev_phase.build_dev_prompt")
+@patch_gate_shell()
+def test_repeated_no_submit_retries_do_not_duplicate_guidance_block(
+    mock_shell, mock_build_dev_prompt, mock_dev, mock_preflight, mock_pool, tmp_path
+):
+    config = _make_config(tmp_path)
+    config = config.__class__(
+        **{
+            **config.__dict__,
+            "dev_profile": config.dev_profile.__class__(
+                **{**config.dev_profile.__dict__, "budget_usd": 10.0}
+            ),
+            "retry": config.retry.__class__(max_dev_iterations=4, max_review_cycles=2),
+        }
+    )
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+
+    mock_shell.side_effect = _shell_pass(workspace, ["FAIL", "FAIL", "PASS"])
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED, profile_name="preflight"
+    )
+    mock_build_dev_prompt.return_value = "dev prompt"
+    mock_dev.side_effect = [
+        _make_agent_result(profile_name="dev"),
+        _max_iter_no_submit_result(profile_name="dev"),
+        _make_agent_result(profile_name="dev"),
+        _max_iter_no_submit_result(profile_name="dev"),
+        _make_agent_result(profile_name="dev"),
+    ]
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    result = run_task(config, task)
+
+    assert result.success is True
+    assert mock_build_dev_prompt.call_count == 5
+    retry_feedback = mock_build_dev_prompt.call_args_list[4].kwargs["human_feedback"]
+    assert retry_feedback is not None
+    assert retry_feedback.count("Additional retry guidance:") == 1
+    assert retry_feedback.count("submit tool") == 1
+    assert "Gate output" in retry_feedback
+    assert result.state.gate_decisions == ["FAIL", "FAIL", "PASS"]
+
+
 def test_sprint_audit_records_stable_outcome_code(tmp_path):
     task = _make_task(tmp_path)
     state_result = type("R", (), {})()

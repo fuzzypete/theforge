@@ -415,6 +415,16 @@ def _describe_dev_failure(result: object, *, is_timeout: bool) -> str:
     return exit_detail
 
 
+def _append_retry_guidance(existing_feedback: str | None, guidance: str) -> str:
+    """Preserve prior feedback while appending a retry note only once."""
+    if not existing_feedback:
+        return guidance
+    appended_block = f"Additional retry guidance:\n{guidance}"
+    if existing_feedback.endswith(appended_block):
+        return existing_feedback
+    return f"{existing_feedback}\n\n{appended_block}"
+
+
 def _dev_transport_retry_backoff_seconds(retry_count: int) -> int:
     """Return the backoff delay before the next transient dev retry."""
     return _DEV_TRANSPORT_RETRY_BACKOFF_BASE_SECONDS * (2 ** max(retry_count - 1, 0))
@@ -1519,13 +1529,9 @@ def _run_dev_phase(
                 "the same exploratory loop. Narrow scope, stabilize the worktree, and submit a "
                 "structured result promptly."
             )
-            if state.human_feedback:
-                state.human_feedback = (
-                    f"{state.human_feedback}\n\n"
-                    f"Additional retry guidance:\n{_submit_pressure_feedback}"
-                )
-            else:
-                state.human_feedback = _submit_pressure_feedback
+            state.human_feedback = _append_retry_guidance(
+                state.human_feedback, _submit_pressure_feedback
+            )
             # Preserve any partial edits before retrying (#1746). Like the
             # timeout resume below, this is another retry-with-possibly-dirty-
             # worktree case: the agent burned its internal iteration budget
@@ -1709,12 +1715,13 @@ def _run_dev_phase(
         # applies equally to the dev phase.
         if _is_timeout and not state.budget.is_exhausted():
             state.retry_reason = RetryReason.TIMEOUT_RESUME
-            state.human_feedback = (
+            state.human_feedback = _append_retry_guidance(
+                state.human_feedback,
                 f"Your previous dev iteration was cut off by a timeout: {_failure_detail}. "
                 "Any work you had already produced was checkpoint-committed for you, so "
                 "the branch already contains it — continue from that committed state rather "
                 "than redoing it. Narrow the remaining scope so you finish within the time "
-                "limit."
+                "limit.",
             )
             record_dev_iteration_telemetry(
                 state,
