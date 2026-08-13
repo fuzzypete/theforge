@@ -821,13 +821,15 @@ def _rollback_recorded_dev_attempt(
     dev_durations_len: int,
     dev_handoff_len: int,
 ) -> None:
-    """Remove the just-recorded DEV attempt from ordinary iteration accounting."""
-    del state.dev_results[dev_results_len:]
-    del state.dev_durations[dev_durations_len:]
-    del state.dev_handoff_snapshots[dev_handoff_len:]
+    """Remove only the trailing no-judgment DEV attempt from ordinary accounting."""
+    if len(state.dev_results) > dev_results_len:
+        state.dev_results.pop()
+    if len(state.dev_durations) > dev_durations_len:
+        state.dev_durations.pop()
+    if len(state.dev_handoff_snapshots) > dev_handoff_len:
+        state.dev_handoff_snapshots.pop()
     state.pending_dev_transport_retry_count = 0
     state.pending_dev_transport_retry_events = []
-    state.pending_dev_verification_requests = []
 
 
 def _resolve_dev_sandbox_capabilities(config: ForgeConfig) -> dict:
@@ -1773,24 +1775,25 @@ def _run_dev_phase(
         _changed_since_start = _worktree_changed_since_commit(
             workspace_path, state.last_dev_start_commit
         )
-        _left_no_observable_work = (not _has_branch_commits) or (_changed_since_start is False)
+        # ── Infrastructure abort vs. genuine escalation (#1951) ──────
+        # Refusing to APPROVE an empty diff is right either way. What differs
+        # is what the run is entitled to CLAIM about the story. ESCALATE is the
+        # outcome reserved for a story whose framing an agent found invalid —
+        # it asserts a judgment. When the dev invocation produced no model
+        # output at all (credential rejected, transport dropped, process never
+        # started), no agent judged anything, and recording ESCALATE writes a
+        # story-quality verdict that no model ever formed — one that then
+        # outlives the run in escalation memory.
+        _invocation_failure = classify_agent_failure(
+            dev_result,
+            phase="DEV",
+            profile_name=getattr(config.dev_profile, "name", None),
+            detail=_failure_detail,
+        )
+        _left_no_observable_work = (not _has_branch_commits) or (
+            _invocation_failure is not None and _changed_since_start is False
+        )
         if _left_no_observable_work:
-            # ── Infrastructure abort vs. genuine escalation (#1951) ──────
-            # Refusing to APPROVE an empty diff is right either way. What
-            # differs is what the run is entitled to CLAIM about the story.
-            # ESCALATE is the outcome reserved for a story whose framing an
-            # agent found invalid — it asserts a judgment. When the dev
-            # invocation produced no model output at all (credential rejected,
-            # transport dropped, process never started), no agent judged
-            # anything, and recording ESCALATE writes a story-quality verdict
-            # that no model ever formed — one that then outlives the run in
-            # escalation memory.
-            _invocation_failure = classify_agent_failure(
-                dev_result,
-                phase="DEV",
-                profile_name=getattr(config.dev_profile, "name", None),
-                detail=_failure_detail,
-            )
             if _invocation_failure is not None:
                 record_invocation_failure(state, _invocation_failure)
                 _unused_dev_iteration = zero_charge_no_model_artifacts(dev_result)
@@ -1843,9 +1846,14 @@ def _run_dev_phase(
                     unused_dev_iteration=_unused_dev_iteration,
                 )
             state.phase = Phase.ESCALATE
+            _work_clause = (
+                "produced no commits ahead of base"
+                if not _has_branch_commits
+                else "left the preserved branch unchanged"
+            )
             state.error = (
-                f"Dev agent failed ({_failure_detail}) and produced no commits "
-                "ahead of base — escalating to avoid an empty-diff APPROVE"
+                f"Dev agent failed ({_failure_detail}) and {_work_clause} "
+                "— escalating to avoid an empty-diff APPROVE"
             )
             record_dev_iteration_telemetry(
                 state,
