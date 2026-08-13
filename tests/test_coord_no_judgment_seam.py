@@ -282,11 +282,22 @@ class TestDevNoJudgment:
         assert result.state.budget.total_count == 0
         assert result.state.budget.cycle_count == 0
         assert result.state.budget.remaining() == config.retry.max_dev_iterations
+        failure_extra = result.state.infrastructure_failure["extra"]
+        assert failure_extra["transport_retry_count"] == 1
+        assert len(failure_extra["transport_retry_events"]) == 1
+        assert failure_extra["transport_retry_events"][0]["iteration"] == 1
+        assert failure_extra["transport_retry_events"][0]["retry"] == 1
+        assert "rate_limit" in failure_extra["transport_retry_events"][0]["error"]
+        assert "429" in failure_extra["transport_retry_events"][0]["error"]
 
         audit = generate_audit_log(config, task, result)
         assert audit["iterations"]["usage_summary"]["dev"]["used"] == 0
         assert audit["cost"]["dev_invocations"] == 1
         assert audit["cost"]["dev_usd"] == expected_dev_usd
+        assert (
+            audit["agent_invocation"]["infrastructure_failure"]["extra"]["transport_retry_events"]
+            == failure_extra["transport_retry_events"]
+        )
         assert mock_profiles.call_count == 0
 
     @patch("theforge.coordinator.model_profiles_bridge.update_profiles_from_run")

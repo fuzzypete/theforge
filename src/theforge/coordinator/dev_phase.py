@@ -832,6 +832,19 @@ def _rollback_recorded_dev_attempt(
     state.pending_dev_transport_retry_events = []
 
 
+def _pending_dev_transport_retry_failure_extra(state: CoordinatorState) -> dict:
+    """Audit-visible transport-retry evidence for a DEV failure record."""
+    if (
+        state.pending_dev_transport_retry_count <= 0
+        and not state.pending_dev_transport_retry_events
+    ):
+        return {}
+    return {
+        "transport_retry_count": state.pending_dev_transport_retry_count,
+        "transport_retry_events": list(state.pending_dev_transport_retry_events),
+    }
+
+
 def _resolve_dev_sandbox_capabilities(config: ForgeConfig) -> dict:
     """Resolve the project's sandbox capability profile for audit + logging (#1947).
 
@@ -1795,6 +1808,12 @@ def _run_dev_phase(
         )
         if _left_no_observable_work:
             if _invocation_failure is not None:
+                _failure_extra = {
+                    **_invocation_failure.extra,
+                    **_pending_dev_transport_retry_failure_extra(state),
+                }
+                if _failure_extra != _invocation_failure.extra:
+                    _invocation_failure = _dc_replace(_invocation_failure, extra=_failure_extra)
                 record_invocation_failure(state, _invocation_failure)
                 _unused_dev_iteration = zero_charge_no_model_artifacts(dev_result)
                 if _unused_dev_iteration:
