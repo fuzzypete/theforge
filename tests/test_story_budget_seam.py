@@ -1849,9 +1849,7 @@ class TestTheReservationIsReleasedOnceReviewCanNoLongerRun:
         assert sb.remaining_reserved_review_usd(reservation, 2.02) == 0.0
         assert state.adaptive_limits_audit["review_funding_reservation"]["release_count"] == 2
 
-    def test_a_rereleased_retained_cycle_funds_the_next_dev_dispatch(
-        self, tmp_path: Path
-    ) -> None:
+    def test_a_rereleased_retained_cycle_funds_the_next_dev_dispatch(self, tmp_path: Path) -> None:
         """The retained re-review dollar is returned in time to fund the repair attempt."""
         state, result, dev_calls = self._run_loop(
             tmp_path,
