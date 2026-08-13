@@ -1513,12 +1513,19 @@ def _run_dev_phase(
                         "pressure and narrower scope instead of repeating unchanged "
                         "conditions."
                     )
-            state.human_feedback = (
+            _submit_pressure_feedback = (
                 "The previous dev iteration exhausted its iteration budget without calling the "
                 "submit tool, so there is no structured handoff to continue from. Do not repeat "
                 "the same exploratory loop. Narrow scope, stabilize the worktree, and submit a "
                 "structured result promptly."
             )
+            if state.human_feedback:
+                state.human_feedback = (
+                    f"{state.human_feedback}\n\n"
+                    f"Additional retry guidance:\n{_submit_pressure_feedback}"
+                )
+            else:
+                state.human_feedback = _submit_pressure_feedback
             # Preserve any partial edits before retrying (#1746). Like the
             # timeout resume below, this is another retry-with-possibly-dirty-
             # worktree case: the agent burned its internal iteration budget
