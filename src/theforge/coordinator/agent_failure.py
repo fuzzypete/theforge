@@ -277,11 +277,6 @@ def produced_model_output(result: Any) -> bool:
         return True
     if getattr(result, "dev_handoff", None):
         return True
-    if _has_model_usage_evidence(result):
-        return True
-    failure_code = str(getattr(result, "failure_code", "") or "").lower()
-    if failure_code in _MODEL_EXECUTION_FAILURE_CODES:
-        return True
     text = _text_of(result)
     if not text:
         return False
@@ -289,6 +284,11 @@ def produced_model_output(result: Any) -> bool:
         return False
     if _matches(text, _NO_OUTPUT_MARKERS):
         return False
+    if _has_model_usage_evidence(result):
+        return True
+    failure_code = str(getattr(result, "failure_code", "") or "").lower()
+    if failure_code in _MODEL_EXECUTION_FAILURE_CODES:
+        return True
     if _looks_like_auth_failure(text) or _looks_like_transport_failure(text):
         return False
     if _has_runner_artifacts(result):

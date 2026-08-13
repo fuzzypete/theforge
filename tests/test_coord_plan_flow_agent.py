@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 from pathlib import Path
 from unittest.mock import patch
 
@@ -40,6 +41,7 @@ from theforge.coordinator.plan_flow import (
     _retry_parse_failed_plan_reviews,
 )
 from theforge.coordinator.state import CoordinatorState, Phase
+from theforge.runners import AgentResult
 
 # ── Local helpers ─────────────────────────────────────────────────────
 
@@ -1737,6 +1739,108 @@ class TestPlanReviewerFailureAudit:
         assert (
             audit["plan_review"]["transport_retries"] == result.state.plan_review_transport_retries
         )
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
+    @patch("theforge.coordinator.plan_flow.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_textless_plan_review_result_does_not_poison_resume_session(
+        self,
+        mock_shell,
+        mock_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_plan_pool,
+        mock_human_review,
+        mock_code_pool,
+        tmp_path,
+    ):
+        config = _make_plan_agent_review_config(tmp_path, dual_reviewer=True)
+        config = dataclasses.replace(
+            config,
+            plan_agent_review=dataclasses.replace(config.plan_agent_review, min_reviewers=1),
+        )
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        captured_session_ids: list[list[str | None]] = []
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_plan_agent.side_effect = mock_agent
+        mock_preflight.return_value = _make_agent_result(
+            success=True, output=PREFLIGHT_PROCEED_MEDIUM, cost_usd=0.05
+        )
+        mock_agent.side_effect = [
+            _make_agent_result(
+                success=True,
+                output="# Plan\n\nOriginal plan.",
+                cost_usd=0.10,
+            ),
+            _make_agent_result(
+                success=True,
+                output="# Plan\n\nRevised plan.",
+                cost_usd=0.12,
+            ),
+            _make_agent_result(success=True, output="Implemented."),
+        ]
+
+        def plan_pool_side_effect(**kwargs):
+            captured_session_ids.append(list(kwargs["session_ids"]))
+            if len(captured_session_ids) == 1:
+                return [
+                    AgentResult(
+                        success=False,
+                        output=(
+                            "CLAUDE_STREAM_NO_TEXT: reason=result_missing_text "
+                            "subtype=error_during_execution"
+                        ),
+                        session_id="plan-review-poisoned",
+                        cost_usd=0.0,
+                        exit_code=1,
+                        raw={},
+                        profile_name="plan-review-a",
+                    ),
+                    _make_agent_result(
+                        success=True,
+                        output=PLAN_AGENT_REJECT_P1,
+                        session_id="plan-review-b-1",
+                        cost_usd=0.08,
+                        profile_name="plan-review-b",
+                    ),
+                ]
+            return [
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    session_id="plan-review-a-fresh",
+                    cost_usd=0.06,
+                    profile_name="plan-review-a",
+                ),
+                _make_agent_result(
+                    success=True,
+                    output=PLAN_AGENT_APPROVE,
+                    session_id="plan-review-b-2",
+                    cost_usd=0.06,
+                    profile_name="plan-review-b",
+                ),
+            ]
+
+        mock_plan_pool.side_effect = plan_pool_side_effect
+        mock_code_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task, interactive=True)
+
+        assert result.success is True
+        assert captured_session_ids == [[None, None]]
+        assert result.state.plan_review_session_ids == {"plan-review-b": "plan-review-b-1"}
+        sessions_data = json.loads((workspace / ".forge/sessions.json").read_text())
+        assert sessions_data["plan_review_session_ids"] == {"plan-review-b": "plan-review-b-1"}
 
     @patch("theforge.coordinator.review_pool.run_agent_pool")
     @patch("theforge.coordinator.review_phase._human_review", return_value=("approve", None))
