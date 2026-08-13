@@ -457,15 +457,22 @@ def _print_skipped_intake(non_done: list[dict], rca_stories: dict) -> None:
 def _print_entry_notes(entry: dict) -> None:
     """Print the accounting and cross-surface notes an RCA entry carries.
 
-    Both are reported *beside* the story's classification, never as it: an
-    unmeasured cost is a condition of the run's accounting, and a disagreement
+    All are reported *beside* the story's classification, never as it: an
+    unmeasured cost is a condition of the run's accounting, a disagreement
     between the audit and the summary is a fact about the surfaces rather than
-    about the work (#2373). Absent on RCA artifacts written by an older ruleset,
-    in which case nothing is printed.
+    about the work (#2373), and a story whose spend went to preparation for dev
+    work that produced nothing is describing where the money went, not why the
+    story failed (#2427). Absent on RCA artifacts written by an older ruleset, in
+    which case nothing is printed.
     """
     accounting = entry.get("cost_accounting")
     if isinstance(accounting, dict) and accounting.get("measured") is False:
         print("       accounting:   cost unmeasured for this story (not a failure)")
+    spend_shape = entry.get("spend_shape")
+    if isinstance(spend_shape, dict):
+        note = str(spend_shape.get("note") or "").strip()
+        if note:
+            print(f"       spend:        {note}")
     consistency = entry.get("outcome_consistency")
     if isinstance(consistency, dict) and consistency.get("agrees") is False:
         note = str(consistency.get("note") or "").strip()

@@ -173,6 +173,19 @@ def _looks_like_transport_failure(text: str) -> bool:
     return _matches(text, _TRANSPORT_PATTERNS) or bool(_TRANSPORT_CODE_RE.search(text))
 
 
+def carries_agent_text(output: str | None) -> bool:
+    """True when *output* is text an agent produced rather than a stand-in marker.
+
+    The runners write a marker (``CLAUDE_STREAM_NO_TEXT: ...``, ``TIMEOUT: Agent
+    exceeded ...``) into ``output`` when the stream carried no agent text at all.
+    Quoting one back to an operator as "what the agent said" describes a run that
+    said nothing as if it had spoken, so callers surfacing captured agent words
+    ask here first (#2427).
+    """
+    text = " ".join(str(output or "").split()).lower()
+    return bool(text) and not _matches(text, _NO_OUTPUT_MARKERS)
+
+
 def produced_model_output(result: Any) -> bool:
     """Return True when this invocation carries evidence a model actually spoke.
 
