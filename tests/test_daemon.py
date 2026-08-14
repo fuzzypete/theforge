@@ -357,8 +357,8 @@ def test_state_update_fn_called_in_run_sprint(tmp_path: Path) -> None:
 
     with patch("theforge.sprint.runner.run_task", return_value=mock_result):
         with patch("theforge.sprint.runner._triage_spec"):
-            with patch("theforge.sprint.runner._write_sprint_audit"):
-                with patch("theforge.sprint.runner._write_sprint_summary"):
+            with patch("theforge.sprint.audit_publish._write_sprint_audit"):
+                with patch("theforge.sprint.audit_publish._write_sprint_summary"):
                     with patch(
                         "theforge.sprint.runner._validate_story_paths", return_value=[story_path]
                     ):

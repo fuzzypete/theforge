@@ -486,8 +486,8 @@ def test_healthy_credential_lets_the_sprint_run(tmp_path: Path) -> None:
             return_value={"passed": True, "message": "ok"},
         ),
         patch("theforge.sprint.runner.run_task", return_value=_ok_result()) as mock_run_task,
-        patch("theforge.sprint.runner._write_sprint_audit"),
-        patch("theforge.sprint.runner._write_sprint_summary"),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
     ):
         result = run_sprint_ctx(config, resolved)
 
@@ -549,8 +549,8 @@ def _run_two_story_sprint(
             return_value={"passed": True, "message": "ok"},
         ),
         patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
-        patch("theforge.sprint.runner._write_sprint_audit"),
-        patch("theforge.sprint.runner._write_sprint_summary"),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
         patch("theforge.sprint.runner._write_story_audit"),
     ):
         result = run_sprint_ctx(config, resolved)
@@ -663,8 +663,8 @@ def test_inflight_sibling_cancelled_by_breaker_is_not_a_story_failure(
             return_value={"passed": True, "message": "ok"},
         ),
         patch("theforge.sprint.runner.run_task", side_effect=_fake_run_task),
-        patch("theforge.sprint.runner._write_sprint_audit"),
-        patch("theforge.sprint.runner._write_sprint_summary"),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
         patch("theforge.sprint.runner._write_story_audit"),
     ):
         result = run_sprint_ctx(config, resolved)
