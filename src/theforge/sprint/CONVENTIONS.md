@@ -38,6 +38,15 @@ and sprint-level audit/display behavior.
 - `tests/test_sprint_runner_structure.py` asserts both of the above against the
   parsed module, so re-introducing frame capture fails a test rather than
   passing review.
+- A responsibility moved out of `runner.py` does not import it back.
+  `audit_publish.py` is the first move (#2402) and the shape to copy: it takes
+  the execution state (and reads the run context off it) rather than a list of
+  members, and it depends on the writers in `audit.py`, never on the runner.
+  `tests/test_sprint_audit_publish.py` asserts the absence of that import, so a
+  relocation-with-a-dependency-left-behind fails a test. The cost of annotating
+  the state without importing the runner is deliberate: the parameter is `Any`
+  and documented, because the alternative is exactly the coupling the move
+  removed.
 
 ## Context
 
@@ -50,3 +59,6 @@ and sprint-level audit/display behavior.
   safety rails for concurrent or repeated execution.
 - `display.py` and `audit.py` shape operator-facing visibility into sprint
   progress and outcomes.
+- `audit_publish.py` owns the end of a run: it builds the terminal audit and
+  summary inputs from the run's state, writes the audit/summary/RCA artifacts,
+  and commits and pushes the canonical per-run audit JSON to the base branch.

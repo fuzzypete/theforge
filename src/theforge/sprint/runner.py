@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import os
-import shlex
 import shutil
 import subprocess
 import sys
@@ -76,7 +74,6 @@ from .audit import (
     _get_or_create_sprint_id,
     _load_accepted_unmeasured_spend,
     _write_sprint_audit,
-    _write_sprint_summary,
     _write_story_audit,
     load_prior_generation_story_audit,
     persist_accepted_unmeasured_spend,
@@ -84,6 +81,7 @@ from .audit import (
     preflight_degraded_row_fields,
     write_live_story_audit,
 )
+from .audit_publish import publish_story_run_audits, write_terminal_sprint_audits
 from .auth_gate import enforce_sprint_auth_readiness
 from .budget import budget_verification_spend, evaluate_budget
 from .carry import (
@@ -185,37 +183,6 @@ def _cli_cost_untracked(runner: str | None) -> bool:
     return accounting_mode_for("cli", runner) in _UNTRACKED_ACCOUNTING_MODES
 
 
-_STORY_RUN_AUDIT_DIR = ".forge/audits/runs"
-_STORY_RUN_AUDIT_COMMIT_CMD = (
-    f'git commit -m "chore(audit): record sprint run audits" -- {_STORY_RUN_AUDIT_DIR}'
-)
-
-# Where the outcome of the publish step is recorded. Lives under .forge/ (which
-# .gitignore denies wholesale), so writing it never dirties the base-branch
-# checkout the sprint is publishing from.
-_STORY_RUN_AUDIT_PUBLISH_STATE_PATH = ".forge/audit-publish-state.json"
-
-# A push rejected because the base branch moved is reconciled and retried. Three
-# attempts covers the sprint's own merges landing while the push is in flight;
-# beyond that the remote is being advanced by something other than this run and
-# looping longer just delays the operator's answer.
-_STORY_RUN_AUDIT_PUSH_ATTEMPTS = 3
-
-# Publish end states, recorded to ``_STORY_RUN_AUDIT_PUBLISH_STATE_PATH`` and
-# carried on ``StoryRunAuditPublishError.state``. They exist so that an operator
-# looking at local-only audit commits can tell *which* thing happened: the run
-# never got here (no/stale record), it got here and the remote refused
-# (``push_refused``), or publishing was deliberately skipped (``local_only``).
-AUDIT_PUBLISH_CLEAN = "clean"
-AUDIT_PUBLISH_COMMITTED = "committed_unpublished"
-AUDIT_PUBLISH_PUBLISHED = "published"
-AUDIT_PUBLISH_LOCAL_ONLY = "local_only"
-AUDIT_PUBLISH_COMMIT_FAILED = "commit_failed"
-AUDIT_PUBLISH_BRANCH_MISMATCH = "branch_mismatch"
-AUDIT_PUBLISH_PUSH_REFUSED = "push_refused"
-AUDIT_PUBLISH_RECONCILE_FAILED = "reconcile_failed"
-AUDIT_PUBLISH_VERIFY_FAILED = "verify_failed"
-
 run_agent = None
 log_agent_result = None
 
@@ -224,256 +191,6 @@ def _log(msg: str) -> None:
     # Worker-slug prefixing (parallel attribution) is applied centrally by
     # ``_log_line``; do not prepend it here or it would double-tag.
     _log_line("[sprint]", msg)
-
-
-class StoryRunAuditPublishError(RuntimeError):
-    """Canonical story run audits could not be published to the base branch.
-
-    ``state`` is one of the ``AUDIT_PUBLISH_*`` constants and names the end
-    state the checkout was left in. It is a ``RuntimeError`` subclass because
-    the sprint entry point already treats a publish failure as fatal; the extra
-    attribute only makes the *kind* of failure legible to callers and tests.
-    """
-
-    def __init__(self, message: str, *, state: str) -> None:
-        super().__init__(message)
-        self.state = state
-
-
-def _record_audit_publish_state(
-    project_root: Path,
-    base_branch: str,
-    state: str,
-    detail: str | None = None,
-) -> None:
-    """Record the publish end state next to the checkout it describes.
-
-    Best-effort: a sprint must not fail because this marker could not be
-    written, and the marker must never mask the error it is describing.
-    """
-    path = project_root / _STORY_RUN_AUDIT_PUBLISH_STATE_PATH
-    payload = {
-        "state": state,
-        "base_branch": base_branch,
-        "recorded_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
-        "detail": detail,
-    }
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-    except OSError as exc:  # pragma: no cover — filesystem-level failure
-        _log(f"Warning: could not record story run audit publish state: {exc}")
-
-
-def _require_audit_publish_branch(project_root: Path, base_branch: str, *, operation: str) -> None:
-    """Refuse before mutating the project root from the wrong checked-out branch."""
-    try:
-        current_branch = coordinator_workspace._current_checked_out_branch(project_root)
-    except RuntimeError as exc:
-        raise StoryRunAuditPublishError(
-            f"Failed to verify the checked-out branch before {operation} story run audits: {exc}",
-            state=AUDIT_PUBLISH_BRANCH_MISMATCH,
-        ) from exc
-    if current_branch == base_branch:
-        return
-    raise StoryRunAuditPublishError(
-        f"Refusing to {operation} story run audits for base branch '{base_branch}' because "
-        f"the project root currently has '{current_branch}' checked out. Check out "
-        f"{base_branch} and rerun the publish, or move the pending audit records off "
-        f"'{current_branch}'.",
-        state=AUDIT_PUBLISH_BRANCH_MISMATCH,
-    )
-
-
-def _reconcile_base_with_origin(project_root: Path, base_branch: str) -> None:
-    """Fetch origin and rebase the local base branch onto its current head.
-
-    Raises ``StoryRunAuditPublishError`` when the reconcile itself cannot be
-    completed, aborting any partial rebase so the checkout is left usable.
-    """
-    from ..coordinator import util as _cu  # noqa: PLC0415
-
-    _require_audit_publish_branch(project_root, base_branch, operation="reconcile")
-    quoted_base = shlex.quote(base_branch)
-    ok_fetch, fetch_out = _cu._run_shell(f"git fetch origin {quoted_base}", project_root)
-    if not ok_fetch:
-        raise StoryRunAuditPublishError(
-            f"Failed to fetch origin/{base_branch} while publishing story run audits: "
-            f"{fetch_out.strip()}",
-            state=AUDIT_PUBLISH_RECONCILE_FAILED,
-        )
-
-    ok_rebase, rebase_out = _cu._run_shell(
-        f"git rebase origin/{quoted_base} {quoted_base}",
-        project_root,
-    )
-    if not ok_rebase:
-        _cu._run_shell("git rebase --abort", project_root)
-        raise StoryRunAuditPublishError(
-            f"Failed to rebase '{base_branch}' onto origin/{base_branch} while publishing "
-            f"story run audits: {rebase_out.strip()}",
-            state=AUDIT_PUBLISH_RECONCILE_FAILED,
-        )
-
-
-def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: bool) -> None:
-    """Commit and publish canonical per-run audit JSON emitted during a sprint.
-
-    The sprint writes these records to the project-root base-branch checkout on
-    the operator's behalf. A commit that is never pushed is unowned state: later
-    story worktrees are cut from that checkout and GitHub attributes the audit
-    JSON to whichever story happens to be running. So the commit is only half
-    the operation — this pushes it to origin and verifies the base branch is no
-    longer ahead, raising loudly if either step fails.
-
-    ``publish`` comes from ``_base_branch_tracks_origin``: it is false only when
-    this run lands stories by merging into the local base checkout *and* has
-    opted out of pushing them. Pushing a branch publishes all of its ancestors,
-    so a push here would then also publish those local merges. In that one
-    configuration the commit stays local and the fact is warned about instead.
-
-    A rejected push is not a failure of this step so much as a statement about
-    where the remote is: the sprint's own merges are what usually advance the
-    base branch, so a run that landed stories is the *normal* case for the local
-    branch being behind. So a rejection is reconciled (fetch + rebase onto the
-    current remote head) and retried, and only exhausting that raises. Whichever
-    end state the checkout lands in is recorded to
-    ``.forge/audit-publish-state.json`` so it survives to where the state is
-    observed.
-    """
-    from ..coordinator import util as _cu  # noqa: PLC0415
-
-    if not (project_root / ".git").exists():
-        return
-
-    try:
-        _require_audit_publish_branch(project_root, base_branch, operation="publish")
-    except StoryRunAuditPublishError as exc:
-        _record_audit_publish_state(project_root, base_branch, exc.state, detail=str(exc))
-        raise
-
-    audit_dir = Path(_STORY_RUN_AUDIT_DIR)
-    quoted_audit_dir = shlex.quote(audit_dir.as_posix())
-    ok_status, status_out = _cu._run_shell(
-        f"git status --porcelain -- {quoted_audit_dir}",
-        project_root,
-    )
-    if not ok_status:
-        raise StoryRunAuditPublishError(
-            f"Failed to inspect story run audits: {status_out}",
-            state=AUDIT_PUBLISH_COMMIT_FAILED,
-        )
-    if not status_out.strip():
-        # Nothing pending. Record it so a marker from an earlier run cannot be
-        # mistaken for this one's outcome.
-        _record_audit_publish_state(project_root, base_branch, AUDIT_PUBLISH_CLEAN)
-        return
-
-    ok_add, add_out = _cu._run_shell(f"git add -- {quoted_audit_dir}", project_root)
-    if not ok_add:
-        raise StoryRunAuditPublishError(
-            f"Failed to stage story run audits: {add_out}",
-            state=AUDIT_PUBLISH_COMMIT_FAILED,
-        )
-
-    ok_commit, commit_out = _cu._run_shell(_STORY_RUN_AUDIT_COMMIT_CMD, project_root)
-    if not ok_commit:
-        raise StoryRunAuditPublishError(
-            f"Failed to commit story run audits: {commit_out}",
-            state=AUDIT_PUBLISH_COMMIT_FAILED,
-        )
-    _log("Committed canonical story run audit records to the base branch checkout.")
-    # Written before the push so that a crash mid-publish is distinguishable
-    # from a run that never reached this function at all.
-    _record_audit_publish_state(project_root, base_branch, AUDIT_PUBLISH_COMMITTED)
-
-    if not publish:
-        _record_audit_publish_state(
-            project_root,
-            base_branch,
-            AUDIT_PUBLISH_LOCAL_ONLY,
-            detail="workspace.auto_push is off for a run that lands stories locally",
-        )
-        _log(
-            f"⚠ SPRINT  story run audit records remain local: this run merges stories into "
-            f"'{base_branch}' with workspace.auto_push off, so pushing would also publish those "
-            f"local merges. Push '{base_branch}' yourself before any workflow that diffs a story "
-            f"branch against origin/{base_branch}."
-        )
-        return
-
-    quoted_base = shlex.quote(base_branch)
-    push_out = ""
-    for attempt in range(1, _STORY_RUN_AUDIT_PUSH_ATTEMPTS + 1):
-        ok_push, push_out = _cu._run_shell(
-            f"git push origin {quoted_base}",
-            project_root,
-        )
-        if ok_push:
-            break
-        if attempt == _STORY_RUN_AUDIT_PUSH_ATTEMPTS:
-            _record_audit_publish_state(
-                project_root,
-                base_branch,
-                AUDIT_PUBLISH_PUSH_REFUSED,
-                detail=push_out.strip(),
-            )
-            raise StoryRunAuditPublishError(
-                f"Failed to push story run audits to origin/{base_branch} after "
-                f"{_STORY_RUN_AUDIT_PUSH_ATTEMPTS} attempts (fetch + rebase between "
-                f"attempts): {push_out.strip()}",
-                state=AUDIT_PUBLISH_PUSH_REFUSED,
-            )
-        _log(
-            f"Push of story run audits to origin/{base_branch} was refused "
-            f"(attempt {attempt}/{_STORY_RUN_AUDIT_PUSH_ATTEMPTS}); reconciling with the "
-            f"current remote head and retrying."
-        )
-        try:
-            _reconcile_base_with_origin(project_root, base_branch)
-        except StoryRunAuditPublishError as exc:
-            _record_audit_publish_state(
-                project_root,
-                base_branch,
-                exc.state,
-                detail=str(exc),
-            )
-            raise
-
-    ok_ahead, ahead_out = _cu._run_shell(
-        f"git rev-list --count origin/{quoted_base}..{quoted_base}",
-        project_root,
-    )
-    if not ok_ahead:
-        message = (
-            f"Failed to verify story run audits reached origin/{base_branch}: {ahead_out.strip()}"
-        )
-        _record_audit_publish_state(
-            project_root, base_branch, AUDIT_PUBLISH_VERIFY_FAILED, detail=message
-        )
-        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_VERIFY_FAILED)
-    try:
-        ahead = int(ahead_out.strip())
-    except ValueError:
-        message = (
-            f"Failed to verify story run audits reached origin/{base_branch}: "
-            f"unexpected rev-list output {ahead_out.strip()!r}"
-        )
-        _record_audit_publish_state(
-            project_root, base_branch, AUDIT_PUBLISH_VERIFY_FAILED, detail=message
-        )
-        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_VERIFY_FAILED) from None
-    if ahead > 0:
-        message = (
-            f"Story run audits were committed but '{base_branch}' is still {ahead} commit(s) "
-            f"ahead of origin/{base_branch} after push. Publish or reset it before rerunning."
-        )
-        _record_audit_publish_state(
-            project_root, base_branch, AUDIT_PUBLISH_VERIFY_FAILED, detail=message
-        )
-        raise StoryRunAuditPublishError(message, state=AUDIT_PUBLISH_VERIFY_FAILED)
-    _record_audit_publish_state(project_root, base_branch, AUDIT_PUBLISH_PUBLISHED)
-    _log(f"Pushed canonical story run audit records to origin/{base_branch}.")
 
 
 def _scrub_root_forge_artifacts(config: ForgeConfig) -> None:
@@ -3706,6 +3423,20 @@ class SprintRunContext:
         an agent sidecar is not evidence the agent is gone (#2079).
         """
         return self.live_story_slugs | self.unresolved_live_slugs
+
+    @property
+    def slug_by_canonical_ref(self) -> dict[str, str]:
+        """The reverse of :attr:`slug_to_context`: canonical ref → slug.
+
+        Derived here beside the mapping it inverts because two unrelated
+        consumers need it — the terminal audit writers, which key every story
+        row by ref, and the post-sprint hook, which falls back to it for a
+        story whose workspace never got created. Deriving it twice would be two
+        chances to disagree about the sprint that ran.
+        """
+        return {
+            canonical_ref: slug for slug, (_t, _s, canonical_ref) in self.slug_to_context.items()
+        }
 
     @property
     def name(self) -> str:
@@ -7864,76 +7595,19 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _sc_body_lines.append(f"Stopped: {_sprint_state.stop.reason}")
             send_notifications(_ctx.config, _sc_title, "\n".join(_sc_body_lines))
 
-    # Build slug map and canonical_refs for audit writers
-    slug_map: dict[str, str] = {ctx[2]: slug for slug, ctx in _ctx.slug_to_context.items()}
-    canonical_refs = [ctx[2] for ctx in _ctx.slug_to_context.values()]
-
-    # Write sprint-audit.yaml (existing format; kept for backward compatibility)
-    _write_sprint_audit(
-        manifest=_ctx.resolved,
+    # The terminal audit, summary and RCA — inputs and all — belong to
+    # sprint.audit_publish (#2402); the runner hands over the state and the
+    # facts only this call knows.
+    write_terminal_sprint_audits(
+        _sprint_state,
         result=sprint_result,
-        canonical_refs=canonical_refs,
         started_at=started_at,
         finished_at=finished_at,
         duration=duration,
-        project_root=_ctx.config.project_root,
-        story_times=_sprint_state.story_times,
-        batch_assignments=_sprint_state.batch_assignments,
-        slug_map=slug_map,
-        tasks_by_slug={slug: ctx[0] for slug, ctx in _ctx.slug_to_context.items()},
-        ci_break_slug=_sprint_state.stop.halt_slug,
-        sprint_id=_ctx.sprint_id,
+        sprint_log_dir=_sprint_log_dir,
         dropped_slugs=_dropped_slugs,
-        skipped_issues=_ctx.skipped_issues,
-        current_story_entries_by_ref=_sprint_state.current_story_entries_by_ref,
-        triage_actions_by_ref={
-            canonical_ref: triage.action for canonical_ref, triage in triages.items()
-        },
-        run_id=_ctx.run_id,
-        live_telemetry_snapshots=_sprint_state.live_telemetry_snapshots,
+        triages=triages,
     )
-
-    # Write sprint-summary.yaml to .forge/logs/<sprint-name>/
-    if _sprint_log_dir is not None:
-        _write_sprint_summary(
-            manifest=_ctx.resolved,
-            result=sprint_result,
-            canonical_refs=canonical_refs,
-            started_at=started_at,
-            finished_at=finished_at,
-            duration=duration,
-            sprint_log_dir=_sprint_log_dir,
-            story_times=_sprint_state.story_times,
-            batch_assignments=_sprint_state.batch_assignments,
-            slug_map=slug_map,
-            run_id=_ctx.run_id,
-            tasks_by_slug={slug: ctx[0] for slug, ctx in _ctx.slug_to_context.items()},
-            ci_break_slug=_sprint_state.stop.halt_slug,
-            sprint_id=_ctx.sprint_id,
-            project_root=_ctx.config.project_root,
-            dropped_slugs=_dropped_slugs,
-            skipped_issues=_ctx.skipped_issues,
-            triage_actions_by_ref={
-                canonical_ref: triage.action for canonical_ref, triage in triages.items()
-            },
-            current_story_entries_by_ref=_sprint_state.current_story_entries_by_ref,
-            story_state=_sprint_state.stories,
-            config=_ctx.config,
-            live_telemetry_snapshots=_sprint_state.live_telemetry_snapshots,
-        )
-
-        # Eagerly generate sprint-rca.yaml when any story finished non-DONE.
-        # The RCA engine is a pure function over the artifacts just written
-        # (sprint-summary.yaml + per-story audit/logs), so it runs off the
-        # runner's hot path and stays regenerable via `forge rca`.
-        try:
-            from .rca import write_sprint_rca
-
-            _rca_path = write_sprint_rca(_sprint_log_dir)
-            if _rca_path is not None:
-                _log(f"Sprint RCA written: {_rca_path}")
-        except Exception as _rca_exc:  # noqa: BLE001 — RCA is best-effort
-            _log(f"Warning: sprint RCA generation failed: {_rca_exc}")
 
     if _sprint_state.state_writer is not None:
         _sprint_state.state_writer.remove()
@@ -7942,23 +7616,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # but the failure is NOT swallowed: a local-only audit commit contaminates
     # every later story PR cut from this checkout, so the sprint must exit
     # nonzero rather than report success over divergent base-branch state.
-    from ..coordinator.workspace import _base_branch_tracks_origin
-
-    try:
-        _commit_story_run_audits(
-            _ctx.config.project_root,
-            _ctx.config.workspace.base_branch,
-            publish=_base_branch_tracks_origin(_ctx.config, lands_locally=_sprint_lands_locally),
-        )
-    except RuntimeError as exc:
-        _state = getattr(exc, "state", None)
-        _state_suffix = (
-            f" [state={_state}; recorded in {_STORY_RUN_AUDIT_PUBLISH_STATE_PATH}]"
-            if _state
-            else ""
-        )
-        _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}{_state_suffix}")
-        raise
+    publish_story_run_audits(_sprint_state, lands_locally=_sprint_lands_locally)
 
     # ── POST_SPRINT hook ──────────────────────────────────────────────
     if _ctx.config.hooks and _ctx.config.hooks.post_sprint:
@@ -7972,7 +7630,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             if _ws is not None:
                 _slug = _ws.name
             else:
-                _slug = slug_map.get(spec_str, Path(spec_str).stem)
+                _slug = _ctx.slug_by_canonical_ref.get(spec_str, Path(spec_str).stem)
             _verdict = ""
             if res.state.review_results:
                 _verdict = res.state.review_results[-1].verdict
