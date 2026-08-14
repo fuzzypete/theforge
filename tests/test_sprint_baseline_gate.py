@@ -453,8 +453,8 @@ def test_baseline_pass_proceeds_to_normal_sprint_flow(
             "theforge.sprint.runner.run_task",
             return_value=_fake_result(),
         ) as mock_run_task,
-        patch("theforge.sprint.runner._write_sprint_audit"),
-        patch("theforge.sprint.runner._write_sprint_summary"),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
     ):
         result = run_sprint_ctx(config, resolved)
 
@@ -763,10 +763,10 @@ def test_an_unreproduced_baseline_failure_lets_the_sprint_run_its_stories(
     with (
         patch("theforge.coordinator.workspace.assert_base_branch_checked_out"),
         patch("theforge.sprint.runner.run_task", return_value=_fake_result()) as mock_run_task,
-        patch("theforge.sprint.runner._write_sprint_summary"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
         # The fixture repo sits on the feature branch, which the audit publish
         # refuses; unrelated to what this test pins.
-        patch("theforge.sprint.runner._commit_story_run_audits"),
+        patch("theforge.sprint.audit_publish._commit_story_run_audits"),
     ):
         result = run_sprint_ctx(config, resolved, no_pull=True, run_id="abc123")
 

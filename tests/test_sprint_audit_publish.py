@@ -1,22 +1,30 @@
-"""Tests for publishing canonical story run audit records at end of sprint.
+"""Tests for ``sprint/audit_publish.py``: terminal sprint audits and their publish.
 
-The publish step pushes the audit commit to the base branch. Because the
+The module owns one responsibility end to end — build the terminal audit and
+summary inputs, write the run's artifacts, then commit and push the canonical
+per-run audit JSON — and every test here calls it directly, with no sprint
+running, no worktree and no agent invoked (#2402).
+
+The publish half pushes the audit commit to the base branch. Because the
 sprint's own merges are what usually advance that branch, a non-fast-forward
 rejection is the ordinary case for a run that landed stories — it must be
-reconciled and retried rather than raised as terminal. These tests drive the
+reconciled and retried rather than raised as terminal. Those tests drive the
 real git plumbing (a bare "origin" plus two clones) so the reconcile is
 exercised end to end, and assert the recorded publish end state.
 """
 
 from __future__ import annotations
 
+import datetime
 import json
 import subprocess
 from pathlib import Path
 
 import pytest
+import yaml
+from coord_test_helpers import _make_config
 
-from theforge.sprint.runner import (
+from theforge.sprint.audit_publish import (
     _STORY_RUN_AUDIT_PUBLISH_STATE_PATH,
     AUDIT_PUBLISH_BRANCH_MISMATCH,
     AUDIT_PUBLISH_CLEAN,
@@ -26,7 +34,13 @@ from theforge.sprint.runner import (
     AUDIT_PUBLISH_RECONCILE_FAILED,
     StoryRunAuditPublishError,
     _commit_story_run_audits,
+    publish_story_run_audits,
+    write_terminal_sprint_audits,
 )
+from theforge.sprint.dag import StoryTriage
+from theforge.sprint.manifest import ResolvedSprint, SprintResult
+from theforge.sprint.runner import SprintExecutionState, SprintRunContext
+from theforge.task import TaskStory
 
 BASE = "release/v0.13"
 
@@ -267,3 +281,217 @@ def test_publish_records_clean_state_when_no_audits_are_pending(
     _commit_story_run_audits(clone, BASE, publish=True)
 
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_CLEAN
+
+
+# ── the write half: terminal audit + summary, called directly ─────────────
+#
+# No sprint runs in any of these. The state a run would hold is constructed
+# here and handed to the module, which is the property the move was for: the
+# responsibility is exercisable on its own (#2402).
+
+
+def _make_state(
+    tmp_path: Path,
+    *,
+    base_branch: str = "main",
+    auto_push: bool = True,
+) -> SprintExecutionState:
+    """The execution state a one-story sprint would hold at its terminal write."""
+    import dataclasses
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(
+            config.workspace, base_branch=base_branch, auto_push=auto_push
+        ),
+    )
+    task = TaskStory(name="Export service", slug="export-service", github_issue=42)
+    resolved = ResolvedSprint(
+        name="audit-move",
+        budget_usd=10.0,
+        stories=[(task, None, "issue:42")],
+        max_parallel=1,
+    )
+    context = SprintRunContext(
+        config=config,
+        resolved=resolved,
+        sprint_id="sprint-abc",
+        run_id="run-xyz",
+    )
+    return SprintExecutionState.for_run(context)
+
+
+def _make_result() -> SprintResult:
+    return SprintResult(
+        name="audit-move",
+        specs_total=1,
+        specs_succeeded=1,
+        specs_failed=0,
+        specs_skipped=0,
+        total_cost_usd=1.25,
+        budget_usd=10.0,
+        results=[],
+    )
+
+
+def test_terminal_write_emits_audit_and_summary_from_the_state(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    started = datetime.datetime(2026, 8, 13, 9, 0, tzinfo=datetime.timezone.utc)
+    finished = started + datetime.timedelta(minutes=12)
+    state.story_times["export-service"] = (started, finished)
+    state.batch_assignments["export-service"] = 1
+    state.current_story_entries_by_ref["issue:42"] = {
+        "slug": "export-service",
+        "outcome": "done",
+        "cost_usd": 1.25,
+    }
+    log_dir = tmp_path / ".forge" / "logs" / "audit-move"
+
+    write_terminal_sprint_audits(
+        state,
+        result=_make_result(),
+        started_at=started,
+        finished_at=finished,
+        duration=720.0,
+        sprint_log_dir=log_dir,
+        dropped_slugs={},
+        triages={"issue:42": StoryTriage(story_path="issue:42", action="full", reason="new")},
+    )
+
+    audit = yaml.safe_load(
+        (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+    )
+    assert audit["sprint"]["name"] == "audit-move"
+    assert audit["sprint"]["sprint_id"] == "sprint-abc"
+    assert audit["sprint"]["duration_seconds"] == 720.0
+    # The ref → slug map and the tasks-by-slug map are built inside the module
+    # from the run context, so the story is identifiable in the record without
+    # the caller having assembled either.
+    assert [spec["slug"] for spec in audit["specs"]] == ["export-service"]
+
+    summary = yaml.safe_load((log_dir / "sprint-summary.yaml").read_text(encoding="utf-8"))
+    assert summary["sprint"]["name"] == "audit-move"
+    assert [story["slug"] for story in summary["stories"]] == ["export-service"]
+    # Both artifacts describe the same run: one derivation, two writers.
+    assert summary["sprint"]["run_id"] == "run-xyz"
+    assert summary["sprint"]["sprint_id"] == audit["sprint"]["sprint_id"]
+
+
+def test_terminal_write_skips_log_dir_artifacts_when_there_is_no_log_dir(
+    tmp_path: Path,
+) -> None:
+    """A run that could not create its log directory still records the audit."""
+    state = _make_state(tmp_path)
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    write_terminal_sprint_audits(
+        state,
+        result=_make_result(),
+        started_at=now,
+        finished_at=now,
+        duration=0.0,
+        sprint_log_dir=None,
+        dropped_slugs={},
+        triages={},
+    )
+
+    assert (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").exists()
+    assert not (tmp_path / ".forge" / "logs").exists()
+
+
+def test_terminal_write_records_a_dropped_story_reason(tmp_path: Path) -> None:
+    state = _make_state(tmp_path)
+    now = datetime.datetime.now(datetime.timezone.utc)
+
+    write_terminal_sprint_audits(
+        state,
+        result=_make_result(),
+        started_at=now,
+        finished_at=now,
+        duration=0.0,
+        sprint_log_dir=None,
+        dropped_slugs={"export-service": "collision with sibling"},
+        triages={},
+    )
+
+    audit = yaml.safe_load(
+        (tmp_path / ".forge" / "audits" / "sprint-audit.yaml").read_text(encoding="utf-8")
+    )
+    spec = audit["specs"][0]
+    assert spec["outcome"] == "DROPPED"
+    assert spec["drop_reason"] == "collision with sibling"
+
+
+# ── the publish half, entered as the runner enters it ─────────────────────
+
+
+def test_publish_entry_point_publishes_for_the_state_it_is_given(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    origin, clone = origin_and_clone
+    _write_audit(clone, "run-h.json")
+    state = _make_state(clone, base_branch=BASE)
+
+    publish_story_run_audits(state, lands_locally=False)
+
+    assert "run-h.json" in _git(origin, "ls-tree", "-r", "--name-only", BASE)
+    assert _read_state(clone)["state"] == AUDIT_PUBLISH_PUBLISHED
+
+
+def test_publish_entry_point_keeps_the_commit_local_when_pushing_would_publish_merges(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    """auto_push off on a run that lands locally: commit, do not push, say so."""
+    origin, clone = origin_and_clone
+    _write_audit(clone, "run-i.json")
+    state = _make_state(clone, base_branch=BASE, auto_push=False)
+
+    publish_story_run_audits(state, lands_locally=True)
+
+    assert "run-i.json" not in _git(origin, "ls-tree", "-r", "--name-only", BASE)
+    assert _read_state(clone)["state"] == AUDIT_PUBLISH_LOCAL_ONLY
+
+
+def test_publish_entry_point_reports_the_failure_and_re_raises(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    """Reporting is part of the responsibility — and the sprint still exits nonzero."""
+    _origin, clone = origin_and_clone
+    _git(clone, "checkout", "-b", "feature/wrong-branch")
+    _write_audit(clone, "run-j.json")
+    state = _make_state(clone, base_branch=BASE)
+
+    with pytest.raises(StoryRunAuditPublishError) as excinfo:
+        publish_story_run_audits(state, lands_locally=False)
+
+    assert excinfo.value.state == AUDIT_PUBLISH_BRANCH_MISMATCH
+    assert _read_state(clone)["state"] == AUDIT_PUBLISH_BRANCH_MISMATCH
+
+
+def test_the_module_does_not_import_the_sprint_runner() -> None:
+    """Separation is the point of the move — a dependency back would undo it.
+
+    Two stories changing unrelated parts of a sprint run should claim different
+    files. An import of ``sprint.runner`` here — including one hidden inside a
+    function or behind ``TYPE_CHECKING`` — puts this module back in the runner's
+    dependency graph and makes the move a relocation (#2402).
+    """
+    import ast
+
+    from theforge.sprint import audit_publish
+
+    tree = ast.parse(Path(audit_publish.__file__).read_text(encoding="utf-8"))
+    offenders: list[str] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom):
+            module = node.module or ""
+            if module == "runner" or module.endswith(".runner"):
+                offenders.append(f"line {node.lineno}: from {'.' * node.level}{module} import ...")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith("sprint.runner"):
+                    offenders.append(f"line {node.lineno}: import {alias.name}")
+    assert not offenders, "sprint/audit_publish.py imports the sprint runner: " + "; ".join(
+        offenders
+    )
