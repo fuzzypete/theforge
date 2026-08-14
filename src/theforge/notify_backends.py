@@ -95,37 +95,71 @@ def format_pending_decision_notification(
         f"Full option set omitted from this notification; read {pending_path_str}",
     ]
 
-    def _compose(command_block: Sequence[str], *, reason_text: str) -> str:
+    def _compose(
+        command_block: Sequence[str],
+        *,
+        reason_text: str,
+        metadata_block: Sequence[str] | None = None,
+    ) -> str:
         lines: list[str] = []
         if reason_text:
             lines.append(reason_text)
-        if metadata_lines:
+        effective_metadata = metadata_lines if metadata_block is None else list(metadata_block)
+        if effective_metadata:
             if lines:
                 lines.append("")
-            lines.extend(metadata_lines)
+            lines.extend(effective_metadata)
         if command_block:
             if lines:
                 lines.append("")
             lines.extend(command_block)
         return "\n".join(lines)
 
-    if command_lines:
-        full_body = _compose(command_lines, reason_text=reason)
-        if len(full_body) <= max_chars:
-            return full_body
-        available_reason = max_chars - len(_compose(command_lines, reason_text=""))
-        trimmed_body = _compose(
-            command_lines,
-            reason_text=_truncate_notification_text(reason, available_reason),
+    def _compose_with_truncated_reason(
+        command_block: Sequence[str],
+        *,
+        metadata_block: Sequence[str] | None = None,
+    ) -> str:
+        if not reason:
+            return _compose(command_block, reason_text="", metadata_block=metadata_block)
+        candidate = _compose(command_block, reason_text=reason, metadata_block=metadata_block)
+        if len(candidate) <= max_chars:
+            return candidate
+        available_reason = (
+            max_chars
+            - len(
+                _compose(
+                    command_block,
+                    reason_text="x",
+                    metadata_block=metadata_block,
+                )
+            )
+            + 1
         )
+        return _compose(
+            command_block,
+            reason_text=_truncate_notification_text(reason, available_reason),
+            metadata_block=metadata_block,
+        )
+
+    if command_lines:
+        trimmed_body = _compose_with_truncated_reason(command_lines)
         if len(trimmed_body) <= max_chars:
             return trimmed_body
 
-    available_reason = max_chars - len(_compose(fallback_lines, reason_text=""))
-    return _compose(
-        fallback_lines,
-        reason_text=_truncate_notification_text(reason, available_reason),
-    )
+    fallback_metadata_variants = [
+        metadata_lines,
+        [line for line in metadata_lines if not line.startswith("Phase: ")],
+        [line for line in metadata_lines if not line.startswith(("Phase: ", "Deadline: "))],
+        [],
+    ]
+    for metadata_variant in fallback_metadata_variants:
+        fallback_body = _compose_with_truncated_reason(
+            fallback_lines, metadata_block=metadata_variant
+        )
+        if len(fallback_body) <= max_chars:
+            return fallback_body
+    return _truncate_notification_text(_compose(fallback_lines, reason_text=""), max_chars)
 
 
 def send_notifications(

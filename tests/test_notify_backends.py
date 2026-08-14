@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 from theforge.config import BackendConfig
 from theforge.notify_backends import (
+    MAX_PENDING_NOTIFICATION_BODY_CHARS,
     _send_ntfy,
     _send_slack,
     _send_terminal,
@@ -203,6 +204,35 @@ def test_format_pending_decision_notification_reports_when_full_option_set_is_om
     assert "Full option set omitted from this notification;" in body
     assert "/tmp/.forge/pending/run-42.yaml" in body
     assert "<option_00|option_01" not in body
+
+
+def test_format_pending_decision_notification_truncates_long_reason_and_keeps_options():
+    body = format_pending_decision_notification(
+        {
+            "reason": "Escalation advisory:\n" + ("review drift detected\n" * 200),
+            "run_id": "65273305e89c",
+            "phase": "ESCALATE",
+            "options": [
+                "accept",
+                "redirect",
+                "defer_or_abandon",
+                "re_review",
+                "split_story",
+                "abort",
+            ],
+            "timeout_at": "2026-08-14T20:00:00+00:00",
+        },
+        pending_path="/tmp/.forge/pending/65273305e89c.yaml",
+    )
+
+    assert "Phase: ESCALATE" in body
+    assert "Run ID: 65273305e89c" in body
+    assert (
+        "forge decide 65273305e89c "
+        "<accept|redirect|defer_or_abandon|re_review|split_story|abort>" in body
+    )
+    assert "Full option set omitted from this notification;" not in body
+    assert len(body) <= MAX_PENDING_NOTIFICATION_BODY_CHARS
 
 
 # ── Slack backend tests ────────────────────────────────────────────────
