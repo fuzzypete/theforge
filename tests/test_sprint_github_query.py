@@ -449,8 +449,8 @@ class TestRunSprintAcceptsResolvedSprint:
             with patch(
                 "theforge.sprint.runner.run_task", return_value=self._make_coordinator_result()
             ):
-                with patch("theforge.sprint.runner._write_sprint_audit"):
-                    with patch("theforge.sprint.runner._write_sprint_summary"):
+                with patch("theforge.sprint.audit_publish._write_sprint_audit"):
+                    with patch("theforge.sprint.audit_publish._write_sprint_summary"):
                         result = run_sprint_ctx(config, resolved)
 
         assert result.specs_total == 1
@@ -482,8 +482,8 @@ class TestRunSprintAcceptsResolvedSprint:
             with patch(
                 "theforge.sprint.runner.run_task", return_value=self._make_coordinator_result()
             ):
-                with patch("theforge.sprint.runner._write_sprint_audit"):
-                    with patch("theforge.sprint.runner._write_sprint_summary"):
+                with patch("theforge.sprint.audit_publish._write_sprint_audit"):
+                    with patch("theforge.sprint.audit_publish._write_sprint_summary"):
                         result = run_sprint_ctx(config, resolved)
 
         assert result.specs_total == 1

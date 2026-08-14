@@ -3455,7 +3455,7 @@ class TestSprintRunAuditCommit:
                 return_value={"merged": True, "success": True, "action": "merge"},
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
-            patch("theforge.sprint.runner._log", side_effect=warnings.append),
+            patch("theforge.sprint.audit_publish._log", side_effect=warnings.append),
             pytest.raises(RuntimeError, match="Failed to push story run audits"),
         ):
             run_sprint_ctx(config, manifest_path, auto_merge=True)
@@ -3498,7 +3498,7 @@ class TestSprintRunAuditCommit:
                 return_value={"merged": True, "success": True, "action": "merge"},
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
-            patch("theforge.sprint.runner._log", side_effect=warnings.append),
+            patch("theforge.sprint.audit_publish._log", side_effect=warnings.append),
             pytest.raises(RuntimeError, match="still 1 commit"),
         ):
             run_sprint_ctx(config, manifest_path, auto_merge=True)
@@ -3544,7 +3544,7 @@ class TestSprintRunAuditCommit:
         with (
             patch("theforge.sprint.runner.run_task", return_value=result),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
-            patch("theforge.sprint.runner._log", side_effect=logs.append),
+            patch("theforge.sprint.audit_publish._log", side_effect=logs.append),
         ):
             run_sprint_ctx(config, manifest_path)
 
@@ -3591,7 +3591,7 @@ class TestSprintRunAuditCommit:
                 return_value={"merged": True, "success": True, "action": "merge"},
             ),
             patch("theforge.coordinator.util._run_shell", side_effect=fake_shell),
-            patch("theforge.sprint.runner._log", side_effect=logs.append),
+            patch("theforge.sprint.audit_publish._log", side_effect=logs.append),
         ):
             sprint = run_sprint_ctx(config, manifest_path, auto_merge=True)
 
