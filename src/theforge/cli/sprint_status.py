@@ -8,24 +8,20 @@ import sys
 import textwrap
 from pathlib import Path
 
+from theforge.cli.reentry_display import issue_cost_line
+from theforge.coordinator.issue_cost import issue_number_from_slug
 from theforge.coordinator.util import _fmt_cost_total
 
 #: Width of the STATUS column — wide enough for the longest status label
 #: ("interrupted") so a killed story does not push the row out of alignment.
 _STATUS_WIDTH = 11
 
-_ISSUE_REF_RE = re.compile(r"(?:issue-|#)(\d+)")
 _DETAIL_REF_RE = re.compile(r"#(\d+)")
 
-
-def _issue_number_from_slug(text: str) -> int | None:
-    """Extract N from an ``issue-N`` or ``#N`` token; None if it doesn't match."""
-    if not text:
-        return None
-    match = _ISSUE_REF_RE.search(text)
-    if match:
-        return int(match.group(1))
-    return None
+#: Slug -> issue-number normalization is shared with the issue-cost aggregate so
+#: the number this view resolves a title for and the number that view sums runs
+#: for can never diverge (#2365).
+_issue_number_from_slug = issue_number_from_slug
 
 
 def _ensure_titles(entries: list, project_root: Path, cache: dict) -> None:
@@ -330,7 +326,13 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
         bundle_slugs = "  ".join(e.slug for e in bundle_entries)
         print(f"[bundle: {bundle_slugs}]")
         for entry in bundle_entries:
-            _print_story_line(entry, status_icons, indent=2, title_cache=title_cache)
+            _print_story_line(
+                entry,
+                status_icons,
+                indent=2,
+                title_cache=title_cache,
+                project_root=project_root,
+            )
         print()
 
     if batch_entries:
@@ -341,11 +343,19 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             group_slugs = "  ".join(e.slug for e in groups[group_id])
             print(f"[batch: {group_id}  {group_slugs}]")
             for entry in groups[group_id]:
-                _print_story_line(entry, status_icons, indent=2, title_cache=title_cache)
+                _print_story_line(
+                    entry,
+                    status_icons,
+                    indent=2,
+                    title_cache=title_cache,
+                    project_root=project_root,
+                )
             print()
 
     for entry in regular_entries:
-        _print_story_line(entry, status_icons, indent=0, title_cache=title_cache)
+        _print_story_line(
+            entry, status_icons, indent=0, title_cache=title_cache, project_root=project_root
+        )
 
     return 0
 
@@ -433,8 +443,15 @@ def _print_story_line(
     status_icons: dict,
     indent: int,
     title_cache: dict | None = None,
+    project_root: Path | None = None,
 ) -> None:
-    """Print a single story line for forge sprint-status."""
+    """Print a single story line for forge sprint-status.
+
+    The COST column is this run's spend and stays that. What the *issue* has
+    cost across every recorded run is disclosed below the columns when there is
+    more than one, because the column figure alone reads as the cost of the
+    issue when it is one attempt's share of it (#2365).
+    """
     cache = title_cache if title_cache is not None else {}
     icon = status_icons.get(getattr(entry, "status", "waiting"), "?")
     path = getattr(entry, "path", getattr(entry, "slug", ""))
@@ -511,6 +528,9 @@ def _print_story_line(
     reentry_note = getattr(entry, "reentry_note", "")
     if reentry_note:
         print(f"{prefix}    re-entry: {reentry_note}")
+    slug = str(getattr(entry, "slug", "") or "")
+    for line in issue_cost_line(project_root, slug, indent=f"{prefix}    "):
+        print(line)
 
 
 def _format_sprint_phase(

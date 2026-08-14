@@ -18,7 +18,7 @@ from theforge.runners.schema_utils import ToolCallRequest
 def _make_profile(
     name: str = "test-reviewer",
     provider: str = "google",
-    model: str = "gemini-2.5-flash",
+    model: str = "gemini-3-flash-preview",
     thinking_budget: int | None = None,
     phase: str | None = None,
 ) -> ModelProfile:
@@ -215,13 +215,13 @@ class TestRunGoogle:
         fake_client.models.generate_content.return_value = fake_response
 
         _, modules = _make_google_modules(fake_client)
-        profile = _make_profile(model="gemini-2.5-flash")
+        profile = _make_profile(model="gemini-3-flash-preview")
 
         with patch.dict(sys.modules, modules):
             result = _run_google("test prompt", profile)
 
         assert result.success
-        assert result.cost_usd == 0.30 + (0.75 * 2.50)
+        assert result.cost_usd == 0.50 + (0.75 * 3.00)
         assert result.model_usage[0].thinking_tokens == 250_000
 
     def test_none_response_text_returns_clear_error(self):
@@ -539,7 +539,7 @@ class TestGoogleAdapter:
         fake_client.models.generate_content.side_effect = [first_response, second_response]
 
         _, modules = _make_google_modules(fake_client)
-        profile = _make_profile(model="gemini-2.5-flash")
+        profile = _make_profile(model="gemini-3-flash-preview")
 
         with patch.dict(sys.modules, modules):
             adapter = _make_google_adapter(profile, secrets=None)
@@ -551,7 +551,7 @@ class TestGoogleAdapter:
         assert turn.usage.input_tokens == 300 + 310
         assert turn.usage.output_tokens == 40 + 50
         assert turn.usage.thinking_tokens == 20 + 30
-        assert turn.usage.cost_usd == (610 / 1_000_000 * 0.30) + (140 / 1_000_000 * 2.50)
+        assert turn.usage.cost_usd == (610 / 1_000_000 * 0.50) + (140 / 1_000_000 * 3.00)
 
     def test_content_parts_none_yields_empty(self):
         """Google adapter with candidate.content.parts = None → no tool_calls, no text."""

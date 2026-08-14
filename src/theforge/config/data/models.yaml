@@ -21,7 +21,7 @@
 #               cost_rank_basis
 #   base_url:   endpoint metadata (locally served OpenAI-compatible servers)
 #   cost:       input_per_mtok, output_per_mtok, cached_input_per_mtok,
-#               pricing_provenance
+#               pricing_provenance, rate_basis
 #   identity:   status (served|retired), verified_against, verified_on,
 #               retired_reason
 #   invocation: reasoning_mode (enabled|disabled)
@@ -47,6 +47,16 @@
 # recorded for. Omitting it marks them *unattributed*: routing ignores them.
 # `routing.cost_rank_basis` must be stated whenever the band is not this entry's
 # own attributable price band — an unstated, underivable band is a load error.
+#
+# `cost.rate_basis` states whether spend on the entry is established from a rate
+# card at all. It defaults to `token_rates`. `provider_reported` says the
+# transport returns the figure it was billed, so the entry declares no rates and
+# none can be *missing* — the distinction an absent `cost:` block cannot make
+# (#2388). An entry declaring it may not also declare per-MTok figures.
+#
+# This file is the ONLY place a rate is declared. There is no packaged fallback
+# table behind it: since #2388 a per-MTok figure reaches accounting from a
+# catalog entry here or from a project's forge.yaml, and from nowhere else.
 
 version: 1
 
@@ -55,8 +65,8 @@ models:
   #
   # `sonnet`/`opus` are Claude-CLI shorthands, not billed identities: the CLI
   # resolves each to whichever concrete version it currently ships (the vendor
-  # bills `claude-sonnet-4-6` / `claude-opus-4-6`-style names — see
-  # runners/schema_utils.PRICING_TABLE). The entry identity can therefore move
+  # bills `claude-sonnet-4-6` / `claude-opus-4-6`-style names, which are pinned
+  # entries of their own below). The entry identity can therefore move
   # while the literal below does not, so these figures carry no
   # pricing_provenance: they are indicative only and routing ignores them.
   # Re-attributing them requires pinning the entry to the concrete version the
@@ -129,16 +139,20 @@ models:
   # unaffected by their presence.
   #
   # Unlike the shorthands, a pinned model string IS the identity the vendor
-  # bills under (runners/schema_utils.PRICING_TABLE keys them identically), so
-  # where a price has been observed for one it carries pricing_provenance and its
-  # band derives from that price — no cost_rank_basis needed. Where no price has
-  # been attributed yet, the band restates the vendor's tier naming exactly as
-  # the shorthand's does, and says so.
+  # bills under, so where a price has been observed for one it carries
+  # pricing_provenance and its band derives from that price — no cost_rank_basis
+  # needed. Where no price has been attributed yet, the band restates the
+  # vendor's tier naming exactly as the shorthand's does, and says so.
+  #
+  # The rates the priced entries below carry are not for routing alone: the
+  # Claude CLI reports the *billed* name in each stream event, so a run killed
+  # before its result event is repriced from these figures by the kill-path
+  # reconstruction in runners/runner_claude.py.
 
-  # Current flagship. No per-MTok figure has been attributed to this identity in
-  # this repo yet (PRICING_TABLE has none), so it declares no cost block and
-  # bands on the vendor's own tier naming rather than borrowing the shorthand's
-  # indicative literal.
+  # Current flagship. Declares no rates and needs none: the Claude CLI reports
+  # what it was billed, so nothing here is ever multiplied by a token count.
+  # `rate_basis` says that outright — an empty cost block would be
+  # indistinguishable from a rate somebody forgot to record.
   - provider: anthropic
     model: claude-opus-5
     transport: {kind: cli}
@@ -147,6 +161,8 @@ models:
       capability: 10
       cost_rank: 3
       cost_rank_basis: vendor-tier
+    cost:
+      rate_basis: provider_reported
 
   # Current mid-priced workhorse. Same attribution position as claude-opus-5.
   - provider: anthropic
@@ -157,6 +173,8 @@ models:
       capability: 7
       cost_rank: 1
       cost_rank_basis: vendor-tier
+    cost:
+      rate_basis: provider_reported
 
   # Prior flagship generation — the candidate the shorthand cannot name. Priced
   # under its own billed identity, so its band (3) is derived, and it is
@@ -209,8 +227,9 @@ models:
   #
   # Unlike the Claude-CLI shorthands above, these model strings are the identity
   # the vendor bills under — they are passed through verbatim and priced under
-  # the same name (runners/schema_utils.PRICING_TABLE keys them identically), so
-  # the figures are attributable to the entry.
+  # the same name — so the figures are attributable to the entry. The Codex CLI
+  # reports token counts and no price, so these rates are what makes a run on
+  # them accountable at all.
   - provider: openai
     model: gpt-5.4
     transport: {kind: cli}

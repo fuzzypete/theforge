@@ -16,24 +16,30 @@ priced by what it dispatched, not by what it was seated as.
 
 **The lookup never crosses transports.** Every key in a compiled registry is a
 concrete ``(provider, model, transport)``. An exact miss is unpriced, full stop.
-Cross-transport reuse of a legacy, transport-agnostic price exists only as a
-COMPILE-TIME materialization (see :mod:`theforge.config.dispatch_rates`) that is
-recorded on the entry as :attr:`RateSource.LEGACY_COMPAT` with the key it came
-from, so it is inspectable rather than implicit at query time. That is what stops
-a model priced by the operator on the CLI from silently lending its price to the
-same model reached over the API.
+There is no transport-agnostic tier to fall through to: a model priced by the
+operator on the CLI cannot lend its price to the same model reached over the API,
+because no code path can widen one identity's rate onto another.
+
+**Rates are declared in one kind of place, and it is not here.** This module
+carries the rate *types* and the registry mechanism; the figures live in the
+shipped catalog (``config/data/models.yaml``) or in a project's ``forge.yaml``,
+both of which an operator can edit without a release. A packaged
+``PRICING_TABLE`` used to sit here as a second declaration surface that no
+configuration could override and that accounting consulted whenever the registry
+missed — it was removed in #2388 (see ``docs/reference/dropped-legacy-rates.md``
+for the rows it held and where each went).
 
 **This module is an import leaf.** It has no ``theforge`` imports at all — not
 at module scope, not inside a function. That is deliberate and load-bearing:
 configuration load compiles the registry, so ``theforge.config.dispatch_rates``
 imports this module, and anything this module reached would become reachable
 from ``theforge.config`` — which is how a pricing key ends up in an import cycle
-with half the runners package. So the pure rate *data* (:class:`ModelRates`,
-:data:`PRICING_TABLE`) lives here, while the catalog-backed resolution that
-needs ``theforge.config.models`` stays in :mod:`theforge.runners.schema_utils`,
-which imports this module one way and re-exports these names for compatibility.
-:func:`resolve` returns None when no registry is installed rather than falling
-back to ``pricing_for``; ``schema_utils.rates_for`` owns that baseline.
+with half the runners package. So the pure rate types (:class:`ModelRates`) live
+here, while the catalog-backed resolution that needs ``theforge.config.models``
+stays in :mod:`theforge.runners.schema_utils`, which imports this module one way
+and re-exports these names for compatibility. :func:`resolve` returns None when
+no registry is installed rather than falling back to ``pricing_for``;
+``schema_utils.rates_for`` owns that baseline.
 """
 
 from __future__ import annotations
@@ -69,7 +75,7 @@ class PricedProfile(Protocol):
     def mode(self) -> str: ...
 
 
-# ── Rate data (pure, packaged) ────────────────────────────────────────
+# ── Rate types (pure — the figures live in the catalog) ───────────────
 
 
 @dataclass(frozen=True)
@@ -93,64 +99,6 @@ class ModelRates:
 # the uncached rate approximates) states it on its catalog entry and is priced
 # from that figure rather than from this multiplier — see :class:`ModelRates`.
 CACHED_INPUT_RATE_MULT = 0.1
-
-
-# The PACKAGED BASELINE rate card (per 1M tokens). Since #2335 this is no longer
-# a second, competing source of truth that accounting reads while routing reads
-# the model registry — the two could disagree, and a model priced in
-# configuration and absent here routed as priced and recorded its spend as
-# unknown.
-#
-# What it is now: transport-agnostic figures that config load MATERIALIZES onto
-# concrete (provider, model, transport) identities when compiling the rate
-# registry, and only onto identities the configuration can actually dispatch on
-# (theforge.config.dispatch_rates._materialize_legacy_rates). A row here can
-# therefore never widen onto a transport a project already priced separately,
-# and it is not consulted at all once a registry is installed.
-#
-# It remains authoritative for concrete billed identifiers that are not registry
-# entries in their own right — a vendor CLI reports ``claude-sonnet-4-6`` while
-# the profile dispatches under the ``sonnet`` shorthand — and it is the answer
-# for any process that never loads a configuration (unit tests).
-#
-# Key: (provider, model_name)
-# Value: (input_cost_per_mtok, output_cost_per_mtok)
-PRICING_TABLE: dict[tuple[str, str], tuple[float, float]] = {
-    ("openai", "o4-mini"): (1.10, 4.40),
-    ("openai", "gpt-4o"): (2.50, 10.00),
-    ("openai", "gpt-4o-mini"): (0.15, 0.60),
-    ("openai", "gpt-5.1-codex-mini"): (1.50, 6.00),
-    ("openai", "gpt-5.1-codex"): (3.00, 12.00),
-    ("openai", "gpt-5.1-codex-max"): (6.00, 24.00),
-    ("openai", "gpt-5.4-mini"): (0.25, 2.00),
-    ("openai", "gpt-5.4"): (1.25, 10.00),
-    ("openai", "gpt-5.4-pro"): (15.00, 120.00),
-    # Was a hand-kept mirror of the forge.yaml figures, because routing read the
-    # config and accounting read this table. It no longer has to be: a project
-    # price now reaches accounting through the compiled registry (#2335). Kept as
-    # the packaged baseline for a project that does not declare this model.
-    ("openai", "gpt-5.5"): (5.00, 30.00),
-    ("anthropic", "claude-opus-4-6"): (15.00, 75.00),
-    ("anthropic", "claude-sonnet-4-6"): (3.00, 15.00),
-    # Mirrors the figures the `haiku` shorthand carries and the pinned
-    # `anthropic/claude-haiku-4-5/cli` catalog entry attributes to this name.
-    ("anthropic", "claude-haiku-4-5"): (1.00, 5.00),
-    ("google", "gemini-3.5-flash"): (1.50, 9.00),  # mirrors forge.yaml overlay
-    ("google", "gemini-3.1-pro-preview"): (2.00, 12.00),  # ≤200k tokens
-    ("google", "gemini-3.1-pro-preview-customtools"): (2.00, 12.00),
-    ("google", "gemini-2.5-pro"): (1.25, 10.00),  # ≤200k tokens
-    ("google", "gemini-2.5-flash"): (0.30, 2.50),
-    ("google", "gemini-2.5-flash-lite"): (0.10, 0.40),
-    ("google", "gemini-2.0-flash"): (0.10, 0.40),
-    ("google", "gemini-2.0-flash-lite"): (0.075, 0.30),
-    # DeepSeek is deliberately absent. Its rates — including the cache-hit tier
-    # it bills separately, which this table has no column for — are declared on
-    # the catalog entries in config/data/models.yaml and read through
-    # :func:`theforge.runners.schema_utils.pricing_for`. The rows that used to
-    # sit here were the third hand-maintained copy of a rate card and outlived
-    # two of its revisions (#2352); the retired identifiers they priced now
-    # record no price at all.
-}
 
 
 class AccountingMode(str, Enum):
@@ -200,8 +148,7 @@ class RateSource(str, Enum):
 
     PROJECT = "project"  # declared in forge.yaml
     CATALOG = "catalog"  # shipped model catalog entry
-    LEGACY_COMPAT = "legacy_compat"  # widened from the transport-agnostic table
-    BASELINE = "baseline"  # no registry installed: today's pricing_for answer
+    BASELINE = "baseline"  # no registry installed: the catalog answer, transport-blind
     NONE = "none"  # unpriced
 
 
@@ -299,8 +246,7 @@ class RateEntry:
     rates: ModelRates | None = None
     mode: AccountingMode = AccountingMode.UNKNOWN
     source: RateSource = RateSource.NONE
-    #: For LEGACY_COMPAT, the transport-agnostic key this was materialized from;
-    #: otherwise the registry key or catalog id the figures were declared on.
+    #: The registry key or catalog id the figures were declared on.
     origin: str = ""
 
     @property
@@ -330,9 +276,8 @@ class RateRegistry:
     """Compiled ``DispatchIdentity -> RateEntry`` map with a strict lookup.
 
     ``lookup`` matches the exact key only. There is no transport-agnostic tier
-    and no fallthrough to :data:`PRICING_TABLE`: once a registry is installed, a
-    miss is unpriced and says so. Cross-transport reuse happens at compile time
-    or not at all.
+    and no packaged table to fall through to: once a registry is installed, a
+    miss is unpriced and says so.
     """
 
     entries: Mapping[DispatchIdentity, RateEntry] = field(default_factory=dict)
@@ -448,7 +393,7 @@ def known_models(provider: str, transport: str) -> tuple[str, ...]:
 
     Used by the Claude CLI's dated-id prefix match, which must run against keys
     of the SAME transport only. Empty when nothing is installed; the caller
-    falls back to the packaged table in that case.
+    falls back to the shipped catalog's rates in that case.
     """
     registry = active()
     if registry is None:

@@ -463,6 +463,7 @@ models:
         cached_input_per_mtok: 0.20     # only if the provider bills its cache
                                         # tier at its own published rate
         pricing_provenance: gemini-4-pro-2026-08
+        rate_basis: token_rates         # or `provider_reported`, with no figures
       identity:
         status: served                  # served | retired
         verified_against: provider model list
@@ -489,6 +490,21 @@ price-attributable nor explained is a load error rather than a silent guess.
 prompt-cache hit rather than expressing it as a fraction of the uncached rate.
 Omit it and forge applies its generic 10%-of-input discount, which is what
 OpenAI and Anthropic actually bill.
+
+**A rate is declared here and nowhere else.** The catalog entry (shipped or
+yours) is the only place a per-MTok figure comes from — there is no packaged
+rate table behind it that a release could change and your configuration could
+not (#2388; `docs/reference/dropped-legacy-rates.md` records the one that used
+to exist). So an entry with no figures is an entry that cannot be priced, and
+`rate_basis` is how you say which kind of "no figures" you mean:
+
+- `token_rates` (the default) — spend is token count × the rates on this entry.
+  Declaring no figures under this basis means the identity records its cost as
+  unknown, and `forge check-config` says so at load.
+- `provider_reported` — the transport returns the figure it was billed (the
+  Claude CLI does), so no rate card is ever consulted and none is missing. An
+  entry declaring this may not also declare per-MTok figures: a rate nothing
+  reads is a rate nothing keeps current.
 
 **Upstream identifiers.** `identity` is what the entry claims about the name the
 *provider* serves, and when that claim was last checked. It matters because a

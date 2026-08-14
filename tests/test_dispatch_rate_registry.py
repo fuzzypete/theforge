@@ -161,15 +161,12 @@ class TestNoBorrowAcrossTransports:
         assert warnings, "load must name the unaccountable API identity"
         assert "transport fallback" in warnings[0] or "review pool" in warnings[0]
 
-    def test_a_pricing_conflict_suppresses_the_packaged_widening_and_is_named(
-        self, tmp_path, caplog
-    ):
-        """Rule (c): a per-transport disagreement surfaces, it is not resolved.
+    def test_a_price_declared_on_one_transport_leaves_the_other_unpriced(self, tmp_path, caplog):
+        """A per-transport gap surfaces; it is not filled from somewhere else.
 
-        ``gpt-5.5`` carries a packaged PRICING_TABLE row. The project prices it
-        on the CLI only. The API path must therefore NOT inherit the packaged
-        figure either — the conflict is operator-actionable and is reported as
-        such rather than papered over with whichever number is nearest.
+        The project prices ``gpt-5.5`` on the CLI only. The API path must stay
+        unpriced and be named at load: there is no packaged row behind it to
+        borrow from (#2388), and the CLI's own figure must never widen onto it.
         """
         with caplog.at_level(logging.WARNING, logger="theforge.config"):
             _load(
@@ -204,17 +201,25 @@ class TestNoBorrowAcrossTransports:
 
         messages = [record.getMessage() for record in caplog.records]
         assert any(
-            "gpt-5.5" in message and "per-transport pricing conflict" in message
+            "gpt-5.5" in message and "(api)" in message and "no rate card" in message
             for message in messages
         ), messages
 
 
-# ── Legacy materialization: rules (a), (b), (c) ───────────────────────
+# ── One declaration surface: the catalog, or forge.yaml ───────────────
 
 
-class TestLegacyMaterialization:
-    def test_packaged_price_materializes_onto_a_reachable_api_identity(self, tmp_path):
-        """Rule (a)/(b): a transport-agnostic packaged row still prices, as today."""
+class TestSingleDeclarationSurface:
+    """Every rate in a compiled registry came from a place config can edit (#2388).
+
+    The packaged ``PRICING_TABLE`` these tests used to exercise was the second
+    place a rate could be declared: compiled into the runner package, unreachable
+    from any configuration, and consulted whenever the registry missed. It is
+    gone, and what replaced it is not a different fallback — it is the catalog
+    entries that already priced the identities anything could dispatch.
+    """
+
+    def test_a_catalog_price_reaches_a_reachable_api_identity(self, tmp_path):
         cfg = _load(tmp_path, {"models": ["openai/gpt-5.4/api"], "budget_usd": 50.0})
         assert cfg.dev_profile.mode == "api"
 
@@ -222,38 +227,45 @@ class TestLegacyMaterialization:
         assert registry is not None
         entry = registry.lookup(DispatchIdentity("openai", "gpt-5.4", "api"))
         assert entry.priced
+        assert entry.source is RateSource.CATALOG
+        assert entry.origin == "openai/gpt-5.4/api"
         assert _estimate_cost("openai", "gpt-5.4", 1_000_000, 0, transport="api") == pytest.approx(
             pricing_for("openai", "gpt-5.4").input_per_mtok
         )
 
-    def test_an_unreachable_packaged_row_is_absent_from_the_compiled_registry(self):
-        """Rule (b): nothing unscoped enters the registry.
+    def test_every_priced_entry_names_a_registry_entry_as_its_origin(self, tmp_path):
+        """No entry can be priced from a source configuration could not supply."""
+        cfg = _load(
+            tmp_path,
+            {
+                "models": ["openai/gpt-5.4/api", "openai/gpt-5.4-mini/api"],
+                "budget_usd": 50.0,
+            },
+        )
+        registry = rr.active()
+        assert registry is not None
+        priced = [entry for entry in registry.entries.values() if entry.priced]
+        assert priced
+        for entry in priced:
+            assert entry.source in (RateSource.CATALOG, RateSource.PROJECT), entry
+            assert entry.origin in cfg.model_registry, entry
 
-        ``gpt-4o`` is in the packaged table but reachable on nothing here, so it
-        is dropped at compile time rather than retained as a wildcard that some
-        later identity could match against.
+    def test_an_identity_no_registry_entry_describes_is_unpriced(self):
+        """A model the merged registry does not name is priced by nothing.
+
+        ``gpt-4o`` was a packaged-table row and is reachable on nothing here. It
+        used to be materialized onto any identity that named it; now the absence
+        of a registry entry IS the answer.
         """
-        reachable = (rr.make_identity("openai", "gpt-5.4", "api"),)
+        identity = rr.make_identity("openai", "gpt-4o", "api")
         from theforge.config.dispatch_rates import ReachableIdentity
 
-        registry, _ = compile_rate_registry(
+        registry = compile_rate_registry(
             {},
-            (ReachableIdentity(identity=reachable[0], runner="openai", paths=("dev",)),),
+            (ReachableIdentity(identity=identity, runner="openai", paths=("dev",)),),
         )
-        assert DispatchIdentity("openai", "gpt-4o", "api") not in registry.entries
-        assert registry.lookup(DispatchIdentity("openai", "gpt-4o", "api")).priced is False
-
-    def test_a_materialized_entry_records_where_it_was_widened_from(self, tmp_path):
-        """The widening is inspectable, not implicit."""
-        _load(tmp_path, {"models": ["openai/gpt-5.4/api"], "budget_usd": 50.0})
-        registry = rr.active()
-        entry = registry.lookup(DispatchIdentity("openai", "gpt-5.4", "api"))
-        if entry.source is RateSource.LEGACY_COMPAT:
-            assert entry.origin.startswith("PRICING_TABLE[")
-        else:
-            # A catalog entry already prices this identity per-transport, which
-            # is strictly better than a widening — assert it says so.
-            assert entry.source in (RateSource.CATALOG, RateSource.PROJECT)
+        assert registry.lookup(identity).priced is False
+        assert registry.lookup(identity).source is RateSource.NONE
 
 
 # ── Every dispatch path is priced by what it dispatched ───────────────
@@ -934,9 +946,14 @@ class TestRateRegistryIsAnImportLeaf:
         assert offenders == [], f"rate_registry must stay an import leaf; found {offenders}"
 
     def test_schema_utils_re_exports_the_moved_names(self):
-        """Existing imports keep working after the pricing data moved."""
+        """Existing imports keep working after the pricing types moved.
+
+        ``PRICING_TABLE`` is deliberately absent from both: the packaged rate
+        dictionary was removed in #2388, so there is nothing to re-export.
+        """
         from theforge.runners import rate_registry, schema_utils
 
-        assert schema_utils.PRICING_TABLE is rate_registry.PRICING_TABLE
         assert schema_utils.ModelRates is rate_registry.ModelRates
         assert schema_utils.CACHED_INPUT_RATE_MULT == rate_registry.CACHED_INPUT_RATE_MULT
+        assert not hasattr(rate_registry, "PRICING_TABLE")
+        assert not hasattr(schema_utils, "PRICING_TABLE")

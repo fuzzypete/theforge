@@ -62,6 +62,11 @@ from pathlib import Path
 # the interval *is* the width of the unobserved window described above.
 SAMPLE_INTERVAL_SECONDS = 0.05
 
+#: How many generations one :meth:`DescendantTracker.observe` pass will walk
+#: before returning. Far deeper than any real agent/gate process tree; it exists
+#: only so a tree that is forking as fast as we read it cannot hold a sample open.
+_MAX_WALK_GENERATIONS = 64
+
 
 def is_real_pid(value: object) -> bool:
     """True only for a value that can denote a real process.
@@ -438,43 +443,70 @@ class DescendantTracker:
             return dict(self._seen)
 
     def observe(self) -> None:
-        """Walk one generation out from everything currently known."""
+        """Walk out from everything currently known, as deep as the links go.
+
+        One sample sees the whole tree, not one generation of it. Walking a
+        single generation per call made depth a way out after all: a
+        grandchild was only recorded on the *second* sample, a
+        great-grandchild on the third, and a spawn killed before enough
+        samples elapsed took every unrecorded descendant with it — which is
+        the containment this exists to provide (#2309). It also made growth
+        ambiguous, because a sample that saw no new process still "grew" by
+        reaching one generation deeper into a tree that was already there.
+        """
         if not self._active:
             return
-        with self._lock:
-            frontier = set(self._frontier)
-        candidates: list[int] = []
-        for pid in frontier:
-            candidates.extend(children_of(pid))
-        if self._pgid is not None:
-            # A group member is ours whether or not we ever saw it born — this
-            # covers a descendant whose own parent chain broke before the first
-            # sample but which never left the group.
-            candidates.extend(members_of_group(self._pgid))
-
         me = os.getpid()
         with self._lock:
-            fresh = [
-                pid
-                for pid in candidates
-                if is_real_pid(pid)
-                and pid != me
-                and pid not in self._seen
-                and pid not in self._roots
-            ]
+            pending = set(self._frontier)
+        # A group member is ours whether or not we ever saw it born — this
+        # covers a descendant whose own parent chain broke before the first
+        # sample but which never left the group. Seeded once: group membership
+        # is not something the child walk discovers more of.
+        seeded = members_of_group(self._pgid) if self._pgid is not None else []
+
         grew = False
-        for pid in fresh:
-            info = process_info(pid)
-            if info is None:
-                continue
+        # Bounded because a tree that is actively forking can keep handing us
+        # new pids: an observation is a sample, and a sample that never returns
+        # is worse than one that stops a generation short.
+        for _ in range(_MAX_WALK_GENERATIONS):
+            candidates: list[int] = list(seeded)
+            seeded = []
+            for pid in pending:
+                candidates.extend(children_of(pid))
+
             with self._lock:
-                # Union, never replace: the point is to remember a descendant
-                # that has since been orphaned and would appear in no later
-                # snapshot as anything's child.
-                if pid not in self._seen:
-                    grew = True
-                self._seen.setdefault(pid, info.fingerprint)
-                self._frontier.add(pid)
+                fresh = [
+                    pid
+                    for pid in dict.fromkeys(candidates)
+                    if is_real_pid(pid)
+                    and pid != me
+                    and pid not in self._seen
+                    and pid not in self._roots
+                ]
+            if not fresh:
+                break
+
+            discovered: set[int] = set()
+            for pid in fresh:
+                info = process_info(pid)
+                if info is None:
+                    continue
+                with self._lock:
+                    # Union, never replace: the point is to remember a descendant
+                    # that has since been orphaned and would appear in no later
+                    # snapshot as anything's child.
+                    if pid not in self._seen:
+                        grew = True
+                        discovered.add(pid)
+                    self._seen.setdefault(pid, info.fingerprint)
+                    self._frontier.add(pid)
+            if not discovered:
+                break
+            # Only what this pass turned up needs walking: everything else was
+            # already walked earlier in this same call.
+            pending = discovered
+
         if grew and self._on_observed is not None:
             # Only on growth: the sidecar write is cheap but not free, and a
             # sample that saw nothing new has nothing to persist.

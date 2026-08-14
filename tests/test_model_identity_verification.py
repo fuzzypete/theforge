@@ -59,9 +59,9 @@ from theforge.runners.adapters.deepseek import _run_deepseek, deepseek_request_k
 from theforge.runners.adapters.openai import _read_chat_usage
 from theforge.runners.api import _estimated_provenance
 from theforge.runners.schema_utils import (
-    PRICING_TABLE,
     ToolCallRequest,
     _estimate_cost,
+    catalog_rates,
     pricing_for,
     rate_card_confirmed,
 )
@@ -155,14 +155,17 @@ class TestRetiredIdentifiers:
             assert spec.pricing_provenance is None
             assert pricing_for(spec.provider, spec.model) is None
 
-    def test_the_accounting_table_no_longer_carries_deepseek_at_all(self):
+    def test_only_the_served_deepseek_identifiers_carry_rates(self):
         """The third hand-maintained copy of the rate card is gone.
 
         It held four rows, two commented as aliases of a generation two releases
         old, at the superseded rates. Rates now live on the catalog entry beside
-        the identity and verification date they were recorded with.
+        the identity and verification date they were recorded with — and since
+        #2388 that catalog is the only place they live, so the retired
+        identifiers price nothing anywhere.
         """
-        assert not [key for key in PRICING_TABLE if key[0] == "deepseek"]
+        deepseek = {model for provider, model in catalog_rates() if provider == "deepseek"}
+        assert deepseek == {"deepseek-v4-pro", "deepseek-v4-flash"}
 
     def test_a_retirement_must_state_a_reason(self):
         """A withdrawn name with no stated reason tells an operator nothing."""

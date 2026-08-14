@@ -35,7 +35,7 @@ def _make_profile(
     return ModelProfile(
         name="dev",
         cli="codex",
-        model="o4-mini",
+        model="gpt-5.4-mini",
         budget_usd=2.0,
         timeout_seconds=900,
         allowed_tools=("Read", "Edit", "Write", "Bash"),
@@ -389,18 +389,18 @@ class TestCodexCachedTokenPricing:
             reasoning_output_tokens=14,
         )
         cost, model_usage = _price_codex_usage(profile=profile, usage=usage)
-        # o4-mini: (1.10, 4.40)/Mtok. uncached = 12892 - 9088 = 3804.
-        expected = (3804 / 1e6) * 1.10 + (9088 / 1e6) * 1.10 * 0.1 + (21 / 1e6) * 4.40
+        # gpt-5.4-mini: (0.25, 2.00)/Mtok. uncached = 12892 - 9088 = 3804.
+        expected = (3804 / 1e6) * 0.25 + (9088 / 1e6) * 0.25 * 0.1 + (21 / 1e6) * 2.00
         assert cost == pytest.approx(expected)
         # A flat-rate charge would be strictly larger — that overstatement is the
         # bug this guards.
-        assert cost < (12892 / 1e6) * 1.10 + (21 / 1e6) * 4.40
+        assert cost < (12892 / 1e6) * 0.25 + (21 / 1e6) * 2.00
 
     def test_reasoning_tokens_recorded_but_not_double_billed(self) -> None:
         profile = _make_profile()
         usage = _CodexUsage(input_tokens=0, output_tokens=1000, reasoning_output_tokens=800)
         cost, model_usage = _price_codex_usage(profile=profile, usage=usage)
-        assert cost == pytest.approx((1000 / 1e6) * 4.40)
+        assert cost == pytest.approx((1000 / 1e6) * 2.00)
         assert model_usage[0].thinking_tokens == 800
 
     def test_cache_write_tokens_surface_in_model_usage(self) -> None:
@@ -590,15 +590,15 @@ class TestCodexLifecycle:
     ) -> None:
         """A codex JSON blob with a usage block is priced via the pricing table."""
         self._patch_env(monkeypatch, "usage")
-        profile = _make_profile(sandbox_mode="none")  # model o4-mini: (1.10, 4.40)/Mtok
+        profile = _make_profile(sandbox_mode="none")  # model gpt-5.4-mini: (0.25, 2.00)/Mtok
         result = _run_codex(
             prompt="do the thing",
             profile=profile,
             working_dir=tmp_path,
         )
-        # 1000 in * 1.10/M + 500 out * 4.40/M = 0.0011 + 0.0022 = 0.0033
+        # 1000 in * 0.25/M + 500 out * 2.00/M = 0.00025 + 0.001 = 0.00125
         assert result.cost_usd is not None
-        assert result.cost_usd == pytest.approx(0.0033)
+        assert result.cost_usd == pytest.approx(0.00125)
         assert len(result.model_usage) == 1
         usage = result.model_usage[0]
         assert usage.input_tokens == 1000
@@ -615,7 +615,7 @@ class TestCodexLifecycle:
             profile=profile,
             working_dir=tmp_path,
         )
-        assert result.cost_usd == pytest.approx(0.0033)
+        assert result.cost_usd == pytest.approx(0.00125)
         assert len(result.model_usage) == 1
 
     def test_json_event_usage_yields_measured_cost(
@@ -623,7 +623,7 @@ class TestCodexLifecycle:
     ) -> None:
         """A `codex exec --json` turn.completed event is parsed into measured cost."""
         self._patch_env(monkeypatch, "json_usage")
-        profile = _make_profile(sandbox_mode="none")  # o4-mini: (1.10, 4.40)/Mtok
+        profile = _make_profile(sandbox_mode="none")  # gpt-5.4-mini: (0.25, 2.00)/Mtok
         result = _run_codex(prompt="do the thing", profile=profile, working_dir=tmp_path)
 
         assert result.success is True
@@ -635,7 +635,7 @@ class TestCodexLifecycle:
         assert usage.cache_creation_tokens == 256
         assert usage.output_tokens == 2100
         assert usage.thinking_tokens == 1400
-        expected = (3804 / 1e6) * 1.10 + (9088 / 1e6) * 1.10 * 0.1 + (2100 / 1e6) * 4.40
+        expected = (3804 / 1e6) * 0.25 + (9088 / 1e6) * 0.25 * 0.1 + (2100 / 1e6) * 2.00
         assert result.cost_usd == pytest.approx(expected)
 
     def test_json_mode_does_not_leak_events_into_agent_output(
