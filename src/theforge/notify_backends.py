@@ -37,6 +37,16 @@ def _truncate_notification_text(text: str, limit: int) -> str:
     return text[: limit - 3].rstrip() + "..."
 
 
+def _first_fitting_whole_body(candidates: Sequence[str], limit: int) -> str:
+    """Return the first complete notification body that fits the budget."""
+    if limit <= 0:
+        return ""
+    for candidate in candidates:
+        if candidate and len(candidate) <= limit:
+            return candidate
+    return ""
+
+
 def _format_pending_deadline(timeout_at: str, *, now: datetime | None = None) -> str:
     """Render an absolute deadline plus the remaining or overdue window."""
     deadline = datetime.fromisoformat(timeout_at)
@@ -159,7 +169,24 @@ def format_pending_decision_notification(
         )
         if len(fallback_body) <= max_chars:
             return fallback_body
-    return _truncate_notification_text(_compose(fallback_lines, reason_text=""), max_chars)
+
+    last_resort_candidates = []
+    if run_id:
+        last_resort_candidates.extend(
+            [
+                _compose(
+                    command_lines or ["Reply with:", f"  forge decide {run_id} <action>"],
+                    reason_text="",
+                    metadata_block=[f"Run ID: {run_id}"],
+                ),
+                f"Run ID: {run_id}",
+                run_id,
+            ]
+        )
+    else:
+        last_resort_candidates.append("Pending decision; read the pending file on this machine.")
+
+    return _first_fitting_whole_body(last_resort_candidates, max_chars)
 
 
 def send_notifications(

@@ -235,6 +235,22 @@ def test_format_pending_decision_notification_truncates_long_reason_and_keeps_op
     assert len(body) <= MAX_PENDING_NOTIFICATION_BODY_CHARS
 
 
+def test_format_pending_decision_notification_last_resort_never_truncates_command_mid_token():
+    body = format_pending_decision_notification(
+        {
+            "reason": "Operator action required.",
+            "run_id": "run-42",
+            "phase": "ESCALATE",
+            "options": [f"option_{idx:02d}" for idx in range(20)],
+            "timeout_at": "2026-08-14T20:00:00+00:00",
+        },
+        pending_path="/" + ("very-long-segment/" * 20) + "run-42.yaml",
+        max_chars=14,
+    )
+
+    assert body == "Run ID: run-42"
+
+
 # ── Slack backend tests ────────────────────────────────────────────────
 
 
