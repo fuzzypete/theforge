@@ -21,7 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, timedelta
 
-from .pricing import AttributablePricing
+from .pricing import RATE_BASIS_TOKEN_RATES, AttributablePricing
 
 TRANSPORT_KINDS: frozenset[str] = frozenset({"cli", "api"})
 
@@ -321,6 +321,16 @@ class AgentSpec(AttributablePricing):
     # Request-level behavioural mode to ask for at invocation, where the provider
     # expresses one. None = send nothing and take the provider's default.
     reasoning_mode: str | None = None
+    # Whether spend on this entry is established from a rate card at all. The
+    # default says it is; ``provider_reported`` says the transport returns the
+    # billed figure, which is what makes "needs no rate" readable as a stated
+    # property rather than inferred from the absence of one (#2388).
+    rate_basis: str = RATE_BASIS_TOKEN_RATES
+
+    @property
+    def uses_rate_card(self) -> bool:
+        """Does pricing this entry require declared per-MTok rates?"""
+        return self.rate_basis == RATE_BASIS_TOKEN_RATES
 
     @property
     def tier(self) -> str:

@@ -7,7 +7,7 @@ site thereafter looks the dispatched identity up in that registry. One
 declaration of a model's cost therefore serves both the decision to use it and
 the record of what using it cost.
 
-Three things happen here, in order:
+Two things happen here, in order:
 
 1. **Compile.** Every ``AgentSpec`` in the merged registry yields an entry keyed
    by ``(provider, model, transport.kind)``. Because the key includes the
@@ -16,16 +16,17 @@ Three things happen here, in order:
    reproduced (the merged dict is itself keyed by canonical id, so two specs
    cannot collide on one identity by construction).
 
-2. **Materialize legacy prices.** The packaged, transport-agnostic
-   :data:`PRICING_TABLE` keeps working by being resolved onto concrete
-   transport identities *here*, under three restrictions spelled out in
-   :func:`_materialize_legacy_rates`. This is what replaces a transport-agnostic
-   fallback tier at query time, and it is why a CLI price an operator declared
-   can never become the API path's price.
-
-3. **Report.** Identities the configuration can actually dispatch on but cannot
+2. **Report.** Identities the configuration can actually dispatch on but cannot
    account for are warned about at load, naming the paths they are reachable on,
    rather than discovered as a cost-unknown after the spend has happened.
+
+There used to be a third step between them: a packaged, transport-agnostic
+``PRICING_TABLE`` was *materialized* onto concrete transport identities here, so
+a rate compiled into the runner package could price an identity the catalog
+never described. That table was a second declaration surface no configuration
+could override, and it is gone (#2388) — the registry is compiled from the
+merged model registry and nothing else, so every figure in it came from the
+shipped catalog or from ``forge.yaml``.
 """
 
 from __future__ import annotations
@@ -34,7 +35,6 @@ import logging
 from dataclasses import dataclass, field
 
 from theforge.runners.rate_registry import (
-    PRICING_TABLE,
     AccountingMode,
     DispatchIdentity,
     ModelRates,
@@ -115,7 +115,7 @@ def _profile_identities(
     fallback_models = getattr(profile, "fallback_models", ()) or ()
     # None when the provider has no API adapter: no model fallback can be
     # attempted at all, so those entries name no reachable identity and are not
-    # enumerated (target restriction, rule b).
+    # enumerated.
     model_fb_transport = model_fallback_transport(provider) if fallback_models else None
     if model_fb_transport is not None:
         for fallback_model in fallback_models:
@@ -151,10 +151,10 @@ def _profile_identities(
 def reachable_identities(config: object) -> tuple[ReachableIdentity, ...]:
     """Every identity the loaded configuration can dispatch on.
 
-    Computed once and used for BOTH the legacy-materialization target
-    restriction and the load-time report, so what is widened and what is
-    reported are derived from one list rather than two enumerations that can
-    drift apart.
+    Computed once and used both to give every dispatchable identity a registry
+    entry (priced or not, so its accounting mode survives the lookup) and to
+    drive the load-time report, so what is compiled and what is reported are
+    derived from one list rather than two enumerations that can drift apart.
     """
     found: dict[DispatchIdentity, _Reach] = {}
 
@@ -201,6 +201,13 @@ def _spec_rates(spec: AgentSpec) -> ModelRates | None:
     """The rate card an ``AgentSpec`` declares, honouring attribution rules."""
     from .pricing import PRICING_PROVENANCE_LOCAL_ENDPOINT  # noqa: PLC0415
 
+    if not spec.uses_rate_card:
+        # The entry states that its transport reports what it was billed, so no
+        # rate card is consulted for it. Honoured here rather than trusted to be
+        # accompanied by absent figures: an overlay can declare the basis and
+        # inherit a built-in entry's numbers, and those numbers must not become
+        # a price nothing keeps current.
+        return None
     if spec.input_cost_per_mtok is None or spec.output_cost_per_mtok is None:
         return None
     if not spec.pricing_attributable:
@@ -217,74 +224,18 @@ def _spec_rates(spec: AgentSpec) -> ModelRates | None:
     )
 
 
-def _materialize_legacy_rates(
-    entries: dict[DispatchIdentity, RateEntry],
-    reachable: tuple[ReachableIdentity, ...],
-    project_priced: set[tuple[str, str]],
-) -> set[DispatchIdentity]:
-    """Widen packaged transport-agnostic prices onto concrete identities.
-
-    Three restrictions, each closing one way a price could reach an identity it
-    was never recorded for:
-
-    (a) **Source.** Materialization draws ONLY from the packaged
-        :data:`PRICING_TABLE`. A project-declared per-transport entry never
-        widens to another transport — that is the reported failure (a model
-        priced on the CLI lending its rate to the API path) and it is refused
-        structurally, not by convention.
-    (b) **Target.** A legacy price is materialized only onto an identity this
-        configuration can actually dispatch on. Entries that resolve onto no
-        reachable identity are dropped; nothing unscoped enters the registry.
-    (c) **Conflict.** Materialization is refused for a ``(provider, model)``
-        that carries any project-declared per-transport price. A genuine
-        per-transport disagreement must surface at load, not be resolved by
-        borrowing either figure.
-
-    Returns the identities whose widening rule (c) suppressed, so the load-time
-    report can name the conflict as the operator-actionable case it is.
-    """
-    conflicted: set[DispatchIdentity] = set()
-    for reach in reachable:
-        identity = reach.identity
-        existing = entries.get(identity)
-        if existing is not None and (
-            existing.priced or existing.mode is AccountingMode.INDEPENDENTLY_MEASURED
-        ):
-            continue
-        legacy = PRICING_TABLE.get((identity.provider, identity.model))
-        if legacy is None:
-            continue
-        if (identity.provider, identity.model) in project_priced:
-            conflicted.add(identity)
-            continue
-        mode = accounting_mode_for(identity.transport, reach.runner)
-        origin = f"PRICING_TABLE[{identity.provider}/{identity.model}]"
-        entries[identity] = RateEntry(
-            identity=identity,
-            rates=ModelRates(input_per_mtok=legacy[0], output_per_mtok=legacy[1]),
-            mode=mode,
-            source=RateSource.LEGACY_COMPAT,
-            origin=origin,
-        )
-        log.info(
-            "Pricing %s from the packaged rate table (%s): no per-transport entry declares it.",
-            identity.label,
-            origin,
-        )
-    return conflicted
-
-
 def compile_rate_registry(
     model_registry: dict[str, AgentSpec],
     reachable: tuple[ReachableIdentity, ...],
-) -> tuple[RateRegistry, set[DispatchIdentity]]:
+) -> RateRegistry:
     """Build the registry for one configuration.
 
-    Returns ``(registry, conflicted)`` where ``conflicted`` names identities
-    whose legacy widening was suppressed by a per-transport pricing conflict.
+    Every priced entry comes from a spec in ``model_registry`` — the merged
+    catalog + ``forge.yaml`` view — so a figure in the compiled registry is one
+    an operator could have supplied. Nothing is widened onto an identity the
+    registry does not describe.
     """
     entries: dict[DispatchIdentity, RateEntry] = {}
-    project_priced: set[tuple[str, str]] = set()
 
     from .pricing import PRICING_PROVENANCE_LOCAL_ENDPOINT  # noqa: PLC0415
 
@@ -307,8 +258,6 @@ def compile_rate_registry(
                 origin=canonical_id,
             )
             continue
-        if rates is not None and is_project:
-            project_priced.add((identity.provider, identity.model))
         entries[identity] = RateEntry(
             identity=identity,
             rates=rates,
@@ -322,8 +271,6 @@ def compile_rate_registry(
             or canonical_model_id(spec.provider, spec.model, spec.transport.kind),
         )
 
-    conflicted = _materialize_legacy_rates(entries, reachable, project_priced)
-
     # Every reachable identity gets an entry even when it is unpriced, so its
     # accounting mode survives the lookup and the report can classify it.
     for reach in reachable:
@@ -336,17 +283,15 @@ def compile_rate_registry(
             source=RateSource.NONE,
         )
 
-    registry = RateRegistry(
+    return RateRegistry(
         entries=entries,
         reachable={reach.identity: reach.paths for reach in reachable},
     )
-    return registry, conflicted
 
 
 def report_unaccountable_identities(
     registry: RateRegistry,
     reachable: tuple[ReachableIdentity, ...],
-    conflicted: set[DispatchIdentity],
 ) -> list[str]:
     """Warn once per dispatchable identity whose spend could not be accounted for.
 
@@ -361,14 +306,6 @@ def report_unaccountable_identities(
         reason = entry.unaccountable_reason()
         if reason is None:
             continue
-        if reach.identity in conflicted:
-            reason = (
-                f"{reach.identity.provider}/{reach.identity.model} is priced on another "
-                f"transport but dispatched on {reach.identity.transport} with no "
-                f"{reach.identity.transport} price — a per-transport pricing conflict "
-                "suppressed the packaged fallback rather than borrowing the other "
-                "transport's rate"
-            )
         paths = ", ".join(reach.paths) or "unknown path"
         message = (
             f"Cost cannot be accounted for {reach.identity.label}: {reason}. "
@@ -388,9 +325,7 @@ def install_rate_registry(config: object) -> RateRegistry:
     so a load that raises never leaves its partial rates installed.
     """
     reachable = reachable_identities(config)
-    registry, conflicted = compile_rate_registry(
-        getattr(config, "model_registry", None) or {}, reachable
-    )
+    registry = compile_rate_registry(getattr(config, "model_registry", None) or {}, reachable)
     install(registry)
-    report_unaccountable_identities(registry, reachable, conflicted)
+    report_unaccountable_identities(registry, reachable)
     return registry

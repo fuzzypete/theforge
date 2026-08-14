@@ -270,7 +270,7 @@ class TestAgentLoopLifecycle:
                 text_output="done",
                 structured_data=None,
                 usage=ModelUsage(
-                    model="gemini-2.5-flash",
+                    model="gemini-3-flash-preview",
                     input_tokens=1_000_000,
                     output_tokens=500_000,
                     cache_read_tokens=0,
@@ -280,7 +280,7 @@ class TestAgentLoopLifecycle:
                 ),
             )
 
-        profile = _make_profile(provider="google", model="gemini-2.5-flash")
+        profile = _make_profile(provider="google", model="gemini-3-flash-preview")
         manager = AgentLoopManager(
             profile=profile,
             provider="google",
@@ -296,7 +296,7 @@ class TestAgentLoopLifecycle:
 
         assert result.success
         assert result.model_usage[0].thinking_tokens == 250_000
-        assert result.cost_usd == 0.30 + (0.75 * 2.50)
+        assert result.cost_usd == 0.50 + (0.75 * 3.00)
 
     def test_max_iterations_terminates_loop_with_accumulated_cost(self, tmp_path):
         """Loop terminates after max_iterations, still reports cost."""
