@@ -12,13 +12,120 @@ import platform
 import shutil
 import subprocess
 import urllib.request
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .coordinator import util as _cu
 
 if TYPE_CHECKING:
     from .config import ForgeConfig
+
+
+MAX_PENDING_NOTIFICATION_BODY_CHARS = 900
+
+
+def _truncate_notification_text(text: str, limit: int) -> str:
+    """Trim text to fit a notification body budget."""
+    if limit <= 0:
+        return ""
+    if len(text) <= limit:
+        return text
+    if limit <= 3:
+        return text[:limit]
+    return text[: limit - 3].rstrip() + "..."
+
+
+def _format_pending_deadline(timeout_at: str, *, now: datetime | None = None) -> str:
+    """Render an absolute deadline plus the remaining or overdue window."""
+    deadline = datetime.fromisoformat(timeout_at)
+    if deadline.tzinfo is None:
+        deadline = deadline.replace(tzinfo=timezone.utc)
+    now_utc = now or datetime.now(timezone.utc)
+    remaining_seconds = (deadline - now_utc).total_seconds()
+    deadline_utc = deadline.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    if remaining_seconds >= 0:
+        return (
+            f"Deadline: {deadline_utc} "
+            f"({_cu._fmt_duration(max(0.0, remaining_seconds))} remaining)"
+        )
+    return f"Deadline: {deadline_utc} ({_cu._fmt_duration(abs(remaining_seconds))} overdue)"
+
+
+def format_pending_decision_notification(
+    pending_record: Mapping[str, object],
+    *,
+    pending_path: Path | str,
+    max_chars: int = MAX_PENDING_NOTIFICATION_BODY_CHARS,
+) -> str:
+    """Build an actionable notification body from the pending decision record."""
+    reason = str(pending_record.get("reason") or "").strip()
+    run_id = str(pending_record.get("run_id") or "").strip()
+    timeout_at = str(pending_record.get("timeout_at") or "").strip()
+    options = [
+        str(option).strip() for option in pending_record.get("options") or [] if str(option)
+    ]
+    phase = str(pending_record.get("phase") or "").strip()
+    pending_path_str = str(pending_path)
+    metadata_lines = []
+    if phase:
+        metadata_lines.append(f"Phase: {phase}")
+    if run_id:
+        metadata_lines.append(f"Run ID: {run_id}")
+    if timeout_at:
+        metadata_lines.append(_format_pending_deadline(timeout_at))
+
+    command_lines: list[str] = []
+    if run_id and options:
+        option_set = "|".join(options)
+        command_lines = [
+            "Reply with:",
+            f"  forge decide {run_id} <{option_set}>",
+        ]
+    elif run_id:
+        command_lines = [
+            "Reply with:",
+            f"  forge decide {run_id} <action>",
+        ]
+
+    fallback_lines = [
+        "Reply with:",
+        f"  forge decide {run_id} <action>" if run_id else "  forge decide <run-id> <action>",
+        f"Full option set omitted from this notification; read {pending_path_str}",
+    ]
+
+    def _compose(command_block: Sequence[str], *, reason_text: str) -> str:
+        lines: list[str] = []
+        if reason_text:
+            lines.append(reason_text)
+        if metadata_lines:
+            if lines:
+                lines.append("")
+            lines.extend(metadata_lines)
+        if command_block:
+            if lines:
+                lines.append("")
+            lines.extend(command_block)
+        return "\n".join(lines)
+
+    if command_lines:
+        full_body = _compose(command_lines, reason_text=reason)
+        if len(full_body) <= max_chars:
+            return full_body
+        available_reason = max_chars - len(_compose(command_lines, reason_text=""))
+        trimmed_body = _compose(
+            command_lines,
+            reason_text=_truncate_notification_text(reason, available_reason),
+        )
+        if len(trimmed_body) <= max_chars:
+            return trimmed_body
+
+    available_reason = max_chars - len(_compose(fallback_lines, reason_text=""))
+    return _compose(
+        fallback_lines,
+        reason_text=_truncate_notification_text(reason, available_reason),
+    )
 
 
 def send_notifications(
