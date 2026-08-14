@@ -136,15 +136,17 @@ def _parse_model_usage(result_json: dict[str, Any]) -> tuple[ModelUsage, ...]:
 # aggregated ``modelUsage`` block — never arrives, so the normal cost path
 # produces nothing. But every ``assistant`` stream event already captured in
 # memory carries a per-message ``usage`` block (Anthropic usage shape). We
-# aggregate those and price them via the shared pricing table so a killed run's
-# real spend is attributed rather than silently dropped to $0.00. Where no
+# aggregate those and price them from the model catalog's rates for the billed
+# name the events report, so a killed run's real spend is attributed rather than
+# silently dropped to $0.00. Where no
 # usable usage was ever received, cost is recorded as unknown (None) — never a
 # fabricated zero, so "unmeasured" stays distinct from "free".
 
 # Anthropic prompt-cache pricing is expressed as multiples of the base input
 # rate: cache reads bill at 0.1x and 5-minute cache writes at 1.25x (Anthropic
-# pricing docs). The shared PRICING_TABLE only carries (input, output) rates,
-# so we apply these multipliers here to price the cached-token components.
+# pricing docs). A catalog entry that publishes its own cache-hit rate states it
+# and is priced from that; otherwise these multipliers price the cached-token
+# components off the entry's input rate.
 _CACHE_READ_RATE_MULT = 0.1
 _CACHE_WRITE_RATE_MULT = 1.25
 
@@ -167,19 +169,20 @@ def _anthropic_cli_pricing_names() -> tuple[str, ...]:
     Drawn from the installed rate registry, which is keyed by ``(provider, model,
     transport)`` — so the prefix match below can never resolve a CLI stream event
     onto a price declared for the same model name over the API (#2335). With no
-    registry installed (unit tests, non-config code paths) this falls back to the
-    packaged table, reproducing the previous behaviour exactly.
+    registry installed (unit tests, non-config code paths) the shipped catalog's
+    own rates answer instead.
     """
-    from theforge.runners.rate_registry import PRICING_TABLE, known_models  # noqa: PLC0415
+    from theforge.runners.rate_registry import known_models  # noqa: PLC0415
+    from theforge.runners.schema_utils import catalog_rates  # noqa: PLC0415
 
-    # The packaged table is unioned in rather than used only as a fallback: the
+    # The shipped catalog is unioned in rather than used only as a fallback: the
     # names the CLI reports are concrete *billed* ids (``claude-sonnet-4-6``)
-    # that are never registry entries in their own right — the registry knows the
-    # shorthand (``sonnet``) the profile dispatches under. Both halves are
-    # packaged baseline, so nothing project-declared for another transport can
-    # enter here.
+    # that a configuration need not have enabled — the registry may only know the
+    # shorthand (``sonnet``) the profile dispatches under. ``catalog_rates`` reads
+    # the packaged catalog only, so nothing project-declared for another
+    # transport can enter here.
     names = set(known_models("anthropic", "cli"))
-    names.update(model for provider, model in PRICING_TABLE if provider == "anthropic")
+    names.update(model for provider, model in catalog_rates() if provider == "anthropic")
     # Longest first so a dated id matches its most specific family entry rather
     # than whichever shorter prefix happened to be enumerated first.
     return tuple(sorted(names, key=len, reverse=True))
@@ -217,22 +220,20 @@ def _estimate_anthropic_cost(
     the resolved rate card publishes its own cache-read figure — that is
     preferred over the generic 0.1x multiplier when declared.
     """
-    from theforge.runners.rate_registry import PRICING_TABLE, ModelRates  # noqa: PLC0415
-    from theforge.runners.schema_utils import rates_for  # noqa: PLC0415
+    from theforge.runners.schema_utils import catalog_rates, rates_for  # noqa: PLC0415
 
     key = _resolve_anthropic_pricing_key(model)
     if key is None:
         return None
     rates = rates_for("anthropic", key, "cli")
     if rates is None:
-        # Packaged-baseline-only last resort, for the concrete billed ids above
-        # that no registry entry names. Deliberately reads PRICING_TABLE rather
-        # than pricing_for: a project-declared price for another transport must
-        # never reach this path.
-        packaged = PRICING_TABLE.get(("anthropic", key))
-        if packaged is None:
+        # Shipped-catalog last resort, for the concrete billed ids above that the
+        # loaded configuration does not enable. Deliberately reads the packaged
+        # catalog rather than the merged registry: a project-declared price for
+        # another transport must never reach this path.
+        rates = catalog_rates().get(("anthropic", key))
+        if rates is None:
             return None
-        rates = ModelRates(input_per_mtok=packaged[0], output_per_mtok=packaged[1])
     in_rate = rates.input_per_mtok
     out_rate = rates.output_per_mtok
     cache_read_rate = (

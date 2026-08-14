@@ -444,7 +444,7 @@ class TestLocalEndpointCostZeroing:
             output_tokens=50,
             raw={},
         )
-        # For unknown model "codestral" there's no PRICING_TABLE entry → None
+        # "codestral" is priced only as a local endpoint, which is not a rate → None
         assert result.cost_usd is None
 
     def test_loop_mode_localhost_cost_is_zero(self, tmp_path):

@@ -32,6 +32,29 @@ PRICING_PROVENANCE_LOCAL_ENDPOINT = "local-endpoint"
 # derived from an untraceable price.
 UNPRICED_COST_RANK = 1
 
+# ── Whether an entry is priced from a rate card at all ───────────────────
+#
+# "No rate declared" used to have two meanings that looked identical in the
+# catalog: a rate that is *missing* (the entry needs one and nobody recorded it)
+# and a rate that is *not applicable* (the transport returns the billed figure,
+# so no rate card is ever consulted). Only the first is a defect, and telling
+# them apart meant knowing which runner the entry's transport dispatches to —
+# an inference from an absent field (#2388).
+#
+# ``cost.rate_basis`` states it instead. It is a claim about how spend on this
+# entry is established, not a price, so it is the one cost field an entry with no
+# figures at all can still carry.
+
+# Default: spend is token count × the rates declared on this entry.
+RATE_BASIS_TOKEN_RATES = "token_rates"
+# The transport reports what it was billed (the Claude CLI's ``total_cost_usd`` /
+# per-model ``costUSD``), so this entry deliberately declares no rates and none
+# can be missing. An entry declaring this may not also declare per-MTok figures:
+# a rate nothing consults is a figure that can silently go stale.
+RATE_BASIS_PROVIDER_REPORTED = "provider_reported"
+
+RATE_BASES: frozenset[str] = frozenset({RATE_BASIS_TOKEN_RATES, RATE_BASIS_PROVIDER_REPORTED})
+
 # ── Cost-band attribution ────────────────────────────────────────────────
 #
 # ``RoutingPolicy.cost_rank`` is the *other* price-shaped routing input: it
