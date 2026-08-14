@@ -64,7 +64,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.cli.reentry_display import load_reentry_display
+from theforge.cli.reentry_display import issue_cost_line, load_reentry_display
 from theforge.sprint.rca import DONE_OUTCOMES, RCA_FILENAME
 from theforge.sprint.status_reader import (
     _elapsed_seconds_from_bounds,
@@ -136,9 +136,9 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
     non_done = [s for s in stories if _outcome(s) not in DONE_OUTCOMES]
 
     _print_header(sprint_block, run_id)
-    _print_landed(landed, len(stories))
-    _print_already_landed(already_landed)
-    _print_already_satisfied(already_satisfied)
+    _print_landed(landed, len(stories), project_root)
+    _print_already_landed(already_landed, project_root)
+    _print_already_satisfied(already_satisfied, project_root)
 
     # Shape-gate skip categories (issue #1453) are independent of story
     # outcomes: a sprint can land every runnable story yet still have skipped a
@@ -150,7 +150,7 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
     # skips above: a sprint can land every story and still have routed one of
     # them on a preflight that inspected nothing. That is precisely the case
     # that stayed invisible for four months (#2346).
-    _print_preflight_degradations(stories)
+    _print_preflight_degradations(stories, project_root)
 
     # All-DONE sprint: tighter LANDED-only digest, no recovery sections.
     if not non_done:
@@ -176,8 +176,8 @@ def display_sprint_digest(run_id: str, project_root: Path) -> int:
 
     rca_stories = rca.get("stories") if isinstance(rca.get("stories"), dict) else {}
 
-    _print_failed_by_class(non_done, rca_stories)
-    _print_skipped_intake(non_done, rca_stories)
+    _print_failed_by_class(non_done, rca_stories, project_root)
+    _print_skipped_intake(non_done, rca_stories, project_root)
     _print_partial_value(non_done, rca_stories)
     _print_next(stories, rca_stories)
     return 0
@@ -198,17 +198,17 @@ def _print_header(sprint_block: dict, run_id: str) -> None:
     print("  ·  ".join(parts))
 
 
-def _print_landed(landed: list[dict], total: int) -> None:
+def _print_landed(landed: list[dict], total: int, project_root: Path | None = None) -> None:
     print()
     print(f"LANDED ({len(landed)} of {total})")
     if not landed:
         print("  (none)")
         return
     for story in landed:
-        print(f"  ✓ {_story_row(story)}")
+        print(f"  ✓ {_story_row(story, project_root)}")
 
 
-def _print_already_landed(stories: list[dict]) -> None:
+def _print_already_landed(stories: list[dict], project_root: Path | None = None) -> None:
     """Render stories whose work merged/closed before the reporting invocation.
 
     A resume or re-dispatch that finds a story already merged (or its issue
@@ -223,11 +223,11 @@ def _print_already_landed(stories: list[dict]) -> None:
     print()
     print(f"ALREADY LANDED (skipped as merged) ({len(stories)})")
     for story in stories:
-        print(f"  ✓ {_story_row(story)}")
+        print(f"  ✓ {_story_row(story, project_root)}")
         print("       landed before this run — skipped as already merged")
 
 
-def _print_already_satisfied(stories: list[dict]) -> None:
+def _print_already_satisfied(stories: list[dict], project_root: Path | None = None) -> None:
     """Render no-op ALREADY_DONE acceptances distinctly from landed changes.
 
     These stories succeeded without shipping a change — preflight determined the
@@ -240,7 +240,7 @@ def _print_already_satisfied(stories: list[dict]) -> None:
     print()
     print(f"ALREADY SATISFIED ({len(stories)})")
     for story in stories:
-        print(f"  ✓ {_story_row(story)}")
+        print(f"  ✓ {_story_row(story, project_root)}")
         reason = str(story.get("preflight_reason") or "").strip()
         if reason:
             print(f"       no change needed — {reason}")
@@ -282,7 +282,7 @@ def _shipped_a_change(story: dict) -> bool:
     return bool(isinstance(landing, dict) and landing.get("merged"))
 
 
-def _print_preflight_degradations(stories: list[dict]) -> None:
+def _print_preflight_degradations(stories: list[dict], project_root: Path | None = None) -> None:
     """Render stories whose preflight produced no founded classification.
 
     Both halves of the degraded path appear here. The escalating half
@@ -299,7 +299,7 @@ def _print_preflight_degradations(stories: list[dict]) -> None:
     print()
     print(f"PREFLIGHT DEGRADATIONS ({len(degraded)})")
     for story in degraded:
-        print(f"  ⚠ {_story_row(story)}")
+        print(f"  ⚠ {_story_row(story, project_root)}")
         reason = str(story.get("preflight_degraded_reason") or "unknown")
         action = str(story.get("preflight_failure_action") or "proceed")
         print(f"       reason: {reason}   action: {action}")
@@ -399,9 +399,15 @@ def _print_outstanding(non_done: list[dict], project_root: Path) -> None:
         print(f"  ✗ {_story_ref(story)}  {', '.join(phases)}")
         if note:
             print(f"       re-entry: {note}")
+        # The re-entry decision is taken here, so the running total belongs
+        # here — not only on the row that reports the run just finished (#2365).
+        for line in issue_cost_line(project_root, str(story.get("slug") or ""), indent="       "):
+            print(line)
 
 
-def _print_failed_by_class(non_done: list[dict], rca_stories: dict) -> None:
+def _print_failed_by_class(
+    non_done: list[dict], rca_stories: dict, project_root: Path | None = None
+) -> None:
     """Group failed stories under their literal ``primary_failure_class``.
 
     Stories whose class routes to SKIPPED / INTAKE are excluded here. Class
@@ -420,7 +426,7 @@ def _print_failed_by_class(non_done: list[dict], rca_stories: dict) -> None:
         print(f"FAILED — {primary} ({len(group)})")
         for story in group:
             entry = _rca_entry(story, rca_stories)
-            print(f"  ✗ {_story_row(story)}")
+            print(f"  ✗ {_story_row(story, project_root)}")
             print(f"       primary:      {primary}")
             contributing = _string_list(entry.get("contributing_factors"))
             if contributing:
@@ -432,7 +438,9 @@ def _print_failed_by_class(non_done: list[dict], rca_stories: dict) -> None:
             _print_entry_notes(entry)
 
 
-def _print_skipped_intake(non_done: list[dict], rca_stories: dict) -> None:
+def _print_skipped_intake(
+    non_done: list[dict], rca_stories: dict, project_root: Path | None = None
+) -> None:
     rows = [
         story
         for story in non_done
@@ -444,7 +452,7 @@ def _print_skipped_intake(non_done: list[dict], rca_stories: dict) -> None:
     print(f"SKIPPED / INTAKE ({len(rows)})")
     for story in rows:
         entry = _rca_entry(story, rca_stories)
-        print(f"  ⊘ {_story_row(story)}")
+        print(f"  ⊘ {_story_row(story, project_root)}")
         primary = _primary_class(entry)
         detail = _skip_detail(entry)
         if detail:
@@ -535,8 +543,15 @@ def _print_next(stories: list[dict], rca_stories: dict) -> None:
 # ── Row / field helpers ───────────────────────────────────────────────────────
 
 
-def _story_row(story: dict) -> str:
-    """`#NNNN  $cost  elapsed  <title>` for a landed/failed row."""
+def _story_row(story: dict, project_root: Path | None = None) -> str:
+    """`#NNNN  $cost  elapsed  <title>` for a landed/failed row.
+
+    ``$cost`` is what *this* run spent, unchanged. When the issue has been
+    worked by more than one recorded run, the issue's own total is appended
+    beside it — the run figure alone reads as the cost of landing the issue when
+    it is a fraction of it (#2365). A single-run issue gains nothing, because
+    there the two figures are the same number.
+    """
     ref = _story_ref(story)
     cost = story.get("cost_usd")
     # A measured $0.00 is a number, not a missing value. Rendering it as the
@@ -550,7 +565,19 @@ def _story_row(story: dict) -> str:
     elapsed = _elapsed_seconds_from_bounds(story.get("started_at"), story.get("finished_at"))
     elapsed_str = f"{int(elapsed // 60)}m" if isinstance(elapsed, (int, float)) else "—"
     title = str(story.get("path") or story.get("slug") or "")
-    return f"{ref}  {cost_str}  {elapsed_str}  {title}"
+    return f"{ref}  {cost_str}  {elapsed_str}  {title}{_issue_total_suffix(story, project_root)}"
+
+
+def _issue_total_suffix(story: dict, project_root: Path | None) -> str:
+    """``  [issue: $341.10 across 5 runs]``, or empty for a single-run issue."""
+    if project_root is None:
+        return ""
+    from theforge.coordinator.issue_cost import load_issue_cost  # noqa: PLC0415
+
+    aggregate = load_issue_cost(project_root, slug=str(story.get("slug") or ""))
+    if aggregate is None or not aggregate.has_prior_attempts:
+        return ""
+    return f"  [issue: {aggregate.describe()}]"
 
 
 def _story_ref(story: dict) -> str:
