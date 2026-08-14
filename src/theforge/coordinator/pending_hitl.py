@@ -35,7 +35,7 @@ def _pending_human_review(
     approve | reject | escalate | extend | timeout
     """
     from theforge import pending as _pending
-    from theforge.notify_backends import send_notifications
+    from theforge.notify_backends import format_pending_decision_notification, send_notifications
 
     p1 = sum(1 for f in parsed_review.findings if f.severity == "P1")
     p2 = sum(1 for f in parsed_review.findings if f.severity == "P2")
@@ -62,7 +62,7 @@ def _pending_human_review(
     _cu._log(f"  Run ID:  {_eff_run_id}")
     _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
 
-    _pending.write_pending(
+    pending_path = _pending.write_pending(
         run_id=_eff_run_id,
         story=task.slug,
         phase="HUMAN_REVIEW",
@@ -72,10 +72,11 @@ def _pending_human_review(
         project_root=project_root,
     )
 
+    pending_record = _pending.read_pending(_eff_run_id, project_root=project_root) or {}
     send_notifications(
         config,
-        title=f"TheForge: review needed — {task.slug}",
-        body=reason[:300],
+        title=f"TheForge: review needed — {task.slug} (HUMAN_REVIEW)",
+        body=format_pending_decision_notification(pending_record, pending_path=pending_path),
     )
 
     _poll_start = time.monotonic()
@@ -137,7 +138,7 @@ def _pending_escalate_gate(
         ACTION_TAXONOMY,
         render_advisory_for_pending,
     )
-    from theforge.notify_backends import send_notifications
+    from theforge.notify_backends import format_pending_decision_notification, send_notifications
 
     from .escalate_actions import available_escalate_actions, omitted_actions_note
 
@@ -248,7 +249,7 @@ def _pending_escalate_gate(
         for _action, _why in sorted(omitted_actions.items()):
             _cu._log(f"  Not offered: {_action} — {_why}")
 
-    _pending.write_pending(
+    pending_path = _pending.write_pending(
         run_id=_eff_run_id,
         story=task.slug,
         phase="ESCALATE",
@@ -259,10 +260,11 @@ def _pending_escalate_gate(
         extra=extra,
     )
 
+    pending_record = _pending.read_pending(_eff_run_id, project_root=project_root) or {}
     send_notifications(
         config,
-        title=f"TheForge: ESCALATE — {task.slug}",
-        body=reason[:300],
+        title=f"TheForge: decision needed — {task.slug} (ESCALATE)",
+        body=format_pending_decision_notification(pending_record, pending_path=pending_path),
     )
 
     _poll_start = time.monotonic()
@@ -379,7 +381,7 @@ def _pending_plan_review(
 ) -> str:
     """Pending-file-based plan review. Returns 'approve' | 'regenerate' | 'abandon'."""
     from theforge import pending as _pending
-    from theforge.notify_backends import send_notifications
+    from theforge.notify_backends import format_pending_decision_notification, send_notifications
 
     timeout_seconds = int(
         _pending.bounded_gate_wait(config.plan_review.timeout_seconds, "PLAN_REVIEW")
@@ -395,7 +397,7 @@ def _pending_plan_review(
     _cu._log(f"  Run ID:  {_eff_run_id}")
     _cu._log(f"  Timeout: {_cu._fmt_duration(timeout_seconds)}")
 
-    _pending.write_pending(
+    pending_path = _pending.write_pending(
         run_id=_eff_run_id,
         story=task.slug,
         phase="PLAN_REVIEW",
@@ -405,10 +407,11 @@ def _pending_plan_review(
         project_root=project_root,
     )
 
+    pending_record = _pending.read_pending(_eff_run_id, project_root=project_root) or {}
     send_notifications(
         config,
-        title=f"TheForge: plan ready — {task.slug}",
-        body=reason[:300],
+        title=f"TheForge: plan ready — {task.slug} (PLAN_REVIEW)",
+        body=format_pending_decision_notification(pending_record, pending_path=pending_path),
     )
 
     _pr_start = time.monotonic()
