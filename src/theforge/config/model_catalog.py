@@ -30,6 +30,7 @@ Canonical shape::
       input_per_mtok: 1.25
       output_per_mtok: 10.00
       pricing_provenance: gpt-5.5
+      rate_basis: token_rates    # or `provider_reported`, with no figures
 
 Two resolution modes sit on top of that one syntax:
 
@@ -83,6 +84,9 @@ from .pricing import (
     COST_BAND_BASIS_OPERATOR_DECLARED,
     COST_BAND_BASIS_UNPRICED_DEFAULT,
     PRICING_PROVENANCE_OPERATOR_DECLARED,
+    RATE_BASES,
+    RATE_BASIS_PROVIDER_REPORTED,
+    RATE_BASIS_TOKEN_RATES,
     UNPRICED_COST_RANK,
     custom_model_cost_rank,
     price_cost_band_basis,
@@ -112,6 +116,7 @@ COST_KEYS: frozenset[str] = frozenset(
         "output_per_mtok",
         "cached_input_per_mtok",
         "pricing_provenance",
+        "rate_basis",
     }
 )
 IDENTITY_KEYS: frozenset[str] = frozenset(
@@ -134,6 +139,7 @@ PROVENANCE_FIELDS: tuple[str, ...] = (
     "output_cost_per_mtok",
     "cached_input_cost_per_mtok",
     "pricing_provenance",
+    "rate_basis",
     "identity",
     "reasoning_mode",
 )
@@ -447,6 +453,27 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
         if provenance is not None:
             provenance = _require_str(provenance, where=f"{where}.cost.pricing_provenance")
         cost["pricing_provenance"] = provenance
+    if "rate_basis" in cost_raw:
+        rate_basis = _require_str(cost_raw["rate_basis"], where=f"{where}.cost.rate_basis")
+        if rate_basis not in RATE_BASES:
+            raise ValueError(
+                f"forge.yaml '{where}.cost.rate_basis' must be one of "
+                f"{sorted(RATE_BASES)}, got {rate_basis!r}"
+            )
+        priced_fields = {
+            "input_cost_per_mtok",
+            "output_cost_per_mtok",
+            "cached_input_cost_per_mtok",
+        }
+        if rate_basis == RATE_BASIS_PROVIDER_REPORTED and priced_fields & set(cost):
+            raise ValueError(
+                f"forge.yaml '{where}.cost' declares rate_basis "
+                f"{RATE_BASIS_PROVIDER_REPORTED!r} together with per-MTok figures. "
+                "A transport that reports what it was billed never consults a rate card, "
+                "so the figures would be a price nothing reads and nothing keeps current — "
+                "declare one or the other."
+            )
+        cost["rate_basis"] = rate_basis
 
     declared = (
         frozenset(routing)
@@ -549,6 +576,7 @@ def resolve_packaged(defn: ParsedDefinition, *, where: str) -> ResolvedModel:
         pricing_provenance=provenance,
         identity=defn.identity,
         reasoning_mode=defn.reasoning_mode,
+        rate_basis=defn.cost.get("rate_basis", RATE_BASIS_TOKEN_RATES),
     )
     return ResolvedModel(
         canonical_id=defn.canonical_id,
@@ -667,6 +695,20 @@ def resolve_project(
         sources["pricing_provenance"] = SOURCE_BUILTIN if builtin is not None else SOURCE_PROJECT
         provenance = builtin.pricing_provenance if builtin is not None else None
 
+    # A declaration that states figures is declaring a rate card, whatever the
+    # entry it overlays said — otherwise an overlay adding rates to a
+    # provider-reported built-in would inherit "no rate card is consulted here"
+    # and its own figures would be unreachable.
+    if "rate_basis" in defn.declared:
+        sources["rate_basis"] = SOURCE_PROJECT
+        rate_basis = defn.cost["rate_basis"]
+    elif declares_price:
+        sources["rate_basis"] = SOURCE_PROJECT
+        rate_basis = RATE_BASIS_TOKEN_RATES
+    else:
+        sources["rate_basis"] = SOURCE_BUILTIN if builtin is not None else SOURCE_PROJECT
+        rate_basis = builtin.rate_basis if builtin is not None else RATE_BASIS_TOKEN_RATES
+
     banded_cost_rank = (
         custom_model_cost_rank(
             float(input_cost or 0.0),
@@ -763,6 +805,7 @@ def resolve_project(
         pricing_provenance=provenance,
         identity=identity or UNCONFIRMED_IDENTITY,
         reasoning_mode=reasoning_mode,
+        rate_basis=rate_basis,
     )
     return ResolvedModel(
         canonical_id=defn.canonical_id,

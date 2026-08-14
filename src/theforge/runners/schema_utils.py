@@ -10,7 +10,6 @@ from typing import TYPE_CHECKING, Any, Literal, Protocol
 from theforge.agent_types import ModelUsage
 from theforge.runners.rate_registry import (
     CACHED_INPUT_RATE_MULT,
-    PRICING_TABLE,
     AccountingMode,
     ModelRates,
     RateEntry,
@@ -242,15 +241,17 @@ def cache_reads_are_subset_of_input(provider: str) -> bool:
 
 
 def _catalog_rates() -> dict[tuple[str, str], ModelRates]:
-    """Rate cards carried by the shipped model catalog, keyed like PRICING_TABLE.
+    """Rate cards carried by the shipped model catalog, keyed ``(provider, model)``.
 
     The catalog is where a model's price is *declared alongside the identity it
     was recorded for* — a price with no ``pricing_provenance`` is a literal
     nothing can vouch for (see config/pricing.py), so those entries are skipped
-    and fall through to the table below. Where two catalog entries share a
+    and the identity reads as unpriced. Where two catalog entries share a
     ``(provider, model)`` and disagree on price (the same model offered over both
     CLI and API), the pair is dropped rather than arbitrated: an ambiguous rate
-    is not a better answer than the explicit table.
+    is not a better answer than none. Both drops are why this is the
+    transport-blind *baseline* only — the compiled registry keys by transport and
+    never has to arbitrate.
 
     Imported lazily so this module keeps its light import graph, and recomputed
     per call is avoided by the module-level cache below.
@@ -261,6 +262,10 @@ def _catalog_rates() -> dict[tuple[str, str], ModelRates]:
     rates: dict[tuple[str, str], ModelRates] = {}
     ambiguous: set[tuple[str, str]] = set()
     for spec in AGENT_REGISTRY.values():
+        if not spec.uses_rate_card:
+            # States that its transport reports the billed figure: no rate card
+            # is consulted for it, so it contributes none.
+            continue
         if spec.input_cost_per_mtok is None or spec.output_cost_per_mtok is None:
             continue
         if not spec.pricing_attributable:
@@ -305,24 +310,17 @@ def pricing_for(provider: str, model: str) -> ModelRates | None:
     resolves through :func:`rates_for`, which is keyed by
     ``(provider, model, transport)``; this function answers when no registry is
     installed, which is the case for unit tests and for any process that never
-    loads a configuration. Its behaviour is deliberately unchanged so that
-    baseline is bit-for-bit what it was before #2335.
+    loads a configuration.
 
-    Catalog first, :data:`PRICING_TABLE` second. The catalog is the surface where
-    a rate is declared next to the identity it was recorded for and the date that
-    identity was last checked against the provider, so it is the one that gets to
-    answer when both do. The table remains for identities the catalog does not
-    describe — vendor CLI shorthands resolve to concrete billed names that are
-    never catalog entries in their own right (``claude-sonnet-4-6``), and stream
-    events report those names directly.
+    **The catalog is the whole answer.** It used to be the first of two: a
+    packaged ``PRICING_TABLE`` answered whatever the catalog did not, which made
+    it a rate declaration no configuration could override and a place a figure
+    could disagree with the catalog and win by being consulted second (#2388).
+    The identities it uniquely served are catalog entries in their own right
+    now — the concrete billed names a vendor CLI reports (``claude-sonnet-4-6``)
+    are pinned entries — so removing it left no reachable identity unpriced.
     """
-    catalog = catalog_rates().get((provider, model))
-    if catalog is not None:
-        return catalog
-    price = PRICING_TABLE.get((provider, model))
-    if price is None:
-        return None
-    return ModelRates(input_per_mtok=price[0], output_per_mtok=price[1])
+    return catalog_rates().get((provider, model))
 
 
 def rate_card_confirmed(provider: str, model: str, *, today: date | None = None) -> bool:
@@ -330,10 +328,10 @@ def rate_card_confirmed(provider: str, model: str, *, today: date | None = None)
 
     True only when the figures came from a catalog entry whose upstream
     identifier has been checked against the provider inside the verification
-    window. A rate read from :data:`PRICING_TABLE` is never confirmed: that table
-    records no identity and no date, which is exactly how it carried DeepSeek's
-    superseded rates across two revisions of the provider's pricing without
-    anything noticing.
+    window. The packaged rate table this used to have to exclude could never be
+    confirmed — it recorded no identity and no date, which is exactly how it
+    carried DeepSeek's superseded rates across two revisions of the provider's
+    pricing without anything noticing — and it no longer exists (#2388).
 
     Consumed by the API cost-provenance stamp so an estimate off a rate card that
     may no longer apply is distinguishable from one that is current (#2352).
@@ -445,8 +443,9 @@ def _estimate_cost(
         if key not in _MISSING_PRICING_WARNED:
             logger.warning(
                 "Missing pricing entry for provider=%s model=%s transport=%s; cost cannot "
-                "be estimated. Declare a cost block on the model's catalog entry (or add "
-                "it to PRICING_TABLE) so audit and budget totals stay accurate.",
+                "be estimated. Declare a cost block on the model's catalog entry (in "
+                "config/data/models.yaml or in your forge.yaml) so audit and budget "
+                "totals stay accurate.",
                 provider,
                 model,
                 transport or "unspecified",
