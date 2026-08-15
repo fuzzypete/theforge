@@ -1053,9 +1053,20 @@ A plan model with no API transport available skips generation with a warning.
 Its cost is recorded on the artifact under `generation.cost_usd`, because it is
 spent after the run's own cost accounting has closed.
 
-`knowledge.prior_run_context` is reserved for Layer 3 consumption (injecting
-these summaries into future prompts) and does nothing today. Design doctrine
-lives in `docs/plans/knowledge-capture.md`.
+`knowledge.prior_run_context` enables Layer 3 consumption: context assembly may
+then offer indexed prior summaries to the **plan, dev, and review** phases as
+advisory, droppable context items. It never offers them to preflight, whose
+output drives coordinator control flow (ADR-0002 clause 5), and it only offers a
+summary the knowledge index carries an *admissible* verdict for — a summary with
+an inadmissible verdict, or with no verdict at all, is never injected. Relevance
+is scored from deterministic index fields only (file overlap, domain, story
+shape, indexed patterns, recency), so summary prose can never select itself in.
+
+Every decision is recorded per phase in the audit record under
+`context_manifests[].prior_run_context` — what was included and why, what was
+dropped, and a `note` that distinguishes "no relevant prior knowledge exists"
+from "prior knowledge existed but was withheld as inadmissible or stale". Design
+doctrine lives in `docs/plans/knowledge-capture.md`.
 
 ### Adaptive assignment (`assignment:`)
 

@@ -879,6 +879,86 @@ def test_generate_audit_log_includes_context_manifests(tmp_path: Path) -> None:
     assert manifest["git_sha"] == "abc123"
     assert manifest["items_included"][0]["type"] == "invariant"
     assert manifest["items_dropped"][0]["reason"] == "out of scope"
+    # A pack built without prior-run knowledge still reports the gate as off,
+    # so "nothing was injected" is an audited fact rather than a missing key.
+    assert manifest["prior_run_context"]["enabled"] is False
+
+
+def test_generate_audit_log_includes_prior_run_context_decisions(tmp_path: Path) -> None:
+    state = CoordinatorState()
+    from theforge.task import ContextManifestEntry, ContextPack
+
+    pack = ContextPack(
+        content="ctx",
+        included=(
+            ContextManifestEntry(
+                source="knowledge:4f2a91c",
+                kind="prior_run_summary",
+                required=False,
+                lines=6,
+                included=True,
+                reason="file_overlap(sprint/runner.py), domain_match(sprint)",
+                score=16,
+                item_type="advisory",
+            ),
+        ),
+        dropped=(
+            ContextManifestEntry(
+                source="knowledge:9c11e0a",
+                kind="prior_run_summary",
+                required=False,
+                lines=6,
+                included=False,
+                reason="file_overlap(sprint/runner.py)",
+                item_type="advisory",
+                drop_reason="budget_pressure",
+            ),
+        ),
+        budget=10,
+        line_count=6,
+        phase="dev",
+        structural_index_git_sha=None,
+        prior_run_context={
+            "enabled": True,
+            "included": [
+                {
+                    "run_id": "4f2a91c",
+                    "reason": "file_overlap(sprint/runner.py), domain_match(sprint)",
+                    "score": 16,
+                    "verdict": {"status": "admissible", "rank": "full"},
+                }
+            ],
+            "dropped": [
+                {"run_id": "9c11e0a", "reason": "budget_pressure"},
+                {
+                    "run_id": "71bd334",
+                    "reason": "inadmissible(cited_source_deleted)",
+                    "verdict": {
+                        "status": "inadmissible",
+                        "rank": "excluded",
+                        "reasons": ["cited_source_deleted"],
+                    },
+                },
+            ],
+            "note": (
+                "1 prior summaries included; "
+                "1 summaries matched but were excluded on admissibility"
+            ),
+        },
+    )
+    state.context_manifests.append({"phase": "dev", "manifest": pack})
+    result = _make_coordinator_result(state)
+    log = generate_audit_log(_make_config(tmp_path), _make_task(tmp_path), result)
+
+    prior = log["context_manifests"][0]["prior_run_context"]
+    assert prior["enabled"] is True
+    assert prior["included"][0]["run_id"] == "4f2a91c"
+    assert prior["included"][0]["verdict"]["status"] == "admissible"
+    dropped = {item["run_id"]: item for item in prior["dropped"]}
+    assert dropped["9c11e0a"]["reason"] == "budget_pressure"
+    assert dropped["71bd334"]["verdict"]["reasons"] == ["cited_source_deleted"]
+    assert "excluded on admissibility" in prior["note"]
+    assert log["context_manifests"][0]["items_dropped"][0]["reason"] == "budget_pressure"
 
 
 # ── Layer 1 knowledge capture tests ──────────────────────────────────────────

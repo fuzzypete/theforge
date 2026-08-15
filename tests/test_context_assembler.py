@@ -2,13 +2,86 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import yaml
+
 from theforge.config.load import load_config
 from theforge.task import ContextAssembler
+
+_PRIOR_STORY = "Refactor the sprint runner retry loop"
+_PRIOR_FILES = ["src/theforge/sprint/runner.py"]
 
 
 def _write_file(path: Path, text: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(text, encoding="utf-8")
+
+
+def _write_prior_run_corpus(
+    root: Path, run_id: str = "4f2a91c", *, admissible: bool = True
+) -> None:
+    """Write a knowledge index + summary artifact matching the prior-run story."""
+    verdict = (
+        {"status": "admissible", "rank": "full"}
+        if admissible
+        else {
+            "status": "inadmissible",
+            "rank": "excluded",
+            "reasons": ["cited_source_deleted"],
+        }
+    )
+    _write_file(
+        root / ".forge" / "knowledge" / "index.yaml",
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "source_count": 1,
+                "indexed_count": 1,
+                "skipped_count": 0,
+                "entries": [
+                    {
+                        "run_id": run_id,
+                        "generated_at": "2026-08-01T00:00:00",
+                        "story": {
+                            "slug": run_id,
+                            "name": "Sprint runner retry",
+                            "github_issue": 1,
+                        },
+                        "story_shape": {"work_type": "refactor", "complexity": "medium"},
+                        "domains": ["sprint"],
+                        "changed_files": ["src/theforge/sprint/runner.py"],
+                        "learned_patterns": ["retry-decorator"],
+                        "summary_path": f".forge/knowledge/summaries/{run_id}.yaml",
+                        "admissibility_verdict": verdict,
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+    )
+    _write_file(
+        root / ".forge" / "knowledge" / "summaries" / f"{run_id}.yaml",
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "what_changed": {
+                    "description": "reworked the sprint runner retry loop",
+                    "approach": "extracted a bounded helper",
+                },
+                "what_was_learned": [{"claim": "retries need a jitter cap", "evidence": []}],
+            },
+            sort_keys=False,
+        ),
+    )
+
+
+def _config_with_prior_run_context(root: Path, *, enabled: bool) -> object:
+    config_path = root / "forge.yaml"
+    config_path.write_text(
+        f"project: demo\nknowledge:\n  prior_run_context: {str(enabled).lower()}\n",
+        encoding="utf-8",
+    )
+    return load_config(config_path)
 
 
 def test_context_assembler_includes_invariants_even_over_budget(tmp_path: Path) -> None:
@@ -190,3 +263,105 @@ def test_context_assembler_uses_review_budget_for_review_phase(tmp_path: Path) -
 
     assert pack.phase == "review"
     assert pack.budget == assembler.budgets.review_budget
+
+
+def test_prior_run_summary_is_included_when_enabled_and_relevant(tmp_path: Path) -> None:
+    _write_prior_run_corpus(tmp_path)
+    config = _config_with_prior_run_context(tmp_path, enabled=True)
+
+    pack = ContextAssembler.from_config(config).assemble(
+        phase="dev", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100
+    )
+
+    assert "reworked the sprint runner retry loop" in pack.content
+    assert any(entry.kind == "prior_run_summary" for entry in pack.included)
+    assert all(
+        entry.item_type == "advisory"
+        for entry in pack.included
+        if entry.kind == "prior_run_summary"
+    )
+    manifest = pack.prior_run_context
+    assert manifest["enabled"] is True
+    assert [item["run_id"] for item in manifest["included"]] == ["4f2a91c"]
+    assert "file_overlap(src/theforge/sprint/runner.py)" in manifest["included"][0]["reason"]
+    assert manifest["included"][0]["verdict"]["status"] == "admissible"
+
+
+def test_prior_run_summary_is_disabled_by_default(tmp_path: Path) -> None:
+    _write_prior_run_corpus(tmp_path)
+
+    direct = ContextAssembler(tmp_path).assemble(
+        phase="dev", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100
+    )
+    from_config = ContextAssembler.from_config(
+        _config_with_prior_run_context(tmp_path, enabled=False)
+    ).assemble(phase="dev", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100)
+
+    for pack in (direct, from_config):
+        assert "sprint runner retry loop" not in pack.content
+        assert not any(entry.kind == "prior_run_summary" for entry in pack.included)
+        assert not any(entry.kind == "prior_run_summary" for entry in pack.dropped)
+        assert pack.prior_run_context["enabled"] is False
+
+
+def test_prior_run_summary_never_reaches_preflight_even_when_enabled(tmp_path: Path) -> None:
+    _write_prior_run_corpus(tmp_path)
+    config = _config_with_prior_run_context(tmp_path, enabled=True)
+
+    pack = ContextAssembler.from_config(config).assemble(
+        phase="preflight", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100
+    )
+
+    assert "sprint runner retry loop" not in pack.content
+    assert not any(entry.kind == "prior_run_summary" for entry in pack.included)
+    assert "not injected in the preflight phase" in pack.prior_run_context["note"]
+
+
+def test_inadmissible_prior_summary_is_excluded_with_verdict_in_manifest(tmp_path: Path) -> None:
+    _write_prior_run_corpus(tmp_path, admissible=False)
+    config = _config_with_prior_run_context(tmp_path, enabled=True)
+
+    pack = ContextAssembler.from_config(config).assemble(
+        phase="dev", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100
+    )
+
+    assert "sprint runner retry loop" not in pack.content
+    manifest = pack.prior_run_context
+    assert manifest["included"] == []
+    assert manifest["dropped"][0]["reason"] == "inadmissible(cited_source_deleted)"
+    assert manifest["dropped"][0]["verdict"]["reasons"] == ["cited_source_deleted"]
+    assert "excluded on admissibility" in manifest["note"]
+
+
+def test_prior_run_summary_is_dropped_before_required_context(tmp_path: Path) -> None:
+    _write_prior_run_corpus(tmp_path)
+    _write_file(
+        tmp_path / "src" / "theforge" / "sprint" / "CONVENTIONS.md",
+        "# Sprint\n\n## Invariants\n\n- invariant one\n- invariant two\n",
+    )
+    config = _config_with_prior_run_context(tmp_path, enabled=True)
+
+    pack = ContextAssembler.from_config(config).assemble(
+        phase="dev", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=1
+    )
+
+    assert "## Invariants" in pack.content
+    assert any(entry.item_type == "invariant" for entry in pack.included)
+    dropped = [entry for entry in pack.dropped if entry.kind == "prior_run_summary"]
+    assert dropped and dropped[0].drop_reason == "budget_pressure"
+    manifest = pack.prior_run_context
+    assert manifest["included"] == []
+    assert manifest["dropped"][0]["reason"] == "budget_pressure"
+    assert "dropped under budget pressure" in manifest["note"]
+
+
+def test_enabled_run_without_any_prior_knowledge_proceeds_normally(tmp_path: Path) -> None:
+    config = _config_with_prior_run_context(tmp_path, enabled=True)
+
+    pack = ContextAssembler.from_config(config).assemble(
+        phase="dev", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100
+    )
+
+    assert pack.prior_run_context["enabled"] is True
+    assert pack.prior_run_context["included"] == []
+    assert "no relevant prior knowledge exists" in pack.prior_run_context["note"]

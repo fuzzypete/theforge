@@ -672,6 +672,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 }
                 for item in entry["manifest"].dropped
             ],
+            "prior_run_context": entry["manifest"].prior_run_context,
         }
         for entry in state.context_manifests
     ]
