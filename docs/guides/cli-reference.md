@@ -864,6 +864,41 @@ exists to measure.
 
 ---
 
+## `forge knowledge-report`
+
+Is the knowledge feed-forward loop earning its keep? Compares stories that
+actually received prior-run summaries against comparable stories that did not,
+on plan regeneration rate, review restated-finding rate, dev/review iteration
+counts, and cost per completed story / stories per dollar.
+
+```bash
+forge knowledge-report                          # all recorded runs, terminal report
+forge knowledge-report --recent-run-count 30    # bound by run count
+forge knowledge-report --since 2026-08-01 --until 2026-08-31
+forge knowledge-report --format json            # structured payload (also: yaml)
+```
+
+Cohorts come from the audit record's context manifests, never from config: a
+run is **with_prior_summary** only when an eligible phase (plan / dev / review)
+recorded `prior_run_context.enabled: true` *and* included at least one summary.
+Enabled with nothing included is the control cohort. Disabled or unrecorded is
+`unclassified` and never enters a comparison — a run from before the feature
+existed is not evidence about the feature.
+
+Comparisons are bucketed by preflight work type, complexity band, and domains,
+and only buckets holding both cohorts contribute; "stories with prior knowledge
+did better" means nothing if those stories were also smaller.
+
+The report distinguishes **insufficient_data** (cohorts or metric denominators
+too thin to compare) from **no_observed_improvement** (enough data, and the
+with-prior cohort did not do better). Missing telemetry is reported as an
+unavailable denominator, never as a zero: a run with no `plan_review` block is
+not a run with zero regenerations, and a run with null `cost.total_usd` is a
+delivery of unknown spend, counted in its cohort and excluded from both cost
+denominators.
+
+---
+
 ## `forge audits`
 
 Manage the SQLite audit substrate (distinct from `forge audit`, which renders a
