@@ -1,10 +1,87 @@
 from __future__ import annotations
 
+import json
+import subprocess
 from pathlib import Path
 
 import yaml
 
+from theforge.knowledge_admissibility import (
+    REASON_CITED_SOURCE_DELETED,
+    REASON_PROVENANCE_UNRESOLVED,
+    REASON_RELEVANCE_INDETERMINATE,
+    REASON_SOUNDNESS_INDETERMINATE,
+    REASON_SOURCE_RUN_TAINTED,
+    REASON_SOURCES_CHANGED,
+    REASON_SOURCES_MOVED,
+    STATUS_ADMISSIBLE,
+    STATUS_ADMISSIBLE_WITH_REDUCED_RANK,
+    STATUS_INADMISSIBLE,
+)
 from theforge.knowledge_index import KNOWLEDGE_INDEX_PATH, rebuild_knowledge_index
+
+
+def _git(project_root: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", *args],
+        cwd=project_root,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _init_git_repo(project_root: Path) -> None:
+    _git(project_root, "init", "-q", "-b", "main")
+    _git(project_root, "config", "user.email", "test@example.com")
+    _git(project_root, "config", "user.name", "Test")
+
+
+def _commit_all(project_root: Path, message: str) -> str:
+    _git(project_root, "add", ".")
+    _git(project_root, "commit", "-q", "-m", message)
+    return _git(project_root, "rev-parse", "HEAD")
+
+
+def _write_run_record(
+    project_root: Path,
+    run_id: str,
+    *,
+    trust_status: str = "trusted",
+    base_ref: str | None = None,
+    head_ref: str | None = None,
+    finding_ids: tuple[str, ...] = ("f-001",),
+    file_paths: tuple[str, ...] = ("src/client.py",),
+) -> Path:
+    path = project_root / ".forge" / "audits" / "runs" / f"{run_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "run_id": run_id,
+        "trust_status": trust_status,
+        "trust_checks": [],
+        "finding_registry": [
+            {
+                "finding_id": finding_id,
+                "cycle_first_seen": 1,
+                "cycle_last_seen": 1,
+                "file": file_paths[0] if file_paths else "",
+                "severity": "P1",
+                "description": f"finding {finding_id}",
+                "disposition": "resolved",
+            }
+            for finding_id in finding_ids
+        ],
+        "reviews": [{"cycle": 1}],
+        "phases": {"plan": {"plan_structured": {"steps": [{"id": "s-1", "description": "step"}]}}},
+        "changed_files": {
+            "base_ref": base_ref,
+            "head_ref": head_ref,
+            "files": [{"path": path} for path in file_paths],
+        },
+    }
+    path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def _write_summary(
@@ -22,6 +99,8 @@ def _write_summary(
     domains: list[str],
     changed_files: list[str],
     learned_patterns: list[str],
+    what_was_learned: list[dict] | None = None,
+    authoritative_run_record: str | None = None,
 ) -> Path:
     path = project_root / ".forge" / "knowledge" / "summaries" / f"{run_id}.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,6 +123,10 @@ def _write_summary(
         "changed_files": changed_files,
         "learned_patterns": learned_patterns,
     }
+    if authoritative_run_record is not None:
+        payload["authoritative_run_record"] = authoritative_run_record
+    if what_was_learned is not None:
+        payload["what_was_learned"] = what_was_learned
     path.write_text(
         yaml.safe_dump(payload, sort_keys=False, default_flow_style=False),
         encoding="utf-8",
@@ -55,6 +138,16 @@ def _entry_ids(payload: dict[str, object]) -> list[str]:
     entries = payload["entries"]
     assert isinstance(entries, list)
     return [entry["run_id"] for entry in entries]
+
+
+def _entry_map(payload: dict[str, object]) -> dict[str, dict[str, object]]:
+    entries = payload["entries"]
+    assert isinstance(entries, list)
+    return {entry["run_id"]: entry for entry in entries if isinstance(entry, dict)}
+
+
+def _summary_claim(*evidence: dict[str, object]) -> list[dict[str, object]]:
+    return [{"claim": "learned something real", "evidence": list(evidence)}]
 
 
 def test_rebuild_is_deterministic_and_order_is_stable(tmp_path: Path) -> None:
@@ -245,7 +338,7 @@ def test_unreadable_or_non_utf8_summaries_are_skipped_with_diagnostics(tmp_path:
     assert "unreadable summary:" in result.diagnostics[0].reason
 
 
-def test_entries_expose_lookup_fields_needed_by_next_story(tmp_path: Path) -> None:
+def test_entries_expose_lookup_fields_and_fail_closed_verdicts(tmp_path: Path) -> None:
     _write_summary(
         tmp_path,
         "run-api-retry",
@@ -266,7 +359,7 @@ def test_entries_expose_lookup_fields_needed_by_next_story(tmp_path: Path) -> No
 
     assert result.path == tmp_path / KNOWLEDGE_INDEX_PATH
     assert result.diagnostics == ()
-    assert result.payload["schema_version"] == 1
+    assert result.payload["schema_version"] == 2
     assert result.payload["source_count"] == 1
     assert result.payload["indexed_count"] == 1
     assert result.payload["skipped_count"] == 0
@@ -289,5 +382,342 @@ def test_entries_expose_lookup_fields_needed_by_next_story(tmp_path: Path) -> No
             "changed_files": ["src/client.py", "tests/test_client.py"],
             "learned_patterns": ["retry", "timeout"],
             "summary_path": ".forge/knowledge/summaries/run-api-retry.yaml",
+            "admissibility_facts": {
+                "source_run": {"tainted": False, "resolution": "indeterminate"},
+                "provenance": {"resolution": "indeterminate"},
+                "cited_sources": [],
+            },
+            "admissibility_verdict": {
+                "status": STATUS_INADMISSIBLE,
+                "rank": "excluded",
+                "reasons": [REASON_SOUNDNESS_INDETERMINATE],
+            },
         }
     ]
+
+
+def test_unchanged_cited_source_is_admissible(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    head_ref = _commit_all(tmp_path, "seed")
+
+    _write_run_record(tmp_path, "run-unchanged", base_ref=head_ref, head_ref=head_ref)
+    _write_summary(
+        tmp_path,
+        "run-unchanged",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-unchanged.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+    entry = _entry_map(result.payload)["run-unchanged"]
+
+    assert entry["admissibility_verdict"] == {"status": STATUS_ADMISSIBLE, "rank": "full"}
+    assert entry["admissibility_facts"]["cited_sources"] == [
+        {
+            "cited_path": "src/client.py",
+            "state": "unchanged",
+            "current_path": "src/client.py",
+            "commits_since_summary": 0,
+        }
+    ]
+
+
+def test_changed_cited_source_is_down_ranked(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    baseline = _commit_all(tmp_path, "seed")
+    _write_run_record(tmp_path, "run-changed", base_ref=baseline, head_ref=baseline)
+    _write_summary(
+        tmp_path,
+        "run-changed",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-changed.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+    src.write_text("value = 2\n", encoding="utf-8")
+    _commit_all(tmp_path, "follow-up")
+
+    result = rebuild_knowledge_index(tmp_path)
+    verdict = _entry_map(result.payload)["run-changed"]["admissibility_verdict"]
+
+    assert verdict == {
+        "status": STATUS_ADMISSIBLE_WITH_REDUCED_RANK,
+        "rank": "reduced",
+        "reasons": [REASON_SOURCES_CHANGED],
+    }
+
+
+def test_rename_with_continuity_is_down_ranked(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    old_path = tmp_path / "src" / "client.py"
+    old_path.parent.mkdir(parents=True)
+    old_path.write_text("value = 1\n", encoding="utf-8")
+    baseline = _commit_all(tmp_path, "seed")
+    _write_run_record(tmp_path, "run-moved", base_ref=baseline, head_ref=baseline)
+    _write_summary(
+        tmp_path,
+        "run-moved",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-moved.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+    new_path = tmp_path / "src" / "phases" / "client.py"
+    new_path.parent.mkdir(parents=True)
+    _git(tmp_path, "mv", "src/client.py", "src/phases/client.py")
+    _commit_all(tmp_path, "rename")
+
+    result = rebuild_knowledge_index(tmp_path)
+    entry = _entry_map(result.payload)["run-moved"]
+
+    assert entry["admissibility_verdict"] == {
+        "status": STATUS_ADMISSIBLE_WITH_REDUCED_RANK,
+        "rank": "reduced",
+        "reasons": [REASON_SOURCES_MOVED],
+    }
+    assert entry["admissibility_facts"]["cited_sources"] == [
+        {
+            "cited_path": "src/client.py",
+            "state": "moved",
+            "current_path": "src/phases/client.py",
+            "commits_since_summary": 1,
+        }
+    ]
+
+
+def test_deleted_cited_source_is_inadmissible(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    baseline = _commit_all(tmp_path, "seed")
+    _write_run_record(tmp_path, "run-deleted", base_ref=baseline, head_ref=baseline)
+    _write_summary(
+        tmp_path,
+        "run-deleted",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-deleted.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+    src.unlink()
+    _commit_all(tmp_path, "delete")
+
+    result = rebuild_knowledge_index(tmp_path)
+    verdict = _entry_map(result.payload)["run-deleted"]["admissibility_verdict"]
+
+    assert verdict == {
+        "status": STATUS_INADMISSIBLE,
+        "rank": "excluded",
+        "reasons": [REASON_CITED_SOURCE_DELETED],
+    }
+
+
+def test_tainted_source_run_is_inadmissible(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    head_ref = _commit_all(tmp_path, "seed")
+
+    _write_run_record(
+        tmp_path,
+        "run-tainted",
+        trust_status="tainted",
+        base_ref=head_ref,
+        head_ref=head_ref,
+    )
+    _write_summary(
+        tmp_path,
+        "run-tainted",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-tainted.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+    verdict = _entry_map(result.payload)["run-tainted"]["admissibility_verdict"]
+
+    assert verdict == {
+        "status": STATUS_INADMISSIBLE,
+        "rank": "excluded",
+        "reasons": [REASON_SOURCE_RUN_TAINTED],
+    }
+
+
+def test_unresolved_provenance_is_inadmissible(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    head_ref = _commit_all(tmp_path, "seed")
+
+    _write_run_record(tmp_path, "run-unresolved", base_ref=head_ref, head_ref=head_ref)
+    _write_summary(
+        tmp_path,
+        "run-unresolved",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-unresolved.json",
+        what_was_learned=_summary_claim({"type": "review_finding", "finding_id": "f-missing"}),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+    verdict = _entry_map(result.payload)["run-unresolved"]["admissibility_verdict"]
+
+    assert verdict == {
+        "status": STATUS_INADMISSIBLE,
+        "rank": "excluded",
+        "reasons": [REASON_PROVENANCE_UNRESOLVED],
+    }
+
+
+def test_non_git_history_absence_down_ranks_relevance(tmp_path: Path) -> None:
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+
+    _write_run_record(tmp_path, "run-no-history", file_paths=("src/client.py",))
+    _write_summary(
+        tmp_path,
+        "run-no-history",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-no-history.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+    entry = _entry_map(result.payload)["run-no-history"]
+
+    assert entry["admissibility_verdict"] == {
+        "status": STATUS_ADMISSIBLE_WITH_REDUCED_RANK,
+        "rank": "reduced",
+        "reasons": [REASON_RELEVANCE_INDETERMINATE],
+    }
+    assert entry["admissibility_facts"]["cited_sources"] == [
+        {
+            "cited_path": "src/client.py",
+            "state": "relevance_indeterminate",
+            "current_path": "src/client.py",
+        }
+    ]
+
+
+def test_missing_run_record_is_soundness_indeterminate(tmp_path: Path) -> None:
+    _write_summary(
+        tmp_path,
+        "run-missing-record",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-missing-record.json",
+        what_was_learned=_summary_claim({"type": "review_finding", "finding_id": "f-001"}),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+    verdict = _entry_map(result.payload)["run-missing-record"]["admissibility_verdict"]
+
+    assert verdict == {
+        "status": STATUS_INADMISSIBLE,
+        "rank": "excluded",
+        "reasons": [REASON_SOUNDNESS_INDETERMINATE],
+    }
