@@ -18,6 +18,7 @@ from theforge.config import ForgeConfig
 from theforge.gate_diagnostics import run_gate_diagnostic_pass
 from theforge.process_group import ProcessTeardown
 from theforge.task import TaskStory
+from theforge.validation_profiles import SelectedValidation, validation_run_record
 
 from . import util as _cu
 from .commit_guard import _commits_exist_strict, _has_commits_ahead_of_base
@@ -221,7 +222,35 @@ def _persist_trajectory(state: CoordinatorState, workspace_path: Path, what: str
         _log_verbose(f"Could not persist {what}: {exc}")
 
 
-def _record_gate_commit(state: CoordinatorState, workspace_path: Path, decision: str) -> None:
+def _record_validation_run(
+    state: CoordinatorState,
+    *,
+    selection: SelectedValidation | None,
+    decision: str | None,
+    commit: str | None,
+    skipped: bool = False,
+) -> None:
+    """Append the provenance of one validation run (#2358).
+
+    Written for every run the phase performs, authoritative or not: what a
+    verdict is worth is a property of the profile behind it, and a record that
+    omits the profile forces that question to be answered by reading a command
+    string. ``selection`` is None only when no command ran at all (a suppressed
+    gate), which is recorded as a skipped advisory run rather than a pass.
+    """
+    state.validation_runs.append(
+        validation_run_record(selection, result=decision, commit=commit, skipped=skipped)
+    )
+
+
+def _record_gate_commit(
+    state: CoordinatorState,
+    workspace_path: Path,
+    decision: str,
+    *,
+    selection: SelectedValidation | None = None,
+    skipped: bool = False,
+) -> None:
     """Record which commit the gate just judged, and what it decided (#2052).
 
     Stored as a pair so a review cycle can say whether the commit its reviewers
@@ -237,10 +266,21 @@ def _record_gate_commit(state: CoordinatorState, workspace_path: Path, decision:
     REVIEW — the resumed cycle then rendered a deliberately suppressed gate as
     ``ungated``, which is exactly the wrong verification state to report.
     """
-    state.last_gate_decision = decision
     ok, out = _cu._run_shell("git rev-parse HEAD", workspace_path)
     sha = out.strip() if ok else ""
-    state.last_gate_commit = sha or None
+    # A verdict is written only from a run that carries merge authority. A run
+    # of any other profile — a story gate_override in a project that declares
+    # profiles — is still recorded, as advisory, but it does not become the
+    # story's gate decision, so nothing downstream can rest a merge on it
+    # (#2358). The skip path passes no selection and keeps its historical
+    # SKIPPED provenance, which reads as a suppressed gate rather than a pass.
+    _authoritative = selection is None or selection.is_merge_authority
+    if _authoritative:
+        state.last_gate_decision = decision
+        state.last_gate_commit = sha or None
+    _record_validation_run(
+        state, selection=selection, decision=decision, commit=sha or None, skipped=skipped
+    )
     _persist_trajectory(state, workspace_path, "gate-commit provenance")
 
 
@@ -289,7 +329,11 @@ def _record_gate_teardowns(
 
 
 def _record_gate_run(
-    state: CoordinatorState, workspace_path: Path, decision: str | None = None
+    state: CoordinatorState,
+    workspace_path: Path,
+    decision: str | None = None,
+    *,
+    selection: SelectedValidation | None = None,
 ) -> None:
     """Count one gate execution and persist the count for ``--resume``.
 
@@ -303,7 +347,7 @@ def _record_gate_run(
     state.gate_runs += 1
     if decision is not None:
         # Writes the whole sidecar, incremented gate_runs included.
-        _record_gate_commit(state, workspace_path, decision)
+        _record_gate_commit(state, workspace_path, decision, selection=selection)
     else:
         _persist_trajectory(state, workspace_path, "gate-run count")
 
@@ -752,6 +796,10 @@ def _run_validate_phase(
     # and a leaked worker produces no artifact of its own — so the record has to
     # come from here or not at all.
     _gate_teardowns: list[ProcessTeardown] = []
+    # Which validation profile the gate actually ran, filled in by run_gate_full.
+    # VALIDATE always asks for the merge-authority profile; the selection comes
+    # back so the recorded result can say what it is worth (#2358).
+    _gate_selection: list[SelectedValidation] = []
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
         _log("  Gate: none (story override)")
@@ -760,7 +808,7 @@ def _run_validate_phase(
         gate_result_for_telemetry = gate_decision
         # No gate ran, so this is not a gate run — but the commit still has a
         # verification state, and "suppressed by override" is that state.
-        _record_gate_commit(state, workspace_path, "SKIPPED")
+        _record_gate_commit(state, workspace_path, "SKIPPED", skipped=True)
     else:
         if gate_override is not None:
             _log_phase(state.phase, "running gate... (override)")
@@ -775,15 +823,70 @@ def _run_validate_phase(
                 iter_num=state.dev_trace_count,
                 output_digest=_gate_digest,
                 process_teardowns=_gate_teardowns,
+                selection_out=_gate_selection,
             )
         )
         # The gate command ran. Count it here — before decision/error routing —
         # so timeouts and errors, which return without ever appending to
         # gate_decisions, are still counted as the executions they were (#1984).
-        _record_gate_run(state, workspace_path, decision=gate_decision or "ERROR")
+        _record_gate_run(
+            state,
+            workspace_path,
+            decision=gate_decision or "ERROR",
+            selection=_gate_selection[0] if _gate_selection else None,
+        )
         # After the counter, so a leak from the first gate is tagged gate_run 1
         # like every other run-gated telemetry rather than 0 (#2309).
         _record_gate_teardowns(state, _gate_teardowns)
+        # ── Widen an advisory run to the merge-authority profile ──────────
+        # A story gate_override under declared profiles runs an undeclared
+        # command, whose result is advisory. A PASS from it is not a verdict,
+        # and letting VALIDATE return PASS on it would carry the story to
+        # REVIEW and DONE with no merge-authority result behind it. So the
+        # advisory run widens: the declared merge-authority profile runs too,
+        # in the same worktree, and *its* result is the verdict. Unknown input
+        # causes more validation to run, never less (#2358).
+        #
+        # Only a passing advisory run widens. A failing one already blocks
+        # progression — advisory results may inform routing, they just cannot
+        # establish trust — so paying for the complete profile after it would
+        # buy no decision that is not already made.
+        _advisory_selection = _gate_selection[0] if _gate_selection else None
+        if (
+            _advisory_selection is not None
+            and not _advisory_selection.is_merge_authority
+            and gate_decision == "PASS"
+            and gate_err is None
+        ):
+            _log(
+                f"  Gate override passed but is advisory ({_advisory_selection.describe()}); "
+                "widening to the merge-authority profile for the verdict"
+            )
+            # Both out-parameters are reset first: everything downstream — the
+            # stall brake's output signature, the recorded selection, the
+            # gate_decisions append — must describe the run that produced the
+            # verdict, not the advisory run that preceded it.
+            _gate_selection.clear()
+            _gate_digest.clear()
+            gate_decision, gate_err, gate_output_tail, resolved_gate_cmd, gate_exit_code = (
+                run_gate_full(
+                    config,
+                    workspace_path,
+                    task=task,
+                    iter_num=state.dev_trace_count,
+                    output_digest=_gate_digest,
+                    process_teardowns=_gate_teardowns,
+                    selection_out=_gate_selection,
+                    ignore_gate_override=True,
+                )
+            )
+            _record_gate_run(
+                state,
+                workspace_path,
+                decision=gate_decision or "ERROR",
+                selection=_gate_selection[0] if _gate_selection else None,
+            )
+            _record_gate_teardowns(state, _gate_teardowns)
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)
@@ -940,7 +1043,18 @@ def _run_validate_phase(
         )
 
     assert gate_decision is not None
-    state.gate_decisions.append(gate_decision)
+    # Appended only for a run that carries merge authority (or the legacy path,
+    # where the selection is the gate command itself). An advisory run's result
+    # is already recorded in ``state.validation_runs``; letting it into the
+    # decision history would make it indistinguishable from a verdict (#2358).
+    _recorded_selection = _gate_selection[0] if _gate_selection else None
+    if _recorded_selection is None or _recorded_selection.is_merge_authority:
+        state.gate_decisions.append(gate_decision)
+    else:
+        _log(
+            f"  Gate result recorded as advisory ({_recorded_selection.describe()}): "
+            "it does not establish merge authority."
+        )
     if state_update_fn is not None:
         state_update_fn(
             {

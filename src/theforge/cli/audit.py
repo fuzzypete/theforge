@@ -149,6 +149,21 @@ def cmd_audit(args: object) -> int:
     print(f"    Review cycles:               {review_cycles}")
     print(f"    Gate runs (executed):        {iterations.get('gate_runs', '?')}")
     print(f"    Gate decisions: {iterations.get('gate_decisions', [])}")
+    # What each validation run was worth, not just that it happened (#2358).
+    # Absent for runs recorded before profiles existed; nothing is printed then,
+    # so an older audit renders exactly as it did before.
+    for entry in iterations.get("validation_runs") or []:
+        if not isinstance(entry, dict):
+            continue
+        _skipped = " (skipped)" if entry.get("skipped") else ""
+        _widened = " [widened]" if entry.get("widened") else ""
+        print(
+            f"    Validation: {entry.get('profile', '?')} "
+            f"({entry.get('authority', '?')} authority) → "
+            f"{entry.get('result', '?')}{_skipped}{_widened}"
+        )
+        if entry.get("command"):
+            print(f"                command: {entry['command']}")
 
     # Cost summary
     print()

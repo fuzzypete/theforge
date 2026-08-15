@@ -933,19 +933,28 @@ def _triage_spec(
     )
     if on_gate_start is not None:
         on_gate_start(gate_label)
+    # Which profile this pre-check ran, and what its result is worth. The triage
+    # reason is this decision's durable record — it is what the sprint log and
+    # state report for "why did this story enter at REVIEW" — so the profile
+    # travels in it rather than being reconstructible only from config (#2358).
+    gate_selection: list = []
     try:
         gate_decision, gate_err, _gate_output = _run_gate(
-            config, worktree_path, task=task, label=gate_label
+            config, worktree_path, task=task, label=gate_label, selection_out=gate_selection
         )
     finally:
         if on_gate_end is not None:
             on_gate_end(gate_label)
 
+    profile_note = f", {gate_selection[0].describe()}" if gate_selection else ""
+
     if gate_err is None and gate_decision == "PASS":
         return StoryTriage(
             story_path=story_path,
             action="review",
-            reason=f"worktree exists, gate passes ({len(commits_ahead)} commits ahead)",
+            reason=(
+                f"worktree exists, gate passes ({len(commits_ahead)} commits ahead{profile_note})"
+            ),
             worktree_path=worktree_path,
             slug=slug,
         )
@@ -954,7 +963,7 @@ def _triage_spec(
     return StoryTriage(
         story_path=story_path,
         action="dev",
-        reason=f"worktree exists, gate fails ({reason_detail})",
+        reason=f"worktree exists, gate fails ({reason_detail}{profile_note})",
         worktree_path=worktree_path,
         slug=slug,
     )
