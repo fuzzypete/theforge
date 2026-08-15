@@ -10,9 +10,11 @@ construction layer, not the coordinator.
 
 - Keep prompt construction separate from coordinator control flow and separate
   from runner/provider execution details.
+<!-- forge-invariant id="acceptance-criteria-authoritative" scope="area:prompts area:story phase:plan,dev,review" enforcement="review" -->
 - Preserve the distinction between story requirements and advisory notes.
   Acceptance criteria are authoritative; notes are hints that must not be
   promoted into hard requirements by default.
+<!-- /forge-invariant -->
 - Story and plan parsing should remain strict enough to surface malformed agent
   output instead of papering over ambiguity.
 - Keep low-dependency data definitions lightweight; avoid pulling heavy runtime

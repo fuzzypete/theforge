@@ -1627,12 +1627,30 @@ def load_config(config_path: Path) -> ForgeConfig:
     if not isinstance(knowledge_data, dict):
         raise ValueError(f"forge.yaml 'knowledge' must be a mapping, got {knowledge_data!r}")
     _knowledge_values: dict[str, bool] = {}
-    for _key in ("run_summaries", "prior_run_context"):
+    for _key in ("run_summaries", "prior_run_context", "invariant_context"):
         _value = knowledge_data.get(_key, getattr(KnowledgeConfig, _key))
         if not isinstance(_value, bool):
             raise ValueError(f"forge.yaml 'knowledge.{_key}' must be a bool, got {_value!r}")
         _knowledge_values[_key] = _value
-    knowledge_cfg = KnowledgeConfig(**_knowledge_values)
+    # Source globs are a list, not a gate, so they are parsed off the bool loop.
+    _invariant_sources_raw = knowledge_data.get(
+        "invariant_sources", list(KnowledgeConfig.invariant_sources)
+    )
+    if not isinstance(_invariant_sources_raw, list):
+        raise ValueError(
+            "forge.yaml 'knowledge.invariant_sources' must be a list of glob strings,"
+            f" got {_invariant_sources_raw!r}"
+        )
+    for _glob in _invariant_sources_raw:
+        if not isinstance(_glob, str) or not _glob.strip():
+            raise ValueError(
+                "forge.yaml 'knowledge.invariant_sources' items must be non-empty strings,"
+                f" got {_glob!r}"
+            )
+    knowledge_cfg = KnowledgeConfig(
+        **_knowledge_values,
+        invariant_sources=tuple(_glob.strip() for _glob in _invariant_sources_raw),
+    )
 
     context_data = raw.get("context", {})
     context_cfg = ContextConfig(

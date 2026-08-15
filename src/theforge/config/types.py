@@ -1254,10 +1254,20 @@ class KnowledgeConfig:
     and never without an admissible verdict in the knowledge index. It is
     deliberately not advertised in the generated starter config: it is only
     useful once a project has a corpus of summaries to draw on.
+
+    ``invariant_context`` gates the #1875 invariant-index spike: when on,
+    ``ContextAssembler`` offers project invariants marked in the project's own
+    authoritative Markdown to the plan, dev, and review phases — never to
+    preflight, for the same ADR-0002 clause 5 reason. ``invariant_sources`` is
+    the list of Markdown globs the deterministic extractor scans; it holds
+    *source locations only*, never invariant prose, because the marked document
+    stays the single source of truth.
     """
 
     run_summaries: bool = False
     prior_run_context: bool = False
+    invariant_context: bool = False
+    invariant_sources: tuple[str, ...] = ("*.md", "docs/**/*.md", "**/CONVENTIONS.md")
 
 
 @dataclass(frozen=True)

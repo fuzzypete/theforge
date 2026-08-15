@@ -669,12 +669,16 @@ principle stands regardless of which model wins the cheap-bucket tie-break.)
 Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow.
 
 ### No LLM in the loop for process decisions
+<!-- forge-invariant id="coordinator-pure-python" scope="area:coordinator phase:plan,dev,review files:src/theforge/coordinator/*.py" enforcement="review" -->
 The coordinator is pure Python. If you find yourself writing code where an LLM
 decides whether to retry or escalate, stop — that decision belongs in the coordinator.
+<!-- /forge-invariant -->
 
 ### Schema enforcement is mandatory
+<!-- forge-invariant id="schema-integrity-boundary" scope="area:schema area:review phase:plan,dev,review files:src/theforge/schemas.py" enforcement="gate" -->
 The review output schema in `schemas.py` is the integrity boundary. Do not relax
 cross-validation rules (APPROVE+P1 or REQUEST_CHANGES+no P1 are always errors).
+<!-- /forge-invariant -->
 
 ### Review YAML structure
 ```yaml

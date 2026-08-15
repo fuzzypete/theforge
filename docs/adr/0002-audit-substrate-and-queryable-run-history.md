@@ -102,10 +102,12 @@ The router's trust surface is exactly the substrate. Anything else is advisory.
 
 `.forge/knowledge/summaries/{run_id}.yaml` (knowledge-capture Layer 2) are LLM-generated condensations of run history. They feed Layer 3 — the future-runs context-assembly machinery — so agents stop rediscovering the same conventions and failure modes.
 
+<!-- forge-invariant id="summaries-advisory" scope="area:audit area:knowledge phase:plan,dev,review files:src/theforge/knowledge_*.py,src/theforge/task/*_selector.py" enforcement="review" -->
 Summaries are advisory. Specifically:
 
 - **May influence:** prompt construction for plan, dev, and review phases; audit-derived signal renderings for preflight; context manifests that select which summaries are relevant for the current story; operator-facing search and discovery.
 - **MUST NOT influence:** routing decisions, budget enforcement, refusal verdicts, gate pass/fail outcomes, or any mechanical action the coordinator takes. Those decisions belong to the per-run records and the deterministic gates.
+<!-- /forge-invariant -->
 
 This is the *"LLMs propose, the coordinator decides"* invariant applied to history. Mechanical control flow stays on telemetry; LLM-generated text stays on context.
 

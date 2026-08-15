@@ -25,6 +25,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from theforge.task.invariant_selector import ELIGIBLE_PHASES as INVARIANT_ELIGIBLE_PHASES
 from theforge.task.prior_run_selector import ELIGIBLE_PHASES
 
 # ── Cohorts ──────────────────────────────────────────────────────────────────
@@ -32,6 +33,12 @@ from theforge.task.prior_run_selector import ELIGIBLE_PHASES
 COHORT_WITH = "with_prior_summary"
 COHORT_WITHOUT = "without_prior_summary"
 COHORT_UNCLASSIFIED = "unclassified"
+
+#: Cohorts for the #1875 invariant-context spike. Same rule as above: the
+#: manifest decides, not configuration, and a run from before the feature
+#: existed is not evidence about the feature.
+INVARIANT_COHORT_WITH = "with_invariant_context"
+INVARIANT_COHORT_WITHOUT = "without_invariant_context"
 
 _COMPLEXITY_BANDS = {
     "small": "LOW",
@@ -62,10 +69,18 @@ class RunSignals:
     dev_iterations: int | None
     review_cycles: int | None
     cost_usd: float | None
+    invariant_cohort: str = COHORT_UNCLASSIFIED
+    invariant_included: int | None = None
+    invariant_uncertain: int | None = None
+    invariant_dropped: int | None = None
 
     @property
     def classified(self) -> bool:
         return self.cohort in (COHORT_WITH, COHORT_WITHOUT)
+
+    @property
+    def invariant_classified(self) -> bool:
+        return self.invariant_cohort in (INVARIANT_COHORT_WITH, INVARIANT_COHORT_WITHOUT)
 
 
 def _mapping(value: object) -> dict:
@@ -117,6 +132,68 @@ def classify_cohort(record: dict) -> str:
         if isinstance(included, list) and included:
             return COHORT_WITH
     return COHORT_WITHOUT if enabled_somewhere else COHORT_UNCLASSIFIED
+
+
+def classify_invariant_cohort(record: dict) -> str:
+    """Which invariant-context cohort a run belongs to (#1875).
+
+    Mirrors :func:`classify_cohort` deliberately: enabled somewhere *and*
+    something included is treatment; enabled with nothing included is a genuine
+    control; disabled or absent is unclassified. Preflight manifests never
+    classify — the selector refuses that phase, so a preflight manifest saying
+    "not injected here" is not evidence either way.
+    """
+    manifests = record.get("context_manifests")
+    if not isinstance(manifests, list):
+        return COHORT_UNCLASSIFIED
+
+    enabled_somewhere = False
+    for entry in manifests:
+        manifest = _mapping(entry)
+        phase = (_text(manifest.get("phase")) or "").lower()
+        if phase not in INVARIANT_ELIGIBLE_PHASES:
+            continue
+        invariants = _mapping(manifest.get("invariant_context"))
+        if invariants.get("enabled") is not True:
+            continue
+        enabled_somewhere = True
+        included = invariants.get("included")
+        if isinstance(included, list) and included:
+            return INVARIANT_COHORT_WITH
+    return INVARIANT_COHORT_WITHOUT if enabled_somewhere else COHORT_UNCLASSIFIED
+
+
+def _invariant_counts(record: dict) -> tuple[int | None, int | None, int | None]:
+    """Included / uncertain / dropped invariants across eligible manifests.
+
+    ``None`` when no eligible manifest carried an enabled ``invariant_context``
+    block — unavailable telemetry, never a zero.
+    """
+    manifests = record.get("context_manifests")
+    if not isinstance(manifests, list):
+        return (None, None, None)
+
+    included = uncertain = dropped = 0
+    observed = False
+    for entry in manifests:
+        manifest = _mapping(entry)
+        phase = (_text(manifest.get("phase")) or "").lower()
+        if phase not in INVARIANT_ELIGIBLE_PHASES:
+            continue
+        invariants = _mapping(manifest.get("invariant_context"))
+        if invariants.get("enabled") is not True:
+            continue
+        observed = True
+        included += _list_len(invariants.get("included"))
+        uncertain += _list_len(invariants.get("uncertain"))
+        dropped += _list_len(invariants.get("dropped"))
+    if not observed:
+        return (None, None, None)
+    return (included, uncertain, dropped)
+
+
+def _list_len(value: object) -> int:
+    return len(value) if isinstance(value, list) else 0
 
 
 def _bucket(record: dict) -> tuple[str, str, tuple[str, ...]] | None:
@@ -211,6 +288,7 @@ def extract_signals(record: dict) -> RunSignals:
     iterations = _mapping(record.get("iterations"))
     plan_review = record.get("plan_review")
     restated, total_findings = _review_recurrence(record)
+    inv_included, inv_uncertain, inv_dropped = _invariant_counts(record)
 
     return RunSignals(
         run_id=_text(record.get("run_id")) or "",
@@ -231,4 +309,8 @@ def extract_signals(record: dict) -> RunSignals:
         dev_iterations=_count(iterations.get("dev_iterations_productive")),
         review_cycles=_count(iterations.get("review_cycles_total")),
         cost_usd=_cost(_mapping(record.get("cost")).get("total_usd")),
+        invariant_cohort=classify_invariant_cohort(record),
+        invariant_included=inv_included,
+        invariant_uncertain=inv_uncertain,
+        invariant_dropped=inv_dropped,
     )

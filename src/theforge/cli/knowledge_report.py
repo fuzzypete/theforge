@@ -29,6 +29,9 @@ def cmd_knowledge_report(args: argparse.Namespace) -> int:
         render_terminal,
         report_payload,
     )
+    from theforge.knowledge_invariant_proof import (  # noqa: PLC0415
+        build_invariant_proof_from_records,
+    )
 
     config_path = _find_config(Path(args.config).resolve() if args.config else None)
     if config_path is None:
@@ -70,11 +73,13 @@ def cmd_knowledge_report(args: argparse.Namespace) -> int:
         recent_run_count=recent_run_count,
     )
 
+    proof = build_invariant_proof_from_records(records)
+
     if args.format == "terminal":
-        print(render_terminal(report), end="")
+        print(render_terminal(report, proof), end="")
         return 0
 
-    payload = report_payload(report)
+    payload = report_payload(report, proof)
     if args.format == "json":
         print(json.dumps(payload, indent=2))
     else:
