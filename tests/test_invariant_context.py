@@ -123,7 +123,8 @@ def test_config_defaults_keep_the_portable_source_globs(tmp_path: Path):
     config = load_config(path)
 
     assert config.knowledge.invariant_context is False
-    assert "docs/**/*.md" in config.knowledge.invariant_sources
+    # Layout-neutral: naming a docs/ directory would presume one project's shape.
+    assert config.knowledge.invariant_sources == ("**/*.md",)
 
 
 @pytest.mark.parametrize(

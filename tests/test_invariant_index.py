@@ -8,6 +8,7 @@ from pathlib import Path
 import yaml
 
 from theforge.cli.index import cmd_index
+from theforge.config.types import KnowledgeConfig
 from theforge.invariant_index import (
     COMPLETENESS_FULL,
     COMPLETENESS_NONE,
@@ -202,10 +203,93 @@ def test_configured_globs_bound_discovery(tmp_path: Path):
 
 def test_discovery_skips_derived_and_vendored_directories(tmp_path: Path):
     _write(tmp_path, ".forge/knowledge/notes.md", "x")
+    _write(tmp_path, ".pytest_cache/README.md", "x")
     _write(tmp_path, "node_modules/pkg/CONVENTIONS.md", "x")
+    _write(tmp_path, "build/generated/notes.md", "x")
     _write(tmp_path, "keep.md", "x")
 
     assert [p.as_posix() for p in discover_sources(tmp_path, ("**/*.md",))] == ["keep.md"]
+
+
+def test_the_default_glob_names_no_project_layout():
+    # The feature has to work on any target project, so the shipped default
+    # cannot presume a docs/ directory exists.
+    assert KnowledgeConfig().invariant_sources == ("**/*.md",)
+
+
+def test_default_glob_finds_markers_wherever_a_project_keeps_them(tmp_path: Path):
+    _write(
+        tmp_path,
+        "POLICY.md",
+        '<!-- forge-invariant id="root" -->\nR.\n<!-- /forge-invariant -->\n',
+    )
+    _write(
+        tmp_path,
+        "handbook/rules/two.md",
+        '<!-- forge-invariant id="nested" -->\nN.\n<!-- /forge-invariant -->\n',
+    )
+
+    result = build_invariant_index(tmp_path, KnowledgeConfig().invariant_sources)
+
+    assert [entry["id"] for entry in result.entries] == ["root", "nested"]
+
+
+# ── Documentation examples are not invariants ────────────────────────────────
+
+
+def test_markers_inside_fenced_code_blocks_are_ignored(tmp_path: Path):
+    _write(
+        tmp_path,
+        "guide.md",
+        "# How to mark an invariant\n\n"
+        "```md\n"
+        '<!-- forge-invariant id="illustration" scope="area:x" enforcement="review" -->\n'
+        "An example a project shows while documenting the convention.\n"
+        "<!-- /forge-invariant -->\n"
+        "```\n\n"
+        "## A real rule\n\n"
+        '<!-- forge-invariant id="genuine" -->\n'
+        "An actual rule this project asserts.\n"
+        "<!-- /forge-invariant -->\n",
+    )
+
+    result = build_invariant_index(tmp_path, ("**/*.md",))
+
+    assert [entry["id"] for entry in result.entries] == ["genuine"]
+    assert result.diagnostics == ()
+
+
+def test_documenting_the_convention_does_not_file_duplicate_ids(tmp_path: Path):
+    """The repo's own docs illustrate real ids; that must not collide with them."""
+    _write(
+        tmp_path,
+        "rules.md",
+        '<!-- forge-invariant id="shared" -->\nThe real rule.\n<!-- /forge-invariant -->\n',
+    )
+    _write(
+        tmp_path,
+        "guide.md",
+        "~~~md\n"
+        '<!-- forge-invariant id="shared" -->\nThe same id, shown as an example.\n'
+        "<!-- /forge-invariant -->\n"
+        "~~~\n",
+    )
+
+    result = build_invariant_index(tmp_path, ("**/*.md",))
+
+    assert [entry["source_path"] for entry in result.entries] == ["rules.md"]
+    assert result.diagnostics == ()
+
+
+def test_an_unterminated_fence_suppresses_the_rest_of_the_file(tmp_path: Path):
+    _write(
+        tmp_path,
+        "guide.md",
+        "```md\n"
+        '<!-- forge-invariant id="never-closed-fence" -->\nExample.\n<!-- /forge-invariant -->\n',
+    )
+
+    assert build_invariant_index(tmp_path, ("**/*.md",)).entries == []
 
 
 def test_ordering_is_deterministic_across_rebuilds(tmp_path: Path):

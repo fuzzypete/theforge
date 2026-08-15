@@ -60,11 +60,23 @@ _OPEN_MARKER = re.compile(r"<!--\s*forge-invariant\b(?P<attrs>.*?)-->", re.DOTAL
 _CLOSE_MARKER = re.compile(r"<!--\s*/\s*forge-invariant\s*-->")
 _ATTR_PATTERN = re.compile(r"(?P<key>[A-Za-z_][A-Za-z0-9_-]*)\s*=\s*\"(?P<value>[^\"]*)\"")
 _HEADING_PATTERN = re.compile(r"^(#{1,6})\s+(?P<title>.+?)\s*$")
+_FENCE_PATTERN = re.compile(r"^(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
 
-#: Directories never scanned for invariant sources regardless of the configured
-#: globs. ``.forge`` is excluded because the derived index lives there.
+#: Vendored and build directories never scanned for invariant sources, whatever
+#: the configured globs say. Kept to names that mean the same thing in any
+#: ecosystem — a project's *own* layout is never assumed here, because the
+#: default glob is the whole repository.
 _EXCLUDED_DIRS = frozenset(
-    {".git", ".forge", ".venv", "venv", "node_modules", "__pycache__", ".tox", ".mypy_cache"}
+    {
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "vendor",
+        "target",
+        "build",
+        "dist",
+        "site-packages",
+    }
 )
 
 
@@ -100,6 +112,11 @@ def discover_sources(project_root: Path, globs: tuple[str, ...] | list[str]) -> 
 
     Ordering is total and content-independent so two rebuilds of an unchanged
     tree produce byte-identical indexes.
+
+    Hidden directories are skipped along with the vendored/build names above.
+    That single rule keeps tooling state — caches, VCS metadata, ``.forge``'s own
+    derived index — out of the corpus without naming any project's layout, which
+    matters because the default glob is every Markdown file in the repository.
     """
     found: set[Path] = set()
     for pattern in globs:
@@ -116,7 +133,7 @@ def discover_sources(project_root: Path, globs: tuple[str, ...] | list[str]) -> 
                 rel = match.relative_to(project_root)
             except ValueError:  # pragma: no cover - glob results are always under root
                 continue
-            if any(part in _EXCLUDED_DIRS for part in rel.parts):
+            if any(part in _EXCLUDED_DIRS or part.startswith(".") for part in rel.parts[:-1]):
                 continue
             found.add(rel)
     return sorted(found)
@@ -135,13 +152,21 @@ def extract_from_text(
 
     Returns metadata entries and diagnostics. The invariant prose is hashed for
     staleness detection and then discarded — the source document keeps it.
+
+    Markers inside fenced code blocks are ignored. A project that documents this
+    convention writes example markers in its own docs, and an example is a marker
+    *about* the convention rather than an application of it; without this,
+    documenting the feature would file its own illustrations as live invariants.
     """
     entries: list[dict[str, Any]] = []
     diagnostics: list[InvariantIndexDiagnostic] = []
     lines = text.splitlines()
+    fenced = _fenced_lines(lines)
 
     for match in _OPEN_MARKER.finditer(text):
         open_line = _line_number(text, match.start())
+        if open_line in fenced:
+            continue
         attrs, attr_errors = _parse_attributes(match.group("attrs"))
         for error in attr_errors:
             diagnostics.append(InvariantIndexDiagnostic(source_path, open_line, error))
@@ -224,6 +249,30 @@ def extract_from_text(
         )
 
     return entries, diagnostics
+
+
+def _fenced_lines(lines: list[str]) -> frozenset[int]:
+    """1-based line numbers that sit inside a fenced code block.
+
+    Fence delimiters themselves count as inside, so a marker sharing a line with
+    one cannot slip through. An unterminated fence swallows the rest of the file,
+    which is the conservative reading: text a Markdown renderer would show as
+    code is not a rule the project is asserting.
+    """
+    inside: set[int] = set()
+    fence: str | None = None
+    for index, line in enumerate(lines, start=1):
+        stripped = line.strip()
+        match = _FENCE_PATTERN.match(stripped)
+        if fence is None:
+            if match:
+                fence = match.group("fence")[:3]
+                inside.add(index)
+            continue
+        inside.add(index)
+        if match and match.group("fence").startswith(fence) and not match.group("info").strip():
+            fence = None
+    return frozenset(inside)
 
 
 def _parse_attributes(raw: str) -> tuple[dict[str, str], list[str]]:

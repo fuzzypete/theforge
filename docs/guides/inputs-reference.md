@@ -1078,7 +1078,7 @@ marked in the project's own authoritative docs:
 ```yaml
 knowledge:
   invariant_context: false
-  invariant_sources: ["*.md", "docs/**/*.md", "**/CONVENTIONS.md"]
+  invariant_sources: ["**/*.md"]   # default: every Markdown file; narrow if you like
 ```
 
 ```md

@@ -39,6 +39,11 @@ LLM-generated summaries advise agents; they never drive coordinator control flow
 | `scope` | no | Whitespace-separated `key:value` tokens. Known keys: `area`, `phase`, `files` (comma-separated values). |
 | `enforcement` | no | `advisory` (default), `review`, or `gate`. Declares how the project enforces the rule; TheForge uses it only for ranking. |
 
+A marker inside a fenced code block is ignored. An example shown while
+*documenting* the convention is a marker about the convention, not an assertion
+of a rule — without that exemption this very document would file its own
+illustrations as live invariants, duplicate-id diagnostics and all.
+
 The convention is **portable**: nothing in it names TheForge's own doc culture.
 A target project points `knowledge.invariant_sources` at whatever Markdown it
 keeps its rules in.
@@ -47,12 +52,18 @@ Configuration is source locations only — never invariant prose:
 
 ```yaml
 knowledge:
-  invariant_context: false           # off by default
+  invariant_context: false      # off by default
   invariant_sources:
-    - "*.md"
-    - "docs/**/*.md"
-    - "**/CONVENTIONS.md"
+    - "**/*.md"                 # the default
 ```
+
+The default is deliberately **every Markdown file in the repository**. A default
+naming `docs/` would presume one project's layout, and the whole point is that
+this works on a target project whose rules live in `handbook/`, `rfcs/`, or the
+repository root. Discovery skips hidden directories and the usual vendored/build
+names (`node_modules`, `vendor`, `build`, `dist`, …), and only files containing
+the literal `forge-invariant` are parsed at all, so the broad default costs a
+substring scan. Projects with a settled documentation layout can narrow it.
 
 ## The derived index
 

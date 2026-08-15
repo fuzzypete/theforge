@@ -1262,12 +1262,19 @@ class KnowledgeConfig:
     the list of Markdown globs the deterministic extractor scans; it holds
     *source locations only*, never invariant prose, because the marked document
     stays the single source of truth.
+
+    The default glob is every Markdown file in the repository, deliberately: a
+    default naming particular directories would presume one project's layout,
+    and this feature has to work on any target project that marks its own rules.
+    The extractor skips derived and vendored trees and only parses files that
+    actually contain a marker, so the broad default costs a substring scan.
+    Projects with a settled documentation layout can narrow it here.
     """
 
     run_summaries: bool = False
     prior_run_context: bool = False
     invariant_context: bool = False
-    invariant_sources: tuple[str, ...] = ("*.md", "docs/**/*.md", "**/CONVENTIONS.md")
+    invariant_sources: tuple[str, ...] = ("**/*.md",)
 
 
 @dataclass(frozen=True)
