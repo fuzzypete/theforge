@@ -8,6 +8,7 @@ from pathlib import Path
 
 from theforge.cli.shared import _find_config
 from theforge.indexer import INDEX_PATH, generate_index
+from theforge.invariant_index import rebuild_invariant_index
 from theforge.knowledge_index import rebuild_knowledge_index
 
 
@@ -22,6 +23,19 @@ def cmd_index(args: argparse.Namespace) -> int:
         return 1
 
     project_root = config_path.parent
+    if getattr(args, "invariants", False):
+        from theforge.config.load import load_config  # noqa: PLC0415
+
+        config = load_config(config_path)
+        result = rebuild_invariant_index(project_root, config.knowledge.invariant_sources)
+        for diagnostic in result.diagnostics:
+            print(
+                f"{diagnostic.path}:{diagnostic.line}: {diagnostic.reason}",
+                file=sys.stderr,
+            )
+        print(str(result.path))
+        return 0
+
     if getattr(args, "knowledge", False):
         result = rebuild_knowledge_index(project_root)
         for diagnostic in result.diagnostics:
@@ -41,4 +55,12 @@ def register_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         "--knowledge",
         action="store_true",
         help="Rebuild .forge/knowledge/index.yaml from persisted summaries",
+    )
+    parser.add_argument(
+        "--invariants",
+        action="store_true",
+        help=(
+            "Rebuild .forge/knowledge/invariants/index.yaml from forge-invariant "
+            "markers in the configured Markdown sources"
+        ),
     )

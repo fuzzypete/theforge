@@ -79,13 +79,14 @@ Four categories, enforced by both `.gitignore` and runtime checks:
 |----------|----------|----------|---------------------|
 | **Secrets** | `.env`, `secrets.yaml` | Never | Leak credentials |
 | **Machine-local runtime** | `worktrees/`, `locks/`, `merge.lock`, `daemon.json`, `pending/`, `runs/` (the execution state dir, not the audit dir), root `handoff.yaml` | Never | Break runs: stale PIDs, nested git repos, cross-machine lock false-positives |
-| **Noise / derived views** | `logs/`, `index/`, `audits/history.jsonl`, `audits/index.sqlite`, `knowledge/index.yaml`, `assignment_history.yaml` (derived) | Never (derived or ephemeral) | Create churn or merge conflicts; regenerable |
+| **Noise / derived views** | `logs/`, `index/`, `audits/history.jsonl`, `audits/index.sqlite`, `knowledge/index.yaml`, `knowledge/invariants/index.yaml`, `assignment_history.yaml` (derived) | Never (derived or ephemeral) | Create churn or merge conflicts; regenerable |
 | **Project memory + config** | `hooks/`, `.env.example`, `audits/runs/{run_id}.json`, `knowledge/summaries/{run_id}.yaml` | **Default on** (opt out via `forge init --local-memory`) | Nothing — this is the working memory of the project |
 
 The third category is important: **derived views are never tracked, even
 though they contain tracked data.** `history.jsonl`, `index.sqlite`,
-`knowledge/index.yaml`, and `assignment_history.yaml` are rebuildable from
-per-run files. Tracking them would create merge-conflict bait without adding
+`knowledge/index.yaml`, `knowledge/invariants/index.yaml`, and
+`assignment_history.yaml` are rebuildable from per-run files or, for the
+invariant index (#1875), from the marked Markdown sources it derives from. Tracking them would create merge-conflict bait without adding
 information the per-run files don't already have.
 
 ### Naming collision note

@@ -6,7 +6,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import prior_run_manifest, prior_run_selector
+from . import invariant_manifest, invariant_selector, prior_run_manifest, prior_run_selector
+from .invariant_selector import INVARIANT_KIND
 from .prior_run_selector import PRIOR_RUN_KIND
 
 if TYPE_CHECKING:
@@ -47,6 +48,13 @@ class ContextItem:
     content: str
     reason: str
     score: int = 0
+    # Identity of the indexed thing this item renders — a run id for prior-run
+    # summaries, an invariant id for project invariants. Carried explicitly
+    # because the budget loop later has to report *which* entries survived, and
+    # re-deriving an id by splitting ``source`` makes that decision depend on
+    # whether a project's own file paths happen to contain the delimiter.
+    # ``None`` for items that render no indexed entity (docs, structural index).
+    item_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -74,6 +82,10 @@ class ContextPack:
     # Audit-visible record of the prior-run knowledge this assembly considered.
     # Defaulted so the many constructors that predate #1860 keep working.
     prior_run_context: dict = field(default_factory=prior_run_manifest.disabled_manifest)
+    # Audit-visible record of the project invariants this assembly considered,
+    # including the ones it could not confidently scope. Defaulted for the same
+    # reason as ``prior_run_context``: constructors predating #1875 keep working.
+    invariant_context: dict = field(default_factory=invariant_manifest.disabled_manifest)
 
 
 @dataclass(frozen=True)
@@ -90,12 +102,14 @@ class ContextAssembler:
         *,
         budgets: ContextBudgetConfig | None = None,
         prior_run_context: bool = False,
+        invariant_context: bool = False,
     ) -> None:
         self.project_root = project_root
         self.budgets = budgets or ContextBudgetConfig()
         # Off unless a config explicitly turns it on: a direct
         # ContextAssembler(project_root) never injects prior-run knowledge.
         self.prior_run_context = prior_run_context
+        self.invariant_context = invariant_context
 
     @classmethod
     def from_config(cls, config: "ForgeConfig") -> "ContextAssembler":
@@ -109,6 +123,7 @@ class ContextAssembler:
                 review_budget=ctx.review_budget,
             ),
             prior_run_context=config.knowledge.prior_run_context,
+            invariant_context=config.knowledge.invariant_context,
         )
 
     def assemble(
@@ -185,6 +200,25 @@ class ContextAssembler:
                         content=candidate.content,
                         reason=candidate.reason,
                         score=candidate.score,
+                        item_id=candidate.run_id,
+                    )
+                )
+
+        invariant_selection = self._select_invariants(
+            phase=normalized_phase, story_text=story_text, file_list=file_list
+        )
+        if invariant_selection is not None:
+            for invariant in invariant_selection.candidates:
+                advisory_items.append(
+                    ContextItem(
+                        source=invariant.source,
+                        kind=INVARIANT_KIND,
+                        required=False,
+                        lines=_count_lines(invariant.content),
+                        content=invariant.content,
+                        reason=invariant.reason,
+                        score=invariant.score,
+                        item_id=invariant.invariant_id,
                     )
                 )
 
@@ -242,15 +276,20 @@ class ContextAssembler:
             prior_run_context=(
                 prior_run_manifest.build_manifest(
                     prior_selection,
-                    included_run_ids={
-                        item.source.split(":", 1)[1]
-                        for item in included_items
-                        if item.kind == PRIOR_RUN_KIND
-                    },
+                    included_run_ids=_included_ids(included_items, PRIOR_RUN_KIND),
                     phase=normalized_phase,
                 )
                 if prior_selection is not None
                 else prior_run_manifest.disabled_manifest()
+            ),
+            invariant_context=(
+                invariant_manifest.build_manifest(
+                    invariant_selection,
+                    included_ids=_included_ids(included_items, INVARIANT_KIND),
+                    phase=normalized_phase,
+                )
+                if invariant_selection is not None
+                else invariant_manifest.disabled_manifest()
             ),
         )
 
@@ -265,6 +304,25 @@ class ContextAssembler:
         if not self.prior_run_context:
             return None
         return prior_run_selector.select_prior_runs(
+            self.project_root,
+            phase=phase,
+            story_text=story_text,
+            file_list=file_list,
+        )
+
+    def _select_invariants(
+        self, *, phase: str, story_text: str, file_list: list[str] | None
+    ) -> invariant_selector.InvariantSelection | None:
+        """Return the invariant selection, or ``None`` when injection is off.
+
+        Disabled means the derived index is never even read, so no marked prose
+        can reach a prompt through any later code path. Preflight is handled
+        inside the selector, which refuses it outright: preflight output drives
+        coordinator control flow (ADR-0002 clause 5).
+        """
+        if not self.invariant_context:
+            return None
+        return invariant_selector.select_invariants(
             self.project_root,
             phase=phase,
             story_text=story_text,
@@ -380,6 +438,18 @@ class ContextAssembler:
         return score
 
 
+def _included_ids(items: list[ContextItem], kind: str) -> set[str]:
+    """Ids of ``kind`` items that survived the budget, read off the item itself.
+
+    The manifest's "included vs dropped under budget pressure" split is only
+    trustworthy if it uses the same identity the selector used. Splitting the
+    display ``source`` string to recover it made that split depend on a
+    project's file naming, which is exactly the kind of coupling a portable
+    feature cannot carry.
+    """
+    return {item.item_id for item in items if item.kind == kind and item.item_id is not None}
+
+
 def _drop_reason(item: ContextItem) -> str:
     """Name why an item lost its budget slot.
 
@@ -387,7 +457,9 @@ def _drop_reason(item: ContextItem) -> str:
     can tell "we knew something relevant but required context won" apart from the
     ordinary advisory truncation that has always read ``budget exceeded``.
     """
-    return "budget_pressure" if item.kind == PRIOR_RUN_KIND else "budget exceeded"
+    return (
+        "budget_pressure" if item.kind in (PRIOR_RUN_KIND, INVARIANT_KIND) else "budget exceeded"
+    )
 
 
 def _extract_section(text: str, heading: str) -> str:

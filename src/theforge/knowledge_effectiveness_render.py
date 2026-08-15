@@ -27,6 +27,12 @@ from theforge.knowledge_effectiveness import (
     Metric,
     MetricComparison,
 )
+from theforge.knowledge_invariant_proof import (
+    INVARIANT_COHORT_WITH,
+    INVARIANT_COHORT_WITHOUT,
+    InvariantChurnComparison,
+    InvariantContextProof,
+)
 
 _METRIC_LABELS = {
     METRIC_PLAN_REGENERATION: "plan regeneration rate",
@@ -44,8 +50,23 @@ _RATE_METRICS = frozenset({METRIC_PLAN_REGENERATION, METRIC_REVIEW_RECURRENCE})
 # ── Structured payload ───────────────────────────────────────────────────────
 
 
-def report_payload(report: KnowledgeEffectivenessReport) -> dict:
-    """JSON/YAML-serializable view of the report."""
+def report_payload(
+    report: KnowledgeEffectivenessReport,
+    proof: "InvariantContextProof | None" = None,
+) -> dict:
+    """JSON/YAML-serializable view of the report.
+
+    ``proof`` is the #1875 invariant-context spike section. It is optional so
+    the spike's proof machinery can be removed without touching the shipped
+    knowledge-loop report.
+    """
+    payload = _report_payload(report)
+    if proof is not None:
+        payload["invariant_context_proof"] = invariant_proof_payload(proof)
+    return payload
+
+
+def _report_payload(report: KnowledgeEffectivenessReport) -> dict:
     return {
         "window": {
             "since": report.since,
@@ -117,7 +138,10 @@ def _comparison_payload(comparison: MetricComparison) -> dict:
 # ── Terminal renderer ────────────────────────────────────────────────────────
 
 
-def render_terminal(report: KnowledgeEffectivenessReport) -> str:
+def render_terminal(
+    report: KnowledgeEffectivenessReport,
+    proof: "InvariantContextProof | None" = None,
+) -> str:
     """Operator-facing view: window, cohorts, matched comparison, verdict."""
     lines: list[str] = []
     _render_header(report, lines)
@@ -125,6 +149,9 @@ def render_terminal(report: KnowledgeEffectivenessReport) -> str:
     _render_comparison(report, lines)
     _render_trend(report, lines)
     _render_verdict(report, lines)
+    if proof is not None:
+        lines.append("")
+        _render_invariant_proof(proof, lines)
     return "\n".join(lines) + "\n"
 
 
@@ -225,3 +252,70 @@ def _render_trend(report: KnowledgeEffectivenessReport, lines: list[str]) -> Non
 def _render_verdict(report: KnowledgeEffectivenessReport, lines: list[str]) -> None:
     marker = "?" if report.status == STATUS_INSUFFICIENT_DATA else "→"
     lines.append(f"{marker} {report.status}: {report.status_reason}")
+
+
+# ── Invariant-context proof section (#1875) ──────────────────────────────────
+
+
+def invariant_proof_payload(proof: InvariantContextProof) -> dict:
+    """JSON/YAML-serializable view of the invariant-context proof."""
+    counts = proof.selection_counts
+    return {
+        "status": proof.status,
+        "status_reason": proof.status_reason,
+        "cohorts": dict(proof.cohort_counts),
+        "selection": {
+            "runs_with_telemetry": counts.runs_with_telemetry,
+            "included": counts.included,
+            "uncertain": counts.uncertain,
+            "dropped": counts.dropped,
+            "uncertain_share": counts.uncertain_share,
+        },
+        "churn_comparison": [
+            {
+                "metric": item.name,
+                "lower_is_better": item.lower_is_better,
+                "comparable": item.comparable,
+                INVARIANT_COHORT_WITH: _metric_payload(item.with_invariants),
+                INVARIANT_COHORT_WITHOUT: _metric_payload(item.without_invariants),
+                "delta": item.delta,
+                "improved": item.improved,
+            }
+            for item in proof.comparisons
+        ],
+    }
+
+
+def _render_invariant_proof(proof: InvariantContextProof, lines: list[str]) -> None:
+    lines.append("Invariant-context proof (#1875 spike)")
+    lines.append("-" * 60)
+    counts = proof.cohort_counts
+    lines.append(
+        f"Runs:    {counts.get(INVARIANT_COHORT_WITH, 0)} with invariant context, "
+        f"{counts.get(INVARIANT_COHORT_WITHOUT, 0)} without, "
+        f"{counts.get(COHORT_UNCLASSIFIED, 0)} unclassified"
+    )
+    selection = proof.selection_counts
+    share = f"{selection.uncertain_share:.0%}" if selection.uncertain_share is not None else "—"
+    lines.append(
+        f"Scope:   {selection.included} invariants included "
+        f"({selection.uncertain} uncertain → broad source, {share} of inclusions), "
+        f"{selection.dropped} dropped"
+    )
+    lines.append("")
+    for item in proof.comparisons:
+        label = _METRIC_LABELS.get(item.name, item.name)
+        lines.append(f"  {label:<32} {_invariant_verdict(item)}")
+    lines.append("")
+    marker = "?" if proof.status == STATUS_INSUFFICIENT_DATA else "→"
+    lines.append(f"{marker} {proof.status}: {proof.status_reason}")
+
+
+def _invariant_verdict(comparison: InvariantChurnComparison) -> str:
+    if not comparison.comparable:
+        return "insufficient data"
+    if comparison.improved:
+        return f"improved ({comparison.delta:+})"
+    if comparison.delta == 0:
+        return "unchanged"
+    return f"not improved ({comparison.delta:+})"

@@ -1070,6 +1070,34 @@ dropped, and a `note` that distinguishes "no relevant prior knowledge exists"
 from "prior knowledge existed but was withheld as inadmissible or stale". Design
 doctrine lives in `docs/plans/knowledge-capture.md`.
 
+`knowledge.invariant_context` (default `false`) gates the #1875 invariant-index
+spike, and `knowledge.invariant_sources` lists the Markdown globs the extractor
+scans — source locations only, never invariant prose. Project invariants are
+marked in the project's own authoritative docs:
+
+```yaml
+knowledge:
+  invariant_context: false
+  invariant_sources: ["**/*.md"]   # default: every Markdown file; narrow if you like
+```
+
+```md
+<!-- forge-invariant id="summaries-advisory" scope="area:audit phase:plan,dev,review files:src/theforge/knowledge_*.py" enforcement="review" -->
+LLM-generated summaries advise agents; they never drive coordinator control flow.
+<!-- /forge-invariant -->
+```
+
+`forge index --invariants` rebuilds the derived index at
+`.forge/knowledge/invariants/index.yaml`, which stores provenance and
+applicability metadata only — the source document stays authoritative and is
+re-read when text is injected. When the gate is on, plan and dev may receive
+narrow capsules while **review always receives the broader enclosing source
+section**, and preflight receives nothing at all (ADR-0002 clause 5). When scope
+confidence is low, the broader source is included rather than the rule dropped.
+Every decision is recorded per phase under `context_manifests[].invariant_context`
+with `included`, `dropped`, and `uncertain` entries. Design doctrine and the
+adoption decision live in `docs/plans/1875-invariant-index-spike.md`.
+
 ### Adaptive assignment (`assignment:`)
 
 Config mechanics for the v0.13 adaptive routing surface. Behavior and doctrine

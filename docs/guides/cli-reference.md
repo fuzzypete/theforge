@@ -789,6 +789,18 @@ detection read to reason about the repository.
 forge index
 ```
 
+Two derived-index modes share the command:
+
+```bash
+forge index --knowledge    # .forge/knowledge/index.yaml from persisted run summaries
+forge index --invariants   # .forge/knowledge/invariants/index.yaml from forge-invariant markers
+```
+
+`--invariants` scans the Markdown globs in `knowledge.invariant_sources`, prints
+`path:line: reason` diagnostics for malformed annotations on stderr, and writes
+provenance metadata only — never invariant prose. See
+`docs/plans/1875-invariant-index-spike.md`.
+
 ---
 
 ## `forge check-story-config`
