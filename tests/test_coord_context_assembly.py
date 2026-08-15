@@ -302,8 +302,44 @@ def _write_prior_run_corpus(root, run_id="4f2a91c"):
                 "what_changed": {
                     "description": "prior run reworked the thing",
                     "approach": "extracted a helper",
+                    "files_modified": ["src/app.py"],
                 },
-                "what_was_learned": [{"claim": "the thing needs a guard", "evidence": []}],
+                "what_was_learned": [
+                    {
+                        "claim": "the thing needs a guard",
+                        "evidence": [{"type": "file", "path": "src/app.py"}],
+                    }
+                ],
+                "review_insights": {
+                    "recurring_findings": [
+                        {
+                            "finding_id": "f-007",
+                            "description": "sentinel recurring prose",
+                            "cycles_seen": 2,
+                        }
+                    ],
+                    "resolved_findings": [
+                        {
+                            "finding_id": "f-003",
+                            "description": "sentinel resolved prose",
+                            "resolution": "sentinel resolution prose",
+                        }
+                    ],
+                    "observations": ["sentinel observation prose"],
+                },
+                "complexity_signal": {
+                    "actual_iterations": 2,
+                    "review_cycles": 2,
+                    "plan_regenerations": 1,
+                    "cost_usd": 4.25,
+                    "dominant_difficulty": "sentinel difficulty prose",
+                },
+                "story_shape": {
+                    "work_type": "feature",
+                    "complexity": "medium",
+                    "complexity_score": 6,
+                    "contract_change": False,
+                },
             },
             sort_keys=False,
         ),
@@ -322,8 +358,8 @@ def test_prior_run_context_flows_through_phase_seams_into_audit_state(
     """The config gate must survive the whole phase flow, not just the assembler.
 
     Each phase records the ContextPack it actually used, so an operator reading
-    the audit sees the prior-run decision per phase — including that preflight
-    was never offered prior knowledge (ADR-0002 clause 5).
+    the audit sees the prior-run decision per phase — including preflight's
+    signal-only advisory rendering.
     """
     config = replace(
         _make_plan_config(tmp_path),
@@ -368,11 +404,22 @@ def test_prior_run_context_flows_through_phase_seams_into_audit_state(
         captured.setdefault(entry["phase"], entry["manifest"])
 
     assert captured["preflight"].prior_run_context["enabled"] is True
-    assert captured["preflight"].prior_run_context["included"] == []
-    assert "not injected in the preflight phase" in captured["preflight"].prior_run_context["note"]
+    assert captured["preflight"].prior_run_context["phase"] == "preflight"
+    assert captured["preflight"].prior_run_context["rendering_mode"] == "signal_only"
+    assert [item["run_id"] for item in captured["preflight"].prior_run_context["included"]] == [
+        "4f2a91c"
+    ]
+    assert "Preflight note: Advisory prior-run signals only." in captured["preflight"].content
+    assert (
+        "Run signals: actual_iterations=2, review_cycles=2, plan_regenerations=1, cost_usd=4.25"
+    ) in captured["preflight"].content
+    assert "prior run reworked the thing" not in captured["preflight"].content
+    assert "sentinel difficulty prose" not in captured["preflight"].content
+    assert "sentinel recurring prose" not in captured["preflight"].content
 
     dev_prior = captured["dev"].prior_run_context
     assert dev_prior["enabled"] is True
     assert [item["run_id"] for item in dev_prior["included"]] == ["4f2a91c"]
     assert "file_overlap(src/app.py)" in dev_prior["included"][0]["reason"]
-    assert "prior run reworked the thing" in captured["dev"].content
+    assert "Evidence-backed implementation patterns:" in captured["dev"].content
+    assert "the thing needs a guard" in captured["dev"].content

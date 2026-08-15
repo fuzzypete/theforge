@@ -94,10 +94,10 @@ def _cost(value: object) -> float | None:
 def classify_cohort(record: dict) -> str:
     """Which cohort a run belongs to, decided only by its context manifests.
 
-    Manifests for phases prior-run context is never injected into (preflight)
-    are skipped: they record ``enabled: True`` with nothing included on every
-    run of an enabled project, and counting them would put every such run in the
-    control group.
+    Only prose-eligible plan/dev/review manifests classify cohorts. Preflight's
+    signal-only manifest is advisory visibility, not treatment/control evidence,
+    so preflight-only records stay ``unclassified`` rather than inflating the
+    control cohort.
     """
     manifests = record.get("context_manifests")
     if not isinstance(manifests, list):

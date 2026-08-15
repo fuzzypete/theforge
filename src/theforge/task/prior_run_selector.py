@@ -46,9 +46,12 @@ from theforge.knowledge_index import KNOWLEDGE_INDEX_PATH, KNOWLEDGE_INDEX_SCHEM
 PRIOR_RUN_KIND = "prior_run_summary"
 
 #: ADR-0002 clause 5: summary prose may advise the planning, development, and
-#: review agents. It must never reach preflight, whose output (sufficiency,
-#: complexity, likely files, refusal) drives coordinator control flow.
+#: review agents. Preflight may receive only audit-derived signal renderings,
+#: never summary prose, because its output (sufficiency, complexity, likely
+#: files, refusal) drives coordinator control flow.
 ELIGIBLE_PHASES = frozenset({"plan", "dev", "review"})
+SIGNAL_ONLY_PHASES = frozenset({"preflight"})
+SUPPORTED_PHASES = ELIGIBLE_PHASES | SIGNAL_ONLY_PHASES
 
 #: Most prior summaries a single assembly will ever offer, before budget.
 _MAX_CANDIDATES = 3
@@ -115,6 +118,8 @@ class PriorRunCandidate:
     reason: str
     verdict: KnowledgeSummaryVerdict
     content: str
+    phase: str
+    rendering_mode: str
 
     @property
     def source(self) -> str:
@@ -139,6 +144,8 @@ class PriorRunSelection:
     excluded: tuple[PriorRunExclusion, ...] = ()
     entry_count: int = 0
     phase_eligible: bool = True
+    phase: str = ""
+    rendering_mode: str = ""
 
 
 def select_prior_runs(
@@ -155,8 +162,9 @@ def select_prior_runs(
     the index is absent/malformed, or nothing scores above zero.
     """
     normalized_phase = (phase or "").lower()
-    if normalized_phase not in ELIGIBLE_PHASES:
-        return PriorRunSelection(phase_eligible=False)
+    rendering_mode = _rendering_mode_for_phase(normalized_phase)
+    if not rendering_mode:
+        return PriorRunSelection(phase_eligible=False, phase=normalized_phase)
 
     entries = _load_index_entries(Path(project_root))
     if not entries:
@@ -228,7 +236,16 @@ def select_prior_runs(
             score -= _PENALTY_REDUCED_RANK
             reasons.append("reduced_rank")
 
-        content = _render_summary(Path(project_root), entry, run_id=run_id, verdict=verdict)
+        content = _render_summary(
+            Path(project_root),
+            entry,
+            run_id=run_id,
+            verdict=verdict,
+            phase=normalized_phase,
+            rendering_mode=rendering_mode,
+            touched_files=touched_files,
+            touched_dirs=touched_dirs,
+        )
         if not content:
             excluded.append(
                 PriorRunExclusion(run_id=run_id, reason="summary_unreadable", verdict=verdict)
@@ -243,6 +260,8 @@ def select_prior_runs(
                 reason=", ".join(reasons),
                 verdict=verdict,
                 content=content,
+                phase=normalized_phase,
+                rendering_mode=rendering_mode,
             )
         )
 
@@ -265,6 +284,8 @@ def select_prior_runs(
         excluded=tuple(excluded),
         entry_count=len(entries),
         phase_eligible=True,
+        phase=normalized_phase,
+        rendering_mode=rendering_mode,
     )
 
 
@@ -383,6 +404,10 @@ def _render_summary(
     *,
     run_id: str,
     verdict: KnowledgeSummaryVerdict,
+    phase: str,
+    rendering_mode: str,
+    touched_files: set[str],
+    touched_dirs: set[str],
 ) -> str:
     """Render bounded advisory prose from the referenced summary artifact."""
     rel_path = _text(entry.get("summary_path"))
@@ -404,36 +429,269 @@ def _render_summary(
         ),
         "",
     ]
-
-    what_changed = summary.get("what_changed")
-    if isinstance(what_changed, Mapping):
-        description = _text(what_changed.get("description"), limit=_MAX_FIELD_CHARS)
-        approach = _text(what_changed.get("approach"), limit=_MAX_FIELD_CHARS)
-        if description:
-            lines.append(f"- What changed: {description}")
-        if approach:
-            lines.append(f"- Approach: {approach}")
-
-    learned = summary.get("what_was_learned")
-    if isinstance(learned, list):
-        claims = [
-            _text(item.get("claim"), limit=_MAX_FIELD_CHARS)
-            for item in learned
-            if isinstance(item, Mapping)
-        ]
-        claims = [claim for claim in claims if claim][:_MAX_RENDERED_CLAIMS]
-        if claims:
-            lines.append("- Learned:")
-            lines.extend(f"  - {claim}" for claim in claims)
-
-    patterns = _string_list(entry.get("learned_patterns"))[:_MAX_RENDERED_PATTERNS]
-    if patterns:
-        lines.append(f"- Patterns: {', '.join(patterns)}")
+    phase_lines = _phase_lines(
+        phase,
+        summary=summary,
+        entry=entry,
+        rendering_mode=rendering_mode,
+        touched_files=touched_files,
+        touched_dirs=touched_dirs,
+    )
+    lines.extend(phase_lines)
 
     if verdict.reasons:
         lines.append(f"- Verdict caveats: {', '.join(verdict.reasons)}")
 
     return "\n".join(lines).strip()
+
+
+def _phase_lines(
+    phase: str,
+    *,
+    summary: Mapping[str, Any],
+    entry: Mapping[str, Any],
+    rendering_mode: str,
+    touched_files: set[str],
+    touched_dirs: set[str],
+) -> list[str]:
+    if rendering_mode == "signal_only":
+        return _render_preflight_signals(summary)
+    if phase == "plan":
+        return _render_plan_summary(summary)
+    if phase == "dev":
+        return _render_dev_summary(
+            summary,
+            entry=entry,
+            touched_files=touched_files,
+            touched_dirs=touched_dirs,
+        )
+    if phase == "review":
+        return _render_review_summary(summary)
+    return []
+
+
+def _render_preflight_signals(summary: Mapping[str, Any]) -> list[str]:
+    lines = [
+        (
+            "- Preflight note: Advisory prior-run signals only. "
+            "Use these as risk context, not as control-flow input."
+        ),
+    ]
+    story_shape = summary.get("story_shape")
+    if isinstance(story_shape, Mapping):
+        shape_parts = [
+            f"{key}={value}"
+            for key in ("work_type", "complexity", "complexity_score", "contract_change")
+            if (value := story_shape.get(key)) is not None and _text(value)
+        ]
+        if shape_parts:
+            lines.append(f"- Story shape: {', '.join(shape_parts)}")
+
+    complexity = summary.get("complexity_signal")
+    if isinstance(complexity, Mapping):
+        metrics = []
+        for key in ("actual_iterations", "review_cycles", "plan_regenerations", "cost_usd"):
+            value = complexity.get(key)
+            if value is None:
+                continue
+            metrics.append(f"{key}={value}")
+        if metrics:
+            lines.append(f"- Run signals: {', '.join(metrics)}")
+
+    insights = summary.get("review_insights")
+    if isinstance(insights, Mapping):
+        recurring_count, recurring = _finding_metadata(insights.get("recurring_findings"))
+        resolved_count, resolved = _finding_metadata(insights.get("resolved_findings"))
+        if recurring_count:
+            detail = f"; {', '.join(recurring)}" if recurring else ""
+            lines.append(f"- Recurring findings: count={recurring_count}{detail}")
+        if resolved_count:
+            detail = f"; {', '.join(resolved)}" if resolved else ""
+            lines.append(f"- Resolved findings: count={resolved_count}{detail}")
+    return lines
+
+
+def _render_plan_summary(summary: Mapping[str, Any]) -> list[str]:
+    lines: list[str] = []
+    what_changed = summary.get("what_changed")
+    if isinstance(what_changed, Mapping):
+        approach = _text(what_changed.get("approach"), limit=_MAX_FIELD_CHARS)
+        if approach:
+            lines.append(f"- Prior approach: {approach}")
+    claims = _evidenced_claims(summary)
+    if claims:
+        lines.append("- Lessons with resolved evidence:")
+        lines.extend(f"  - {claim}" for claim in claims[:_MAX_RENDERED_CLAIMS])
+    return lines
+
+
+def _render_dev_summary(
+    summary: Mapping[str, Any],
+    *,
+    entry: Mapping[str, Any],
+    touched_files: set[str],
+    touched_dirs: set[str],
+) -> list[str]:
+    lines: list[str] = []
+    changed_files = _string_list(summary.get("changed_files")) or _string_list(
+        entry.get("changed_files")
+    )
+    if changed_files:
+        lines.append(
+            f"- Related changed files: {', '.join(changed_files[:_MAX_RENDERED_PATTERNS])}"
+        )
+
+    claims = _dev_grounded_claims(summary, touched_files=touched_files, touched_dirs=touched_dirs)
+    if claims:
+        lines.append("- Evidence-backed implementation patterns:")
+        lines.extend(f"  - {claim}" for claim in claims[:_MAX_RENDERED_CLAIMS])
+    return lines
+
+
+def _render_review_summary(summary: Mapping[str, Any]) -> list[str]:
+    lines: list[str] = []
+    insights = summary.get("review_insights")
+    if isinstance(insights, Mapping):
+        recurring = _finding_descriptions(insights.get("recurring_findings"))
+        resolved = _finding_descriptions(insights.get("resolved_findings"))
+        observations = [
+            _text(item, limit=_MAX_FIELD_CHARS)
+            for item in _string_list(insights.get("observations"))
+        ]
+        if recurring:
+            lines.append("- Recurring findings to re-check:")
+            lines.extend(f"  - {item}" for item in recurring[:_MAX_RENDERED_CLAIMS])
+        if resolved:
+            lines.append("- Resolved findings worth verifying stayed fixed:")
+            lines.extend(f"  - {item}" for item in resolved[:_MAX_RENDERED_CLAIMS])
+        if observations:
+            lines.append("- Verification concerns:")
+            lines.extend(f"  - {item}" for item in observations[:_MAX_RENDERED_CLAIMS])
+
+    complexity = summary.get("complexity_signal")
+    if isinstance(complexity, Mapping):
+        metrics = []
+        for key in ("review_cycles", "actual_iterations", "plan_regenerations"):
+            value = complexity.get(key)
+            if value is not None:
+                metrics.append(f"{key}={value}")
+        if metrics:
+            lines.append(f"- Review-cycle signals: {', '.join(metrics)}")
+    return lines
+
+
+def _evidenced_claims(summary: Mapping[str, Any]) -> list[str]:
+    learned = summary.get("what_was_learned")
+    if not isinstance(learned, list):
+        return []
+    claims: list[str] = []
+    for item in learned:
+        if not isinstance(item, Mapping):
+            continue
+        evidence = item.get("evidence")
+        if not isinstance(evidence, list) or not evidence:
+            continue
+        claim = _text(item.get("claim"), limit=_MAX_FIELD_CHARS)
+        if claim:
+            claims.append(claim)
+    return claims
+
+
+def _dev_grounded_claims(
+    summary: Mapping[str, Any],
+    *,
+    touched_files: set[str],
+    touched_dirs: set[str],
+) -> list[str]:
+    learned = summary.get("what_was_learned")
+    if not isinstance(learned, list):
+        return []
+    claims: list[str] = []
+    for item in learned:
+        if not isinstance(item, Mapping):
+            continue
+        if not _claim_has_dev_relevant_evidence(
+            item.get("evidence"),
+            touched_files=touched_files,
+            touched_dirs=touched_dirs,
+        ):
+            continue
+        claim = _text(item.get("claim"), limit=_MAX_FIELD_CHARS)
+        if claim:
+            claims.append(claim)
+    return claims
+
+
+def _claim_has_dev_relevant_evidence(
+    evidence: Any,
+    *,
+    touched_files: set[str],
+    touched_dirs: set[str],
+) -> bool:
+    if not isinstance(evidence, list) or not evidence:
+        return False
+    for item in evidence:
+        if not isinstance(item, Mapping):
+            continue
+        evidence_type = _text(item.get("type"))
+        if evidence_type in {"review_finding", "plan_step", "diff"}:
+            return True
+        if evidence_type != "file":
+            continue
+        path = _text(item.get("path"))
+        if not path:
+            continue
+        if path in touched_files or str(Path(path).parent) in touched_dirs:
+            return True
+    return False
+
+
+def _finding_metadata(value: Any) -> tuple[int, list[str]]:
+    if not isinstance(value, list):
+        return (0, [])
+    total = sum(1 for item in value if isinstance(item, Mapping))
+    metadata: list[str] = []
+    for item in value[:_MAX_RENDERED_CLAIMS]:
+        if not isinstance(item, Mapping):
+            continue
+        parts = []
+        finding_id = _text(item.get("finding_id"))
+        if finding_id:
+            parts.append(f"id={finding_id}")
+        cycles_seen = item.get("cycles_seen")
+        if cycles_seen is not None:
+            parts.append(f"cycles_seen={cycles_seen}")
+        if parts:
+            metadata.append(", ".join(parts))
+    return total, metadata
+
+
+def _finding_descriptions(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    findings: list[str] = []
+    for item in value[:_MAX_RENDERED_CLAIMS]:
+        if not isinstance(item, Mapping):
+            continue
+        finding_id = _text(item.get("finding_id"))
+        description = _text(item.get("description"), limit=_MAX_FIELD_CHARS)
+        cycles_seen = item.get("cycles_seen")
+        resolution = _text(item.get("resolution"), limit=_MAX_FIELD_CHARS)
+        detail = description or resolution
+        if not detail:
+            continue
+        prefix = f"{finding_id}: " if finding_id else ""
+        suffix = f" (cycles_seen={cycles_seen})" if cycles_seen is not None else ""
+        findings.append(f"{prefix}{detail}{suffix}")
+    return findings
+
+
+def _rendering_mode_for_phase(phase: str) -> str:
+    if phase in SIGNAL_ONLY_PHASES:
+        return "signal_only"
+    if phase in ELIGIBLE_PHASES:
+        return "phase_summary"
+    return ""
 
 
 # ── Reason strings ────────────────────────────────────────────────────────────

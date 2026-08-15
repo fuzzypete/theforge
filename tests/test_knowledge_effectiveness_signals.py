@@ -41,8 +41,13 @@ class TestCohortClassification:
         entry["context_manifests"] = "not-a-list"
         assert classify_cohort(entry) == COHORT_UNCLASSIFIED
 
-    def test_ineligible_phase_manifest_does_not_create_a_control(self) -> None:
-        """Preflight never receives prior-run context, so its manifest proves nothing."""
+    def test_preflight_only_inclusion_stays_unclassified(self) -> None:
+        """Signal-only preflight visibility is not treatment or control evidence."""
+        entry = record("r")
+        entry["context_manifests"] = manifests("with", phase="preflight")
+        assert classify_cohort(entry) == COHORT_UNCLASSIFIED
+
+    def test_preflight_only_empty_manifest_stays_unclassified(self) -> None:
         entry = record("r")
         entry["context_manifests"] = manifests("without", phase="preflight")
         assert classify_cohort(entry) == COHORT_UNCLASSIFIED
