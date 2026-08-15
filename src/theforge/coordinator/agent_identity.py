@@ -68,7 +68,7 @@ def _canonicalize(raw: str, entry: object = None) -> tuple[str, str]:
     names the registry offers over both CLI and API.
     """
     try:
-        from theforge.model_profiles import canonical_id_for_legacy_key  # noqa: PLC0415
+        from theforge.model_profiles_storage import canonical_id_for_legacy_key  # noqa: PLC0415
 
         resolved = canonical_id_for_legacy_key(raw, entry if isinstance(entry, dict) else None)
     except Exception:  # noqa: BLE001 - identity projection must never break indexing

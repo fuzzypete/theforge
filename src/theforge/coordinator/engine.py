@@ -411,7 +411,7 @@ def _coordinator_loop(
     # historical usage.  RetryPolicy.adaptive_iterations=False returns the
     # policy floor values verbatim; floor and cap always bound the outcome.
     from theforge import worker_budget as _worker_budget  # noqa: PLC0415
-    from theforge.model_profiles import load_profiles  # noqa: PLC0415
+    from theforge.model_profiles_storage import load_profiles  # noqa: PLC0415
 
     from .adaptive_iterations import derive_limits  # noqa: PLC0415
     from .util import cap_timeout_to_story_ceiling, resolve_timeout_with_active  # noqa: PLC0415

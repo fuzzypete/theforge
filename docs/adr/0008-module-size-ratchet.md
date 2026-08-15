@@ -180,6 +180,43 @@ but that is a side effect of the split, not the thing being bought. This is
 `CONVENTIONS.md`'s rule restated: extract when a responsibility separates from
 its neighbours, never to satisfy a count.
 
+### `model_profiles.py` — the same shape, and the second one done
+
+`model_profiles.py` is the other module the table named whose problem is
+ownership rather than a god-function: 3,494 lines across 78 top-level functions
+with the largest at 189, so the seams already existed at function level. Two
+change-reasons shared the file — accumulation (applying a completed run's
+outcome, merging it into a profile, updating stored history) and signal
+derivation (the read model routing consults: per-role reliability, domain fit,
+review history, observed-cost tie-breaks). Adding a routing signal has nothing
+to do with how a run's outcome is folded into stored history, and the signal
+side is what every future routing input reads, so the cost was set to rise.
+
+Resolved by #2467 into two owners over one shared vocabulary:
+
+| module | owns |
+|---|---|
+| `model_profiles_storage.py` | run-outcome carriers, YAML I/O, `apply_run` and its `_fold_*`/`_update_*` helpers, backfill, reset, canonical-ID migration and its `_merge_*` catalogue |
+| `model_profiles_read_model.py` | `get_*_signal`, the per-domain fit signals, the observed-cost tie-break, the complexity/score stat readers |
+| `model_profiles_identity.py` | what both genuinely share: role/band names, recency defaults, stored section keys, identity resolution, two stat primitives |
+
+The dependency here runs one way in *both* directions being absent: unlike
+`audit_substrate`, where the read model needs a connection storage opened, a
+profile signal needs only the stored dict, so neither owner imports the other.
+That is what makes the AC demonstrable — a signal is exercisable against a
+profiles dict a test builds directly, with no `RunOutcome` constructed to
+produce it. `model_profiles.py` remains as a re-export facade for the ~35
+consumer modules and tests.
+
+The same two readings apply as for `audit_substrate`. The per-signal
+derivations were **moved, not merged**: each `get_*_signal` survives as its own
+function, as does each `_merge_*` in the migration catalogue, because a module
+that accumulates many small derivations is legitimately long. And the success
+measure is again independent change ownership — a new routing signal is a
+one-file change to the read model, and a new accumulator a one-file change to
+storage, which `tests/test_model_profiles_boundary.py` pins directly rather
+than inferring from the line-count table.
+
 ## Consequences
 
 The ratchet is a holding action and should be read as one. It stops the debt

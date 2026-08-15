@@ -357,7 +357,7 @@ def derive_limits(
 
     profile_stats = None
     if model_profiles:
-        from theforge.model_profiles import get_dev_complexity_stats  # noqa: PLC0415
+        from theforge.model_profiles_read_model import get_dev_complexity_stats  # noqa: PLC0415
 
         profile_stats = get_dev_complexity_stats(
             model_profiles,
@@ -383,7 +383,7 @@ def derive_limits(
     # and wall-clock.
     score_cost_stats = None
     if model_profiles:
-        from theforge.model_profiles import get_dev_score_cost_stats  # noqa: PLC0415
+        from theforge.model_profiles_read_model import get_dev_score_cost_stats  # noqa: PLC0415
 
         score_cost_stats = get_dev_score_cost_stats(
             model_profiles, score, min_runs=_MIN_PROFILE_RUNS
