@@ -46,8 +46,9 @@ from theforge.knowledge_index import KNOWLEDGE_INDEX_PATH, KNOWLEDGE_INDEX_SCHEM
 PRIOR_RUN_KIND = "prior_run_summary"
 
 #: ADR-0002 clause 5: summary prose may advise the planning, development, and
-#: review agents. It must never reach preflight, whose output (sufficiency,
-#: complexity, likely files, refusal) drives coordinator control flow.
+#: review agents. Preflight may receive only audit-derived signal renderings,
+#: never summary prose, because its output (sufficiency, complexity, likely
+#: files, refusal) drives coordinator control flow.
 ELIGIBLE_PHASES = frozenset({"plan", "dev", "review"})
 SIGNAL_ONLY_PHASES = frozenset({"preflight"})
 SUPPORTED_PHASES = ELIGIBLE_PHASES | SIGNAL_ONLY_PHASES
@@ -499,12 +500,14 @@ def _render_preflight_signals(summary: Mapping[str, Any]) -> list[str]:
 
     insights = summary.get("review_insights")
     if isinstance(insights, Mapping):
-        recurring = _finding_metadata(insights.get("recurring_findings"))
-        resolved = _finding_metadata(insights.get("resolved_findings"))
-        if recurring:
-            lines.append(f"- Recurring findings: count={len(recurring)}; {', '.join(recurring)}")
-        if resolved:
-            lines.append(f"- Resolved findings: count={len(resolved)}; {', '.join(resolved)}")
+        recurring_count, recurring = _finding_metadata(insights.get("recurring_findings"))
+        resolved_count, resolved = _finding_metadata(insights.get("resolved_findings"))
+        if recurring_count:
+            detail = f"; {', '.join(recurring)}" if recurring else ""
+            lines.append(f"- Recurring findings: count={recurring_count}{detail}")
+        if resolved_count:
+            detail = f"; {', '.join(resolved)}" if resolved else ""
+            lines.append(f"- Resolved findings: count={resolved_count}{detail}")
     return lines
 
 
@@ -643,9 +646,10 @@ def _claim_has_dev_relevant_evidence(
     return False
 
 
-def _finding_metadata(value: Any) -> list[str]:
+def _finding_metadata(value: Any) -> tuple[int, list[str]]:
     if not isinstance(value, list):
-        return []
+        return (0, [])
+    total = sum(1 for item in value if isinstance(item, Mapping))
     metadata: list[str] = []
     for item in value[:_MAX_RENDERED_CLAIMS]:
         if not isinstance(item, Mapping):
@@ -659,7 +663,7 @@ def _finding_metadata(value: Any) -> list[str]:
             parts.append(f"cycles_seen={cycles_seen}")
         if parts:
             metadata.append(", ".join(parts))
-    return metadata
+    return total, metadata
 
 
 def _finding_descriptions(value: Any) -> list[str]:

@@ -104,7 +104,7 @@ The router's trust surface is exactly the substrate. Anything else is advisory.
 
 Summaries are advisory. Specifically:
 
-- **May influence:** prompt construction for plan, dev, and review phases. Context manifests that select which summaries are relevant for the current story. Operator-facing search and discovery.
+- **May influence:** prompt construction for plan, dev, and review phases; audit-derived signal renderings for preflight; context manifests that select which summaries are relevant for the current story; operator-facing search and discovery.
 - **MUST NOT influence:** routing decisions, budget enforcement, refusal verdicts, gate pass/fail outcomes, or any mechanical action the coordinator takes. Those decisions belong to the per-run records and the deterministic gates.
 
 This is the *"LLMs propose, the coordinator decides"* invariant applied to history. Mechanical control flow stays on telemetry; LLM-generated text stays on context.

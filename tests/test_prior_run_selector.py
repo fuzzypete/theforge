@@ -223,6 +223,37 @@ def test_preflight_phase_gets_signal_only_advisory_context(tmp_path: Path) -> No
         assert sentinel not in content
 
 
+def test_preflight_finding_counts_use_full_totals_not_render_cap(tmp_path: Path) -> None:
+    _write_index(tmp_path, [_entry("4f2a91c")])
+    _write_summary(
+        tmp_path,
+        "4f2a91c",
+        review_insights={
+            "recurring_findings": [
+                {
+                    "finding_id": f"f-{index:03d}",
+                    "description": f"detail {index}",
+                    "cycles_seen": 2,
+                }
+                for index in range(1, 8)
+            ],
+            "resolved_findings": [
+                {"finding_id": f"r-{index:03d}", "description": f"resolved {index}"}
+                for index in range(1, 7)
+            ],
+            "observations": ["SENTINEL review observation prose"],
+        },
+    )
+
+    selection = select_prior_runs(tmp_path, phase="preflight", story_text=_STORY, file_list=_FILES)
+
+    content = selection.candidates[0].content
+    assert "Recurring findings: count=7;" in content
+    assert "Resolved findings: count=6;" in content
+    assert "id=f-006" not in content
+    assert "id=r-006" not in content
+
+
 def test_phase_specific_rendering_changes_by_phase(tmp_path: Path) -> None:
     _corpus(tmp_path, [_entry("4f2a91c")])
 

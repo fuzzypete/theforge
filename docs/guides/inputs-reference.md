@@ -1055,12 +1055,14 @@ spent after the run's own cost accounting has closed.
 
 `knowledge.prior_run_context` enables Layer 3 consumption: context assembly may
 then offer indexed prior summaries to the **plan, dev, and review** phases as
-advisory, droppable context items. It never offers them to preflight, whose
-output drives coordinator control flow (ADR-0002 clause 5), and it only offers a
-summary the knowledge index carries an *admissible* verdict for — a summary with
-an inadmissible verdict, or with no verdict at all, is never injected. Relevance
-is scored from deterministic index fields only (file overlap, domain, story
-shape, indexed patterns, recency), so summary prose can never select itself in.
+advisory, droppable context items, and to **preflight** only as audit-derived
+signal renderings with no summary prose. Preflight's output still drives
+coordinator control flow (ADR-0002 clause 5), so only bounded mechanical signals
+may appear there. A summary is offered only when the knowledge index carries an
+*admissible* verdict for it — a summary with an inadmissible verdict, or with no
+verdict at all, is never injected. Relevance is scored from deterministic index
+fields only (file overlap, domain, story shape, indexed patterns, recency), so
+summary prose can never select itself in.
 
 Every decision is recorded per phase in the audit record under
 `context_manifests[].prior_run_context` — what was included and why, what was
