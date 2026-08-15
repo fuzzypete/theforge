@@ -107,6 +107,49 @@ class TestAccumulationDoesNotImportTheReadModel:
         assert not [n for n in imported if "model_profiles_read_model" in n]
 
 
+class TestNoCycleWithReviewerValue:
+    """``reviewer_value`` folds into profiles too, and must not close a loop.
+
+    ``model_profiles_storage`` calls ``reviewer_value``'s folds from
+    ``apply_run``. If ``reviewer_value`` reached back into storage for the
+    shared ``_fold_resolved_model`` — as it did while that function lived there
+    — the two modules would import each other, which the ``no_circular_imports``
+    convention refuses. The breakdown's writer lives with its keys in
+    ``model_profiles_identity``, below both.
+    """
+
+    def test_reviewer_value_does_not_import_the_accumulation_module(self) -> None:
+        from theforge import reviewer_value
+
+        assert not [
+            name for name in _imported_modules(reviewer_value) if "model_profiles_storage" in name
+        ]
+
+    def test_the_breakdown_writer_is_owned_by_the_shared_module(self) -> None:
+        """One binding, reached identically by every accumulator that writes it."""
+        assert "_fold_resolved_model" in vars(identity)
+        assert storage._fold_resolved_model is identity._fold_resolved_model
+        assert facade._fold_resolved_model is identity._fold_resolved_model
+
+    def test_the_shared_module_reaches_back_into_no_accumulator(self) -> None:
+        """Identity may consult the model registry; it may reach no fold.
+
+        The registry (``config.models``) is below it — that is where the
+        identity resolution chain has always resolved a profile key. What it
+        must never import is anything that folds outcomes, because every
+        accumulator imports identity.
+        """
+        imported = _imported_modules(identity)
+        assert not [
+            n
+            for n in imported
+            if "model_profiles_storage" in n
+            or "model_profiles_read_model" in n
+            or "reviewer_value" in n
+        ]
+        assert imported & {"theforge.config.models"}, "the registry hop is expected here"
+
+
 class TestOneBindingPerName:
     """The facade re-exports one binding per name, not two divergent ones."""
 

@@ -334,8 +334,10 @@ def fold_reviewer_value(
     uniq = sample.uniqueness_rate()
     if uniq is None:
         return  # no P1s → uniqueness/latency-per-P1 undefined; nothing to learn
-    from theforge.model_profiles_identity import _normalize_band  # noqa: PLC0415
-    from theforge.model_profiles_storage import _fold_resolved_model  # noqa: PLC0415
+    from theforge.model_profiles_identity import (  # noqa: PLC0415
+        _fold_resolved_model,
+        _normalize_band,
+    )
 
     band = _normalize_band(sample.complexity)
     section = entry.setdefault(section_for_phase(phase), {})

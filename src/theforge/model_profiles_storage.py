@@ -62,8 +62,8 @@ from theforge.model_profiles_identity import (
     COMPLEXITY_BANDS,
     DOMAIN_RECENCY_WINDOW,
     RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
-    RESOLVED_MODEL_BREAKDOWN_KEY,
     ROLES,
+    _fold_resolved_model,
     _identity_metadata,
     _normalize_band,
     _resolve_agent_spec_for_profile_key,
@@ -448,55 +448,6 @@ def _fold_dev_bucket(
     bucket["avg_iterations"] = round(iter_sum / runs, 4)
     _fold_cost(bucket, cost_usd)
     _fold_duration(bucket, duration_s, timeout_killed, timeout_limit_s)
-
-
-def _fold_resolved_model(
-    section: dict,
-    resolved_model: str | None,
-    *,
-    success: bool | None,
-    tainted: bool,
-    key: str = RESOLVED_MODEL_BREAKDOWN_KEY,
-    count: int = 1,
-) -> None:
-    """Attribute one folded observation to the concrete version that produced it.
-
-    The population under a section's counter describes whatever the configured
-    identity meant at the time of each observation. When that identity is a
-    family alias, "at the time of each observation" is load-bearing: two entries
-    under one key can be entries about two different models, and nothing in the
-    counters says so. This breakdown says so.
-
-    ``key`` selects which counter the breakdown explains
-    (:data:`RESOLVED_MODEL_BREAKDOWN_KEY` for ``runs``,
-    :data:`RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY` for ``_attempted_count``) and
-    ``count`` is how much that counter moved, so a breakdown always sums to the
-    denominator it describes. A breakdown that does not is worse than none: it
-    reads as authoritative while disagreeing with the population it explains.
-
-    Kept deliberately thin — counts only, no rates. It exists so a consumer can
-    answer *does this population describe one model or several*, which the
-    section's own aggregates cannot; recomputing every rate per version would
-    duplicate the whole bucket shape for a question nobody asks yet. Tainted
-    observations are tallied here too (never folded into ``runs``), mirroring
-    how every other aggregate keeps its exclusions visible rather than deleting
-    them.
-
-    A ``None`` ``resolved_model`` records nothing: "the transport reported no
-    resolved identity" is not evidence about a version.
-    """
-    if not resolved_model or count <= 0:
-        return
-    breakdown = section.setdefault(key, {})
-    bucket = breakdown.setdefault(resolved_model, {})
-    if tainted:
-        bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + count
-        return
-    bucket["runs"] = int(bucket.get("runs", 0)) + count
-    if success is not None:
-        bucket["_successes"] = float(bucket.get("_successes", 0.0)) + (
-            float(count) if success else 0.0
-        )
 
 
 def _fold_dev_capability(

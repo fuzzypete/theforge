@@ -9,8 +9,19 @@ section keys, the identity resolution chain that maps a profile key to a
 ``(provider, model)`` pair, and the two stat primitives that read a stored
 bucket's counters — lives here so each name has exactly one binding.
 
-Nothing here accumulates anything or answers a routing question; adding either
-belongs in the owning module, not in this one.
+One stored shape is owned here outright rather than by either half: the
+per-served-version breakdown (:data:`RESOLVED_MODEL_BREAKDOWN_KEY`,
+:data:`RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY`) together with the single function
+that maintains it, :func:`_fold_resolved_model`. Three separate accumulators
+write that breakdown — the dev and role folds in ``model_profiles_storage`` and
+the reviewer-value fold in :mod:`theforge.reviewer_value` — and a breakdown
+written three different ways stops summing to the denominator it explains, so
+the keys and their writer stay together, below every accumulator rather than
+inside one of them. Putting it in ``model_profiles_storage`` is what made
+``reviewer_value`` and that module import each other.
+
+Beyond that one shape, nothing here accumulates anything or answers a routing
+question; adding either belongs in the owning module, not in this one.
 """
 
 from __future__ import annotations
@@ -75,6 +86,55 @@ own denominator.
 
 ALIAS_DERIVED_KEY = "alias_derived"
 """Section key holding evidence projected from an alias onto a concrete version."""
+
+
+def _fold_resolved_model(
+    section: dict,
+    resolved_model: str | None,
+    *,
+    success: bool | None,
+    tainted: bool,
+    key: str = RESOLVED_MODEL_BREAKDOWN_KEY,
+    count: int = 1,
+) -> None:
+    """Attribute one folded observation to the concrete version that produced it.
+
+    The population under a section's counter describes whatever the configured
+    identity meant at the time of each observation. When that identity is a
+    family alias, "at the time of each observation" is load-bearing: two entries
+    under one key can be entries about two different models, and nothing in the
+    counters says so. This breakdown says so.
+
+    ``key`` selects which counter the breakdown explains
+    (:data:`RESOLVED_MODEL_BREAKDOWN_KEY` for ``runs``,
+    :data:`RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY` for ``_attempted_count``) and
+    ``count`` is how much that counter moved, so a breakdown always sums to the
+    denominator it describes. A breakdown that does not is worse than none: it
+    reads as authoritative while disagreeing with the population it explains.
+
+    Kept deliberately thin — counts only, no rates. It exists so a consumer can
+    answer *does this population describe one model or several*, which the
+    section's own aggregates cannot; recomputing every rate per version would
+    duplicate the whole bucket shape for a question nobody asks yet. Tainted
+    observations are tallied here too (never folded into ``runs``), mirroring
+    how every other aggregate keeps its exclusions visible rather than deleting
+    them.
+
+    A ``None`` ``resolved_model`` records nothing: "the transport reported no
+    resolved identity" is not evidence about a version.
+    """
+    if not resolved_model or count <= 0:
+        return
+    breakdown = section.setdefault(key, {})
+    bucket = breakdown.setdefault(resolved_model, {})
+    if tainted:
+        bucket["tainted_runs"] = int(bucket.get("tainted_runs", 0)) + count
+        return
+    bucket["runs"] = int(bucket.get("runs", 0)) + count
+    if success is not None:
+        bucket["_successes"] = float(bucket.get("_successes", 0.0)) + (
+            float(count) if success else 0.0
+        )
 
 
 def _normalize_band(complexity: str | None) -> str:

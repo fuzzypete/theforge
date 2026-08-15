@@ -27,6 +27,10 @@ in the scheduler. They are now two owners with shared vocabulary between them
     the recency-window defaults, the stored section keys, the identity
     resolution chain, and the two stat primitives over a stored bucket. Each
     such name has exactly one binding, so this facade re-exports one of each.
+    It also owns the per-served-version breakdown outright — the two section
+    keys plus ``_fold_resolved_model``, their single writer — because three
+    accumulators in two modules write that one shape and it has to be written
+    the same way by all of them.
 
 The dependency runs one way in *both* directions being absent: the read model
 never imports storage, and storage never imports the read model. That is what
@@ -57,6 +61,7 @@ from .model_profiles_identity import (  # noqa: F401
     RESOLVED_MODEL_ATTEMPT_BREAKDOWN_KEY,
     RESOLVED_MODEL_BREAKDOWN_KEY,
     ROLES,
+    _fold_resolved_model,
     _identity_from_unique_spec,
     _identity_metadata,
     _infer_identity_from_key,
@@ -105,7 +110,6 @@ from .model_profiles_storage import (  # noqa: F401
     _fold_domain_slice,
     _fold_duration,
     _fold_harness_terminated,
-    _fold_resolved_model,
     _merge_completion,
     _merge_cost_section,
     _merge_dev,
