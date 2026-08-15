@@ -253,10 +253,41 @@ schema-enforced, auditable, stored in the run record.
 
 #### Where it lives
 
-- In the audit record, alongside the existing blocks (inline).
 - Written to `.forge/knowledge/summaries/{run_id}.yaml` for querying across
   runs. Keyed by `run_id` (not slug) to avoid collisions across reruns of
   the same story.
+- Linked to — not inlined in — the authoritative run record. The summary
+  carries `authoritative_run_record: .forge/audits/runs/{run_id}.json`; the
+  record carries no forward pointer, because it is written first and is
+  immutable once written. **The forward direction is resolved by the same path
+  convention**: a run's summary, if it has one, is at
+  `.forge/knowledge/summaries/{run_id}.yaml`. Layer 3 consumption reads it
+  there rather than expecting a field on the record.
+
+#### As implemented (#1859)
+
+The artifact splits along who can be trusted with what. The agent supplies
+`what_changed.description`/`approach`, `what_was_learned`, `learned_patterns`,
+`review_insights` observations, and `complexity_signal.dominant_difficulty`.
+Every countable field — `changed_files`, `domains`, `story_shape`,
+`review_insights.recurring_findings`/`resolved_findings`, and the iteration /
+cycle / regeneration / cost entries of `complexity_signal` — is filled in by the
+coordinator from the audit record, so no index built over these artifacts can be
+poisoned by a model's recollection.
+
+Evidence is validated by *resolution*, not by shape: each item's reference must
+exist in the run's own audit (finding registry, plan steps, review cycles,
+changed-file paths, diff refs). A well-formed citation of a finding the run
+never raised is rejected, and one unresolvable citation rejects the whole
+summary.
+
+Generation dispatches on a tool-free API transport derived from `plan.ref` (via
+its `api_fallback` when the plan model is a CLI). An empty tool allowlist is
+only narrow on the API path — the Claude CLI reads it as "no restriction" — so a
+plan model with no API transport available skips generation rather than
+dispatching an unbounded agent. Its cost is recorded on the artifact under
+`generation.cost_usd`, since it is spent after the run's own cost accounting has
+closed.
 
 #### When it runs
 

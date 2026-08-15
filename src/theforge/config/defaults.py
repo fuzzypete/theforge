@@ -216,6 +216,14 @@ retry:
   # `elevate` or no usable recommendation, which still wait.
   escalate_timeout_policy: preserve  # "preserve" | "apply_advice"
 
+# Optional: post-run knowledge capture. When enabled, a completed run emits an
+# evidence-backed summary to .forge/knowledge/summaries/{run_id}.yaml. Every
+# learned claim must cite a finding, plan step, review cycle, file, or diff ref
+# from that run — unevidenced summaries are rejected, not persisted. Generation
+# is a post-DONE side effect: it never changes a run's outcome. Ships disabled.
+# knowledge:
+#   run_summaries: true
+
 context:
   preflight_budget: 200
   plan_budget: 120

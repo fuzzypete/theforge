@@ -1546,6 +1546,15 @@ def _write_story_audit(
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
     _write_native_story_record(config.project_root, audit_data)
+    # Post-DONE knowledge summary (#1859). A sprint calls this writer more than
+    # once for the same finished story (pending integration, landing, wrap-up);
+    # generation is guarded on the artifact's own existence, so the story is
+    # summarised once. Never raises.
+    from ..coordinator.knowledge_summary_flow import (  # noqa: PLC0415
+        maybe_generate_run_summary,
+    )
+
+    maybe_generate_run_summary(config, result, audit_data)
 
     log_dir = result.state.log_dir
     if log_dir is None:
