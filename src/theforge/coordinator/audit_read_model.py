@@ -125,6 +125,110 @@ def runs_touching_path(conn: AuditConnection, path: str) -> list[dict]:
     ]
 
 
+def changed_file_touch_rows(
+    conn: AuditConnection,
+    *,
+    since: str | None = None,
+    measured_cost_only: bool = True,
+) -> list[dict]:
+    """Return every ``(run, path)`` touch joined to that run's indexed columns.
+
+    The bulk form of :func:`runs_touching_path`: one scan instead of one query
+    per candidate path, which is what an analysis ranking *all* paths needs.
+    Every column comes from the two tables' indexed fields — no ``raw_json`` is
+    decoded — so the cost of the scan is the join, not deserialization.
+
+    ``since`` filters on ``audit_records.started_at`` (inclusive, compared
+    lexically; the stored format is zero-padded ISO-8601 so lexical order is
+    chronological). ``measured_cost_only`` keeps only runs with a positive
+    recorded cost: a cost-unknown run is a lower bound on what the work needed,
+    not a measurement of what it cost, and averaging one in understates every
+    path it touched.
+    """
+    clauses: list[str] = []
+    params: list[object] = []
+    if measured_cost_only:
+        clauses.append("r.total_cost_usd IS NOT NULL AND r.total_cost_usd > 0")
+    if since is not None:
+        clauses.append("r.started_at >= ?")
+        params.append(since)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    rows = conn.execute(
+        "SELECT c.run_id, c.path, c.insertions, c.deletions, c.binary, "
+        "r.slug, r.issue_id, r.started_at, r.total_cost_usd, r.complexity_score, "
+        "r.outcome_success, r.verdict, r.dev_model, r.dev_resolved_model, r.milestone "
+        "FROM audit_changed_files c JOIN audit_records r ON r.run_id = c.run_id"
+        f"{where} ORDER BY r.started_at, c.run_id, c.path",
+        tuple(params),
+    ).fetchall()
+    return [
+        {
+            "run_id": row[0],
+            "path": row[1],
+            "insertions": row[2],
+            "deletions": row[3],
+            "binary": bool(row[4]),
+            "slug": row[5],
+            "issue_id": row[6],
+            "started_at": row[7],
+            "total_cost_usd": row[8],
+            "complexity_score": row[9],
+            "outcome_success": row[10],
+            "verdict": row[11],
+            "dev_model": row[12],
+            "dev_resolved_model": row[13],
+            "milestone": row[14],
+        }
+        for row in rows
+    ]
+
+
+def changed_file_coverage(conn: AuditConnection, *, since: str | None = None) -> dict:
+    """Return how much measured spend is attributable to a changed-file set.
+
+    The join in :func:`changed_file_touch_rows` is only as good as its coverage:
+    a ranking computed over the joinable minority of runs describes that
+    minority, not the codebase. This reports the denominator so a caller can say
+    so rather than presenting a partial ranking as a complete one.
+
+    Returned keys: ``measured_runs`` / ``measured_spend_usd`` (runs with a
+    positive recorded cost), ``joinable_runs`` / ``joinable_spend_usd`` (of
+    those, the ones with at least one ``audit_changed_files`` row), the two
+    derived ratios, and the ``first_joinable_at`` / ``last_joinable_at`` window
+    the joinable rows span. Ratios are 0.0 when there is nothing to divide.
+    """
+    clauses = ["total_cost_usd IS NOT NULL", "total_cost_usd > 0"]
+    params: list[object] = []
+    if since is not None:
+        clauses.append("started_at >= ?")
+        params.append(since)
+    where = " WHERE " + " AND ".join(clauses)
+    joinable_clause = (
+        " AND EXISTS (SELECT 1 FROM audit_changed_files c WHERE c.run_id = audit_records.run_id)"
+    )
+    measured = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(total_cost_usd), 0.0) FROM audit_records" + where,
+        tuple(params),
+    ).fetchone()
+    joinable = conn.execute(
+        "SELECT COUNT(*), COALESCE(SUM(total_cost_usd), 0.0), "
+        "MIN(started_at), MAX(started_at) FROM audit_records" + where + joinable_clause,
+        tuple(params),
+    ).fetchone()
+    measured_runs, measured_spend = int(measured[0]), float(measured[1] or 0.0)
+    joinable_runs, joinable_spend = int(joinable[0]), float(joinable[1] or 0.0)
+    return {
+        "measured_runs": measured_runs,
+        "measured_spend_usd": measured_spend,
+        "joinable_runs": joinable_runs,
+        "joinable_spend_usd": joinable_spend,
+        "run_coverage_ratio": (joinable_runs / measured_runs) if measured_runs else 0.0,
+        "spend_coverage_ratio": (joinable_spend / measured_spend) if measured_spend else 0.0,
+        "first_joinable_at": joinable[2],
+        "last_joinable_at": joinable[3],
+    }
+
+
 # ── Query helpers ────────────────────────────────────────────────────────
 
 

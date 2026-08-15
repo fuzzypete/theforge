@@ -54,6 +54,10 @@ then [vision.md](vision.md) for the philosophy and reading order.
   (referenced by tests; stays at this path).
 - [v0.13-dogfood-readiness.md](v0.13-dogfood-readiness.md) — evidence record
   for issue #1869, current release cycle.
+- [plans/2348-structural-decay-observer-spike.md](plans/2348-structural-decay-observer-spike.md)
+  — spike record for issue #2348: design, POC and the **defer** decision for a
+  codebase-scoped structural-decay observer, with the data condition that
+  reopens it.
 - **[archive/](archive/)** — closed records with no living role:
   - [coordinator-refactor-plan.md](archive/coordinator-refactor-plan.md) —
     2026-03 plan for the coordinator split (since shipped).
