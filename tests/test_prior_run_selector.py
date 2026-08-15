@@ -1,0 +1,358 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+import yaml
+
+from theforge.task.prior_run_selector import select_prior_runs
+
+_STORY = "Refactor the sprint runner retry loop"
+_FILES = ["src/theforge/sprint/runner.py"]
+
+
+def _verdict(status: str = "admissible", rank: str = "full", reasons: list[str] | None = None):
+    verdict: dict = {"status": status, "rank": rank}
+    if reasons:
+        verdict["reasons"] = reasons
+    return verdict
+
+
+def _entry(
+    run_id: str,
+    *,
+    changed_files: list[str] | None = None,
+    domains: list[str] | None = None,
+    patterns: list[str] | None = None,
+    verdict: dict | None = _verdict(),
+    generated_at: str = "2026-08-01T00:00:00",
+    story_name: str = "Sprint runner retry",
+) -> dict:
+    entry: dict = {
+        "run_id": run_id,
+        "generated_at": generated_at,
+        "story": {"slug": run_id, "name": story_name, "github_issue": 1},
+        "story_shape": {"work_type": "refactor", "complexity": "medium"},
+        "domains": domains if domains is not None else ["sprint"],
+        "changed_files": changed_files
+        if changed_files is not None
+        else ["src/theforge/sprint/runner.py"],
+        "learned_patterns": patterns or [],
+        "summary_path": f".forge/knowledge/summaries/{run_id}.yaml",
+    }
+    if verdict is not None:
+        entry["admissibility_verdict"] = verdict
+    return entry
+
+
+def _write_index(root: Path, entries: list[dict], *, schema_version: int = 2) -> None:
+    path = root / ".forge" / "knowledge" / "index.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "schema_version": schema_version,
+        "source_count": len(entries),
+        "indexed_count": len(entries),
+        "skipped_count": 0,
+        "entries": entries,
+    }
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+
+def _write_summary(root: Path, run_id: str, **overrides) -> None:
+    path = root / ".forge" / "knowledge" / "summaries" / f"{run_id}.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    artifact = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "what_changed": {
+            "description": f"run {run_id} reworked the retry loop",
+            "approach": "extracted a helper",
+        },
+        "what_was_learned": [{"claim": "retries need a jitter cap", "evidence": []}],
+        "learned_patterns": ["retry-decorator"],
+    }
+    artifact.update(overrides)
+    path.write_text(yaml.safe_dump(artifact, sort_keys=False), encoding="utf-8")
+
+
+def _corpus(root: Path, entries: list[dict]) -> None:
+    _write_index(root, entries)
+    for entry in entries:
+        _write_summary(root, entry["run_id"])
+
+
+def test_relevant_summary_is_selected_with_deterministic_reasons(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert [c.run_id for c in selection.candidates] == ["4f2a91c"]
+    candidate = selection.candidates[0]
+    assert "file_overlap(src/theforge/sprint/runner.py)" in candidate.reason
+    assert "domain_match(sprint)" in candidate.reason
+    assert candidate.score > 0
+    assert "reworked the retry loop" in candidate.content
+    assert not selection.excluded
+
+
+def test_irrelevant_summary_is_excluded_as_not_relevant(tmp_path: Path) -> None:
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "9c11e0a",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="Rewrite onboarding docs",
+            )
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert [(e.run_id, e.reason) for e in selection.excluded] == [("9c11e0a", "not_relevant")]
+
+
+def test_inadmissible_verdict_is_never_selected(tmp_path: Path) -> None:
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "71bd334",
+                verdict=_verdict(
+                    status="inadmissible", rank="excluded", reasons=["cited_source_deleted"]
+                ),
+            )
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    exclusion = selection.excluded[0]
+    assert exclusion.reason == "inadmissible(cited_source_deleted)"
+    assert exclusion.admissibility_excluded is True
+
+
+def test_missing_verdict_is_never_selected(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry("0ae5f92", verdict=None)])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "inadmissible(no_verdict)"
+    assert selection.excluded[0].admissibility_excluded is True
+
+
+def test_malformed_verdict_block_fails_closed(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry("bad0001", verdict={"status": "admissible"})])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "inadmissible(no_verdict)"
+
+
+def test_preflight_phase_is_never_offered_prior_knowledge(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    selection = select_prior_runs(tmp_path, phase="preflight", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.phase_eligible is False
+
+
+def test_missing_index_yields_no_candidates(tmp_path: Path) -> None:
+    selection = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded == ()
+    assert selection.entry_count == 0
+
+
+def test_unreadable_or_wrong_schema_index_yields_no_candidates(tmp_path: Path) -> None:
+    _write_index(tmp_path, [_entry("4f2a91c")], schema_version=1)
+    assert (
+        select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES).entry_count
+        == 0
+    )
+
+    (tmp_path / ".forge" / "knowledge" / "index.yaml").write_text(": not: yaml:", encoding="utf-8")
+    assert (
+        select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES).entry_count
+        == 0
+    )
+
+
+def test_missing_summary_artifact_excludes_the_entry(tmp_path: Path) -> None:
+    _write_index(tmp_path, [_entry("4f2a91c")])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "summary_unreadable"
+
+
+def test_reduced_rank_is_penalised_relative_to_full_rank(tmp_path: Path) -> None:
+    _corpus(
+        tmp_path,
+        [
+            _entry("aaa1111"),
+            _entry(
+                "bbb2222",
+                verdict=_verdict(
+                    status="admissible_with_reduced_rank",
+                    rank="reduced",
+                    reasons=["sources_changed"],
+                ),
+            ),
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    by_id = {c.run_id: c for c in selection.candidates}
+    assert by_id["aaa1111"].score > by_id["bbb2222"].score
+    assert "reduced_rank" in by_id["bbb2222"].reason
+
+
+def test_weak_reduced_rank_entry_is_excluded_as_stale(tmp_path: Path) -> None:
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "ccc3333",
+                changed_files=["src/theforge/sprint/other.py"],
+                domains=["unrelated"],
+                story_name="unrelated work",
+                verdict=_verdict(
+                    status="admissible_with_reduced_rank",
+                    rank="reduced",
+                    reasons=["sources_changed"],
+                ),
+            )
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "stale(sources_changed)"
+
+
+def test_selection_is_capped_and_deterministic(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry(f"run{index}") for index in range(6)])
+
+    first = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    second = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert len(first.candidates) == 3
+    assert [c.run_id for c in first.candidates] == [c.run_id for c in second.candidates]
+    # They matched; they lost to better matches. That is not "not relevant".
+    assert all(e.reason == "below_selection_cap(3)" for e in first.excluded)
+    assert all(e.admissibility_excluded is False for e in first.excluded)
+
+
+def test_summary_prose_cannot_create_relevance(tmp_path: Path) -> None:
+    """Deterministic fields say 'unrelated'; prose screams the story's keywords."""
+    _write_index(
+        tmp_path,
+        [
+            _entry(
+                "ddd4444",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="unrelated",
+            )
+        ],
+    )
+    _write_summary(
+        tmp_path,
+        "ddd4444",
+        what_changed={
+            "description": "sprint runner retry loop refactor sprint runner retry",
+            "approach": "sprint runner retry loop",
+        },
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "not_relevant"
+
+
+def test_unrelated_inadmissible_entry_is_excluded_on_relevance_not_admissibility(
+    tmp_path: Path,
+) -> None:
+    """An inadmissible summary about unrelated code is not knowledge this story lost.
+
+    Relevance is settled first, so the entry reports as not_relevant and never
+    inflates the manifest's "matched but excluded on admissibility" count.
+    """
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "71bd334",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="Rewrite onboarding docs",
+                verdict=_verdict(
+                    status="inadmissible", rank="excluded", reasons=["cited_source_deleted"]
+                ),
+            )
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "not_relevant"
+    assert selection.excluded[0].admissibility_excluded is False
+
+
+def test_unrelated_missing_verdict_entry_is_excluded_on_relevance(tmp_path: Path) -> None:
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "0ae5f92",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="Rewrite onboarding docs",
+                verdict=None,
+            )
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "not_relevant"
+    assert selection.excluded[0].admissibility_excluded is False
+
+
+def test_relevance_first_ordering_still_bars_relevant_inadmissible_summaries(
+    tmp_path: Path,
+) -> None:
+    """Deciding relevance first must not soften admissibility as a bar on inclusion."""
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "71bd334",
+                verdict=_verdict(
+                    status="inadmissible", rank="excluded", reasons=["source_run_tainted"]
+                ),
+            ),
+            _entry("0ae5f92", verdict=None),
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    reasons = {e.run_id: e.reason for e in selection.excluded}
+    assert reasons["71bd334"] == "inadmissible(source_run_tainted)"
+    assert reasons["0ae5f92"] == "inadmissible(no_verdict)"
+    assert all(e.admissibility_excluded for e in selection.excluded)

@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import re
 import subprocess
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from . import prior_run_manifest, prior_run_selector
+from .prior_run_selector import PRIOR_RUN_KIND
 
 if TYPE_CHECKING:
     from theforge.config.types import ForgeConfig
@@ -68,6 +71,9 @@ class ContextPack:
     line_count: int
     phase: str = ""
     structural_index_git_sha: str | None = None
+    # Audit-visible record of the prior-run knowledge this assembly considered.
+    # Defaulted so the many constructors that predate #1860 keep working.
+    prior_run_context: dict = field(default_factory=prior_run_manifest.disabled_manifest)
 
 
 @dataclass(frozen=True)
@@ -78,9 +84,18 @@ class ClaudeDocSection:
 
 
 class ContextAssembler:
-    def __init__(self, project_root: Path, *, budgets: ContextBudgetConfig | None = None) -> None:
+    def __init__(
+        self,
+        project_root: Path,
+        *,
+        budgets: ContextBudgetConfig | None = None,
+        prior_run_context: bool = False,
+    ) -> None:
         self.project_root = project_root
         self.budgets = budgets or ContextBudgetConfig()
+        # Off unless a config explicitly turns it on: a direct
+        # ContextAssembler(project_root) never injects prior-run knowledge.
+        self.prior_run_context = prior_run_context
 
     @classmethod
     def from_config(cls, config: "ForgeConfig") -> "ContextAssembler":
@@ -93,6 +108,7 @@ class ContextAssembler:
                 dev_budget=ctx.dev_budget,
                 review_budget=ctx.review_budget,
             ),
+            prior_run_context=config.knowledge.prior_run_context,
         )
 
     def assemble(
@@ -155,6 +171,23 @@ class ContextAssembler:
                     )
                 )
 
+        prior_selection = self._select_prior_runs(
+            phase=normalized_phase, story_text=story_text, file_list=file_list
+        )
+        if prior_selection is not None:
+            for candidate in prior_selection.candidates:
+                advisory_items.append(
+                    ContextItem(
+                        source=candidate.source,
+                        kind=PRIOR_RUN_KIND,
+                        required=False,
+                        lines=_count_lines(candidate.content),
+                        content=candidate.content,
+                        reason=candidate.reason,
+                        score=candidate.score,
+                    )
+                )
+
         included_items = list(required_items)
         dropped_items: list[ContextItem] = []
         used_lines = sum(item.lines for item in included_items)
@@ -192,7 +225,7 @@ class ContextAssembler:
                 reason=item.reason,
                 score=item.score,
                 item_type="invariant" if item.required else "advisory",
-                drop_reason="budget exceeded",
+                drop_reason=_drop_reason(item),
             )
             for item in dropped_items
         )
@@ -206,6 +239,36 @@ class ContextAssembler:
             structural_index_git_sha=self._structural_index_git_sha(structural_index[0])
             if structural_index
             else None,
+            prior_run_context=(
+                prior_run_manifest.build_manifest(
+                    prior_selection,
+                    included_run_ids={
+                        item.source.split(":", 1)[1]
+                        for item in included_items
+                        if item.kind == PRIOR_RUN_KIND
+                    },
+                    phase=normalized_phase,
+                )
+                if prior_selection is not None
+                else prior_run_manifest.disabled_manifest()
+            ),
+        )
+
+    def _select_prior_runs(
+        self, *, phase: str, story_text: str, file_list: list[str] | None
+    ) -> prior_run_selector.PriorRunSelection | None:
+        """Return the prior-run selection, or ``None`` when injection is off.
+
+        Disabled means the index is never even read, so no prior summary can
+        reach a prompt through any later code path.
+        """
+        if not self.prior_run_context:
+            return None
+        return prior_run_selector.select_prior_runs(
+            self.project_root,
+            phase=phase,
+            story_text=story_text,
+            file_list=file_list,
         )
 
     def default_budget_for_phase(self, phase: str) -> int:
@@ -315,6 +378,16 @@ class ContextAssembler:
         ):
             score += 3
         return score
+
+
+def _drop_reason(item: ContextItem) -> str:
+    """Name why an item lost its budget slot.
+
+    Prior-run knowledge gets its own wording so an operator reading the manifest
+    can tell "we knew something relevant but required context won" apart from the
+    ordinary advisory truncation that has always read ``budget exceeded``.
+    """
+    return "budget_pressure" if item.kind == PRIOR_RUN_KIND else "budget exceeded"
 
 
 def _extract_section(text: str, heading: str) -> str:

@@ -1248,11 +1248,12 @@ class KnowledgeConfig:
     nothing consumes it.
 
     ``prior_run_context`` gates Layer 3 injection of those summaries into future
-    agent prompts. Nothing reads it yet — it is parsed (and type-checked) here so
-    a project that sets it early gets a config error for a typo rather than
-    silence, but it is deliberately not advertised in the generated starter
-    config: offering an operator a key that does nothing is worse than not
-    offering it.
+    agent prompts. When on, ``ContextAssembler`` offers indexed summaries to the
+    plan, dev, and review phases as advisory, droppable context items — never to
+    preflight, whose output drives coordinator control flow (ADR-0002 clause 5),
+    and never without an admissible verdict in the knowledge index. It is
+    deliberately not advertised in the generated starter config: it is only
+    useful once a project has a corpus of summaries to draw on.
     """
 
     run_summaries: bool = False

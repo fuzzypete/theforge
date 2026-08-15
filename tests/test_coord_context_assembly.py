@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from unittest.mock import patch
 
+import yaml
 from coord_test_helpers import patch_gate_shell
 
 from tests.coord_test_helpers import (
@@ -13,6 +15,7 @@ from tests.coord_test_helpers import (
     _make_task,
     _shell_with_gate,
 )
+from theforge.config.types import KnowledgeConfig
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.review_pool import _run_review_pool
 from theforge.coordinator.state import CoordinatorState, ReviewCycleMetadata
@@ -254,3 +257,122 @@ def test_prose_prefixed_plan_reaches_dev_file_count_and_scaling_log(
     assert any(
         "Stuck-detection scaled for medium (2 plan files)" in msg for msg in verbose_messages
     )
+
+
+def _write_prior_run_corpus(root, run_id="4f2a91c"):
+    """Write an admissible summary whose deterministic fields match the dev file list."""
+    index = root / ".forge" / "knowledge" / "index.yaml"
+    index.parent.mkdir(parents=True, exist_ok=True)
+    index.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 2,
+                "source_count": 1,
+                "indexed_count": 1,
+                "skipped_count": 0,
+                "entries": [
+                    {
+                        "run_id": run_id,
+                        "generated_at": "2026-08-01T00:00:00",
+                        "story": {
+                            "slug": "implement-thing",
+                            "name": "Implement the thing",
+                            "github_issue": 1,
+                        },
+                        "story_shape": {"work_type": "feature", "complexity": "medium"},
+                        "domains": ["backend"],
+                        "changed_files": ["src/app.py"],
+                        "learned_patterns": [],
+                        "summary_path": f".forge/knowledge/summaries/{run_id}.yaml",
+                        "admissibility_verdict": {"status": "admissible", "rank": "full"},
+                    }
+                ],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    summary = root / ".forge" / "knowledge" / "summaries" / f"{run_id}.yaml"
+    summary.parent.mkdir(parents=True, exist_ok=True)
+    summary.write_text(
+        yaml.safe_dump(
+            {
+                "schema_version": 1,
+                "run_id": run_id,
+                "what_changed": {
+                    "description": "prior run reworked the thing",
+                    "approach": "extracted a helper",
+                },
+                "what_was_learned": [{"claim": "the thing needs a guard", "evidence": []}],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.plan_flow.run_agent")
+@patch("theforge.coordinator.preflight_flow.run_agent")
+@patch("theforge.coordinator.dev_phase.run_agent")
+@patch_gate_shell()
+def test_prior_run_context_flows_through_phase_seams_into_audit_state(
+    mock_shell, mock_dev, mock_preflight, mock_plan, mock_pool, tmp_path
+):
+    """The config gate must survive the whole phase flow, not just the assembler.
+
+    Each phase records the ContextPack it actually used, so an operator reading
+    the audit sees the prior-run decision per phase — including that preflight
+    was never offered prior knowledge (ADR-0002 clause 5).
+    """
+    config = replace(
+        _make_plan_config(tmp_path),
+        knowledge=KnowledgeConfig(prior_run_context=True),
+    )
+    task = _make_task(tmp_path)
+    workspace = tmp_path / task.slug
+    workspace.mkdir()
+    _write_prior_run_corpus(tmp_path)
+
+    mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+    mock_preflight.return_value = _make_agent_result(
+        success=True, output=PREFLIGHT_PROCEED_MEDIUM, profile_name="preflight"
+    )
+    mock_plan.return_value = _make_agent_result(
+        success=True,
+        output=(
+            "```yaml\n"
+            "plan:\n"
+            "  approach: Update the thing.\n"
+            "  steps:\n"
+            "    - id: 1\n"
+            "      description: Update implementation\n"
+            "      files:\n"
+            "        - src/app.py\n"
+            "      action: modify\n"
+            "      details: Apply the behavior change.\n"
+            "```\n"
+        ),
+        profile_name="plan",
+    )
+    mock_dev.return_value = _make_agent_result(success=True, output="Done.", profile_name="dev")
+    mock_pool.return_value = [
+        _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+    ]
+
+    captured: dict[str, ContextPack] = {}
+    result = run_task(config, task)
+
+    assert result.success is True
+    for entry in result.state.context_manifests:
+        captured.setdefault(entry["phase"], entry["manifest"])
+
+    assert captured["preflight"].prior_run_context["enabled"] is True
+    assert captured["preflight"].prior_run_context["included"] == []
+    assert "not injected in the preflight phase" in captured["preflight"].prior_run_context["note"]
+
+    dev_prior = captured["dev"].prior_run_context
+    assert dev_prior["enabled"] is True
+    assert [item["run_id"] for item in dev_prior["included"]] == ["4f2a91c"]
+    assert "file_overlap(src/app.py)" in dev_prior["included"][0]["reason"]
+    assert "prior run reworked the thing" in captured["dev"].content
