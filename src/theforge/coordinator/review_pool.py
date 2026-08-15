@@ -244,7 +244,7 @@ def _append_reviewer_attempt(
     failed invocation is still an invocation and must not evaporate from the audit
     / completion-rate evidence.
     """
-    from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
+    from theforge.model_profiles_identity import canonical_id_from_identity  # noqa: PLC0415
 
     completed, outcome, reason = _classify_reviewer_attempt(result, parseable, config)
     if outcome_override is not None:

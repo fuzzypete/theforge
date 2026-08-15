@@ -12,7 +12,12 @@ from __future__ import annotations
 from pathlib import Path
 
 from theforge.config import ForgeConfig
-from theforge.model_profiles import ReviewerAttempt, RoleAttempt, RunOutcome, update_from_run
+from theforge.model_profiles_storage import (
+    ReviewerAttempt,
+    RoleAttempt,
+    RunOutcome,
+    update_from_run,
+)
 from theforge.reviewer_value import PlanReviewerValueSample, ReviewerValueSample
 
 from .agent_identity import resolved_identity_for_result

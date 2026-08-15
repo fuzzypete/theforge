@@ -9,9 +9,8 @@ from pathlib import Path
 from typing import Any
 
 from theforge.config import is_canonical_model_id
-from theforge.model_profiles import (
-    COMPLEXITY_BANDS,
-    ROLES,
+from theforge.model_profiles_identity import COMPLEXITY_BANDS, ROLES
+from theforge.model_profiles_storage import (
     canonical_id_for_legacy_key,
     load_profiles,
     record_profile_reset,

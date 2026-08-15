@@ -334,7 +334,8 @@ def fold_reviewer_value(
     uniq = sample.uniqueness_rate()
     if uniq is None:
         return  # no P1s → uniqueness/latency-per-P1 undefined; nothing to learn
-    from theforge.model_profiles import _fold_resolved_model, _normalize_band  # noqa: PLC0415
+    from theforge.model_profiles_identity import _normalize_band  # noqa: PLC0415
+    from theforge.model_profiles_storage import _fold_resolved_model  # noqa: PLC0415
 
     band = _normalize_band(sample.complexity)
     section = entry.setdefault(section_for_phase(phase), {})
@@ -380,7 +381,10 @@ def _bucket_signal(
     recency: Any | None,
 ) -> dict[str, Any]:
     """Build a raw/weighted/floor signal from one value accumulator bucket."""
-    from theforge.model_profiles import _recency_params, _weighted_rate  # noqa: PLC0415
+    from theforge.model_profiles_read_model import (  # noqa: PLC0415
+        _recency_params,
+        _weighted_rate,
+    )
 
     mode, half_life, window = _recency_params(recency)
     bucket = bucket or {}
@@ -443,9 +447,9 @@ def get_reviewer_value_signal(
       (#2226), so a value rate accumulated under a family alias is not read as
       describing one reviewer when it describes several.
     """
-    from theforge.model_profiles import (  # noqa: PLC0415
+    from theforge.model_profiles_identity import _normalize_band  # noqa: PLC0415
+    from theforge.model_profiles_read_model import (  # noqa: PLC0415
         _matching_profile_entries,
-        _normalize_band,
         _resolved_population,
     )
 

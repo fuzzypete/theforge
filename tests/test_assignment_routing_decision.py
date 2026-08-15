@@ -201,7 +201,10 @@ def test_profile_signal_entries_have_raw_weighted_runs_floor(monkeypatch):
 def test_block_building_does_not_re_read_profiles(monkeypatch):
     """_build_routing_decision consumes pre-collected signals; it never looks up
     profiles again — the block adds no profile re-reads (AC: bounded overhead)."""
-    import theforge.model_profiles as mp
+    # Patched on ``model_profiles_read_model``, which owns the signal (#2467).
+    # ``model_profiles`` re-exports it, so patching the facade would rebind only
+    # the facade's reference and assignment would still call the real function.
+    import theforge.model_profiles_read_model as mp
 
     calls = {"n": 0}
     real = mp.get_dev_signal

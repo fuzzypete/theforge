@@ -23,7 +23,7 @@ types in low-dependency modules). It defines:
 ADR-0006 alignment: current-run domain tags are routing-safe only as structured
 preflight telemetry (bucket A, "slug/domain tags recorded by preflight").
 Historical per-domain performance is routing-safe only after aggregation and
-clause-2 admissibility checks — see ``model_profiles.get_dev_domain_signal``.
+clause-2 admissibility checks — see ``model_profiles_read_model.get_dev_domain_signal``.
 """
 
 from __future__ import annotations

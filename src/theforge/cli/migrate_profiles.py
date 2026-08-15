@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.model_profiles import (
+from theforge.model_profiles_storage import (
     load_profiles,
     migrate_history_data,
     migrate_profiles_data,
