@@ -290,6 +290,10 @@ complexity 4-9, cheap tier 1-3 — and the cold-start starvation bug that could 
 selection artificially closed in v0.12.0 (#1617). Complexity 7-9 work did grow from 37% to 50% of
 the queue, which is real and nowhere near sufficient to explain 4.3x.
 
+> **Retracted by Amendment 4 (2026-08-15).** The paragraph above does not stand: #2392 showed the
+> 95% concentration was partly a routing defect, not a complexity-appropriate split. Read it with
+> Amendment 4; do not cite it on its own.
+
 Two consequences for how the reduction milestone is justified and scoped.
 
 The argument is spend, not tidiness, and it compounds without an upper bound that anything currently
@@ -387,6 +391,72 @@ deleted rather than left dead. `coordinator/convention_baseline.py` remains: it 
 resolves the branch point for the rules that do block. Verified against the tree at
 withdrawal: 48 advisory findings, 0 blocking.
 
+## Amendment 4 (2026-08-15): the routing ruling-out does not stand
+
+Amendment 2 ruled routing out as a contributor to the 4.3x cost rise, on the grounds that the
+strong tier's ~95% share of dev runs was complexity-appropriate. Three days after that amendment
+was written, #2392 established that it was not.
+
+Winner-mode exploitation was substituting a cross-tier incumbent for the tier-routed dev pick,
+ranking candidates on success rate with cost consulted only on an exact tie. Stories scoring 4-6
+resolved to the mid tier in the rationale and dispatched the strong-tier model anyway; all 19
+mid-band routing snapshots recorded the substitution. The concentration Amendment 2 read as a
+complexity signal was in part the router overriding its own tier decision.
+
+The routing snapshots, split at #2392's merge (`693af62a`, 2026-08-12 06:39Z):
+
+| | pre-#2392 | post-#2392 |
+|---|---|---|
+| opus | 93-95% | 38-41% |
+| gpt-5.4 | 0 | 55-57% |
+| sonnet | 4 runs | 1 run |
+
+Before the fix, the strong-tier model took **every** story scoring 4 through 9 — 55 for 55. After
+it, strong-tier selections are score-8 work plus one evidence-qualified exception (#2434, an upward
+substitution at reliability 0.9077 and $5.47 estimated completion cost). Score 5 and 7 now route
+mid-tier.
+
+**Provenance.** Routing snapshots carry no timestamp, so the split depends on the join into the
+audit substrate. Joining on `run_id` leaves 4 snapshots unmatched and gives 56 pre / 21 post;
+joining on `slug` against the latest `started_at` leaves 1 unmatched and gives 59 pre / 21 post;
+classifying the remainder by snapshot mtime gives 59 pre / 22 post. The unmatched records are
+`issue-2160`, `issue-2164`, `issue-2206` (pre) and `issue-2466` (post), all opus — their snapshot
+`run_id` has no audit record because the snapshot was written by a superseded run attempt. The
+ranges above bracket all three methods; the direction and the band stratification are invariant
+across them.
+
+### What this does and does not change
+
+**The measurements stand.** The monthly cost table, the successful-runs-only control, the per-merge
+git columns, and the observation that complexity, duration and success rate stayed flat are
+unaffected — they were read from the substrate and from git, and #2392 does not touch either.
+
+**The causal attribution does not.** Amendment 2 decomposed the 4.3x into 1.8x invocations-per-run
+and 2.4x cost-per-invocation and claimed the two account for the rise "with no residual." That is
+arithmetic, not attribution: the decomposition is true of any two factors whose product is 4.3, and
+it demonstrates nothing about what drove the second factor. Routing a story to a more expensive
+model raises cost-per-invocation directly, so with the ruling-out withdrawn, an unknown share of
+the 2.4x belongs to the override rather than to change size and module size.
+
+**The ADR's conclusion is unaffected, and this amendment does not reinstate the ratchet.** The
+decision under Amendment 3 is withdrawal, and the case for the reduction milestone never rested on
+this attribution alone: the per-merge git evidence (1.7x files, 4.2x insertions) is independent of
+the audit substrate and independent of which model ran the story. What the retraction costs is the
+claim that spend growth is *fully* explained by structure. It is not, and the residual is now known
+to include a routing artifact of unquantified size.
+
+**What would settle it.** The clean measurement is cost-per-invocation over the post-#2392 window
+against the same window's change size, now that band stratification holds. That window is 21-22
+runs and one week as of this amendment — enough to establish the routing change is real, not enough
+to re-attribute the 2.4x. Anyone re-opening the spend argument should recompute rather than cite
+Amendment 2's decomposition.
+
+The general lesson is narrower than "the numbers were wrong." Amendment 2 ruled out a cause by
+checking whether the observed distribution looked plausible against the declared policy, and it did
+— the audit rationale said "tier mid" while dispatch said strong, so policy and outcome agreed
+everywhere the amendment looked. Ruling out a mechanism requires reading the mechanism, not
+confirming that its output is consistent with its stated intent.
+
 ## References
 
 - `CONVENTIONS.md` — `max_module_lines`
@@ -398,6 +468,12 @@ withdrawal: 48 advisory findings, 0 blocking.
   routing pass accumulates (`theforge/routing_evidence.py`)
 - #2399 — the same unit finished: the state carries what the frame held, the five
   named closures are module-scope, and `run_sprint` takes the context
-- #1617 — cold-start starvation, closed v0.12.0; ruled out as a cause of the model-mix shift
+- #1617 — cold-start starvation, closed v0.12.0; correctly ruled out, but not the only routing
+  mechanism that could concentrate selection — see Amendment 4
+- #2392 — winner-mode tier override; evidence for Amendment 4, closed v0.14.0 (`693af62a`)
+- #2393 — the routing snapshot and live log omit the exploration override, so the Amendment 4 split
+  is reconstructable only from the per-run audit record
 - Amendment figures: `.forge/audits/index.sqlite` (`audit_records`, `invocation_identities`,
   `reviews`); `git log --merges --shortstat` for the per-merge columns
+- Amendment 4 figures: `.forge/routing/*.json` joined to `audit_records` — see the provenance note
+  in that amendment for the join-key sensitivity
