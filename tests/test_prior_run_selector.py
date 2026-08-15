@@ -8,6 +8,15 @@ from theforge.task.prior_run_selector import select_prior_runs
 
 _STORY = "Refactor the sprint runner retry loop"
 _FILES = ["src/theforge/sprint/runner.py"]
+_PREFLIGHT_FORBIDDEN = [
+    "SENTINEL what changed description",
+    "SENTINEL dominant difficulty prose",
+    "SENTINEL recurring finding prose",
+    "SENTINEL resolved finding prose",
+    "SENTINEL review observation prose",
+    "SENTINEL learned pattern tag",
+    "SENTINEL plan-step lesson",
+]
 
 
 def _verdict(status: str = "admissible", rank: str = "full", reasons: list[str] | None = None):
@@ -64,11 +73,51 @@ def _write_summary(root: Path, run_id: str, **overrides) -> None:
         "schema_version": 1,
         "run_id": run_id,
         "what_changed": {
-            "description": f"run {run_id} reworked the retry loop",
-            "approach": "extracted a helper",
+            "description": "SENTINEL what changed description",
+            "approach": "Use a bounded helper before touching retry call sites",
+            "files_modified": ["src/theforge/sprint/runner.py"],
         },
-        "what_was_learned": [{"claim": "retries need a jitter cap", "evidence": []}],
-        "learned_patterns": ["retry-decorator"],
+        "what_was_learned": [
+            {
+                "claim": "Prefer a helper seam around the retry loop",
+                "evidence": [{"type": "file", "path": "src/theforge/sprint/runner.py"}],
+            },
+            {
+                "claim": "SENTINEL plan-step lesson",
+                "evidence": [{"type": "plan_step", "step_id": "s-2"}],
+            },
+        ],
+        "learned_patterns": ["SENTINEL learned pattern tag"],
+        "review_insights": {
+            "recurring_findings": [
+                {
+                    "finding_id": "f-007",
+                    "description": "SENTINEL recurring finding prose",
+                    "cycles_seen": 3,
+                }
+            ],
+            "resolved_findings": [
+                {
+                    "finding_id": "f-003",
+                    "description": "SENTINEL resolved finding prose",
+                    "resolution": "SENTINEL resolution prose",
+                }
+            ],
+            "observations": ["SENTINEL review observation prose"],
+        },
+        "complexity_signal": {
+            "actual_iterations": 2,
+            "review_cycles": 3,
+            "plan_regenerations": 1,
+            "cost_usd": 4.25,
+            "dominant_difficulty": "SENTINEL dominant difficulty prose",
+        },
+        "story_shape": {
+            "work_type": "refactor",
+            "complexity": "medium",
+            "complexity_score": 6,
+            "contract_change": False,
+        },
     }
     artifact.update(overrides)
     path.write_text(yaml.safe_dump(artifact, sort_keys=False), encoding="utf-8")
@@ -90,7 +139,8 @@ def test_relevant_summary_is_selected_with_deterministic_reasons(tmp_path: Path)
     assert "file_overlap(src/theforge/sprint/runner.py)" in candidate.reason
     assert "domain_match(sprint)" in candidate.reason
     assert candidate.score > 0
-    assert "reworked the retry loop" in candidate.content
+    assert "Related changed files: src/theforge/sprint/runner.py" in candidate.content
+    assert "Evidence-backed implementation patterns:" in candidate.content
     assert not selection.excluded
 
 
@@ -153,13 +203,53 @@ def test_malformed_verdict_block_fails_closed(tmp_path: Path) -> None:
     assert selection.excluded[0].reason == "inadmissible(no_verdict)"
 
 
-def test_preflight_phase_is_never_offered_prior_knowledge(tmp_path: Path) -> None:
+def test_preflight_phase_gets_signal_only_advisory_context(tmp_path: Path) -> None:
     _corpus(tmp_path, [_entry("4f2a91c")])
 
     selection = select_prior_runs(tmp_path, phase="preflight", story_text=_STORY, file_list=_FILES)
 
-    assert selection.candidates == ()
-    assert selection.phase_eligible is False
+    assert selection.phase_eligible is True
+    assert selection.rendering_mode == "signal_only"
+    assert [c.run_id for c in selection.candidates] == ["4f2a91c"]
+    content = selection.candidates[0].content
+    assert "Preflight note" in content
+    assert "Story shape: work_type=refactor, complexity=medium, complexity_score=6" in content
+    assert (
+        "Run signals: actual_iterations=2, review_cycles=3, plan_regenerations=1, cost_usd=4.25"
+    ) in content
+    assert "Recurring findings: count=1; id=f-007, cycles_seen=3" in content
+    assert "Resolved findings: count=1; id=f-003" in content
+    for sentinel in _PREFLIGHT_FORBIDDEN:
+        assert sentinel not in content
+
+
+def test_phase_specific_rendering_changes_by_phase(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    plan = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
+    dev = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    review = select_prior_runs(tmp_path, phase="review", story_text=_STORY, file_list=_FILES)
+
+    plan_content = plan.candidates[0].content
+    dev_content = dev.candidates[0].content
+    review_content = review.candidates[0].content
+
+    assert "Prior approach: Use a bounded helper before touching retry call sites" in plan_content
+    assert "Lessons with resolved evidence:" in plan_content
+    assert "SENTINEL plan-step lesson" in plan_content
+
+    assert "Related changed files: src/theforge/sprint/runner.py" in dev_content
+    assert "Evidence-backed implementation patterns:" in dev_content
+    assert "Prefer a helper seam around the retry loop" in dev_content
+    assert "SENTINEL learned pattern tag" not in dev_content
+
+    assert "Recurring findings to re-check:" in review_content
+    assert "f-007: SENTINEL recurring finding prose (cycles_seen=3)" in review_content
+    assert "Resolved findings worth verifying stayed fixed:" in review_content
+    assert "SENTINEL review observation prose" in review_content
+    assert (
+        "Review-cycle signals: review_cycles=3, actual_iterations=2, plan_regenerations=1"
+    ) in review_content
 
 
 def test_missing_index_yields_no_candidates(tmp_path: Path) -> None:

@@ -8,13 +8,15 @@ selector never asks: was nothing known, or was something known and withheld?
 
 from __future__ import annotations
 
-from .prior_run_selector import ELIGIBLE_PHASES, PriorRunSelection
+from .prior_run_selector import SUPPORTED_PHASES, PriorRunSelection
 
 
 def disabled_manifest() -> dict:
     """The manifest payload for a run whose ``knowledge.prior_run_context`` is off."""
     return {
         "enabled": False,
+        "phase": "",
+        "rendering_mode": "",
         "included": [],
         "dropped": [],
         "note": "prior-run context disabled (knowledge.prior_run_context)",
@@ -39,6 +41,8 @@ def build_manifest(
     for candidate in selection.candidates:
         record = {
             "run_id": candidate.run_id,
+            "phase": candidate.phase,
+            "rendering_mode": candidate.rendering_mode,
             "reason": candidate.reason,
             "score": candidate.score,
             "verdict": candidate.verdict.to_dict(),
@@ -49,13 +53,20 @@ def build_manifest(
             dropped.append({**record, "reason": "budget_pressure"})
 
     for exclusion in selection.excluded:
-        record = {"run_id": exclusion.run_id, "reason": exclusion.reason}
+        record = {
+            "run_id": exclusion.run_id,
+            "phase": selection.phase or phase,
+            "rendering_mode": selection.rendering_mode,
+            "reason": exclusion.reason,
+        }
         if exclusion.verdict is not None:
             record["verdict"] = exclusion.verdict.to_dict()
         dropped.append(record)
 
     return {
         "enabled": True,
+        "phase": selection.phase or phase,
+        "rendering_mode": selection.rendering_mode,
         "included": included,
         "dropped": dropped,
         "note": _build_note(
@@ -83,7 +94,7 @@ def _build_note(
     if not selection.phase_eligible:
         return (
             f"prior-run context is not injected in the {phase} phase "
-            f"(eligible phases: {', '.join(sorted(ELIGIBLE_PHASES))})"
+            f"(supported phases: {', '.join(sorted(SUPPORTED_PHASES))})"
         )
     if selection.entry_count == 0:
         return "no relevant prior knowledge exists (no indexed summaries)"

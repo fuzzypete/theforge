@@ -67,9 +67,45 @@ def _write_summary(root: Path, run_id: str, **overrides) -> None:
         "what_changed": {
             "description": f"run {run_id} reworked the retry loop",
             "approach": "extracted a helper",
+            "files_modified": ["src/theforge/sprint/runner.py"],
         },
-        "what_was_learned": [{"claim": "retries need a jitter cap", "evidence": []}],
+        "what_was_learned": [
+            {
+                "claim": "retries need a jitter cap",
+                "evidence": [{"type": "file", "path": "src/theforge/sprint/runner.py"}],
+            }
+        ],
         "learned_patterns": ["retry-decorator"],
+        "review_insights": {
+            "recurring_findings": [
+                {
+                    "finding_id": "f-007",
+                    "description": "missing timeout",
+                    "cycles_seen": 2,
+                }
+            ],
+            "resolved_findings": [
+                {
+                    "finding_id": "f-003",
+                    "description": "race condition",
+                    "resolution": "guarded helper",
+                }
+            ],
+            "observations": ["verify the timeout path"],
+        },
+        "complexity_signal": {
+            "actual_iterations": 2,
+            "review_cycles": 2,
+            "plan_regenerations": 1,
+            "cost_usd": 4.25,
+            "dominant_difficulty": "edge case coverage",
+        },
+        "story_shape": {
+            "work_type": "refactor",
+            "complexity": "medium",
+            "complexity_score": 6,
+            "contract_change": False,
+        },
     }
     artifact.update(overrides)
     path.write_text(yaml.safe_dump(artifact, sort_keys=False), encoding="utf-8")
@@ -100,7 +136,11 @@ def test_manifest_note_separates_admissibility_from_absence(tmp_path: Path) -> N
     manifest = build_manifest(selection, included_run_ids={"4f2a91c"}, phase="dev")
 
     assert manifest["enabled"] is True
+    assert manifest["phase"] == "dev"
+    assert manifest["rendering_mode"] == "phase_summary"
     assert [item["run_id"] for item in manifest["included"]] == ["4f2a91c"]
+    assert manifest["included"][0]["phase"] == "dev"
+    assert manifest["included"][0]["rendering_mode"] == "phase_summary"
     dropped = {item["run_id"]: item["reason"] for item in manifest["dropped"]}
     assert dropped["71bd334"] == "inadmissible(cited_source_deleted)"
     assert dropped["0ae5f92"] == "inadmissible(no_verdict)"
@@ -117,12 +157,26 @@ def test_manifest_note_reports_absence_when_nothing_is_indexed(tmp_path: Path) -
     assert "no relevant prior knowledge exists" in manifest["note"]
 
 
-def test_manifest_note_reports_phase_ineligibility(tmp_path: Path) -> None:
+def test_manifest_note_reports_unsupported_phase_ineligibility(tmp_path: Path) -> None:
     _corpus(tmp_path, [_entry("4f2a91c")])
-    selection = select_prior_runs(tmp_path, phase="preflight", story_text=_STORY, file_list=_FILES)
-    manifest = build_manifest(selection, included_run_ids=set(), phase="preflight")
+    selection = select_prior_runs(tmp_path, phase="validate", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="validate")
 
-    assert "not injected in the preflight phase" in manifest["note"]
+    assert "not injected in the validate phase" in manifest["note"]
+    assert "supported phases: dev, plan, preflight, review" in manifest["note"]
+
+
+def test_manifest_surfaces_signal_only_preflight_rendering(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry("4f2a91c")])
+
+    selection = select_prior_runs(tmp_path, phase="preflight", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids={"4f2a91c"}, phase="preflight")
+
+    assert manifest["phase"] == "preflight"
+    assert manifest["rendering_mode"] == "signal_only"
+    assert manifest["included"][0]["phase"] == "preflight"
+    assert manifest["included"][0]["rendering_mode"] == "signal_only"
+    assert manifest["included"][0]["reason"].startswith("file_overlap(")
 
 
 def test_note_does_not_claim_unrelated_inadmissible_summaries_as_withheld(

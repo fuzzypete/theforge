@@ -67,8 +67,44 @@ def _write_prior_run_corpus(
                 "what_changed": {
                     "description": "reworked the sprint runner retry loop",
                     "approach": "extracted a bounded helper",
+                    "files_modified": ["src/theforge/sprint/runner.py"],
                 },
-                "what_was_learned": [{"claim": "retries need a jitter cap", "evidence": []}],
+                "what_was_learned": [
+                    {
+                        "claim": "retries need a jitter cap",
+                        "evidence": [{"type": "file", "path": "src/theforge/sprint/runner.py"}],
+                    }
+                ],
+                "review_insights": {
+                    "recurring_findings": [
+                        {
+                            "finding_id": "f-007",
+                            "description": "missing timeout coverage",
+                            "cycles_seen": 2,
+                        }
+                    ],
+                    "resolved_findings": [
+                        {
+                            "finding_id": "f-003",
+                            "description": "race condition",
+                            "resolution": "guarded helper",
+                        }
+                    ],
+                    "observations": ["verify the timeout branch"],
+                },
+                "complexity_signal": {
+                    "actual_iterations": 2,
+                    "review_cycles": 2,
+                    "plan_regenerations": 1,
+                    "cost_usd": 4.25,
+                    "dominant_difficulty": "edge case coverage",
+                },
+                "story_shape": {
+                    "work_type": "refactor",
+                    "complexity": "medium",
+                    "complexity_score": 6,
+                    "contract_change": False,
+                },
             },
             sort_keys=False,
         ),
@@ -273,7 +309,8 @@ def test_prior_run_summary_is_included_when_enabled_and_relevant(tmp_path: Path)
         phase="dev", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100
     )
 
-    assert "reworked the sprint runner retry loop" in pack.content
+    assert "Related changed files: src/theforge/sprint/runner.py" in pack.content
+    assert "Evidence-backed implementation patterns:" in pack.content
     assert any(entry.kind == "prior_run_summary" for entry in pack.included)
     assert all(
         entry.item_type == "advisory"
@@ -304,7 +341,9 @@ def test_prior_run_summary_is_disabled_by_default(tmp_path: Path) -> None:
         assert pack.prior_run_context["enabled"] is False
 
 
-def test_prior_run_summary_never_reaches_preflight_even_when_enabled(tmp_path: Path) -> None:
+def test_prior_run_summary_reaches_preflight_as_signal_only_advisory_context(
+    tmp_path: Path,
+) -> None:
     _write_prior_run_corpus(tmp_path)
     config = _config_with_prior_run_context(tmp_path, enabled=True)
 
@@ -312,9 +351,18 @@ def test_prior_run_summary_never_reaches_preflight_even_when_enabled(tmp_path: P
         phase="preflight", story_text=_PRIOR_STORY, file_list=_PRIOR_FILES, budget=100
     )
 
-    assert "sprint runner retry loop" not in pack.content
-    assert not any(entry.kind == "prior_run_summary" for entry in pack.included)
-    assert "not injected in the preflight phase" in pack.prior_run_context["note"]
+    assert "Preflight note: Advisory prior-run signals only." in pack.content
+    assert (
+        "Run signals: actual_iterations=2, review_cycles=2, plan_regenerations=1, cost_usd=4.25"
+    ) in pack.content
+    assert any(entry.kind == "prior_run_summary" for entry in pack.included)
+    manifest = pack.prior_run_context
+    assert manifest["phase"] == "preflight"
+    assert manifest["rendering_mode"] == "signal_only"
+    assert manifest["included"][0]["phase"] == "preflight"
+    assert manifest["included"][0]["rendering_mode"] == "signal_only"
+    assert "reworked the sprint runner retry loop" not in pack.content
+    assert "edge case coverage" not in pack.content
 
 
 def test_inadmissible_prior_summary_is_excluded_with_verdict_in_manifest(tmp_path: Path) -> None:
@@ -352,6 +400,8 @@ def test_prior_run_summary_is_dropped_before_required_context(tmp_path: Path) ->
     manifest = pack.prior_run_context
     assert manifest["included"] == []
     assert manifest["dropped"][0]["reason"] == "budget_pressure"
+    assert manifest["dropped"][0]["phase"] == "dev"
+    assert manifest["dropped"][0]["rendering_mode"] == "phase_summary"
     assert "dropped under budget pressure" in manifest["note"]
 
 
