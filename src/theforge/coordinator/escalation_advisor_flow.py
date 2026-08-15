@@ -17,11 +17,20 @@ from __future__ import annotations
 from dataclasses import replace
 from typing import TYPE_CHECKING
 
+from theforge.assignment import NoCapableCandidateError, _capability_exclusions, _capability_pool
 from theforge.config import DEFAULT_INVESTIGATION_TOOLS
+from theforge.config.model_identity import KNOWN_PHASES
+from theforge.config.pricing import price_tiebreak_signal_for
 from theforge.escalation_advisor import (
     CycleEvidence,
     EvidencePacket,
     parse_advisory_report,
+)
+from theforge.model_capabilities import (
+    capabilities_path,
+    identity_for_agent,
+    identity_for_profile,
+    load_capabilities,
 )
 from theforge.task.advisor_prompts import build_advisor_prompt
 
@@ -50,6 +59,97 @@ log_agent_result = None
 # Cap the dev-diff captured into the packet so a large change cannot balloon the
 # advisor prompt.
 _DIFF_MAX_BYTES = 20_000
+
+
+def _agent_registry_spec(config: "ForgeConfig", agent: object) -> object | None:
+    registry = getattr(config, "model_registry", None) or {}
+    registry_id = getattr(agent, "registry_id", None)
+    spec = registry.get(registry_id) if registry_id else None
+    if spec is None:
+        identity = identity_for_agent(agent)
+        if identity is not None:
+            spec = registry.get(identity.key)
+    return spec
+
+
+def _sort_advisor_candidates(config: "ForgeConfig", agents: list[object]) -> list[object]:
+    fallback_rank = {"cheap": 1, "fast": 1, "mid": 2, "strong": 3}
+
+    def _sort_key(agent: object) -> tuple[object, ...]:
+        spec = _agent_registry_spec(config, agent)
+        if spec is not None:
+            return (spec.cost_rank, -spec.capability, price_tiebreak_signal_for(spec))
+        return (
+            fallback_rank.get(getattr(agent, "tier", None), 2),
+            0,
+            price_tiebreak_signal_for(agent),
+        )
+
+    return sorted(
+        agents,
+        key=_sort_key,
+    )
+
+
+def _agent_phase_eligibility(config: "ForgeConfig", agent: object) -> frozenset[str]:
+    spec = _agent_registry_spec(config, agent)
+    if spec is not None:
+        return spec.phase_eligibility
+    return KNOWN_PHASES
+
+
+def _select_advisor_profile(config: "ForgeConfig") -> object:
+    """Choose the advisor model from the configured pool, fail-closed on ineligibility."""
+    agents = getattr(config, "agents", None) or []
+    if not agents:
+        raise ValueError("no configured model candidates are available for the advisor role")
+
+    phase_eligible = [
+        agent for agent in agents if "advisor" in _agent_phase_eligibility(config, agent)
+    ]
+    if not phase_eligible:
+        raise ValueError(
+            "no configured model is phase-eligible for advisor "
+            "(routing.phase_eligibility excludes advisor)"
+        )
+
+    capabilities = load_capabilities(capabilities_path(config.project_root))
+    excluded = _capability_exclusions(phase_eligible, "advisor", capabilities)
+    capable = _capability_pool(phase_eligible, excluded)
+    if not capable:
+        raise NoCapableCandidateError("advisor", "tool-structured", excluded)
+
+    sorted_capable = _sort_advisor_candidates(config, capable)
+    preflight_identity = identity_for_profile(config.preflight_profile)
+    selected = next(
+        (
+            agent
+            for agent in sorted_capable
+            if preflight_identity is not None and identity_for_agent(agent) == preflight_identity
+        ),
+        None,
+    )
+    if selected is None:
+        fast = [
+            agent
+            for agent in sorted_capable
+            if getattr(_agent_registry_spec(config, agent), "tier", None) == "fast"
+        ]
+        selected = fast[0] if fast else sorted_capable[0]
+
+    return replace(
+        config.preflight_profile,
+        name="advisor",
+        phase="advisor",
+        cli=selected.cli,
+        provider=selected.provider,
+        transport=selected.transport,
+        base_url=selected.base_url,
+        model=selected.model,
+        registry_id=selected.registry_id,
+        registry_source=selected.registry_source,
+        allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
+    )
 
 
 def _ensure_runners() -> None:
@@ -235,16 +335,26 @@ def run_escalation_advisor(
     or errored report as "preserve the escalation" — never as an auto-decision.
     """
     _ensure_runners()
+    state.advisory_generated = False
+    state.advisory_report = None
+    state.advisory_launch_failure = False
+    state.advisory_launch_reason = None
+    state.advisory_unavailable_reason = None
 
     packet = build_evidence_packet(state, task, config, workspace_path)
     state.advisory_packet = packet.to_dict()
 
     prompt = build_advisor_prompt(packet)
-    # Preflight's profile is the base — same capability tier, same clean-baseline
-    # working dir — but not its tool surface. Preflight's is narrowed to deny
-    # delegation it cannot be resumed for (#2346); the advisor is a separate job
-    # that keeps the shared read-only investigation set it held before.
-    profile = replace(config.preflight_profile, allowed_tools=DEFAULT_INVESTIGATION_TOOLS)
+    try:
+        profile = _select_advisor_profile(config)
+    except NoCapableCandidateError as exc:
+        state.advisory_unavailable_reason = str(exc)
+        _log(f"  ⚠ advisor unavailable: {exc}")
+        return None
+    except ValueError as exc:
+        state.advisory_unavailable_reason = str(exc)
+        _log(f"  ⚠ advisor unavailable: {exc}")
+        return None
 
     _log("─── Escalation Advisor (fresh context) ───")
     _log(f"  Profile: {profile.model}")
@@ -271,7 +381,9 @@ def run_escalation_advisor(
         )
     except Exception as exc:  # pragma: no cover - defensive
         _log(f"  ⚠ advisor invocation failed: {exc}")
-        state.advisory_generated = False
+        state.advisory_unavailable_reason = (
+            f"advisor invocation failed before a usable report: {exc}"
+        )
         return None
     finally:
         if cleanup is not None:
@@ -295,7 +407,7 @@ def run_escalation_advisor(
             _log(f"     launch failure: {launch_reason}")
         else:
             _log("  ⚠ advisor agent returned failure — preserving escalation")
-        state.advisory_generated = False
+            state.advisory_unavailable_reason = "advisor returned failure before a usable report"
         return None
 
     report = parse_advisory_report(result.output or "")
@@ -306,5 +418,8 @@ def run_escalation_advisor(
             f"  Advisory recommendation: {report.recommendation} ({len(report.options)} option(s))"
         )
     else:
+        state.advisory_unavailable_reason = (
+            "advisor output failed advisory-report validation: " + "; ".join(report.parse_errors)
+        )
         _log(f"  ⚠ advisory report failed validation: {report.parse_errors}")
     return report

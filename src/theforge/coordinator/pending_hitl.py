@@ -156,6 +156,8 @@ def _pending_escalate_gate(
     project_root = getattr(config, "project_root", None)
 
     advisory_ok = advisory is not None and advisory.ok
+    advisory_has_recommendation = advisory_ok and bool((advisory.recommendation or "").strip())
+    escalate_reason_text = escalate_reason or state.escalate_reason or ""
 
     # Offer only what this state can carry out. An action presented here is a
     # promise the gate keeps: presenting one it cannot perform converts the
@@ -165,7 +167,7 @@ def _pending_escalate_gate(
     options, omitted_actions = available_escalate_actions(state, ACTION_TAXONOMY)
     omitted_note = omitted_actions_note(omitted_actions)
 
-    if advisory_ok:
+    if advisory_ok and advisory_has_recommendation:
         assert advisory is not None
         display_advisory = advisory
         recommendation_withheld = advisory.recommendation in omitted_actions
@@ -195,6 +197,29 @@ def _pending_escalate_gate(
                 else ""
             )
             reason = "\n".join(filter(None, [reason, "", omitted_note, withheld_rec_note]))
+    elif advisory_ok:
+        assert advisory is not None
+        extra = {
+            "decision_required": True,
+            "advisory_no_recommendation": True,
+            "advisory": advisory.to_dict(),
+            "evidence_packet": state.advisory_packet,
+        }
+        if omitted_actions:
+            extra["omitted_actions"] = dict(omitted_actions)
+        reason = "\n".join(
+            filter(
+                None,
+                [
+                    "ESCALATION — advisor completed but recommended no action; select an action.",
+                    advisory.rationale,
+                    verdict_line,
+                    gate_line,
+                    escalate_reason_text[:200],
+                    omitted_note,
+                ],
+            )
+        )
     else:
         # No usable advisory (agent failed / malformed). Still require an explicit
         # operator decision — surface the performable taxonomy plus the raw
@@ -203,6 +228,7 @@ def _pending_escalate_gate(
         if omitted_actions:
             extra["omitted_actions"] = dict(omitted_actions)
         launch_failed = bool(getattr(state, "advisory_launch_failure", False))
+        unavailable_reason = getattr(state, "advisory_unavailable_reason", None)
         if launch_failed:
             # An advisor that never started is a defect in forge's own
             # configuration, not an investigation that reached no conclusion. Say
@@ -226,6 +252,13 @@ def _pending_escalate_gate(
                 ),
                 f"launch failure: {launch_reason}",
             ]
+        elif unavailable_reason:
+            extra["advisory_unavailable_reason"] = unavailable_reason
+            headline = [
+                "ESCALATION — advisory input missing; select an action.",
+                "The advisor role could not produce a usable structured report for this gate.",
+                f"reason: {unavailable_reason}",
+            ]
         else:
             headline = ["ESCALATION — advisory report unavailable; select an action."]
         reason = "\n".join(
@@ -235,7 +268,7 @@ def _pending_escalate_gate(
                     *headline,
                     verdict_line,
                     gate_line,
-                    escalate_reason[:200],
+                    escalate_reason_text[:200],
                     omitted_note,
                 ],
             )

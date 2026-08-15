@@ -77,7 +77,7 @@ class TestReachableFromShippedDefaults:
         haiku = catalog["anthropic/haiku/cli"]
         assert (haiku.tier, haiku.capability, haiku.cost_rank) == ("cheap", 6, 1)
         assert haiku.dev_capable is False
-        assert haiku.phase_eligibility == frozenset({"preflight", "review"})
+        assert haiku.phase_eligibility == frozenset({"advisor", "preflight", "review"})
         # A CLI shorthand resolves at invocation, so its literal is unattributed
         # and routing ignores it — same rule sonnet/opus ship under.
         assert haiku.pricing_provenance is None
@@ -249,7 +249,7 @@ class TestDuplicateDeclarationsAreReported:
                                 "capability": 6,
                                 "cost_rank": 1,
                                 "dev_capable": False,
-                                "phase_eligibility": ["preflight", "review"],
+                                "phase_eligibility": ["preflight", "review", "advisor"],
                             },
                             "cost": {"input_per_mtok": 1.00, "output_per_mtok": 5.00},
                         },

@@ -1077,6 +1077,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "declined_reason": state.escalate_declined_reason,
                 "advisory_generated": state.advisory_generated,
                 "advisory": state.advisory_report,
+                "advisory_unavailable_reason": state.advisory_unavailable_reason,
                 # A pre-turn advisor exit is a configuration defect that spent
                 # nothing — kept distinct in the audit from an advisor that ran
                 # and produced nothing usable (#2164).
