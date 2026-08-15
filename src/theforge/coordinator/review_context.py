@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 import yaml
 
 from theforge.devhandoff import DevHandoff, dev_handoff_to_reviewer_text, parse_dev_handoff
+from theforge.validation_profiles import last_merge_authority_record
 
 from . import util as _cu
 
@@ -19,6 +20,25 @@ if TYPE_CHECKING:
     from theforge.config import ForgeConfig
 
     from .state import CoordinatorState
+
+
+def gate_profile_prompt_kwargs(state: CoordinatorState) -> dict[str, object]:
+    """Name the validation profile behind the verdict a reviewer is handed (#2358).
+
+    Both prompt-building routes (the normal review pool and the review-only
+    entry point) go through this, so a reviewer cannot be told the verdict
+    without also being told what standing it carries. Empty when no
+    merge-authority run was recorded — a legacy config, an older resumed record,
+    or a story whose gate was suppressed — in which case the prompt reads
+    exactly as it did before profiles existed.
+    """
+    record = last_merge_authority_record(getattr(state, "validation_runs", None))
+    if record is None:
+        return {}
+    return {
+        "authoritative_gate_profile": record.get("profile"),
+        "authoritative_gate_authority": record.get("authority"),
+    }
 
 
 def hard_convention_review_kwargs(config: ForgeConfig) -> dict[str, object]:

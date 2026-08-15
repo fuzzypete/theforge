@@ -173,6 +173,18 @@ workspace:
 validation:
   # Command to run validation checks. Gate passes on exit 0, fails on non-zero.
   gate_command: "make gate"
+  # Optional: declare named validation profiles instead of the two command
+  # slots above. Exactly one profile carries merge authority — its result is
+  # the only one that can establish a gate verdict; every other profile's
+  # result is advisory. Forge substitutes {test_target} and {slug}; what to do
+  # with them is your command's decision. Omit this block entirely to keep the
+  # gate_command/test_command behaviour above.
+  # profiles:
+  #   complete:
+  #     command: "make gate"
+  #     authority: merge
+  #   fast: "make test-fast"
+  #   targeted: "make test TARGET={test_target}"
 
 # v0.8 simple model list — complexity-aware roles are derived automatically.
 # Each entry is a canonical model identity: <provider>/<model>/<cli|api>.

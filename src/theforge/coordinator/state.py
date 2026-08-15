@@ -657,6 +657,15 @@ class CoordinatorState:
     # a resumed run reports every cycle as ungated even though a gate ran.
     last_gate_commit: str | None = None
     last_gate_decision: str | None = None
+    # Provenance for every validation run this story performed: which profile
+    # ran, what authority that profile carries, the resolved command, the
+    # result, the commit it judged, and whether it was skipped (#2358). A gate
+    # decision on its own says only that a command exited zero; these records
+    # say what the result was worth, so the scope and standing behind a verdict
+    # is readable afterwards rather than inferred from a command string.
+    # Persisted to the resume sidecar and the audit; records written before this
+    # field existed are absent, and absence is read as legacy (complete/merge).
+    validation_runs: list[dict] = field(default_factory=list)
     last_review_findings: str | None = None
     cycle_history: list[CycleHistory] = field(default_factory=list)
     cycle_history_total: int = 0  # monotonically increasing count of all appended entries

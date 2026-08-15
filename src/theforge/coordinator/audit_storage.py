@@ -119,7 +119,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 28
+CURRENT_RECORD_SCHEMA_VERSION = 29
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1728,6 +1728,25 @@ def _migrate_v27_to_v28(record: dict) -> dict:
     return {**record, "changed_files": None}
 
 
+def _migrate_v28_to_v29(record: dict) -> dict:
+    """Backfill the absent validation-run provenance (issue #2358).
+
+    v29 records, per validation run, which profile produced the result and what
+    authority that profile carried. A v28 record predates profiles: every
+    validation it performed was the single gate command, whose result was the
+    merge decision. So the backfill is an empty list rather than an invented
+    entry — the record's ``gate_decisions``/``gate_runs`` already say what ran,
+    and reconstructing a per-run profile from them would fabricate provenance
+    that was never observed. Readers treat an absent profile as the legacy
+    complete/merge shape, so an old record keeps exactly the standing it had.
+    The stored record is never rewritten (ADR-0002 refusal-to-forget).
+    """
+    block = record.get("iterations")
+    if not isinstance(block, dict) or "validation_runs" in block:
+        return record
+    return {**record, "iterations": {**block, "validation_runs": []}}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1764,6 +1783,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     25: _migrate_v25_to_v26,
     26: _migrate_v26_to_v27,
     27: _migrate_v27_to_v28,
+    28: _migrate_v28_to_v29,
 }
 
 

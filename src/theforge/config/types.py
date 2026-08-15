@@ -614,6 +614,52 @@ class DevVerificationCommand:
     output_tail_chars: int = 4000  # chars of output returned to the agent
 
 
+#: Authority a validation profile's result carries. ``merge`` is the only
+#: standing that establishes a gate verdict; every other run is ``advisory``
+#: — a signal a phase may act on, never a verdict a merge may rest on (#2358).
+VALIDATION_AUTHORITY_MERGE = "merge"
+VALIDATION_AUTHORITY_ADVISORY = "advisory"
+VALIDATION_AUTHORITIES: tuple[str, ...] = (
+    VALIDATION_AUTHORITY_MERGE,
+    VALIDATION_AUTHORITY_ADVISORY,
+)
+
+#: The closed vocabulary of declarable profile names. Closed on purpose: forge
+#: selects a profile *by meaning* (complete / cheap-and-broad / scoped), so a
+#: name it does not recognise is a profile it could never select. Accepting one
+#: would load cleanly and then silently never run — the failure mode the
+#: reviewer of this change flagged. Rejecting it at load time is the config
+#: integrity boundary doing its job.
+VALIDATION_PROFILE_COMPLETE = "complete"
+VALIDATION_PROFILE_FAST = "fast"
+VALIDATION_PROFILE_TARGETED = "targeted"
+VALIDATION_PROFILE_NAMES: tuple[str, ...] = (
+    VALIDATION_PROFILE_COMPLETE,
+    VALIDATION_PROFILE_FAST,
+    VALIDATION_PROFILE_TARGETED,
+)
+
+
+@dataclass(frozen=True)
+class ValidationProfile:
+    """One named validation profile a project declares, and what it is worth.
+
+    The command is the project's own — forge substitutes the scoping context it
+    has (``{test_target}``, ``{slug}``) and runs it. It never infers test
+    framework syntax, source-to-test mappings, or package layout: what a scoped
+    run means is the declared command's decision, not forge's.
+    """
+
+    name: str  # one of VALIDATION_PROFILE_NAMES
+    command: str  # shell command, run in the worktree
+    authority: str = VALIDATION_AUTHORITY_ADVISORY  # one of VALIDATION_AUTHORITIES
+
+    @property
+    def is_merge_authority(self) -> bool:
+        """True when a result from this profile can establish a gate verdict."""
+        return self.authority == VALIDATION_AUTHORITY_MERGE
+
+
 @dataclass(frozen=True)
 class ValidationConfig:
     """How to validate agent output.
@@ -674,11 +720,37 @@ class ValidationConfig:
     # coordinator execution. Does not reset across dev transport retries — the
     # budget belongs to the iteration, not to one run_agent attempt.
     dev_verification_max_requests: int = 10
+    # ── Declared validation profiles (issue #2358) ────────────────────────────
+    # Empty (the default) means the project declared nothing new and keeps the
+    # legacy two-slot behaviour exactly: gate_command is the authoritative
+    # complete run, test_command the advisory inner-loop one. When profiles are
+    # declared they are the whole vocabulary — exactly one carries merge
+    # authority, and selection runs through theforge.validation_profiles.
+    profiles: tuple[ValidationProfile, ...] = ()
 
     def dev_verification_command(self, name: str) -> DevVerificationCommand | None:
         """Return the declared verification command named ``name``, else None."""
         for entry in self.dev_verification_commands:
             if entry.name == name:
+                return entry
+        return None
+
+    def profile(self, name: str) -> ValidationProfile | None:
+        """Return the declared profile named ``name``, else None."""
+        for entry in self.profiles:
+            if entry.name == name:
+                return entry
+        return None
+
+    def declared_merge_profile(self) -> ValidationProfile | None:
+        """Return the declared merge-authority profile, else None.
+
+        None means nothing was declared: the loader guarantees that a non-empty
+        ``profiles`` contains exactly one merge-authority entry, so this can
+        only be None on the legacy path.
+        """
+        for entry in self.profiles:
+            if entry.is_merge_authority:
                 return entry
         return None
 

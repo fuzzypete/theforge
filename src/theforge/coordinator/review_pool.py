@@ -51,6 +51,9 @@ from .review_context import (
     evaluate_reviewer_tree_currency,
     hard_convention_review_kwargs,
 )
+from .review_context import (
+    gate_profile_prompt_kwargs as _gate_profile_prompt_kwargs,
+)
 from .reviewer_progress import ReviewerProgressChannel
 from .state import CoordinatorState, Phase, ReviewCycleMetadata
 
@@ -782,6 +785,7 @@ def _run_review_pool(
                     containment=state.dev_containment,
                     authoritative_gate_decision=state.last_gate_decision,
                     authoritative_gate_commit=state.last_gate_commit,
+                    **_gate_profile_prompt_kwargs(state),
                     fix_claim_flags=fix_claim_flags,
                     p2_policy=config.dev.p2_policy,
                 )
@@ -809,6 +813,7 @@ def _run_review_pool(
                 containment=state.dev_containment,
                 authoritative_gate_decision=state.last_gate_decision,
                 authoritative_gate_commit=state.last_gate_commit,
+                **_gate_profile_prompt_kwargs(state),
                 fix_claim_flags=fix_claim_flags,
                 p2_policy=config.dev.p2_policy,
             )

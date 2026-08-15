@@ -795,6 +795,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             # errored and excluding runs where gate_override skipped the gate.
             # Differs from len(gate_decisions) by design (#1984).
             "gate_runs": state.gate_runs,
+            # Provenance for each validation run: profile, authority, resolved
+            # command, result, commit, skipped (#2358). The gate_decisions list
+            # above says a command exited zero; this says what that was worth.
+            "validation_runs": list(state.validation_runs),
             "dev_loop": _serialize_dev_iteration_metrics(state),
             "gate_debug": _serialize_gate_debug_metrics(state),
             # Gate commands that left processes running and had them killed at
