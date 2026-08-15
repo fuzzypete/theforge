@@ -39,7 +39,9 @@ from theforge.config import (
     PREFLIGHT_ALLOWED_CAPABILITIES,
     PREFLIGHT_FORBIDDEN_TOOLS,
     PREFLIGHT_READ_ONLY_TOOLS,
+    AgentDef,
     resolve_preflight_tools,
+    transport_for,
 )
 from theforge.config.types import ModelProfile
 from theforge.coordinator.engine import run_task
@@ -555,6 +557,23 @@ class TestApiTransportToolCanonicalization:
         from theforge.coordinator.state import CoordinatorState, Phase
 
         config = _make_config(tmp_path)
+        config = config.__class__(
+            **{
+                **config.__dict__,
+                "agents": [
+                    AgentDef(
+                        name="advisor-fast",
+                        provider="anthropic",
+                        model="sonnet",
+                        budget_usd=3.0,
+                        timeout_seconds=600,
+                        tier="fast",
+                        transport=transport_for("anthropic", "api"),
+                        registry_id="anthropic/sonnet/api",
+                    )
+                ],
+            }
+        )
         task = _make_task(tmp_path)
         state = CoordinatorState()
         state.phase = Phase.ESCALATE

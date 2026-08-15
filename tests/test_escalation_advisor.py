@@ -146,6 +146,20 @@ options:
         assert not report.ok
         assert any("no <advisory_report>" in e for e in report.parse_errors)
 
+    def test_empty_recommendation_is_a_valid_no_recommendation_result(self):
+        report = parse_advisory_report(
+            """
+<advisory_report>
+recommendation:
+rationale: The evidence does not support one action over the others.
+options: []
+</advisory_report>
+"""
+        )
+        assert report.ok
+        assert report.recommendation == ""
+        assert report.options == []
+
     def test_recommendation_outside_taxonomy_rejected(self):
         block = self._valid_block(recommendation="ship_it")
         report = parse_advisory_report(block)
@@ -247,6 +261,31 @@ options:
         assert "Redirect" in text and "Elevate" in text
         assert "← recommended" in text
         assert "max cycles exhausted" in text
+
+    def test_render_handles_no_recommendation(self):
+        report = parse_advisory_report(
+            """
+<advisory_report>
+recommendation:
+rationale: The evidence does not support one action over the others.
+options: []
+</advisory_report>
+"""
+        )
+        packet = EvidencePacket(
+            story_name="git-guard",
+            issue_ref="#1365",
+            issue_body="body",
+            acceptance_criteria=["ac1"],
+            cycles=[],
+            reviewer_verdicts={},
+            final_verdict="REQUEST_CHANGES",
+            dev_diff="",
+            test_failures="",
+            escalation_reason="max cycles exhausted",
+        )
+        text = render_advisory_for_pending(report, packet)
+        assert "RECOMMENDED ACTION: none" in text
 
 
 # ── Evidence packet builder ───────────────────────────────────────────────────
