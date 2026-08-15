@@ -28,7 +28,7 @@ from theforge.config import (
     build_provenance,
 )
 from theforge.coordinator import audit as audit_writer
-from theforge.coordinator import audit_substrate
+from theforge.coordinator import audit_storage, audit_substrate
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.audit_substrate import (
     CURRENT_RECORD_SCHEMA_VERSION as SCHEMA_VERSION,
@@ -519,7 +519,11 @@ def test_migrate_record_dispatches_through_registry(
         return {**record, "migrated_v2": True}
 
     fake_registry = {1: fake_v1_to_v2}
-    monkeypatch.setattr(audit_substrate, "MIGRATION_HELPERS", fake_registry)
+    # Patched on ``audit_storage``, which owns the registry and the dispatcher
+    # (#2350). ``audit_substrate`` re-exports both, so patching the facade would
+    # rebind only the facade's own reference and leave the dispatcher reading
+    # its real module global.
+    monkeypatch.setattr(audit_storage, "MIGRATION_HELPERS", fake_registry)
 
     out = audit_substrate._migrate_record({"marker": "untouched"}, from_version=1)
 
