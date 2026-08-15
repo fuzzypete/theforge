@@ -134,6 +134,52 @@ writes currently leave undecided. Every subsequent extraction is downstream of
 that and comparatively cheap. A milestone that starts by splitting files will
 spend its budget discovering this.
 
+### `coordinator/audit_substrate.py` — a different shape, and the first one done
+
+`audit_substrate.py` was on the table above for the same reason as `runner.py`
+and for none of the same causes. It was never a god-function module: 85
+top-level functions with a median of 20 lines, so the seams already existed at
+function level. What it lacked was a boundary between four change-reasons
+sharing one file and one owner — schema definition (8 `CREATE TABLE`), schema
+migration (23 `_migrate_*`), persistence (`upsert_run_record`,
+`rebuild_from_runs`, the record writers), and analytics (28 `SELECT`, 6
+`derive_*`). A new query and a new migration have nothing to do with each other,
+yet they landed in the same module, were reviewed together, and collided in the
+scheduler as a single file claim.
+
+Resolved by #2350 into two owners with a one-way dependency:
+
+| module | owns |
+|---|---|
+| `coordinator/audit_storage.py` | connection opening and validation, schema, migrations, all record writes |
+| `coordinator/audit_read_model.py` | SELECT queries and the derivations over them |
+
+The interface between them is named: `audit_storage.AuditConnection`, a
+connection storage has opened, validated, and brought to the current schema. The
+read model may issue SELECT SQL against one directly — routing every query
+through a storage accessor would have made storage change on every new
+question, which is the coupling being removed. Storage never imports the read
+model. `audit_substrate.py` remains as a re-export facade so the ~20 consumer
+modules keep working.
+
+Two things this ADR should be read as saying about that work:
+
+**The migration catalogue was left intact.** All 23 `_migrate_*` functions moved
+as one uninterrupted sequential unit into `audit_storage.py`. A sequential
+catalogue is legitimately long and is meant to be read in order; dividing it
+would have made it harder to read while making the line-count table look
+better. An issue that judges itself on lines removed will cut exactly the part
+that should be left alone.
+
+**The success measure is independent change ownership, not line count.** The
+right question is whether a new analytical query can land without touching
+schema or migration code — it can, and `verdict_outcome_counts` is the worked
+example, a grouped query over columns `audit_records` already indexes that
+required no schema bump and no migration entry. The line-count table moved too,
+but that is a side effect of the split, not the thing being bought. This is
+`CONVENTIONS.md`'s rule restated: extract when a responsibility separates from
+its neighbours, never to satisfy a count.
+
 ## Consequences
 
 The ratchet is a holding action and should be read as one. It stops the debt
