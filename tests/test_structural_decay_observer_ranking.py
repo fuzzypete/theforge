@@ -1,81 +1,37 @@
-"""Tests for the #2348 structural-decay spike POC.
+"""Tests for the #2348 spike's pure ranking math (``ranking.py``).
 
 The POC's whole value is that its numbers are *qualified* — an excess figure
 computed off three runs and one that survived a controlled comparison must not
-render identically. So these tests pin the qualifications as hard as the
+read identically. So these tests pin the qualifications as hard as the
 arithmetic:
 
-- coverage and threshold reporting, including the case where the data is too
-  thin to trust and the report has to say so
+- attribution: a run's cost is split across the files it changed, never charged
+  whole to each
 - comparable-cohort excess: a run costing more than its like-for-like peers
   produces positive excess, and a run with no peers contributes none
 - ``weakest_signal`` selection, including a control that is *unavailable* being
   reported rather than silently treated as controlled
 - the ship gate: a small hot file must be able to outrank a large cold one, or
   the ranking has rediscovered ``wc -l``
+
+Rendering and substrate access are covered by
+``test_structural_decay_observer_report.py``.
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from structural_decay_test_helpers import coverage as _coverage
+from structural_decay_test_helpers import touch_rows as _touch_rows
 
-from theforge.coordinator import audit_storage
 from theforge.structural_decay_observer import (
     MIN_COHORT_RUNS,
     MIN_TOUCHING_RUNS,
     build_runs,
     compare_to_line_counts,
-    load_report,
     rank_candidates,
-    render,
     resolve_controls,
     threshold_status,
 )
-
-
-def _touch_rows(
-    run_id: str,
-    paths: list[str],
-    *,
-    cost: float,
-    complexity: int | None = 5,
-    dev_model: str | None = "anthropic/opus",
-    started_at: str = "2026-07-01T00:00:00Z",
-    insertions: int = 10,
-) -> list[dict]:
-    return [
-        {
-            "run_id": run_id,
-            "path": path,
-            "insertions": insertions,
-            "deletions": 1,
-            "binary": False,
-            "slug": f"issue-{run_id}",
-            "issue_id": None,
-            "started_at": started_at,
-            "total_cost_usd": cost,
-            "complexity_score": complexity,
-            "outcome_success": 1,
-            "verdict": "APPROVE",
-            "dev_model": dev_model,
-            "dev_resolved_model": dev_model,
-            "milestone": "v0.15.0",
-        }
-        for path in paths
-    ]
-
-
-def _coverage(joinable: int, measured: int, *, spend: float = 100.0) -> dict:
-    return {
-        "measured_runs": measured,
-        "measured_spend_usd": spend,
-        "joinable_runs": joinable,
-        "joinable_spend_usd": spend * (joinable / measured if measured else 0),
-        "run_coverage_ratio": joinable / measured if measured else 0.0,
-        "spend_coverage_ratio": joinable / measured if measured else 0.0,
-        "first_joinable_at": "2026-07-01T00:00:00Z",
-        "last_joinable_at": "2026-08-01T00:00:00Z",
-    }
 
 
 class TestRunProjection:
@@ -294,189 +250,3 @@ class TestThresholdReporting:
         status = threshold_status(_coverage(40, 45), candidates)
 
         assert status["met"] is True
-
-    def test_untrustworthy_ranking_is_labelled_in_the_rendered_report(self) -> None:
-        rows = _touch_rows("a", ["one.py"], cost=10.0)
-        candidates = rank_candidates(build_runs(rows), line_counts={"one.py": 500})
-        coverage = _coverage(31, 160)
-        report = {
-            "coverage": coverage,
-            "controls": resolve_controls(build_runs(rows)),
-            "runs": 1,
-            "candidates": candidates,
-            "threshold": threshold_status(coverage, candidates),
-            "line_count_comparison": compare_to_line_counts(candidates, {"one.py": 500}),
-            "top": 5,
-        }
-
-        text = render(report)
-
-        assert "TRUST THRESHOLD: NOT MET" in text
-        assert "NOT trustworthy at this sample size" in text
-        assert "weakest signal:" in text
-        assert "COMPARISON AGAINST PURE LINE-COUNT RANKING" in text
-
-
-class TestSubstrateIntegration:
-    """The POC must read a real substrate read-only and report on it."""
-
-    def _seed(self, project_root: Path) -> None:
-        (project_root / "src").mkdir(parents=True, exist_ok=True)
-        (project_root / "src" / "hot.py").write_text("x = 1\n" * 120, encoding="utf-8")
-        (project_root / "src" / "cold.py").write_text("y = 1\n" * 900, encoding="utf-8")
-        conn = audit_storage.create_or_open(project_root)
-        try:
-            for i in range(6):
-                paths = ["src/hot.py"] if i % 2 == 0 else ["src/cold.py"]
-                record = {
-                    "run_id": f"{i:012d}",
-                    "schema_version": audit_storage.CURRENT_RECORD_SCHEMA_VERSION,
-                    "task": {"slug": f"issue-{i}"},
-                    "timing": {"started_at": f"2026-07-0{i + 1}T00:00:00Z"},
-                    "preflight": {"complexity": "medium", "complexity_score": 5},
-                    "cost": {"total_usd": 30.0 if i % 2 == 0 else 10.0},
-                    "outcome": {"success": True},
-                    "reviews": [{"pool_models": ["a", "b"], "findings": []}],
-                    "changed_files": {
-                        "base_ref": "a" * 40,
-                        "head_ref": "b" * 40,
-                        "files": [
-                            {"path": p, "insertions": 5, "deletions": 1, "binary": False}
-                            for p in paths
-                        ],
-                    },
-                }
-                audit_storage.upsert_run_record(conn, record, provenance="native")
-            conn.commit()
-        finally:
-            conn.close()
-
-    def test_report_reads_real_substrate_and_reports_coverage(self, tmp_path: Path) -> None:
-        self._seed(tmp_path)
-        (tmp_path / "forge.yaml").write_text("", encoding="utf-8")
-
-        report = load_report(tmp_path, top=5)
-
-        assert report["coverage"]["measured_runs"] == 6
-        assert report["coverage"]["joinable_runs"] == 6
-        assert report["coverage"]["run_coverage_ratio"] == 1.0
-        # Threshold still not met - six runs is far under the sample floors,
-        # which is exactly the report the POC must be able to produce.
-        assert report["threshold"]["met"] is False
-        assert render(report)
-
-    def test_reading_the_substrate_does_not_mutate_it(self, tmp_path: Path) -> None:
-        self._seed(tmp_path)
-        path = audit_storage.substrate_path(tmp_path)
-        before = path.read_bytes()
-
-        load_report(tmp_path, top=5)
-
-        assert path.read_bytes() == before
-
-    def test_missing_substrate_is_an_error_not_a_silent_rebuild(self, tmp_path: Path) -> None:
-        import pytest
-
-        with pytest.raises(audit_storage.SubstrateMissingError):
-            load_report(tmp_path)
-
-        assert not audit_storage.substrate_path(tmp_path).exists()
-
-
-class TestReadModelHelpers:
-    def test_touch_rows_and_coverage_agree_on_the_joinable_set(self, tmp_path: Path) -> None:
-        from theforge.coordinator.audit_read_model import (
-            changed_file_coverage,
-            changed_file_touch_rows,
-        )
-
-        conn = audit_storage.create_or_open(tmp_path)
-        try:
-            for i, (cost, files) in enumerate(
-                [(10.0, ["a.py"]), (20.0, ["a.py", "b.py"]), (None, ["c.py"])]
-            ):
-                record = {
-                    "run_id": f"{i:012d}",
-                    "schema_version": audit_storage.CURRENT_RECORD_SCHEMA_VERSION,
-                    "task": {"slug": f"issue-{i}"},
-                    "timing": {"started_at": f"2026-07-0{i + 1}T00:00:00Z"},
-                    "cost": {"total_usd": cost},
-                    "outcome": {"success": True},
-                    "changed_files": {
-                        "base_ref": "a" * 40,
-                        "head_ref": "b" * 40,
-                        "files": [
-                            {"path": p, "insertions": 1, "deletions": 0, "binary": False}
-                            for p in files
-                        ],
-                    },
-                }
-                audit_storage.upsert_run_record(conn, record, provenance="native")
-            conn.commit()
-
-            rows = changed_file_touch_rows(conn)
-            coverage = changed_file_coverage(conn)
-        finally:
-            conn.close()
-
-        # The cost-unknown run is excluded: it is a lower bound, not a measurement.
-        assert {row["path"] for row in rows} == {"a.py", "b.py"}
-        assert coverage["measured_runs"] == 2
-        assert coverage["joinable_runs"] == 2
-        assert coverage["measured_spend_usd"] == 30.0
-
-    def test_since_filter_bounds_the_window(self, tmp_path: Path) -> None:
-        from theforge.coordinator.audit_read_model import changed_file_touch_rows
-
-        conn = audit_storage.create_or_open(tmp_path)
-        try:
-            for i, started in enumerate(["2026-06-01T00:00:00Z", "2026-08-01T00:00:00Z"]):
-                audit_storage.upsert_run_record(
-                    conn,
-                    {
-                        "run_id": f"{i:012d}",
-                        "schema_version": audit_storage.CURRENT_RECORD_SCHEMA_VERSION,
-                        "task": {"slug": f"issue-{i}"},
-                        "timing": {"started_at": started},
-                        "cost": {"total_usd": 5.0},
-                        "outcome": {"success": True},
-                        "changed_files": {
-                            "base_ref": "a" * 40,
-                            "head_ref": "b" * 40,
-                            "files": [
-                                {
-                                    "path": f"m{i}.py",
-                                    "insertions": 1,
-                                    "deletions": 0,
-                                    "binary": False,
-                                }
-                            ],
-                        },
-                    },
-                    provenance="native",
-                )
-            conn.commit()
-
-            recent = changed_file_touch_rows(conn, since="2026-07-01T00:00:00Z")
-        finally:
-            conn.close()
-
-        assert [row["path"] for row in recent] == ["m1.py"]
-
-
-def test_module_is_not_imported_by_the_coordinator() -> None:
-    """The spike is inert: nothing in the shipped runtime reaches it.
-
-    If this ever fails, the POC has become a component and needs the design
-    review the spike record says it has not had.
-    """
-    src = Path(__file__).resolve().parents[1] / "src" / "theforge"
-    package = src / "structural_decay_observer"
-    importers = [
-        path
-        for path in src.rglob("*.py")
-        if package not in path.parents
-        and "structural_decay_observer" in path.read_text(encoding="utf-8")
-    ]
-
-    assert importers == []
