@@ -1148,8 +1148,12 @@ validation:
   command. What a scoped run means is your command's decision — TheForge infers
   no test-framework syntax, source-to-test mapping, or package layout.
 - **A story `gate:` override is not a declared profile.** With profiles declared
-  it still runs, but its result is recorded as advisory and does not establish
-  merge authority. On the legacy (no-profiles) path it behaves exactly as before.
+  it still runs, but its result is recorded as advisory. A *passing* override
+  then widens: the declared merge-authority profile runs too, in the same
+  worktree, and its result is the verdict — so no story reaches review or
+  landing on a result that carries no merge authority. A failing override
+  already blocks, so it does not pay for the complete profile. On the legacy
+  (no-profiles) path an override behaves exactly as before.
 
 Every validation run is recorded with its profile, authority, resolved command,
 result, and commit — in the audit record (`iterations.validation_runs`), in the

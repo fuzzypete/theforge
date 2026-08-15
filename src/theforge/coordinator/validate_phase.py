@@ -838,6 +838,55 @@ def _run_validate_phase(
         # After the counter, so a leak from the first gate is tagged gate_run 1
         # like every other run-gated telemetry rather than 0 (#2309).
         _record_gate_teardowns(state, _gate_teardowns)
+        # ── Widen an advisory run to the merge-authority profile ──────────
+        # A story gate_override under declared profiles runs an undeclared
+        # command, whose result is advisory. A PASS from it is not a verdict,
+        # and letting VALIDATE return PASS on it would carry the story to
+        # REVIEW and DONE with no merge-authority result behind it. So the
+        # advisory run widens: the declared merge-authority profile runs too,
+        # in the same worktree, and *its* result is the verdict. Unknown input
+        # causes more validation to run, never less (#2358).
+        #
+        # Only a passing advisory run widens. A failing one already blocks
+        # progression — advisory results may inform routing, they just cannot
+        # establish trust — so paying for the complete profile after it would
+        # buy no decision that is not already made.
+        _advisory_selection = _gate_selection[0] if _gate_selection else None
+        if (
+            _advisory_selection is not None
+            and not _advisory_selection.is_merge_authority
+            and gate_decision == "PASS"
+            and gate_err is None
+        ):
+            _log(
+                f"  Gate override passed but is advisory ({_advisory_selection.describe()}); "
+                "widening to the merge-authority profile for the verdict"
+            )
+            # Both out-parameters are reset first: everything downstream — the
+            # stall brake's output signature, the recorded selection, the
+            # gate_decisions append — must describe the run that produced the
+            # verdict, not the advisory run that preceded it.
+            _gate_selection.clear()
+            _gate_digest.clear()
+            gate_decision, gate_err, gate_output_tail, resolved_gate_cmd, gate_exit_code = (
+                run_gate_full(
+                    config,
+                    workspace_path,
+                    task=task,
+                    iter_num=state.dev_trace_count,
+                    output_digest=_gate_digest,
+                    process_teardowns=_gate_teardowns,
+                    selection_out=_gate_selection,
+                    ignore_gate_override=True,
+                )
+            )
+            _record_gate_run(
+                state,
+                workspace_path,
+                decision=gate_decision or "ERROR",
+                selection=_gate_selection[0] if _gate_selection else None,
+            )
+            _record_gate_teardowns(state, _gate_teardowns)
         gate_result_for_telemetry = gate_decision or "ERROR"
     _gate_elapsed = time.monotonic() - _gate_start
     state.validate_durations.append(_gate_elapsed)

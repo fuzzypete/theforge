@@ -345,7 +345,14 @@ def _resolve_merge_conflicts(
         return False
 
     _cu._log("  Running gate to verify resolution...")
-    gate_decision, gate_error, _ = _run_gate(config, workspace_path)
+    # This gate decides whether an agent-authored conflict resolution may land,
+    # so the run log has to say which profile produced that decision and what
+    # authority it carried — the resolution leaves no other artifact stating
+    # what was actually verified (#2358).
+    gate_selection: list = []
+    gate_decision, gate_error, _ = _run_gate(config, workspace_path, selection_out=gate_selection)
+    _profile_note = f" [{gate_selection[0].describe()}]" if gate_selection else ""
+    _cu._log(f"  Resolution gate: {gate_decision or gate_error}{_profile_note}")
     if gate_error or gate_decision != "PASS":
         _cu._log("  ⚠ Conflict resolution broke tests — aborting merge")
         _cu._run_shell("git merge --abort", project_root)

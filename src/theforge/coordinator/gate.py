@@ -96,6 +96,7 @@ def run_gate_full(
     process_teardowns: list[ProcessTeardown] | None = None,
     label: GateLabel | None = None,
     selection_out: list[SelectedValidation] | None = None,
+    ignore_gate_override: bool = False,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
 
@@ -146,9 +147,19 @@ def run_gate_full(
     that does not persist provenance should not have to unpack it. A caller that
     records a verdict needs it, because a verdict is only a verdict if the
     profile behind it carries merge authority (#2358).
+
+    ``ignore_gate_override`` runs the configured profile even when the story
+    carries a ``gate_override``. It exists for one caller: VALIDATE widening a
+    passing *advisory* override to the merge-authority profile, so a story
+    cannot reach REVIEW on a result that carries no merge authority. It is not a
+    way to disable story overrides generally — the override still runs first,
+    and its (advisory) result is still recorded.
     """
     has_override = (
-        task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
+        not ignore_gate_override
+        and task is not None
+        and task.gate_override
+        and not _is_gate_skip(task.gate_override)
     )
     if has_override:
         gate_cmd = task.gate_override  # type: ignore[union-attr]
@@ -304,9 +315,18 @@ def _run_gate(
     task: TaskStory | None = None,
     *,
     label: GateLabel | None = None,
+    selection_out: list[SelectedValidation] | None = None,
 ) -> tuple[str | None, str | None, str]:
-    """Run the gate command. Returns (decision, error, output_tail)."""
+    """Run the gate command. Returns (decision, error, output_tail).
+
+    ``selection_out`` is the same out-parameter ``run_gate_full`` takes, passed
+    through so this wrapper's callers — resume triage and post-conflict
+    verification, both of which act on the result — can say which profile
+    produced it and what authority it carried (#2358). Without the passthrough
+    those two runs were the only coordinator-executed validation whose standing
+    left no trace at all.
+    """
     decision, error, output_tail, _resolved_cmd, _exit_code = run_gate_full(
-        config, workspace_path, task, label=label
+        config, workspace_path, task, label=label, selection_out=selection_out
     )
     return decision, error, output_tail

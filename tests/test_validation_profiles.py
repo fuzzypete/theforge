@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 import yaml
-from coord_test_helpers import _make_config
+from coord_test_helpers import _make_agent_result, _make_config
 
 from theforge.config.load import _validated_validation_profiles
 from theforge.config.types import ValidationConfig, ValidationProfile
@@ -501,3 +501,116 @@ def test_review_prompt_kwargs_come_from_the_recorded_merge_authority_run() -> No
 
 def test_review_prompt_kwargs_are_empty_for_an_older_state_with_no_records() -> None:
     assert gate_profile_prompt_kwargs(CoordinatorState()) == {}
+
+
+# ── Wrapper-path provenance (_run_gate callers) ──────────────────────────
+
+
+def test_run_gate_wrapper_reports_the_selection_it_ran(tmp_path: Path) -> None:
+    """Resume triage and post-conflict verification act on this result.
+
+    Both reach the gate through ``_run_gate`` rather than VALIDATE, so without
+    the passthrough they were the only coordinator-executed validation whose
+    standing left no trace at all.
+    """
+    from theforge.coordinator.gate import _run_gate
+
+    config = _make_config(tmp_path)
+    config = replace(
+        config,
+        validation=replace(
+            config.validation,
+            profiles=_profiles(complete={"command": "echo declared", "authority": "merge"}),
+        ),
+    )
+    selection: list = []
+
+    decision, _error, _tail = _run_gate(config, tmp_path, selection_out=selection)
+
+    assert decision == "PASS"
+    assert selection[0].describe() == "complete (merge authority)"
+
+
+def _triage_git_mock():
+    """git stub for a story whose branch has commits ahead of an unmerged base."""
+    from unittest.mock import MagicMock
+
+    def _mock_run(cmd, **_kwargs):
+        m = MagicMock()
+        if "--is-ancestor" in cmd:
+            m.returncode = 1  # not merged
+        elif any(isinstance(c, str) and c.startswith("--grep=") for c in cmd):
+            m.returncode = 0
+            m.stdout = b""
+        elif "log" in cmd:
+            m.returncode = 0
+            m.stdout = b"abc1234 some commit\n"
+        else:
+            m.returncode = 0
+            m.stdout = b""
+        return m
+
+    return _mock_run
+
+
+def test_triage_reason_names_the_profile_behind_its_decision(tmp_path: Path) -> None:
+    """The triage reason is that decision's durable record."""
+    from unittest.mock import patch
+
+    from theforge.sprint.dag import _triage_spec
+    from theforge.validation_profiles import SelectedValidation
+
+    (tmp_path / "stories").mkdir()
+    (tmp_path / "issue-50.md").write_text("# Story\n\nDo it.\n", encoding="utf-8")
+    (tmp_path / "issue-50").mkdir()
+    config = _make_config(tmp_path)
+
+    def _run_gate_stub(*_args, selection_out=None, **_kwargs):
+        if selection_out is not None:
+            selection_out.append(
+                SelectedValidation(
+                    profile="complete", authority="merge", command="make gate", declared=True
+                )
+            )
+        return ("PASS", None, "")
+
+    with (
+        patch("theforge.sprint.dag.subprocess.run", side_effect=_triage_git_mock()),
+        patch("theforge.sprint.dag._run_gate", side_effect=_run_gate_stub),
+    ):
+        triage = _triage_spec("issue-50.md", config, tmp_path)
+
+    assert triage.action == "review"
+    assert "complete (merge authority)" in triage.reason
+
+
+def test_conflict_resolution_gate_logs_the_profile_behind_its_decision(tmp_path: Path) -> None:
+    """The resolution leaves no other artifact stating what was verified."""
+    from unittest.mock import patch
+
+    from theforge.coordinator import util as coordinator_util
+    from theforge.coordinator.workspace import _resolve_merge_conflicts
+    from theforge.validation_profiles import SelectedValidation
+
+    config = _make_config(tmp_path)
+    lines: list[str] = []
+
+    def _run_gate_stub(*_args, selection_out=None, **_kwargs):
+        if selection_out is not None:
+            selection_out.append(
+                SelectedValidation(
+                    profile="complete", authority="merge", command="make gate", declared=True
+                )
+            )
+        return ("FAIL", None, "boom")
+
+    with (
+        patch.object(coordinator_util, "_log", side_effect=lines.append),
+        patch.object(coordinator_util, "_run_shell", return_value=(True, "src/a.py\n")),
+        patch("theforge.coordinator.workspace._run_gate", side_effect=_run_gate_stub),
+        patch("theforge.coordinator.workspace.run_agent", return_value=_make_agent_result()),
+    ):
+        resolved = _resolve_merge_conflicts(tmp_path, "forge/story", "Story", config, tmp_path)
+
+    assert resolved is False
+    assert any("complete (merge authority)" in line for line in lines)

@@ -27,7 +27,7 @@ from theforge.config.load import _validated_validation_profiles
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.run_setup import load_trajectory_state, save_trajectory_state
-from theforge.coordinator.state import CoordinatorState
+from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.validation_profiles import has_merge_authority_result
 
 PROFILES = _validated_validation_profiles(
@@ -48,12 +48,12 @@ def _config_with_profiles(tmp_path: Path, **validation_kwargs):
     )
 
 
-def _run(config, task, tmp_path: Path):
+def _run(config, task, tmp_path: Path, *, decisions="PASS"):
     workspace = tmp_path / task.slug
     workspace.mkdir(exist_ok=True)
     prompts: list[str] = []
     commands: list[str] = []
-    gate = _gate_side_effect(workspace, "PASS")
+    gate = _gate_side_effect(workspace, decisions)
 
     def shell(cmd, cwd, **kwargs):
         commands.append(cmd)
@@ -113,24 +113,62 @@ class TestProfilesAcrossThePhaseBoundary:
         assert result.state.gate_decisions == ["PASS"]
         assert has_merge_authority_result(result.state.validation_runs)
 
-    def test_an_override_under_declared_profiles_is_advisory_and_writes_no_verdict(
+    def test_a_passing_override_widens_to_the_merge_authority_profile(
         self, tmp_path: Path
     ) -> None:
-        """An undeclared command cannot inherit a declared profile's standing."""
+        """An undeclared command cannot inherit a declared profile's standing.
+
+        It runs and is recorded advisory, and then the declared merge-authority
+        profile runs too — otherwise the story would reach DONE with no result
+        that carries merge authority behind it.
+        """
         config = _config_with_profiles(tmp_path)
         task = dataclasses.replace(_make_task(tmp_path), gate_override="make gate-quick")
 
         result, _prompts, commands = _run(config, task, tmp_path)
 
         assert "make gate-quick" in commands
-        (record,) = result.state.validation_runs
-        assert record["profile"] == "override"
-        assert record["authority"] == "advisory"
-        assert record["result"] == "PASS"
-        # The advisory result is recorded, but it is not the story's verdict.
-        assert result.state.gate_decisions == []
-        assert result.state.last_gate_decision is None
+        advisory, authoritative = result.state.validation_runs
+        assert (advisory["profile"], advisory["authority"]) == ("override", "advisory")
+        assert advisory["result"] == "PASS"
+        # The advisory PASS is not the verdict; the widened run is.
+        assert (authoritative["profile"], authoritative["authority"]) == ("complete", "merge")
+        assert authoritative["command"] == "make gate ALL=1"
+        assert "make gate ALL=1" in commands
+        assert result.state.gate_decisions == ["PASS"]
+        assert result.state.last_gate_decision == "PASS"
+        assert has_merge_authority_result(result.state.validation_runs)
+
+    def test_a_failing_override_blocks_without_paying_for_the_complete_profile(
+        self, tmp_path: Path
+    ) -> None:
+        """A failing advisory run already blocks; widening would buy no decision."""
+        config = _config_with_profiles(tmp_path)
+        task = dataclasses.replace(_make_task(tmp_path), gate_override="make gate-quick")
+
+        result, _prompts, commands = _run(config, task, tmp_path, decisions="FAIL")
+
+        assert result.success is False
+        assert "make gate ALL=1" not in commands
         assert not has_merge_authority_result(result.state.validation_runs)
+
+    def test_a_story_cannot_reach_done_on_an_advisory_result_alone(self, tmp_path: Path) -> None:
+        """The widened run is what decides: if it fails, the story does not land."""
+        config = _config_with_profiles(tmp_path)
+        task = dataclasses.replace(_make_task(tmp_path), gate_override="make gate-quick")
+
+        # The override passes; every subsequent (widened, merge-authority) run fails.
+        result, _prompts, _commands = _run(
+            config, task, tmp_path, decisions=["PASS"] + ["FAIL"] * 10
+        )
+
+        assert result.success is False
+        assert result.state.phase is not Phase.DONE
+        assert not has_merge_authority_result(result.state.validation_runs)
+        assert [r["authority"] for r in result.state.validation_runs][:2] == [
+            "advisory",
+            "merge",
+        ]
 
     def test_a_suppressed_gate_is_recorded_as_skipped_not_as_a_pass(self, tmp_path: Path) -> None:
         config = _config_with_profiles(tmp_path)
