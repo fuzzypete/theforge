@@ -74,7 +74,12 @@ def _build_note(
     budget_dropped_count: int,
     phase: str,
 ) -> str:
-    """Explain the difference between 'nothing was known' and 'something was withheld'."""
+    """Explain the difference between 'nothing was known' and 'something was withheld'.
+
+    Only counts drawn from *relevant* entries appear here. The selector settles
+    relevance before admissibility precisely so this sentence cannot claim an
+    unrelated inadmissible summary as knowledge this story was denied.
+    """
     if not selection.phase_eligible:
         return (
             f"prior-run context is not injected in the {phase} phase "
@@ -85,12 +90,17 @@ def _build_note(
 
     inadmissible = sum(1 for item in selection.excluded if item.admissibility_excluded)
     stale = sum(1 for item in selection.excluded if item.reason.startswith("stale("))
+    over_cap = sum(
+        1 for item in selection.excluded if item.reason.startswith("below_selection_cap")
+    )
 
     parts: list[str] = []
     if included_count:
         parts.append(f"{included_count} prior summaries included")
     if budget_dropped_count:
         parts.append(f"{budget_dropped_count} relevant summaries dropped under budget pressure")
+    if over_cap:
+        parts.append(f"{over_cap} lower-ranked matches not offered")
     if inadmissible:
         parts.append(f"{inadmissible} summaries matched but were excluded on admissibility")
     if stale:

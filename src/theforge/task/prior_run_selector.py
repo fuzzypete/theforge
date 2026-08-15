@@ -175,17 +175,14 @@ def select_prior_runs(
             continue
 
         verdict = interpret_persisted_verdict(entry.get("admissibility_verdict"))
-        if verdict.status not in (STATUS_ADMISSIBLE, STATUS_ADMISSIBLE_WITH_REDUCED_RANK):
-            excluded.append(
-                PriorRunExclusion(
-                    run_id=run_id,
-                    reason=_inadmissible_reason(verdict),
-                    verdict=verdict,
-                    admissibility_excluded=True,
-                )
-            )
-            continue
 
+        # Relevance is judged *before* admissibility, and the order is load-bearing
+        # for the manifest rather than for safety. "2 summaries matched but were
+        # excluded on admissibility" is a claim about knowledge this story could
+        # have used; an inadmissible summary about an unrelated part of the
+        # codebase was never that, and reporting it as withheld knowledge would
+        # tell an operator something false. Either way the entry is excluded —
+        # admissibility below is still an absolute bar on inclusion.
         primary_score, boost_score, reasons = _score_entry(
             entry,
             story_terms=story_terms,
@@ -195,6 +192,17 @@ def select_prior_runs(
         if primary_score <= 0:
             excluded.append(
                 PriorRunExclusion(run_id=run_id, reason="not_relevant", verdict=verdict)
+            )
+            continue
+
+        if verdict.status not in (STATUS_ADMISSIBLE, STATUS_ADMISSIBLE_WITH_REDUCED_RANK):
+            excluded.append(
+                PriorRunExclusion(
+                    run_id=run_id,
+                    reason=_inadmissible_reason(verdict),
+                    verdict=verdict,
+                    admissibility_excluded=True,
+                )
             )
             continue
 
@@ -241,10 +249,12 @@ def select_prior_runs(
     scored.sort(key=lambda candidate: (-candidate.score, candidate.run_id))
     kept = scored[: max(0, limit)]
     for overflow in scored[max(0, limit) :]:
+        # These *did* match — they lost to better-scoring matches, which is a
+        # different fact from "not relevant" and must read as one in the manifest.
         excluded.append(
             PriorRunExclusion(
                 run_id=overflow.run_id,
-                reason="not_relevant",
+                reason=f"below_selection_cap({limit})",
                 verdict=overflow.verdict,
             )
         )

@@ -123,3 +123,59 @@ def test_manifest_note_reports_phase_ineligibility(tmp_path: Path) -> None:
     manifest = build_manifest(selection, included_run_ids=set(), phase="preflight")
 
     assert "not injected in the preflight phase" in manifest["note"]
+
+
+def test_note_does_not_claim_unrelated_inadmissible_summaries_as_withheld(
+    tmp_path: Path,
+) -> None:
+    """The index holds only inadmissible entries about unrelated code.
+
+    Nothing this story could have used was withheld, so the note must read as
+    absence — not as "1 summary matched but was excluded on admissibility".
+    """
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "71bd334",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="Rewrite onboarding docs",
+                verdict=_verdict(
+                    status="inadmissible", rank="excluded", reasons=["cited_source_deleted"]
+                ),
+            ),
+            _entry(
+                "0ae5f92",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="Rewrite onboarding docs",
+                verdict=None,
+            ),
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
+
+    assert manifest["included"] == []
+    assert manifest["note"] == "no relevant prior knowledge exists"
+    assert "admissibility" not in manifest["note"]
+    # The entries are still reported individually, just not as withheld knowledge.
+    assert {item["reason"] for item in manifest["dropped"]} == {"not_relevant"}
+
+
+def test_note_reports_matches_that_lost_to_better_ranked_matches(tmp_path: Path) -> None:
+    _corpus(tmp_path, [_entry(f"run{index}") for index in range(5)])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(
+        selection,
+        included_run_ids={item.run_id for item in selection.candidates},
+        phase="dev",
+    )
+
+    assert len(manifest["included"]) == 3
+    assert {item["reason"] for item in manifest["dropped"]} == {"below_selection_cap(3)"}
+    assert "2 lower-ranked matches not offered" in manifest["note"]
+    assert "admissibility" not in manifest["note"]

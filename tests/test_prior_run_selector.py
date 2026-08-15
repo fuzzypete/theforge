@@ -248,7 +248,9 @@ def test_selection_is_capped_and_deterministic(tmp_path: Path) -> None:
 
     assert len(first.candidates) == 3
     assert [c.run_id for c in first.candidates] == [c.run_id for c in second.candidates]
-    assert all(e.reason == "not_relevant" for e in first.excluded)
+    # They matched; they lost to better matches. That is not "not relevant".
+    assert all(e.reason == "below_selection_cap(3)" for e in first.excluded)
+    assert all(e.admissibility_excluded is False for e in first.excluded)
 
 
 def test_summary_prose_cannot_create_relevance(tmp_path: Path) -> None:
@@ -277,3 +279,80 @@ def test_summary_prose_cannot_create_relevance(tmp_path: Path) -> None:
 
     assert selection.candidates == ()
     assert selection.excluded[0].reason == "not_relevant"
+
+
+def test_unrelated_inadmissible_entry_is_excluded_on_relevance_not_admissibility(
+    tmp_path: Path,
+) -> None:
+    """An inadmissible summary about unrelated code is not knowledge this story lost.
+
+    Relevance is settled first, so the entry reports as not_relevant and never
+    inflates the manifest's "matched but excluded on admissibility" count.
+    """
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "71bd334",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="Rewrite onboarding docs",
+                verdict=_verdict(
+                    status="inadmissible", rank="excluded", reasons=["cited_source_deleted"]
+                ),
+            )
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "not_relevant"
+    assert selection.excluded[0].admissibility_excluded is False
+
+
+def test_unrelated_missing_verdict_entry_is_excluded_on_relevance(tmp_path: Path) -> None:
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "0ae5f92",
+                changed_files=["docs/vision.md"],
+                domains=["docs"],
+                story_name="Rewrite onboarding docs",
+                verdict=None,
+            )
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded[0].reason == "not_relevant"
+    assert selection.excluded[0].admissibility_excluded is False
+
+
+def test_relevance_first_ordering_still_bars_relevant_inadmissible_summaries(
+    tmp_path: Path,
+) -> None:
+    """Deciding relevance first must not soften admissibility as a bar on inclusion."""
+    _corpus(
+        tmp_path,
+        [
+            _entry(
+                "71bd334",
+                verdict=_verdict(
+                    status="inadmissible", rank="excluded", reasons=["source_run_tainted"]
+                ),
+            ),
+            _entry("0ae5f92", verdict=None),
+        ],
+    )
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    reasons = {e.run_id: e.reason for e in selection.excluded}
+    assert reasons["71bd334"] == "inadmissible(source_run_tainted)"
+    assert reasons["0ae5f92"] == "inadmissible(no_verdict)"
+    assert all(e.admissibility_excluded for e in selection.excluded)
