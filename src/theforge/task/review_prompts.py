@@ -173,6 +173,12 @@ def build_review_prompt(
     containment: str | None = None,
     authoritative_gate_decision: str | None = None,
     authoritative_gate_commit: str | None = None,
+    # Which validation profile produced that verdict and what standing it
+    # carries (#2358). A reviewer handed a result must be able to tell a verdict
+    # from a signal; absent (legacy configs, older records) the line is omitted
+    # and the prompt reads exactly as it did before.
+    authoritative_gate_profile: str | None = None,
+    authoritative_gate_authority: str | None = None,
     fix_claim_flags: list[str] | None = None,
     p2_policy: str = "in_scope",
 ) -> str:
@@ -421,6 +427,14 @@ def build_review_prompt(
         sandbox_label = "enabled" if sandboxed else _containment_labels["none"]
     gate_decision_label = authoritative_gate_decision or "UNAVAILABLE"
     gate_commit_label = authoritative_gate_commit or "UNAVAILABLE"
+    gate_profile_line = (
+        ""
+        if not authoritative_gate_profile
+        else (
+            f"\n        Validation profile: {authoritative_gate_profile} "
+            f"({authoritative_gate_authority or 'merge'} authority)"
+        )
+    )
     _hard_block = render_hard_conventions_block(
         stack=stack,
         allowed_root_files=allowed_root_files,
@@ -445,7 +459,7 @@ def build_review_prompt(
 
         Sandbox isolation: {sandbox_label}
         Authoritative gate verdict: {gate_decision_label}
-        Authoritative gate commit: {gate_commit_label}
+        Authoritative gate commit: {gate_commit_label}{gate_profile_line}
 
         Verified commit log (`git log --oneline main..HEAD`):
         ```

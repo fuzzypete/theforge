@@ -82,6 +82,7 @@ from .review_context import (
     _get_handoff_commit_warning,
     _get_handoff_content,
     _latest_forge_handoff_path,
+    gate_profile_prompt_kwargs,
     hard_convention_review_kwargs,
 )
 from .review_pool import _run_review_pool
@@ -2423,6 +2424,7 @@ def _run_review_only_phase(
         containment=state.dev_containment,
         authoritative_gate_decision=state.last_gate_decision,
         authoritative_gate_commit=state.last_gate_commit,
+        **gate_profile_prompt_kwargs(state),
         p2_policy=config.dev.p2_policy,
     )
 

@@ -60,6 +60,7 @@ from ..log_util import _log_line
 from ..process_group import ProcessTeardown
 from ..runners.rate_registry import AccountingMode, accounting_mode_for
 from ..task import BatchMember, TaskStory
+from ..validation_profiles import PHASE_MERGE, select_validation
 from . import unmeasured as unmeasured_spend_policy
 from .abnormal import (
     ABNORMAL_LAUNCH_GUARD_DROP,
@@ -989,6 +990,28 @@ def _baseline_evidence_footer(
     return "\n" + "\n".join(parts) if parts else ""
 
 
+def _baseline_validation_fields(
+    config: ForgeConfig, *, command: str | None = None
+) -> dict[str, object]:
+    """Describe the validation the baseline record refers to (#2358).
+
+    The baseline gate is an authoritative run like any other, so its record has
+    to name the profile behind it. ``command`` is the command that actually ran
+    when one did; on the paths where the gate never executed (not a git
+    checkout, worktree setup failed, re-exec continuation) the record still
+    names the command it *would* have run, resolved through the same
+    merge-authority profile rather than read off the raw config field — those
+    two can differ once a project declares profiles, and a record naming a
+    command that was never going to run is worse than no record.
+    """
+    selection = select_validation(config.validation, phase=PHASE_MERGE)
+    return {
+        "command": command if command is not None else selection.command,
+        "validation_profile": selection.profile,
+        "validation_authority": selection.authority,
+    }
+
+
 def _run_baseline_gate(
     config: ForgeConfig,
     resolved: ResolvedSprint,
@@ -1033,7 +1056,7 @@ def _run_baseline_gate(
             "started_at": now,
             "finished_at": now,
             "merge_base": None,
-            "command": config.validation.gate_command,
+            **_baseline_validation_fields(config),
             "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": "Baseline gate skipped: project root is not a git checkout",
         }
@@ -1058,7 +1081,7 @@ def _run_baseline_gate(
             "started_at": baseline_started_at,
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": None,
-            "command": config.validation.gate_command,
+            **_baseline_validation_fields(config),
             "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": (
                 "Broken baseline: unable to determine merge base against "
@@ -1077,7 +1100,7 @@ def _run_baseline_gate(
             "started_at": baseline_started_at,
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": None,
-            "command": config.validation.gate_command,
+            **_baseline_validation_fields(config),
             "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": (
                 "Broken baseline: unable to determine merge base against "
@@ -1109,7 +1132,7 @@ def _run_baseline_gate(
             "started_at": baseline_started_at,
             "finished_at": datetime.datetime.now(datetime.timezone.utc),
             "merge_base": merge_base_ref,
-            "command": config.validation.gate_command,
+            **_baseline_validation_fields(config),
             "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "message": (
                 "Broken baseline: sprint baseline gate requires running from the root checkout; "
@@ -1157,7 +1180,7 @@ def _run_baseline_gate(
                 "started_at": baseline_started_at,
                 "finished_at": datetime.datetime.now(datetime.timezone.utc),
                 "merge_base": merge_base_ref,
-                "command": config.validation.gate_command,
+                **_baseline_validation_fields(config),
                 "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "message": (
                     "Broken baseline: unable to create temporary worktree for merge base "
@@ -1206,7 +1229,7 @@ def _run_baseline_gate(
                     "started_at": baseline_started_at,
                     "finished_at": datetime.datetime.now(datetime.timezone.utc),
                     "merge_base": merge_base_ref,
-                    "command": config.validation.gate_command,
+                    **_baseline_validation_fields(config),
                     "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                     "worktree": preserved_worktree,
                     "evidence_path": evidence_path,
@@ -1243,7 +1266,7 @@ def _run_baseline_gate(
                 "started_at": baseline_started_at,
                 "finished_at": finished_at,
                 "merge_base": merge_base_ref,
-                "command": resolved_gate_cmd,
+                **_baseline_validation_fields(config, command=resolved_gate_cmd),
                 "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "decision": decision,
                 "output_tail": output_tail,
@@ -1351,7 +1374,7 @@ def _run_baseline_gate(
                 "started_at": baseline_started_at,
                 "finished_at": finished_at,
                 "merge_base": merge_base_ref,
-                "command": confirm_cmd,
+                **_baseline_validation_fields(config, command=confirm_cmd),
                 "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "decision": confirm_decision,
                 "output_tail": confirm_tail,
@@ -1435,7 +1458,7 @@ def _run_baseline_gate(
             "started_at": baseline_started_at,
             "finished_at": finished_at,
             "merge_base": merge_base_ref,
-            "command": resolved_gate_cmd,
+            **_baseline_validation_fields(config, command=resolved_gate_cmd),
             "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "decision": decision,
             "output_tail": output_tail,
@@ -1514,7 +1537,7 @@ def _skipped_baseline_gate(config: ForgeConfig, evidence: str) -> dict[str, obje
         "started_at": now,
         "finished_at": now,
         "merge_base": None,
-        "command": config.validation.gate_command,
+        **_baseline_validation_fields(config),
         "skip_reason": "reexec_continuation",
         "skip_evidence": evidence,
         "message": (
@@ -2415,6 +2438,10 @@ def _run_batch_group(
         member_result.state.gate_runs = leader_result.state.gate_runs
         member_result.state.last_gate_commit = leader_result.state.last_gate_commit
         member_result.state.last_gate_decision = leader_result.state.last_gate_decision
+        # Including which profile produced it and what authority it carried: a
+        # member audit that showed the decision without its provenance would be
+        # the one place a verdict's standing is unreadable (#2358).
+        member_result.state.validation_runs = list(leader_result.state.validation_runs)
         # Members land with the leader's branch; the scheduler must not try to
         # merge a branch that only exists for the leader.
         member_result.landing_status = None

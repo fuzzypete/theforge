@@ -743,6 +743,10 @@ validation:
                                        # sandbox when the dev agent requests them by name. See
                                        # "Dev verification commands" below. Default: none offered.
   dev_verification_max_requests: 10    # fail-closed per-iteration request budget (counts refusals too)
+  profiles: {}                         # optional named validation profiles; exactly one carries
+                                       # merge authority. Omit entirely to keep the
+                                       # gate_command/test_command behaviour above. See
+                                       # "Validation profiles" below.
 
 # ── Retry policy ───────────────────────────────────────────
 retry:
@@ -1110,6 +1114,50 @@ installed:
 python -c "from theforge.config.sandbox_capabilities import resolve_capabilities; \
 print(resolve_capabilities('xcode').audit_payload())"
 ```
+
+### Validation profiles (`validation.profiles`)
+
+`gate_command` and `test_command` are two fixed slots: one authoritative and
+complete, one advisory with no stated relationship to it. Nothing in between can
+be said — which checks are cheap, which result decides a merge, how a scoped run
+differs from a complete one. Profiles let a project state it:
+
+```yaml
+validation:
+  profiles:
+    complete:
+      command: "make gate"
+      authority: merge
+    fast: "make test-fast"
+    targeted: "make test TARGET={test_target}"
+```
+
+- **Names are a closed set:** `complete`, `fast`, `targeted`. TheForge selects a
+  profile by meaning, so a name it does not recognise would load and then never
+  run; an unknown name is rejected at load instead.
+- **Exactly one profile declares `authority: merge`.** Its result is the only
+  one that can establish a gate verdict. Every other profile is `advisory`
+  (the default): the dev/fix loop is told to run it and told that a pass there
+  is not evidence the story is done.
+- **Selection is fixed and deterministic.** VALIDATE runs the merge-authority
+  profile. The dev/fix loop prefers `targeted`, then `fast`; with neither
+  declared it widens to the merge-authority profile. Unknown or empty inputs
+  always cause *more* validation to run, never less.
+- **Scoping context is supplied, not interpreted.** `{test_target}` (per-story,
+  falling back to `default_test_target`) and `{slug}` are substituted into your
+  command. What a scoped run means is your command's decision — TheForge infers
+  no test-framework syntax, source-to-test mapping, or package layout.
+- **A story `gate:` override is not a declared profile.** With profiles declared
+  it still runs, but its result is recorded as advisory and does not establish
+  merge authority. On the legacy (no-profiles) path it behaves exactly as before.
+
+Every validation run is recorded with its profile, authority, resolved command,
+result, and commit — in the audit record (`iterations.validation_runs`), in the
+resume sidecar, and in the reviewer prompt — so the standing behind a verdict is
+readable afterwards rather than inferred from a command string.
+
+**Omit the block entirely and nothing changes:** `gate_command` remains the
+complete, merge-authority run and `test_command` the advisory one.
 
 ### Dev verification commands (`validation.dev_verification_commands`)
 

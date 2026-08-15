@@ -11,6 +11,12 @@ from theforge.coordinator.state import GateDebugTelemetry, GateLabel
 from theforge.process_group import ProcessTeardown
 from theforge.task import TaskStory
 from theforge.traces import write_trace
+from theforge.validation_profiles import (
+    PHASE_MERGE,
+    SelectedValidation,
+    override_selection,
+    select_validation,
+)
 
 from . import util as _cu
 
@@ -89,6 +95,7 @@ def run_gate_full(
     full_output: list[str] | None = None,
     process_teardowns: list[ProcessTeardown] | None = None,
     label: GateLabel | None = None,
+    selection_out: list[SelectedValidation] | None = None,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
 
@@ -131,22 +138,38 @@ def run_gate_full(
     command (baseline vs. per-story reuse vs. validation) are distinguishable
     in the sprint log (#2014). It is display-only: it never reaches the shell
     command, the timeout, or the decision.
+
+    ``selection_out``, when given, receives the `SelectedValidation` this run
+    executed — which profile it was and what authority its result carries. Same
+    out-parameter shape as ``output_digest``, and for the same reason: the
+    5-tuple is unpacked at ~30 call sites including mocked tests, and a caller
+    that does not persist provenance should not have to unpack it. A caller that
+    records a verdict needs it, because a verdict is only a verdict if the
+    profile behind it carries merge authority (#2358).
     """
     has_override = (
         task is not None and task.gate_override and not _is_gate_skip(task.gate_override)
     )
     if has_override:
         gate_cmd = task.gate_override  # type: ignore[union-attr]
+        # An undeclared command cannot inherit a declared profile's standing.
+        # On the legacy path it keeps the authority it has always had; once a
+        # project declares profiles, the override runs but its result is
+        # advisory — merge trust belongs to the declared profile alone.
+        selection = override_selection(gate_cmd, declared=bool(config.validation.profiles))
     else:
-        gate_cmd = config.validation.gate_command
-        default_target = config.validation.default_test_target or "."
-        test_target = (task.test_target if task is not None else None) or default_target
-        slug = task.slug if task is not None else "baseline"
-        gate_cmd = gate_cmd.replace("{test_target}", test_target)
-        gate_cmd = gate_cmd.replace("{slug}", slug)
+        selection = select_validation(config.validation, phase=PHASE_MERGE, task=task)
+        gate_cmd = selection.command
+    if selection_out is not None:
+        selection_out.append(selection)
 
     gate_identity = label.describe() if label is not None else "gate"
     _cu._log_verbose(f"Running {gate_identity}: {gate_cmd}")
+    if config.validation.profiles:
+        # Only once a project declares profiles is there a selection to report:
+        # which one ran and what its result will be worth. Kept off the "Running
+        # gate" line, whose shape names the gate's purpose and target (#2014).
+        _cu._log_verbose(f"  validation profile: {selection.describe()}")
     gate_timeout = config.validation.gate_timeout or 600
     # Passed only when the caller asked for it: an out-parameter nobody supplied
     # is a no-op, and not sending it keeps this call compatible with the stubs

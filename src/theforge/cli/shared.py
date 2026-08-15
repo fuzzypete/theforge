@@ -35,6 +35,7 @@ from theforge.task import (
     load_story,
     parse_story_frontmatter,
 )
+from theforge.validation_profiles import PHASE_ADVISORY, PHASE_MERGE, select_validation
 
 _SECRETS_FILE = ".forge/.env"
 
@@ -365,15 +366,31 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
     workspace_path = config.project_root / config.workspace.path_pattern.format(slug=task.slug)
     branch_name = config.workspace.branch_pattern.format(slug=task.slug)
 
+    # The dry run shows the same selection the real run would make: the
+    # merge-authority profile for the gate, the advisory one for the dev loop
+    # (#2358). Reading the raw gate_command field here would print a command a
+    # profiles-declaring project never runs.
+    gate_selection = select_validation(config.validation, phase=PHASE_MERGE, task=task)
+    advisory_selection = select_validation(config.validation, phase=PHASE_ADVISORY, task=task)
     dev_prompt = build_dev_prompt(
         task,
         workspace_path=workspace_path,
         branch_name=branch_name,
         allowed_tools=config.dev_profile.allowed_tools,
         story_content=story_content,
-        gate_command=config.validation.gate_command,
+        gate_command=gate_selection.command,
+        test_command=advisory_selection.command,
         conventions=config.conventions_soft,
         p2_policy=config.dev.p2_policy,
+        **(
+            {
+                "test_profile": advisory_selection.profile,
+                "test_authority": advisory_selection.authority,
+                "gate_profile": gate_selection.profile,
+            }
+            if config.validation.profiles
+            else {}
+        ),
     )
     review_prompt = build_review_prompt(
         task,
@@ -399,7 +416,9 @@ def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:
     print(f"Workspace command: {workspace_command}")
     print(f"Workspace path:    {workspace_path}")
     print(f"Branch:            {branch_name}")
-    print(f"Gate command:      {config.validation.gate_command}")
+    print(f"Gate command:      {gate_selection.command}")
+    if config.validation.profiles:
+        print(f"Validation:        {gate_selection.describe()}")
     print()
 
     print(f"{sep}")

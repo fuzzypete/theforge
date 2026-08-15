@@ -34,6 +34,7 @@ from theforge.task import (
     render_verification_section,
 )
 from theforge.traces import write_trace
+from theforge.validation_profiles import PHASE_ADVISORY, merge_profile, select_validation
 
 from .agent_failure import (
     CATEGORY_TRANSPORT,
@@ -1006,7 +1007,32 @@ def _run_dev_phase(
         if task.gate_override is not None and not _is_gate_skip(task.gate_override)
         else config.validation.gate_command
     )
-    _test_cmd = config.validation.test_command or _gate_cmd
+    # The dev/fix inner loop gets an *advisory* profile: scoped if the project
+    # declared one, else its cheap broad one, else — widening, never narrowing —
+    # the complete profile. Selection runs through the one path VALIDATE also
+    # uses, so what an agent is told to run and what decides the merge cannot
+    # drift apart (#2358).
+    _advisory = select_validation(config.validation, phase=PHASE_ADVISORY, task=task)
+    _merge_profile = merge_profile(config.validation)
+    # A legacy project with no test_command widens to the complete profile, and
+    # its prompt must stay byte-identical to what it produced before profiles
+    # existed: the unresolved gate command, which the prompt then suppresses the
+    # testing section for.
+    _legacy_widened = _advisory.widened and not _advisory.declared
+    _test_cmd = _gate_cmd if _legacy_widened else _advisory.command
+    _profile_prompt_kwargs: dict = (
+        {}
+        if _legacy_widened
+        else {
+            "test_profile": _advisory.profile,
+            "test_authority": _advisory.authority,
+            "gate_profile": _merge_profile.name,
+        }
+    )
+    _log_verbose(
+        f"  validation profile (dev): {_advisory.describe()} → {_test_cmd}"
+        + ("  [widened: no advisory profile matched]" if _advisory.widened else "")
+    )
     _dev_entry_reason = state.retry_reason  # snapshot before consumed by prompt routing
     # ── Dev-phase verification capability (ADR-0007 / #2050) ──────────────
     # A project whose inner-loop toolchain the host sandbox structurally cannot
@@ -1090,6 +1116,7 @@ def _run_dev_phase(
                 review_findings=state.last_review_findings or "No specific findings provided.",
                 gate_command=_gate_cmd,
                 test_command=_test_cmd,
+                **_profile_prompt_kwargs,
                 gate_skipped=_is_gate_skip(task.gate_override),
                 iteration=state.dev_iteration,
                 cycle_history=state.cycle_history or None,
@@ -1118,6 +1145,7 @@ def _run_dev_phase(
                 review_findings=state.last_review_findings,
                 gate_command=_gate_cmd,
                 test_command=_test_cmd,
+                **_profile_prompt_kwargs,
                 gate_skipped=_is_gate_skip(task.gate_override),
                 iteration=state.dev_iteration,
                 cycle_history=state.cycle_history or None,
@@ -1153,6 +1181,7 @@ def _run_dev_phase(
                 story_content=story_content,
                 gate_command=_gate_cmd,
                 test_command=_test_cmd,
+                **_profile_prompt_kwargs,
                 gate_skipped=_is_gate_skip(task.gate_override),
                 review_findings=_retry_review_findings_for_dev_prompt(state),
                 human_feedback=state.human_feedback,
@@ -1200,6 +1229,7 @@ def _run_dev_phase(
                 story_content=story_content,
                 gate_command=_gate_cmd,
                 test_command=_test_cmd,
+                **_profile_prompt_kwargs,
                 gate_skipped=_is_gate_skip(task.gate_override),
                 review_findings=_retry_review_findings_for_dev_prompt(state),
                 human_feedback=state.human_feedback,
