@@ -118,7 +118,7 @@ models:
       cost_rank: 1
       cost_rank_basis: vendor-tier
       dev_capable: false
-      phase_eligibility: [preflight, review]
+      phase_eligibility: [preflight, review, advisor]
     cost:
       input_per_mtok: 1.00
       output_per_mtok: 5.00
@@ -217,7 +217,7 @@ models:
       capability: 6
       cost_rank: 1
       dev_capable: false
-      phase_eligibility: [preflight, review]
+      phase_eligibility: [preflight, review, advisor]
     cost:
       input_per_mtok: 1.00
       output_per_mtok: 5.00
@@ -358,7 +358,7 @@ models:
       capability: 10
       cost_rank: 3
       # Reasoning-heavy — intentionally excluded from the preflight role.
-      phase_eligibility: [dev, plan, review]
+      phase_eligibility: [dev, plan, review, advisor]
     cost:
       input_per_mtok: 15.00
       output_per_mtok: 120.00

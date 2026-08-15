@@ -26,7 +26,11 @@ from unittest.mock import patch
 
 import pytest
 import yaml
-from hatchling.builders.wheel import WheelBuilder
+
+try:
+    from hatchling.builders.wheel import WheelBuilder
+except ModuleNotFoundError:  # pragma: no cover - environment-dependent
+    WheelBuilder = None
 
 from theforge.cli.check_config import cmd_check_config
 from theforge.config import load_config
@@ -133,7 +137,7 @@ class TestLayering:
 # no test change, while re-tiering one of these fails until the expectation is
 # updated in the same commit. A silent re-tier is the failure #2217 was about,
 # and moving the set into YAML is what made it a one-line edit.
-_ALL_PHASES = ("dev", "plan", "preflight", "review")
+_ALL_PHASES = ("advisor", "dev", "plan", "preflight", "review")
 _SHIPPED_ROUTING: dict[str, tuple[str, int, int, bool, tuple[str, ...]]] = {
     "anthropic/opus/cli": ("strong", 10, 3, True, _ALL_PHASES),
     "anthropic/sonnet/cli": ("fast", 7, 1, True, _ALL_PHASES),
@@ -151,7 +155,7 @@ _SHIPPED_ROUTING: dict[str, tuple[str, int, int, bool, tuple[str, ...]]] = {
     "openai/gpt-5.4-mini/cli": ("cheap", 7, 1, True, _ALL_PHASES),
     # No preflight: the pro tier is kept out of the phase that runs before
     # complexity is known, so it cannot be drawn for cheap up-front work.
-    "openai/gpt-5.4-pro/api": ("strong", 10, 3, True, ("dev", "plan", "review")),
+    "openai/gpt-5.4-pro/api": ("strong", 10, 3, True, ("advisor", "dev", "plan", "review")),
     "openai/gpt-5.4-pro/cli": ("strong", 10, 3, True, _ALL_PHASES),
     "openai/gpt-5.4/api": ("strong", 9, 2, True, _ALL_PHASES),
     "openai/gpt-5.4/cli": ("strong", 9, 2, True, _ALL_PHASES),
@@ -199,6 +203,8 @@ class TestPackagedCatalog:
         ``only-include = ["src/theforge/cli"]``). The artifact is the only thing
         that answers the question the operator cares about.
         """
+        if WheelBuilder is None:
+            pytest.skip("hatchling is not installed in this environment")
         builder = WheelBuilder(str(Path(__file__).resolve().parents[1]))
         artifact = next(iter(builder.build(directory=str(tmp_path), versions=["standard"])))
         with zipfile.ZipFile(artifact) as wheel:
@@ -578,6 +584,37 @@ class TestProjectDeclarationsAreAsExpressiveAsShipped:
         assert spec.routing.cost_rank_basis == COST_BAND_BASIS_DECLARED_POLICY
         assert spec.pricing_provenance == "gemini-4-pro-2026-08"
         assert spec.base_url == "https://example.invalid/v1"
+
+    def test_default_phase_eligibility_includes_advisor(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": [
+                        "anthropic/sonnet/cli",
+                        {
+                            "provider": "google",
+                            "model": "gemini-4-pro",
+                            "transport": {"kind": "api"},
+                            "routing": {
+                                "tier": "strong",
+                                "capability": 10,
+                                "cost_rank": 3,
+                            },
+                            "cost": {
+                                "input_per_mtok": 2.0,
+                                "output_per_mtok": 12.0,
+                                "pricing_provenance": "gemini-4-pro-2026-08",
+                            },
+                        },
+                    ]
+                },
+                "budget_usd": 30.0,
+            },
+        )
+        spec = (load_config(path).model_registry or {})["google/gemini-4-pro/api"]
+        assert spec.phase_eligibility == frozenset(_ALL_PHASES)
 
     def test_models_custom_accepts_the_canonical_schema(self, tmp_path):
         """A reusable declaration is as expressive as an inline one.

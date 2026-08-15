@@ -91,12 +91,16 @@ EXCLUSION_REASONS: frozenset[str] = frozenset(
 # ── Demonstrated-capability gate (#2466) ───────────────────────────────
 #
 # Roles whose result is only usable when structured, mapped to the capability
-# the readiness probe establishes for them. ``dev`` and ``preflight`` are absent
-# from this map deliberately: their probes accept unstructured output by design
-# (see provider_readiness._requires_structured_verdict), so no probe ever
-# establishes structured capability for them and gating on it would be gating on
-# a fact nothing writes.
+# the readiness probe establishes for them. ``advisor`` deliberately shares its
+# token with ``routing.phase_eligibility`` so an operator can name the same role
+# in both the config vocabulary and the capability gate. ``dev`` and
+# ``preflight`` are absent from this map deliberately: their probes accept
+# unstructured output by design (see
+# provider_readiness._requires_structured_verdict), so no probe ever establishes
+# structured capability for them and gating on it would be gating on a fact
+# nothing writes.
 ROLE_REQUIRED_CAPABILITY: dict[str, str] = {
+    "advisor": CAPABILITY_TOOL_STRUCTURED,
     "planner": CAPABILITY_TOOL_STRUCTURED,
     "plan_review": CAPABILITY_TOOL_STRUCTURED,
     "code_review": CAPABILITY_TOOL_STRUCTURED,

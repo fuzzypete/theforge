@@ -209,13 +209,14 @@ class AdvisoryOption:
 class AdvisoryReport:
     """A parsed, validated advisory report.
 
-    ``recommendation`` is one of ``ACTION_TAXONOMY`` and must appear among the
-    presented ``options``. ``parse_errors`` is non-empty when the raw advisor
-    output failed schema validation; callers treat a report with parse errors as
-    unusable and fall back to preserving the escalation.
+    ``recommendation`` is one of ``ACTION_TAXONOMY`` or ``""`` when the advisor
+    deliberately recommends no single action. A non-empty recommendation must
+    appear among the presented ``options``. ``parse_errors`` is non-empty when
+    the raw advisor output failed schema validation; callers treat a report with
+    parse errors as unusable and fall back to preserving the escalation.
     """
 
-    recommendation: str  # one of ACTION_TAXONOMY
+    recommendation: str  # one of ACTION_TAXONOMY, or "" for "no recommendation"
     rationale: str
     options: list[AdvisoryOption]
     parse_errors: list[str] = field(default_factory=list)
@@ -283,11 +284,11 @@ def parse_advisory_report(text: str) -> AdvisoryReport:
     This is the schema integrity boundary for advisor output. Validation rules:
 
     * an ``<advisory_report>`` block must be present and parse as a YAML mapping,
-    * ``recommendation`` must be one of ``ACTION_TAXONOMY``,
-    * ``options`` must be a non-empty list; each option's ``action`` must be a
-      taxonomy value and it must carry non-empty ``evidence``, ``risk``, and
-      ``consequence``,
-    * the ``recommendation`` must appear among the options' actions.
+    * ``recommendation`` must be one of ``ACTION_TAXONOMY`` or empty,
+    * when ``recommendation`` is non-empty, ``options`` must be a non-empty list
+      and the recommendation must appear among the options' actions,
+    * each option's ``action`` must be a taxonomy value and it must carry
+      non-empty ``evidence``, ``risk``, and ``consequence``.
 
     Any violation yields a report with ``parse_errors`` populated (and empty
     recommendation/options) so the caller fails closed rather than acting on a
@@ -310,7 +311,7 @@ def parse_advisory_report(text: str) -> AdvisoryReport:
     errors: list[str] = []
 
     recommendation = str(data.get("recommendation") or "").strip().lower()
-    if recommendation not in ACTION_TAXONOMY:
+    if recommendation and recommendation not in ACTION_TAXONOMY:
         errors.append(
             f"recommendation must be one of {list(ACTION_TAXONOMY)}, got {recommendation!r}"
         )
@@ -319,8 +320,12 @@ def parse_advisory_report(text: str) -> AdvisoryReport:
 
     raw_options = data.get("options")
     options: list[AdvisoryOption] = []
-    if not isinstance(raw_options, list) or not raw_options:
-        errors.append("options must be a non-empty list")
+    if raw_options is None:
+        raw_options = []
+    if not isinstance(raw_options, list):
+        errors.append("options must be a list")
+    elif recommendation and not raw_options:
+        errors.append("options must be a non-empty list when recommendation is set")
     else:
         for i, opt in enumerate(raw_options):
             if not isinstance(opt, dict):
@@ -387,9 +392,12 @@ def render_advisory_for_pending(report: AdvisoryReport, packet: EvidencePacket) 
     lines.append(f"ESCALATION ADVISORY — {packet.story_name} ({packet.issue_ref})")
     lines.append(f"Escalation reason: {packet.escalation_reason}")
     lines.append(f"Review cycles: {len(packet.cycles)}")
-    rec_label = ACTION_LABELS.get(report.recommendation, report.recommendation)
     lines.append("")
-    lines.append(f"RECOMMENDED ACTION: {rec_label}")
+    if report.recommendation:
+        rec_label = ACTION_LABELS.get(report.recommendation, report.recommendation)
+        lines.append(f"RECOMMENDED ACTION: {rec_label}")
+    else:
+        lines.append("RECOMMENDED ACTION: none")
     if report.rationale:
         lines.append(f"  Rationale: {report.rationale}")
     lines.append("")
