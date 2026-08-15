@@ -213,6 +213,38 @@ def test_malformed_and_invalid_summaries_are_skipped_with_diagnostics(tmp_path: 
     assert "does not match summary filename" in result.diagnostics[2].reason
 
 
+def test_unreadable_or_non_utf8_summaries_are_skipped_with_diagnostics(tmp_path: Path) -> None:
+    _write_summary(
+        tmp_path,
+        "run-valid",
+        generated_at="2026-08-14T09:00:00+00:00",
+        slug="api-retry",
+        name="API retry hardening",
+        github_issue=301,
+        work_type="feature",
+        complexity="medium",
+        complexity_score=5,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+    )
+
+    summaries = tmp_path / ".forge" / "knowledge" / "summaries"
+    summaries.mkdir(parents=True, exist_ok=True)
+    (summaries / "run-non-utf8.yaml").write_bytes(b"\xff\xfe\x00broken")
+
+    result = rebuild_knowledge_index(tmp_path)
+
+    assert result.payload["source_count"] == 2
+    assert result.payload["indexed_count"] == 1
+    assert result.payload["skipped_count"] == 1
+    assert _entry_ids(result.payload) == ["run-valid"]
+    assert len(result.diagnostics) == 1
+    assert result.diagnostics[0].path == ".forge/knowledge/summaries/run-non-utf8.yaml"
+    assert "unreadable summary:" in result.diagnostics[0].reason
+
+
 def test_entries_expose_lookup_fields_needed_by_next_story(tmp_path: Path) -> None:
     _write_summary(
         tmp_path,

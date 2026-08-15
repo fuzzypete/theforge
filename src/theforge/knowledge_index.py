@@ -123,6 +123,11 @@ def rebuild_knowledge_index(project_root: Path) -> KnowledgeIndexBuildResult:
         rel_path = str(path.relative_to(project_root))
         try:
             summary = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError) as exc:
+            diagnostics.append(
+                KnowledgeIndexDiagnostic(path=rel_path, reason=f"unreadable summary: {exc}")
+            )
+            continue
         except yaml.YAMLError as exc:
             diagnostics.append(
                 KnowledgeIndexDiagnostic(path=rel_path, reason=f"invalid YAML: {exc}")
