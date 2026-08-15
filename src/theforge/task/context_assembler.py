@@ -48,6 +48,13 @@ class ContextItem:
     content: str
     reason: str
     score: int = 0
+    # Identity of the indexed thing this item renders — a run id for prior-run
+    # summaries, an invariant id for project invariants. Carried explicitly
+    # because the budget loop later has to report *which* entries survived, and
+    # re-deriving an id by splitting ``source`` makes that decision depend on
+    # whether a project's own file paths happen to contain the delimiter.
+    # ``None`` for items that render no indexed entity (docs, structural index).
+    item_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -193,6 +200,7 @@ class ContextAssembler:
                         content=candidate.content,
                         reason=candidate.reason,
                         score=candidate.score,
+                        item_id=candidate.run_id,
                     )
                 )
 
@@ -210,6 +218,7 @@ class ContextAssembler:
                         content=invariant.content,
                         reason=invariant.reason,
                         score=invariant.score,
+                        item_id=invariant.invariant_id,
                     )
                 )
 
@@ -267,11 +276,7 @@ class ContextAssembler:
             prior_run_context=(
                 prior_run_manifest.build_manifest(
                     prior_selection,
-                    included_run_ids={
-                        item.source.split(":", 1)[1]
-                        for item in included_items
-                        if item.kind == PRIOR_RUN_KIND
-                    },
+                    included_run_ids=_included_ids(included_items, PRIOR_RUN_KIND),
                     phase=normalized_phase,
                 )
                 if prior_selection is not None
@@ -280,11 +285,7 @@ class ContextAssembler:
             invariant_context=(
                 invariant_manifest.build_manifest(
                     invariant_selection,
-                    included_ids={
-                        item.source.split("#", 1)[1]
-                        for item in included_items
-                        if item.kind == INVARIANT_KIND and "#" in item.source
-                    },
+                    included_ids=_included_ids(included_items, INVARIANT_KIND),
                     phase=normalized_phase,
                 )
                 if invariant_selection is not None
@@ -435,6 +436,18 @@ class ContextAssembler:
         ):
             score += 3
         return score
+
+
+def _included_ids(items: list[ContextItem], kind: str) -> set[str]:
+    """Ids of ``kind`` items that survived the budget, read off the item itself.
+
+    The manifest's "included vs dropped under budget pressure" split is only
+    trustworthy if it uses the same identity the selector used. Splitting the
+    display ``source`` string to recover it made that split depend on a
+    project's file naming, which is exactly the kind of coupling a portable
+    feature cannot carry.
+    """
+    return {item.item_id for item in items if item.kind == kind and item.item_id is not None}
 
 
 def _drop_reason(item: ContextItem) -> str:

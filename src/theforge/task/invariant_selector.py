@@ -85,7 +85,12 @@ class InvariantCandidate:
 
     @property
     def source(self) -> str:
-        """``ContextItem.source`` — carries the id so the manifest can round-trip."""
+        """Human-readable provenance label for the context manifest.
+
+        Display only. Identity travels separately as ``ContextItem.item_id`` —
+        source paths are project-controlled and may contain the delimiter, so
+        this string is not parseable back into a path and an id.
+        """
         return f"{self.source_path}#{self.invariant_id}"
 
 

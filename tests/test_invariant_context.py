@@ -28,7 +28,12 @@ from theforge.config.types import KnowledgeConfig
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_task
 from theforge.invariant_index import rebuild_invariant_index
-from theforge.task.context_assembler import ContextAssembler, ContextPack
+from theforge.task.context_assembler import (
+    ContextAssembler,
+    ContextItem,
+    ContextPack,
+    _included_ids,
+)
 from theforge.task.invariant_selector import (
     CONFIDENCE_HIGH,
     CONFIDENCE_LOW,
@@ -37,6 +42,7 @@ from theforge.task.invariant_selector import (
     RENDER_SOURCE_SECTION,
     select_invariants,
 )
+from theforge.task.prior_run_selector import PRIOR_RUN_KIND
 
 _GLOBS = ("*.md", "docs/**/*.md", "**/CONVENTIONS.md")
 
@@ -209,6 +215,73 @@ def test_included_items_are_visible_in_the_context_manifest(project: Path):
     entry = next(item for item in pack.included if item.kind == INVARIANT_KIND)
     assert entry.source.endswith("#coordinator-pure") or "#" in entry.source
     assert entry.included is True
+
+
+def test_inclusion_is_recorded_against_the_selector_identity_not_the_path(tmp_path: Path):
+    """A project's own file naming must not move an invariant into `dropped`.
+
+    The manifest recovered the invariant id by splitting the display `source`,
+    so a source path containing the delimiter injected the rule into the prompt
+    while reporting it dropped under budget pressure.
+    """
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "rules#v2.md").write_text(
+        "## Rules\n\n"
+        '<!-- forge-invariant id="hash-path" scope="area:coordinator phase:dev" -->\n'
+        "A rule in a file whose name contains a hash.\n"
+        "<!-- /forge-invariant -->\n",
+        encoding="utf-8",
+    )
+    rebuild_invariant_index(tmp_path, _GLOBS)
+
+    pack = _assembler(tmp_path).assemble(
+        phase="dev",
+        story_text="coordinator retry",
+        file_list=["src/coordinator/engine.py"],
+        budget=400,
+    )
+
+    manifest = pack.invariant_context
+    assert "a hash" in pack.content
+    assert _ids(manifest["included"]) == ["hash-path"]
+    assert manifest["dropped"] == []
+
+
+def test_included_ids_reads_identity_off_the_item_never_off_the_source():
+    """Pins the contract the hash-path bug broke, for both indexed kinds."""
+    items = [
+        ContextItem(
+            source="docs/rules#v2.md#hash-path",
+            kind=INVARIANT_KIND,
+            required=False,
+            lines=1,
+            content="x",
+            reason="r",
+            item_id="hash-path",
+        ),
+        ContextItem(
+            source="knowledge:run:with:colons",
+            kind=PRIOR_RUN_KIND,
+            required=False,
+            lines=1,
+            content="x",
+            reason="r",
+            item_id="run:with:colons",
+        ),
+        # Renders no indexed entity, so it contributes no id.
+        ContextItem(
+            source="CONVENTIONS.md",
+            kind="claude_invariants",
+            required=True,
+            lines=1,
+            content="x",
+            reason="r",
+        ),
+    ]
+
+    assert _included_ids(items, INVARIANT_KIND) == {"hash-path"}
+    assert _included_ids(items, PRIOR_RUN_KIND) == {"run:with:colons"}
+    assert _included_ids(items, "claude_invariants") == set()
 
 
 # ── Conservative fallback ────────────────────────────────────────────────────
