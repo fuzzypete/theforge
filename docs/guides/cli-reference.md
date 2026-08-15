@@ -231,7 +231,26 @@ forge check-providers [flags]
 | Flag | Description |
 |------|-------------|
 | `--profile <name>` | Test only one API profile |
+| `--declared-only` | Exercise only each probe's declared transport |
 | `--config <path>` | Path to `forge.yaml` |
+
+**What it records:** every probe that actually validates a capability (structured
+output) writes the outcome to `.forge/model_capabilities.yaml`, keyed by
+provider/model/transport and stamped with when it was established. Routing reads
+that record at dispatch and declines to seat a model whose required capability is
+currently demonstrated *absent*, reporting
+`capability_demonstrated_absent` in the `routing_decision` block. An identity with
+no record stays eligible — never-established is not absence — and a record whose
+probe subject has changed since (a repointed `base_url`, a different CLI binary)
+is treated as stale rather than current. Re-run this command after changing a
+model's endpoint to refresh the record.
+
+If the record rules out *every* candidate for a role, routing refuses the run
+rather than seating a model that has demonstrated it cannot do the job — the
+error names the role, the capability, and when each absence was established.
+Re-run `forge check-providers` if the record is out of date, or configure a model
+that can produce the capability. An explicitly pinned role is exempt: the
+operator's choice stands and is flagged in that role's routing rationale.
 
 ---
 
