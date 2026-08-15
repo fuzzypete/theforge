@@ -1,0 +1,1063 @@
+"""Analytical read model over the SQLite audit substrate.
+
+This module owns the *read* side of the audit substrate: the SELECT queries and
+the derivations built on top of them. It answers retrospective questions —
+what did this path cost, which runs escalated, what did an alias resolve to,
+which cost cohort does a complexity score fall in — and it owns nothing about
+how the substrate is stored.
+
+The boundary it depends on is :data:`theforge.coordinator.audit_storage.AuditConnection`:
+a sqlite3 connection that storage has already opened, validated, and brought up
+to the current schema. Given one, readers here issue SELECT SQL against it
+directly rather than routing every query through a storage-owned accessor —
+adding a query is a function in this file, not a new method on storage. When a
+query needs the decoded record rather than the indexed columns it calls
+storage's :func:`~theforge.coordinator.audit_storage._load_migrated`, so record
+migration stays storage's responsibility here too.
+
+What does *not* belong here: ``CREATE TABLE``/``ALTER TABLE``, the
+``_migrate_*`` catalogue, ``upsert``/``rebuild``/``record_*`` writers, and
+connection opening. Those live in :mod:`theforge.coordinator.audit_storage`.
+The dependency runs one way — storage never imports this module — which is what
+makes a new analytical query and a new record migration independent changes.
+
+``audit_substrate`` re-exports this module's public names for compatibility.
+"""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+from pathlib import Path
+from typing import Iterable
+
+from .agent_identity import (
+    dev_identity_ledger,
+    dev_model_identity_detail,
+    entry_identity_ledger,
+)
+from .audit_storage import (
+    _INVOCATION_IDENTITY_COLUMNS,
+    AuditConnection,
+    _load_migrated,
+    has_audit_inputs,
+    require_substrate,
+    substrate_path,
+)
+
+
+def verdict_outcome_counts(conn: AuditConnection) -> list[dict]:
+    """Return run counts grouped by review verdict and landed outcome.
+
+    Answers "how often does each verdict actually end in a successful run" —
+    an APPROVE that keeps ending in an unsuccessful outcome means the verdict
+    is not predicting what it claims to.
+
+    This query is the worked example for the storage/read-model boundary
+    (#2350): it reads columns ``audit_records`` already indexes, so it lands
+    entirely in this module. No ``CREATE TABLE``, no ``ALTER TABLE``, no
+    ``_migrate_*`` entry, no ``SUBSTRATE_SCHEMA_VERSION`` bump — nothing in
+    :mod:`theforge.coordinator.audit_storage` changes to add it. Rows with a
+    NULL ``verdict`` are reported under ``verdict=None`` rather than dropped,
+    because "we never recorded one" is itself an answer.
+    """
+    rows = conn.execute(
+        "SELECT verdict, outcome_success, COUNT(*) AS n, "
+        "SUM(COALESCE(total_cost_usd, 0.0)) AS cost "
+        "FROM audit_records GROUP BY verdict, outcome_success "
+        "ORDER BY n DESC, verdict IS NULL, verdict"
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            verdict, success, count, cost = (
+                row["verdict"],
+                row["outcome_success"],
+                row["n"],
+                row["cost"],
+            )
+        else:
+            verdict, success, count, cost = row[0], row[1], row[2], row[3]
+        out.append(
+            {
+                "verdict": verdict,
+                "outcome_success": None if success is None else bool(success),
+                "runs": int(count),
+                "total_cost_usd": float(cost or 0.0),
+            }
+        )
+    return out
+
+
+def runs_touching_path(conn: AuditConnection, path: str) -> list[dict]:
+    """Return the runs that changed ``path``, joined to their cost and outcome.
+
+    The query this table exists for. It answers "what did this file cost" by
+    index lookup on ``audit_changed_files.path`` joined to ``audit_records`` on
+    ``run_id`` — no ``raw_json`` is deserialized, which is the difference
+    between a query that is run and one that is not.
+    """
+    rows = conn.execute(
+        "SELECT c.run_id, c.insertions, c.deletions, c.binary, c.base_ref, c.head_ref, "
+        "r.slug, r.issue_id, r.total_cost_usd, r.complexity_score, r.outcome_success, "
+        "r.verdict, r.started_at "
+        "FROM audit_changed_files c JOIN audit_records r ON r.run_id = c.run_id "
+        "WHERE c.path = ? ORDER BY r.started_at",
+        (path,),
+    ).fetchall()
+    return [
+        {
+            "run_id": row[0],
+            "insertions": row[1],
+            "deletions": row[2],
+            "binary": bool(row[3]),
+            "base_ref": row[4],
+            "head_ref": row[5],
+            "slug": row[6],
+            "issue_id": row[7],
+            "total_cost_usd": row[8],
+            "complexity_score": row[9],
+            "outcome_success": row[10],
+            "verdict": row[11],
+            "started_at": row[12],
+        }
+        for row in rows
+    ]
+
+
+# ── Query helpers ────────────────────────────────────────────────────────
+
+
+def has_review_approve_in_substrate(
+    conn: AuditConnection,
+    slug: str,
+    *,
+    require_landed: bool = False,
+) -> Iterable[dict]:
+    """Yield raw_json dicts for matching APPROVE records.
+
+    The caller is responsible for branch-staleness / unmerged-commits
+    checks — those rely on git state and are not part of substrate
+    semantics.
+    """
+    sql = (
+        "SELECT a.raw_json, a.record_schema_version FROM audit_records a "
+        "JOIN reviews r ON r.run_id = a.run_id "
+        "WHERE a.slug = ? AND r.verdict = 'APPROVE'"
+    )
+    params: tuple = (slug,)
+    if require_landed:
+        sql += " AND a.landing_status = 'landed'"
+    for row in conn.execute(sql, params):
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is not None:
+            yield record
+
+
+def latest_run_outcome_in_substrate(
+    conn: AuditConnection,
+    slug: str,
+) -> dict | None:
+    """Return the most recent run's recorded outcome fields for ``slug``.
+
+    Yields the three record-level dimensions merge-evidence resolution needs to
+    tell "this story landed" from "this story's last run ended badly":
+    ``outcome_success`` (1/0/None), ``verdict`` (run-level final review verdict)
+    and ``landing_status``. Returns ``None`` when no record exists for the slug.
+
+    Ordering is by ``started_at`` descending with ``run_id`` as a deterministic
+    tiebreak, so records written within the same timestamp resolve stably.
+    """
+    row = conn.execute(
+        "SELECT outcome_success, verdict, landing_status FROM audit_records "
+        "WHERE slug = ? ORDER BY started_at DESC, run_id DESC LIMIT 1",
+        (slug,),
+    ).fetchone()
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        outcome, verdict, landing = row["outcome_success"], row["verdict"], row["landing_status"]
+    else:
+        outcome, verdict, landing = row[0], row[1], row[2]
+    return {
+        "outcome_success": outcome,
+        "verdict": verdict,
+        "landing_status": landing,
+    }
+
+
+def iter_records(conn: AuditConnection, *, order_by_started: bool = True) -> Iterable[dict]:
+    """Iterate raw_json dicts for all audit records."""
+    sql = "SELECT raw_json, record_schema_version FROM audit_records"
+    if order_by_started:
+        sql += " ORDER BY started_at ASC"
+    for row in conn.execute(sql):
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is not None:
+            yield record
+
+
+def tail_records(conn: AuditConnection, limit: int) -> list[dict]:
+    """Return the most-recent ``limit`` records ordered by started_at DESC."""
+    rows = conn.execute(
+        "SELECT raw_json, record_schema_version FROM audit_records "
+        "ORDER BY COALESCE(started_at, '') DESC LIMIT ?",
+        (max(0, int(limit)),),
+    ).fetchall()
+    out: list[dict] = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is not None:
+            out.append(record)
+    return out
+
+
+def count_records(conn: AuditConnection) -> int:
+    row = conn.execute("SELECT COUNT(*) FROM audit_records").fetchone()
+    if row is None:
+        return 0
+    return int(row[0])
+
+
+def latest_record_for(
+    conn: AuditConnection,
+    *,
+    slug: str | None = None,
+    issue_id: int | None = None,
+    run_id: str | None = None,
+) -> dict | None:
+    """Return the most-recent migrated record matching a story/run identifier.
+
+    Read-only lookup for operator-facing query surfaces (e.g. ``forge explain``).
+    Exactly one of ``slug`` / ``issue_id`` / ``run_id`` selects the record; a
+    ``run_id`` addresses a single run, while ``slug``/``issue_id`` return the
+    newest run for that story (ordered by ``started_at`` DESC). Returns ``None``
+    when nothing matches. Never writes.
+    """
+    if run_id is not None:
+        clause, param = "run_id = ?", run_id
+    elif slug is not None:
+        clause, param = "slug = ?", slug
+    elif issue_id is not None:
+        clause, param = "issue_id = ?", issue_id
+    else:
+        return None
+    row = conn.execute(
+        "SELECT raw_json, record_schema_version FROM audit_records "
+        f"WHERE {clause} ORDER BY COALESCE(started_at, '') DESC LIMIT 1",
+        (param,),
+    ).fetchone()
+    if row is None:
+        return None
+    if isinstance(row, sqlite3.Row):
+        raw, ver = row["raw_json"], row["record_schema_version"]
+    else:
+        raw, ver = row[0], row[1]
+    return _load_migrated(raw, ver)
+
+
+# ── Alias-resolution drift ───────────────────────────────────────────────
+
+
+def iter_invocation_identities(
+    conn: AuditConnection,
+    *,
+    configured_model: str | None = None,
+    role: str | None = None,
+) -> Iterable[dict]:
+    """Yield indexed invocation-identity rows, oldest first. Never writes."""
+    clauses: list[str] = []
+    params: list[object] = []
+    if configured_model is not None:
+        clauses.append("configured_model = ?")
+        params.append(configured_model)
+    if role is not None:
+        clauses.append("role = ?")
+        params.append(role)
+    where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+    names = ", ".join(_INVOCATION_IDENTITY_COLUMNS)
+    try:
+        rows = conn.execute(
+            f"SELECT {names} FROM invocation_identities{where} "
+            "ORDER BY COALESCE(started_at, ''), run_id, seq",
+            tuple(params),
+        ).fetchall()
+    except sqlite3.OperationalError:
+        return
+    for row in rows:
+        yield {
+            name: (row[name] if isinstance(row, sqlite3.Row) else row[idx])
+            for idx, name in enumerate(_INVOCATION_IDENTITY_COLUMNS)
+        }
+
+
+def alias_resolution_timeline(conn: AuditConnection) -> list[dict]:
+    """Group recorded invocations by configured identity and report drift (#2226).
+
+    Answers the question a family alias makes unanswerable from the identity
+    alone: *what did this actually run, and did that change?* Each returned entry
+    is one configured identity::
+
+        {
+          "configured_model": str,
+          "invocations": int,
+          "resolved_models": [            # ordered by first appearance
+              {"resolved_model": str,
+               "resolution": str | None,
+               "invocations": int,
+               "first_seen": str | None,
+               "last_seen": str | None,
+               "first_run_id": str,
+               "last_run_id": str},
+              ...
+          ],
+          "distinct_resolved": int,
+          "changed": bool,                # resolved to more than one identity
+          "current": str | None,          # the NEWEST recorded resolution
+        }
+
+    ``resolved_models`` is ordered by first appearance, which is the readable
+    order for a drift history. ``current`` is deliberately not its last element:
+    an alias that resolved A → B → A is currently on A, and reading the tail of a
+    first-appearance list would report B.
+
+    ``changed`` is the detection this exists for: two runs naming the same alias
+    that resolved to different concrete versions produce ``changed: True``,
+    which is a recorded fact rather than a behavioural surprise. Entries are
+    ordered most-drifted first, then by invocation count, so the aliases whose
+    subject moved surface at the top. Rows with no configured identity (a
+    pre-ledger record, which could never name one) are skipped: they cannot
+    attest to what an alias resolved to.
+    """
+    grouped: dict[str, dict] = {}
+    for row in iter_invocation_identities(conn):
+        configured = row["configured_model"]
+        resolved = row["resolved_model"]
+        if not configured or not resolved:
+            continue
+        bucket = grouped.setdefault(
+            configured,
+            {"configured_model": configured, "invocations": 0, "_resolved": {}, "_current": None},
+        )
+        bucket["invocations"] += 1
+        # Rows arrive oldest-first, so the last one seen for this alias IS the
+        # newest resolution. Tracked here rather than read off the tail of
+        # ``resolved_models``: that list is ordered by FIRST appearance, so an
+        # alias that went A → B → A would report B as current when the newest
+        # invocation resolved to A.
+        bucket["_current"] = resolved
+        seen = bucket["_resolved"].get(resolved)
+        started = row["started_at"]
+        if seen is None:
+            bucket["_resolved"][resolved] = {
+                "resolved_model": resolved,
+                "resolution": row["resolved_model_resolution"],
+                "invocations": 1,
+                "first_seen": started,
+                "last_seen": started,
+                "first_run_id": row["run_id"],
+                "last_run_id": row["run_id"],
+            }
+        else:
+            seen["invocations"] += 1
+            seen["last_seen"] = started
+            seen["last_run_id"] = row["run_id"]
+    out: list[dict] = []
+    for bucket in grouped.values():
+        resolved_models = list(bucket.pop("_resolved").values())
+        bucket["resolved_models"] = resolved_models
+        bucket["distinct_resolved"] = len(resolved_models)
+        bucket["changed"] = len(resolved_models) > 1
+        bucket["current"] = bucket.pop("_current")
+        out.append(bucket)
+    out.sort(key=lambda b: (-b["distinct_resolved"], -b["invocations"], b["configured_model"]))
+    return out
+
+
+# ── Derived assignment-history view ──────────────────────────────────────
+
+
+_COMPLEXITY_TO_BAND = {"small": "LOW", "medium": "MEDIUM", "large": "HIGH"}
+
+
+def _coerce_complexity_score(value: object) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value)
+    return None
+
+
+def derive_cost_samples_by_score(
+    conn: AuditConnection,
+    *,
+    stats: dict | None = None,
+) -> dict[int, list[float]]:
+    """Return ``{complexity_score: [total_cost_usd, ...]}`` over admissible runs.
+
+    The per-story budget allocator (see ``coordinator.story_budget``) needs the
+    observed cost distribution per complexity band. Reads the indexed flat
+    columns directly — no record migration is needed, because both fields are
+    projected into columns at upsert time — and routes admissibility through the
+    same centralized taint gate every other history consumer uses (ADR-0006
+    clause 4): a run that failed its own trust checks does not teach what a
+    story of its kind costs. Runs that did not end successfully are excluded
+    before the taint gate: an unsuccessful spend observation is a lower bound
+    on what the work needed, not a measurement of what the work costs. When
+    ``stats`` is provided its ``"excluded_for_taint"`` and
+    ``"excluded_for_unsuccessful_outcome"`` keys are incremented by the number
+    of rows set aside for those reasons.
+
+    Rows with a null score, a null cost (cost-unknown runs, which are a lower
+    bound rather than a measurement), or a non-positive cost are skipped: none
+    of them carry a usable spend observation.
+    """
+    from .trust_status import filter_tainted_records  # noqa: PLC0415
+
+    rows = conn.execute(
+        "SELECT complexity_score, total_cost_usd, outcome_success, raw_json FROM audit_records "
+        "WHERE complexity_score IS NOT NULL AND total_cost_usd IS NOT NULL"
+    ).fetchall()
+    candidates: list[dict] = []
+    excluded_for_unsuccessful_outcome = 0
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            score = row["complexity_score"]
+            cost = row["total_cost_usd"]
+            outcome_success = row["outcome_success"]
+            raw = row["raw_json"]
+        else:
+            score, cost, outcome_success, raw = row[0], row[1], row[2], row[3]
+        try:
+            cost_value = float(cost)
+        except (TypeError, ValueError):
+            continue
+        if cost_value <= 0.0:
+            continue
+        score_value = _coerce_complexity_score(score)
+        if score_value is None:
+            continue
+        if outcome_success != 1:
+            excluded_for_unsuccessful_outcome += 1
+            continue
+        trust: str | None = None
+        try:
+            parsed = json.loads(raw) if raw else None
+        except (TypeError, ValueError):
+            parsed = None
+        if isinstance(parsed, dict):
+            status = parsed.get("trust_status")
+            trust = status if isinstance(status, str) else None
+        candidates.append(
+            {"complexity_score": score_value, "total_cost_usd": cost_value, "trust_status": trust}
+        )
+
+    admissible, excluded = filter_tainted_records(candidates)
+    if stats is not None:
+        stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
+        stats["excluded_for_unsuccessful_outcome"] = (
+            int(stats.get("excluded_for_unsuccessful_outcome", 0))
+            + excluded_for_unsuccessful_outcome
+        )
+    out: dict[int, list[float]] = {}
+    for entry in admissible:
+        out.setdefault(int(entry["complexity_score"]), []).append(float(entry["total_cost_usd"]))
+    return out
+
+
+def derive_observed_cost_cohorts(
+    conn: AuditConnection,
+    *,
+    stats: dict | None = None,
+) -> dict[str, dict[str, dict[str, object]]]:
+    """Return observed invocation-cost cohorts keyed by model and cohort tuple.
+
+    The final assignment tie-break compares spend only within like-for-like
+    cohorts: role, complexity band, and requested reasoning effort. This reader
+    projects those cohorts from the invocation ledger (#2226), not from the
+    profile aggregates, because the ledger is the only substrate that carries
+    all three cohort dimensions together with the measured invocation cost.
+
+    Returned shape::
+
+        {
+          "<model identity>": {
+            "dev|MEDIUM|high": {
+              "role": "dev",
+              "complexity": "MEDIUM",
+              "reasoning_effort": "high",
+              "observations": [
+                {"cost_usd": 2.1, "started_at": "...", "cost_provenance": "..."},
+                ...
+              ],
+            },
+          },
+        }
+
+    Only complete observations are kept: a full ledger, a configured-or-resolved
+    model identity, usage metadata, a numeric ``cost_usd``, and the cohort
+    dimensions required by the selector. Tainted runs are filtered by the same
+    centralized gate every other router-consumed history projection uses.
+    """
+    from .trust_status import filter_tainted_records  # noqa: PLC0415
+
+    rows = conn.execute(
+        "SELECT raw_json, record_schema_version, started_at FROM audit_records "
+        "ORDER BY COALESCE(started_at, '') ASC"
+    ).fetchall()
+    candidates: list[dict[str, object]] = []
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            raw = row["raw_json"]
+            ver = row["record_schema_version"]
+            started_at = row["started_at"]
+        else:
+            raw, ver, started_at = row[0], row[1], row[2]
+        record = _load_migrated(raw, ver)
+        if not isinstance(record, dict):
+            continue
+        trust = record.get("trust_status")
+        timing = record.get("timing") if isinstance(record.get("timing"), dict) else {}
+        candidates.append(
+            {
+                "record": record,
+                "trust_status": trust if isinstance(trust, str) else None,
+                "started_at": (
+                    started_at
+                    or timing.get("started_at")
+                    or timing.get("finished_at")
+                    or record.get("started_at")
+                    or record.get("finished_at")
+                ),
+            }
+        )
+
+    admissible, excluded = filter_tainted_records(candidates)
+    if stats is not None:
+        stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
+
+    out: dict[str, dict[str, dict[str, object]]] = {}
+    for item in admissible:
+        record = item.get("record")
+        if not isinstance(record, dict):
+            continue
+        started_at = item.get("started_at")
+        cost = record.get("cost") if isinstance(record.get("cost"), dict) else {}
+        agents = cost.get("agents") if isinstance(cost, dict) else None
+        if not isinstance(agents, list):
+            continue
+        for entry in agents:
+            if not isinstance(entry, dict):
+                continue
+            projection = entry_identity_ledger(entry)
+            if not isinstance(projection, dict) or not projection.get("full_ledger"):
+                continue
+            ledger = entry.get("ledger")
+            if not isinstance(ledger, dict):
+                continue
+            usage = ledger.get("usage")
+            cost_usd = projection.get("cost_usd")
+            role = projection.get("role")
+            complexity = projection.get("complexity")
+            effort = projection.get("reasoning_effort")
+            provenance = projection.get("cost_provenance")
+            if not isinstance(usage, dict) or not usage:
+                continue
+            if not isinstance(cost_usd, (int, float)):
+                continue
+            if not isinstance(role, str) or not role.strip():
+                continue
+            if not isinstance(complexity, str) or not complexity.strip():
+                continue
+            if not isinstance(effort, str) or not effort.strip():
+                continue
+            if not isinstance(provenance, str) or not provenance.strip():
+                continue
+            configured = projection.get("configured")
+            resolved = projection.get("resolved")
+            identity = None
+            if isinstance(configured, tuple) and configured and configured[0]:
+                identity = str(configured[0])
+            elif isinstance(resolved, tuple) and resolved and resolved[0]:
+                identity = str(resolved[0])
+            if not identity:
+                continue
+            cohort_key = f"{role.upper()}|{complexity.upper()}|{effort.lower()}"
+            cohort = out.setdefault(identity, {}).setdefault(
+                cohort_key,
+                {
+                    "role": str(role).upper(),
+                    "complexity": str(complexity).upper(),
+                    "reasoning_effort": str(effort).lower(),
+                    "observations": [],
+                },
+            )
+            observations = cohort.get("observations")
+            if not isinstance(observations, list):
+                observations = []
+                cohort["observations"] = observations
+            observations.append(
+                {
+                    "cost_usd": round(float(cost_usd), 6),
+                    "started_at": str(started_at or ""),
+                    "cost_provenance": str(provenance),
+                }
+            )
+    return out
+
+
+def load_observed_cost_cohorts(
+    project_root: Path,
+) -> tuple[dict[str, dict[str, dict[str, object]]], int]:
+    """Return ``(observed_cost_cohorts, excluded_for_taint)`` from substrate.
+
+    Mirrors the escalation-history loader's runtime contract: a genuinely fresh
+    repo returns an empty mapping; an existing but unreadable substrate remains
+    an operator-facing error rather than silently degrading to no history.
+    """
+    sub_path = substrate_path(project_root)
+    if not sub_path.exists() and not has_audit_inputs(project_root):
+        return {}, 0
+    conn = require_substrate(project_root)
+    try:
+        stats: dict[str, object] = {}
+        cohorts = derive_observed_cost_cohorts(conn, stats=stats)
+        return cohorts, int(stats.get("excluded_for_taint", 0))
+    finally:
+        conn.close()
+
+
+def derive_assignment_history(
+    conn: AuditConnection,
+    *,
+    stats: dict | None = None,
+) -> list[dict]:
+    """Return assignment-history records derived from per-run audit records.
+
+    Replaces the YAML snapshot at ``.forge/assignment_history.yaml`` as the
+    source of truth: each emitted dict has the same shape consumed by
+    :func:`theforge.assignment.load_escalation_history` (story, complexity,
+    dev_model, outcome, reason, timestamp, complexity_score). Records are
+    ordered chronologically by ``timing.started_at``.
+
+    Audit records that lack the routing/complexity fields needed to
+    reconstruct an :class:`EscalationRecord` are skipped — they predate
+    adaptive routing and were never represented in the legacy YAML either.
+
+    Runs marked ``tainted`` by the trust-status marker (ADR-0006 clause 4) are
+    excluded before any projection: a run that failed its own trust checks
+    "doesn't teach", so it must not carry routing weight. Filtering routes
+    through the centralized :func:`trust_status.filter_tainted_records` gate so
+    the rule stays identical across every consumer. The tainted rows remain in
+    the substrate untouched (ADR-0002 refusal-to-forget); this is a read-time
+    gate. When ``stats`` is provided, its ``"excluded_for_taint"`` key is
+    incremented by the number of records set aside so callers (preflight) can
+    surface the count in ``routing_decision``.
+
+    This is the CLI/export view (mapped complexity bands, derives dev model
+    from preflight routing assignments). Adaptive routing uses the more
+    runtime-faithful :func:`iter_escalation_records` instead, which derives
+    dev model from ``cost.agents`` (the model that actually ran).
+    """
+    from .trust_status import filter_tainted_records  # noqa: PLC0415
+
+    admissible, excluded = filter_tainted_records(iter_records(conn, order_by_started=True))
+    if stats is not None:
+        stats["excluded_for_taint"] = int(stats.get("excluded_for_taint", 0)) + excluded
+    out: list[dict] = []
+    for record in admissible:
+        slug = (record.get("task") or {}).get("slug")
+        if not slug:
+            continue
+        outcome_block = record.get("outcome") or {}
+        success = outcome_block.get("success")
+        if not isinstance(success, bool):
+            continue
+        pre = record.get("preflight") if isinstance(record.get("preflight"), dict) else {}
+        complexity_raw = pre.get("complexity")
+        if not isinstance(complexity_raw, str) or not complexity_raw:
+            continue
+        complexity = _COMPLEXITY_TO_BAND.get(complexity_raw.lower(), complexity_raw.upper())
+        routing_raw = pre.get("complexity_routing")
+        routing = routing_raw if isinstance(routing_raw, dict) else {}
+        assignments_raw = routing.get("assignments")
+        assignments = assignments_raw if isinstance(assignments_raw, dict) else {}
+        dev_raw = assignments.get("dev")
+        dev = dev_raw if isinstance(dev_raw, dict) else {}
+        dev_model = dev.get("canonical_id") or dev.get("model")
+        dev_model_resolution: str | None = None
+        # Fallback: when the audit record lacks the preflight.complexity_routing
+        # block (older audits, or audits seeded by tests that bypass routing),
+        # derive the canonical dev model from cost.agents — the model that
+        # actually ran, canonicalized to the same provider/model/transport shape
+        # the routing block would have provided. Shares the one reading of the
+        # agent-entry identity contract (#2201).
+        if not (isinstance(dev_model, str) and dev_model):
+            dev_model, _source, dev_model_resolution = dev_model_identity_detail(record)
+        if not isinstance(dev_model, str) or not dev_model:
+            continue
+        ledger = dev_identity_ledger(record)
+        timing = record.get("timing") or {}
+        timestamp = timing.get("started_at") or timing.get("finished_at") or ""
+        escalation = record.get("escalation") if isinstance(record.get("escalation"), dict) else {}
+        reason = escalation.get("reason") if isinstance(escalation.get("reason"), str) else ""
+        out.append(
+            {
+                "story": str(slug),
+                "complexity": complexity,
+                "dev_model": str(dev_model),
+                "outcome": "DONE" if success else "ESCALATE",
+                "reason": reason or "",
+                "timestamp": str(timestamp),
+                "complexity_score": _coerce_complexity_score(pre.get("complexity_score")),
+                # Only set on the cost.agents fallback: a routing-block model is
+                # canonical by construction and carries no resolution status.
+                "dev_model_resolution": dev_model_resolution,
+                # Configured and resolved carried separately beside the
+                # compatibility ``dev_model`` above, so a consumer can group cost
+                # and outcome by either one independently (#2205). Null on a
+                # pre-ledger record — which ``dev_identity_ledger_full`` says
+                # explicitly, so an absent value never reads as "same as
+                # resolved".
+                "dev_configured_model": ledger["configured"][0] if ledger["configured"] else None,
+                "dev_resolved_model": (
+                    ledger["resolved"][0] if ledger["resolved"] else str(dev_model)
+                ),
+                "dev_identity_ledger_full": ledger["full_ledger"],
+                "dev_configured_differs_from_resolved": ledger["differs"],
+            }
+        )
+    return out
+
+
+def iter_escalation_records(conn: AuditConnection) -> Iterable[dict]:
+    """Yield escalation-shaped dicts derived from audit records.
+
+    Each row exposes the fields the adaptive router cares about for promotion
+    bookkeeping: ``story``, ``complexity``, ``dev_model`` (canonicalized when
+    available, else falls back to embedded dev profile name), ``outcome``
+    ("DONE" if the run succeeded else "ESCALATE"), ``timestamp``, and
+    ``complexity_score``. Records ordered by ``started_at`` ascending so
+    callers can take the trailing window directly.
+
+    This is the runtime-routing view (raw complexity string, derives dev
+    model from ``cost.agents`` — the model that actually ran). The CLI/export
+    view :func:`derive_assignment_history` uses preflight assignments
+    instead, which is the *intended* dev model rather than the executed one.
+
+    Runs marked ``tainted`` by the trust-status marker (ADR-0006 clause 4) are
+    dropped before ``_derive_escalation`` so a run that failed its own trust
+    checks never carries routing weight. The exclusion routes through the same
+    centralized :func:`trust_status.is_tainted` gate every other consumer uses.
+    """
+    from .trust_status import is_tainted  # noqa: PLC0415
+
+    rows = conn.execute(
+        "SELECT raw_json, record_schema_version FROM audit_records "
+        "ORDER BY COALESCE(started_at, '') ASC"
+    )
+    for row in rows:
+        if isinstance(row, sqlite3.Row):
+            raw, ver = row["raw_json"], row["record_schema_version"]
+        else:
+            raw, ver = row[0], row[1]
+        record = _load_migrated(raw, ver)
+        if record is None:
+            continue
+        if is_tainted(record.get("trust_status")):
+            continue
+        derived = _derive_escalation(record)
+        if derived is not None:
+            yield derived
+
+
+_COMPLEXITY_BAND_NORMALIZE = {
+    "small": "LOW",
+    "medium": "MEDIUM",
+    "large": "HIGH",
+    "low": "LOW",
+    "high": "HIGH",
+}
+
+
+def _normalize_complexity_band(value: str) -> str:
+    """Map small/medium/large (and other casing) to LOW/MEDIUM/HIGH.
+
+    Mirrors ``theforge.assignment._normalize_complexity`` so substrate-derived
+    escalation history uses the same key the promotion logic compares against.
+    Empty input returns "" so callers can distinguish "no band recorded" from
+    a normalized band.
+    """
+    if not value:
+        return ""
+    return _COMPLEXITY_BAND_NORMALIZE.get(value.lower(), value.upper())
+
+
+def _derive_escalation(record: dict) -> dict | None:
+    """Project an audit record to its escalation-shape projection."""
+    task = record.get("task") or {}
+    slug = str(task.get("slug") or "").strip()
+    outcome = record.get("outcome") or {}
+    success = outcome.get("success")
+    if not isinstance(success, bool):
+        return None
+    preflight = record.get("preflight") if isinstance(record.get("preflight"), dict) else {}
+    raw_complexity = str(preflight.get("complexity") or "").strip()
+    # Promotion checks compare against LOW/MEDIUM/HIGH (see assignment._normalize_complexity).
+    # Audit records persist the lower-case band (small/medium/large), so normalize on the
+    # projection boundary so two ESCALATE rows for the same model actually match.
+    complexity = _normalize_complexity_band(raw_complexity)
+
+    # Canonical dev model identity, derived from the cost.agents block when
+    # present, through the one shared reading of that contract (#2201).
+    dev_model, _dev_model_source, dev_model_resolution = dev_model_identity_detail(record)
+    dev_model = dev_model or ""
+    ledger = dev_identity_ledger(record)
+
+    raw_score = preflight.get("complexity_score") if isinstance(preflight, dict) else None
+    if isinstance(raw_score, bool):
+        complexity_score: int | None = None
+    elif isinstance(raw_score, int):
+        complexity_score = raw_score
+    elif isinstance(raw_score, float):
+        complexity_score = int(raw_score)
+    else:
+        complexity_score = None
+
+    timing = record.get("timing") or {}
+    timestamp = str(timing.get("finished_at") or timing.get("started_at") or "")
+
+    escalation_block = (
+        record.get("escalation") if isinstance(record.get("escalation"), dict) else {}
+    )
+    reason = str(escalation_block.get("reason") or "")
+
+    return {
+        "story": slug,
+        "complexity": complexity,
+        "dev_model": dev_model,
+        "outcome": "DONE" if success else "ESCALATE",
+        "reason": reason,
+        "timestamp": timestamp,
+        "complexity_score": complexity_score,
+        # Whether ``dev_model`` is a canonical identity or the runner's verbatim
+        # spelling — a consumer aggregating per model needs to be able to tell
+        # an unrecognized identity from a normalized one (#2225).
+        "dev_model_resolution": dev_model_resolution,
+        # Adaptive routing keys off ``dev_model`` (the resolved identity) as it
+        # always has — that is the model whose behaviour the outcome is evidence
+        # about. The configured identity is carried alongside so cost/outcome can
+        # also be grouped by what the operator selected, without either grouping
+        # silently standing in for the other (#2205).
+        "dev_configured_model": ledger["configured"][0] if ledger["configured"] else None,
+        "dev_resolved_model": ledger["resolved"][0] if ledger["resolved"] else dev_model,
+        "dev_identity_ledger_full": ledger["full_ledger"],
+        "dev_configured_differs_from_resolved": ledger["differs"],
+    }
+
+
+def iter_readiness_events(conn: AuditConnection, *, kind: str | None = None) -> Iterable[dict]:
+    """Yield readiness-event dicts (parsed from raw_json), newest first."""
+    if kind is not None:
+        cur = conn.execute(
+            "SELECT raw_json FROM readiness_events WHERE kind = ? ORDER BY event_id DESC",
+            (kind,),
+        )
+    else:
+        cur = conn.execute("SELECT raw_json FROM readiness_events ORDER BY event_id DESC")
+    for row in cur:
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def iter_shape_verdict_events(
+    conn: AuditConnection,
+    *,
+    issue_id: str | None = None,
+    verdict: str | None = None,
+) -> Iterable[dict]:
+    """Yield shape-verdict event dicts (parsed from raw_json), oldest first."""
+    sql = "SELECT raw_json FROM shape_verdict_events"
+    clauses: list[str] = []
+    params: list = []
+    if issue_id is not None:
+        clauses.append("issue_id = ?")
+        params.append(issue_id)
+    if verdict is not None:
+        clauses.append("verdict = ?")
+        params.append(verdict)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY emitted_at ASC, event_id ASC"
+    for row in conn.execute(sql, tuple(params)):
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def iter_shape_skip_events(
+    conn: AuditConnection,
+    *,
+    issue_id: str | None = None,
+    reason_code: str | None = None,
+    category: str | None = None,
+    run_id: str | None = None,
+    since: str | None = None,
+    until: str | None = None,
+) -> Iterable[dict]:
+    """Yield shape-skip event dicts (parsed from raw_json), oldest first.
+
+    Serves the AC6 query surface: filter by ``reason_code`` and an
+    ``[since, until]`` ``emitted_at`` window to answer "all sprints in date
+    range D where skip code C fired" in one call. ``since``/``until`` are
+    inclusive ISO-8601 strings compared lexically (the emitted_at format is
+    zero-padded UTC, so lexical order equals chronological order).
+    """
+    clauses: list[str] = []
+    params: list = []
+    if issue_id is not None:
+        clauses.append("issue_id = ?")
+        params.append(issue_id)
+    if reason_code is not None:
+        clauses.append("reason_code = ?")
+        params.append(reason_code)
+    if category is not None:
+        clauses.append("category = ?")
+        params.append(category)
+    if run_id is not None:
+        clauses.append("run_id = ?")
+        params.append(run_id)
+    if since is not None:
+        clauses.append("emitted_at >= ?")
+        params.append(since)
+    if until is not None:
+        clauses.append("emitted_at <= ?")
+        params.append(until)
+    sql = "SELECT raw_json FROM shape_skip_events"
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY emitted_at ASC, event_id ASC"
+    for row in conn.execute(sql, tuple(params)):
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def repeated_shape_skip_blocks(
+    conn: AuditConnection,
+    *,
+    threshold: int,
+    since: str | None = None,
+    until: str | None = None,
+) -> list[dict]:
+    """Return ``(issue_id, reason_code)`` pairs blocked ``>= threshold`` times.
+
+    This is the stuck-issue detector (issue #1453 AC3): a pattern that surfaced
+    #1135 and #1405 only via manual log-walking becomes a single grouped query.
+    Only ``severity='blocking'`` rows count toward the threshold. Each result
+    carries the block count, first/last block timestamps, and the distinct run
+    ids that hit the block. Ordered by descending block count.
+    """
+    clauses = ["severity = 'blocking'"]
+    params: list = []
+    if since is not None:
+        clauses.append("emitted_at >= ?")
+        params.append(since)
+    if until is not None:
+        clauses.append("emitted_at <= ?")
+        params.append(until)
+    where = " WHERE " + " AND ".join(clauses)
+    sql = (
+        "SELECT issue_id, reason_code, COUNT(*) AS n, "
+        "MIN(emitted_at) AS first_seen, MAX(emitted_at) AS last_seen "
+        "FROM shape_skip_events" + where + " "
+        "GROUP BY issue_id, reason_code HAVING n >= ? "
+        "ORDER BY n DESC, issue_id ASC, reason_code ASC"
+    )
+    out: list[dict] = []
+    for row in conn.execute(sql, tuple(params) + (int(threshold),)):
+        issue_id = row[0] if not isinstance(row, sqlite3.Row) else row["issue_id"]
+        reason_code = row[1] if not isinstance(row, sqlite3.Row) else row["reason_code"]
+        n = row[2] if not isinstance(row, sqlite3.Row) else row["n"]
+        first_seen = row[3] if not isinstance(row, sqlite3.Row) else row["first_seen"]
+        last_seen = row[4] if not isinstance(row, sqlite3.Row) else row["last_seen"]
+        run_rows = conn.execute(
+            "SELECT DISTINCT run_id FROM shape_skip_events "
+            "WHERE issue_id = ? AND reason_code = ? AND severity = 'blocking' "
+            "AND run_id IS NOT NULL ORDER BY run_id",
+            (issue_id, reason_code),
+        ).fetchall()
+        run_ids = [r[0] if not isinstance(r, sqlite3.Row) else r["run_id"] for r in run_rows]
+        out.append(
+            {
+                "issue_id": issue_id,
+                "reason_code": reason_code,
+                "block_count": int(n),
+                "first_seen": first_seen,
+                "last_seen": last_seen,
+                "run_ids": run_ids,
+            }
+        )
+    return out
+
+
+def iter_inline_remediation_events(
+    conn: AuditConnection,
+    *,
+    milestone: str | None = None,
+) -> Iterable[dict]:
+    """Yield inline-remediation event dicts (parsed from raw_json), oldest first."""
+    sql = "SELECT raw_json FROM inline_remediation_events"
+    params: tuple = ()
+    if milestone is not None:
+        sql += " WHERE milestone = ?"
+        params = (milestone,)
+    sql += " ORDER BY emitted_at ASC, event_id ASC"
+    for row in conn.execute(sql, params):
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def inline_remediation_rollup_by_milestone(conn: AuditConnection) -> dict[str, dict]:
+    """Return ``{milestone: {"count": int, "total_cost_usd": float}}``.
+
+    The postmortem refusal-economics numerator: how many inline-remediation
+    events fired per milestone and what they cost. A ``None`` milestone is
+    keyed under the empty string so callers can still surface un-milestoned
+    events. Costs recorded as NULL contribute 0.0.
+    """
+    rows = conn.execute(
+        "SELECT COALESCE(milestone, ''), COUNT(*), COALESCE(SUM(cost_usd), 0.0) "
+        "FROM inline_remediation_events GROUP BY milestone"
+    ).fetchall()
+    out: dict[str, dict] = {}
+    for milestone, count, total_cost in rows:
+        out[str(milestone)] = {
+            "count": int(count),
+            "total_cost_usd": float(total_cost),
+        }
+    return out

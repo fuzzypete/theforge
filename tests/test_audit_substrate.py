@@ -10,6 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from theforge.config import ModelProfile
+from theforge.coordinator import audit_storage
 from theforge.coordinator import audit_substrate as sub
 
 
@@ -838,7 +839,10 @@ class TestRecordSchemaMigration:
             seen_versions.append(from_version)
             return original(record, from_version=from_version)
 
-        monkeypatch.setattr(sub, "_migrate_record", tracking)
+        # ``audit_storage`` owns the decoder; the read-model readers reach it
+        # through ``_load_migrated``, which resolves its own module global.
+        # Patching the ``audit_substrate`` re-export would be a no-op (#2350).
+        monkeypatch.setattr(audit_storage, "_migrate_record", tracking)
         conn = sub.create_or_open(tmp_path)
         try:
             if reader == "iter_records":
@@ -873,7 +877,10 @@ class TestRecordSchemaMigration:
             seen_versions.append(from_version)
             return original(record, from_version=from_version)
 
-        monkeypatch.setattr(sub, "_migrate_record", tracking)
+        # ``audit_storage`` owns the decoder; the read-model readers reach it
+        # through ``_load_migrated``, which resolves its own module global.
+        # Patching the ``audit_substrate`` re-export would be a no-op (#2350).
+        monkeypatch.setattr(audit_storage, "_migrate_record", tracking)
         conn = sub.create_or_open(tmp_path)
         try:
             list(sub.iter_records(conn))
