@@ -142,7 +142,9 @@ class TransportSpec:
             raise ValueError("TransportSpec(kind='api') must not set an executable")
 
 
-_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset(
+    {"preflight", "dev", "plan", "review", "advisor"}
+)
 
 # Domains of the routing fields, kept next to the policy they constrain so both
 # declaration surfaces check the same thing. Each is bounded by what actually
@@ -153,9 +155,10 @@ _DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "pla
 # - ``COST_RANK_RANGE``: the bands role selection reads (1=cheap, 2=mid,
 #   3=strong) — see ``config/pricing.py``.
 # - ``KNOWN_PHASES``: the only phases ever queried, by ``derive_roles()`` in
-#   ``role_derivation.py``. It equals the default set today because every known
-#   phase is eligible by default; they are separate names because a future phase
-#   that is *not* default-eligible would make them diverge.
+#   ``role_derivation.py`` and the single-role advisor selector. It equals the
+#   default set today because every known phase is eligible by default; they are
+#   separate names because a future phase that is *not* default-eligible would
+#   make them diverge.
 #
 # An unrecognized phase is the sharpest of these: ``_phase_candidates`` falls
 # back to the whole list when filtering empties it, so ``[reviewer]`` for
@@ -164,7 +167,7 @@ _DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset({"preflight", "dev", "pla
 MODEL_TIERS: frozenset[str] = frozenset({"cheap", "fast", "strong"})
 CAPABILITY_RANGE: tuple[int, int] = (1, 10)
 COST_RANK_RANGE: tuple[int, int] = (1, 3)
-KNOWN_PHASES: frozenset[str] = frozenset({"preflight", "dev", "plan", "review"})
+KNOWN_PHASES: frozenset[str] = frozenset({"preflight", "dev", "plan", "review", "advisor"})
 
 
 @dataclass(frozen=True)

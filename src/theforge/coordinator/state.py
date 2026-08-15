@@ -886,6 +886,10 @@ class CoordinatorState:
     advisory_generated: bool = False  # True when a valid advisory report was produced
     advisory_packet: dict | None = None  # serialized EvidencePacket fed to the advisor
     advisory_report: dict | None = None  # serialized AdvisoryReport the advisor produced
+    # Why no usable advisory input exists on this gate despite the role being
+    # requested. Distinct from advisory_launch_failure, which means the advisor
+    # process never reached the model at all.
+    advisory_unavailable_reason: str | None = None
     # Set when the advisor process exited before it ever reached the model (a
     # forge configuration / tool-invocation defect, e.g. a CLI refusing to start
     # in the baseline checkout). Kept distinct from advisory_generated=False so

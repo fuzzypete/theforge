@@ -19,13 +19,19 @@ from unittest.mock import patch
 import yaml
 from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
-from theforge.config import BackendConfig, NotificationConfig
+from theforge.config import AgentDef, BackendConfig, NotificationConfig, transport_for
 from theforge.coordinator import escalation_advisor_flow as flow
 from theforge.coordinator import review_phase as rp
 from theforge.coordinator.pending_hitl import _pending_escalate_gate
+from theforge.coordinator.resume_persistence import _apply_escalation, _escalation_block
 from theforge.coordinator.review_phase import _run_escalate_gate
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.escalation_advisor import AdvisoryOption, AdvisoryReport
+from theforge.model_capabilities import (
+    CAPABILITY_TOOL_STRUCTURED,
+    capabilities_path,
+    signature_for_agent,
+)
 from theforge.review import ReviewFinding, ReviewResult
 
 
@@ -83,7 +89,52 @@ def _pending_config(tmp_path: Path, timeout: int = 1):
         backends=(BackendConfig(type="ntfy", url="https://ntfy.sh/t"),),
     )
     new_retry = dataclasses.replace(base.retry, escalate_policy="prompt")
-    return dataclasses.replace(base, notifications=notifications, retry=new_retry)
+    agents = [
+        AgentDef(
+            name="advisor-fast",
+            provider="anthropic",
+            model="sonnet",
+            budget_usd=3.0,
+            timeout_seconds=600,
+            tier="fast",
+            transport=transport_for("anthropic", "api"),
+            registry_id="anthropic/sonnet/api",
+        ),
+        AgentDef(
+            name="advisor-strong",
+            provider="openai",
+            model="gpt-5.4",
+            budget_usd=8.0,
+            timeout_seconds=900,
+            tier="strong",
+            transport=transport_for("openai", "api"),
+            registry_id="openai/gpt-5.4/api",
+        ),
+    ]
+    return dataclasses.replace(base, notifications=notifications, retry=new_retry, agents=agents)
+
+
+def _write_absent_capability_record(tmp_path: Path, *agents: AgentDef) -> None:
+    identities: dict[str, dict] = {}
+    for agent in agents:
+        identity_key = f"{agent.effective_provider}/{agent.model}/{agent.transport.kind}"
+        identities[identity_key] = {
+            "provider": agent.effective_provider,
+            "model": agent.model,
+            "transport": agent.transport.kind,
+            "capabilities": {
+                CAPABILITY_TOOL_STRUCTURED: {
+                    "outcome": "absent",
+                    "established_at": "2026-08-15T09:00:00Z",
+                    "subject_signature": signature_for_agent(agent),
+                    "detail": "no valid verdict in structured output",
+                    "probe_role": "agent-code-review",
+                }
+            },
+        }
+    path = capabilities_path(tmp_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump({"version": 1, "identities": identities}), encoding="utf-8")
 
 
 def _escalated_state() -> CoordinatorState:
@@ -138,6 +189,7 @@ options:
         # the evidence packet.
         assert "ESCALATION ADVISOR" in captured["prompt"]
         assert "Acceptance criteria" in captured["prompt"]
+        assert captured["profile"].phase == "advisor"
         # Recorded on state for the audit trail.
         assert state.advisory_generated is True
         assert state.advisory_report["recommendation"] == "redirect"
@@ -160,6 +212,9 @@ options:
         assert state.advisory_generated is False
         # An advisor that RAN and produced nothing usable is not a launch defect.
         assert state.advisory_launch_failure is False
+        assert (
+            state.advisory_unavailable_reason == "advisor returned failure before a usable report"
+        )
 
     def test_launch_failure_recorded_distinctly_from_advisory_unavailable(
         self, tmp_path, monkeypatch
@@ -192,6 +247,27 @@ options:
         assert state.advisory_generated is False
         assert state.advisory_launch_failure is True
         assert "trusted directory" in state.advisory_launch_reason
+
+    def test_ineligible_structured_incapable_models_are_not_contacted(self, tmp_path, monkeypatch):
+        config = _pending_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _escalated_state()
+        _write_absent_capability_record(tmp_path, *config.agents)
+
+        called = {"run_agent": False}
+
+        def _should_not_run(**kwargs):
+            called["run_agent"] = True
+            return _make_agent_result(success=True, output="", profile_name="advisor")
+
+        monkeypatch.setattr(flow, "run_agent", _should_not_run)
+        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
+
+        report = rp.run_escalation_advisor(state, config, task, tmp_path / "ws")
+
+        assert report is None
+        assert called["run_agent"] is False
+        assert "no candidate can serve role 'advisor'" in (state.advisory_unavailable_reason or "")
 
 
 # ── Pending escalate gate: taxonomy options + no auto-reject on timeout ────────
@@ -339,6 +415,70 @@ class TestPendingEscalateGate:
         assert "advisory_cost_usd" not in data
         assert "FAILED TO LAUNCH" not in data["reason"]
         assert "advisory report unavailable" in data["reason"]
+
+    def test_missing_advisory_input_reason_is_rendered_and_persisted(self, tmp_path):
+        state = _escalated_state()
+        state.advisory_unavailable_reason = (
+            "no candidate can serve role 'advisor': every agent in the pool has "
+            "tool-structured demonstrated absent"
+        )
+
+        data = self._write_checkpoint_without_advisory(tmp_path, state, "run-missing-input")
+
+        assert data["advisory_unavailable"] is True
+        assert "advisory_unavailable_reason" in data
+        assert "advisory input missing" in data["reason"]
+        assert "tool-structured demonstrated absent" in data["reason"]
+
+    def test_resumed_state_keeps_missing_advisory_input_reason(self, tmp_path):
+        original = _escalated_state()
+        original.escalate_decision = "advisory_pending"
+        original.escalate_reason = original.error
+        original.advisory_unavailable_reason = (
+            "no configured model is phase-eligible for advisor "
+            "(routing.phase_eligibility excludes advisor)"
+        )
+        block = _escalation_block(original)
+        assert block is not None
+
+        restored = CoordinatorState()
+        assert _apply_escalation(restored, block) is True
+        assert restored.advisory_unavailable_reason == original.advisory_unavailable_reason
+
+        data = self._write_checkpoint_without_advisory(tmp_path, restored, "run-restored-missing")
+
+        assert "phase-eligible for advisor" in data["reason"]
+        assert data["advisory_unavailable_reason"] == original.advisory_unavailable_reason
+
+    def test_valid_no_recommendation_stays_distinct_from_unavailable(self, tmp_path):
+        config = _pending_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _escalated_state()
+        report = AdvisoryReport(
+            recommendation="",
+            rationale="The evidence does not support one action over the others.",
+            options=[],
+            parse_errors=[],
+            raw={},
+        )
+
+        with patch("theforge.pending.poll_pending", return_value=("timeout", None)):
+            with patch("theforge.notify_backends.send_notifications"):
+                _pending_escalate_gate(
+                    state,
+                    task,
+                    config,
+                    state.error,
+                    {"reviewer-a": "REQUEST_CHANGES"},
+                    "PASS",
+                    run_id="run-no-rec",
+                    advisory=report,
+                )
+
+        data = yaml.safe_load((tmp_path / ".forge" / "pending" / "run-no-rec.yaml").read_text())
+        assert data["advisory_no_recommendation"] is True
+        assert data.get("advisory_unavailable") is None
+        assert "recommended no action" in data["reason"]
 
     def test_decision_cleans_up_pending_file(self, tmp_path):
         # The complementary case: when the operator DOES select, the resolved

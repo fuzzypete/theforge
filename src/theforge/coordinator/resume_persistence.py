@@ -239,6 +239,7 @@ def _escalation_block(state: "CoordinatorState") -> dict[str, Any] | None:
         "reason": state.escalate_reason,
         "advisory_generated": bool(state.advisory_generated),
         "advisory_report": _jsonable(state.advisory_report),
+        "advisory_unavailable_reason": state.advisory_unavailable_reason,
         "advisory_launch_failure": bool(state.advisory_launch_failure),
         "advisory_launch_reason": state.advisory_launch_reason,
         "waited_seconds": state.human_review_waited_seconds,
@@ -899,6 +900,12 @@ def _apply_escalation(state: "CoordinatorState", block: dict[str, Any]) -> bool:
         _set_if_unset(state, "escalate_timeout_advice", block.get("timeout_advice")) or applied
     )
     applied = _set_if_unset(state, "advisory_report", block.get("advisory_report")) or applied
+    applied = (
+        _set_if_unset(
+            state, "advisory_unavailable_reason", block.get("advisory_unavailable_reason")
+        )
+        or applied
+    )
     applied = (
         _set_if_unset(state, "human_review_waited_seconds", block.get("waited_seconds")) or applied
     )
