@@ -6,43 +6,14 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
+from tests.knowledge_effectiveness_test_helpers import record
 from theforge.cli.knowledge_report import cmd_knowledge_report
 from theforge.coordinator import audit_storage
 
 
 def _record(run_id: str, *, started_at: str, included: bool = True) -> dict:
-    return {
-        "run_id": run_id,
-        "task": {"slug": run_id, "name": run_id},
-        "timing": {"started_at": started_at},
-        "outcome": {"success": True, "final_phase": "DONE"},
-        "cost": {"total_usd": 3.0},
-        "preflight": {
-            "work_type": "feature",
-            "complexity": "medium",
-            "complexity_score": 5,
-            "domains": ["backend"],
-        },
-        "context_manifests": [
-            {
-                "phase": "dev",
-                "prior_run_context": {
-                    "enabled": True,
-                    "included": [{"run_id": "prior-1", "reason": "file_overlap"}]
-                    if included
-                    else [],
-                    "dropped": [],
-                    "note": "note",
-                },
-            }
-        ],
-        "plan_review": {"decision": "approve", "regenerated": False},
-        "iterations": {
-            "dev_iterations_productive": 1,
-            "review_cycles_total": 1,
-            "review_loop": [{"iteration": 1, "novel_findings": 1, "restated_findings": 0}],
-        },
-    }
+    """One seeded run, in or out of the with-prior cohort."""
+    return record(run_id, cohort="with" if included else "without", started_at=started_at)
 
 
 def _args(project_root: Path, **overrides: object) -> SimpleNamespace:
