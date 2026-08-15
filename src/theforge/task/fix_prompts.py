@@ -152,6 +152,10 @@ def build_fix_prompt(
     verification_request_dir: str | None = None,
     verification_response_dir: str | None = None,
     verification_max_requests: int = 0,
+    # Declared validation profiles (#2358); absent reproduces the legacy text.
+    test_profile: str | None = None,
+    test_authority: str | None = None,
+    gate_profile: str | None = None,
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -161,11 +165,12 @@ def build_fix_prompt(
     The coordinator runs the gate after the agent completes — the agent
     should NOT re-run the gate (saves 5-8 minutes per iteration).
     """
+    gate_name = "the gate" if not gate_profile else f"the merge-authority `{gate_profile}` profile"
     gate_bullet = (
         ""
         if gate_skipped
         else (
-            f"- Do NOT re-run the gate (`{gate_command}`). "
+            f"- Do NOT re-run {gate_name} (`{gate_command}`). "
             "The coordinator runs it automatically after you complete.\n        "
             "- Gate execution is delegated to the coordinator this iteration. "
             "Add `gate_delegated: true` to your `<forge_handoff>` block so the "
@@ -176,9 +181,17 @@ def build_fix_prompt(
     )
 
     if test_command and test_command != gate_command:
+        profile_note = (
+            ""
+            if not test_profile
+            else (
+                f" This is the `{test_profile}` profile; its result is "
+                f"{test_authority or 'advisory'} and does not establish merge authority."
+            )
+        )
         test_bullet = (
             f"- When running tests during development, use exactly: "
-            f"`{test_command}`. Do not hand-roll ad-hoc test invocations.\n        "
+            f"`{test_command}`. Do not hand-roll ad-hoc test invocations.{profile_note}\n        "
         )
     else:
         test_bullet = ""

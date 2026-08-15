@@ -62,6 +62,10 @@ from .types import (
     ESCALATE_TIMEOUT_POLICIES,
     ESCALATE_TIMEOUT_PRESERVE,
     SUPPORTED_PROVIDERS,
+    VALIDATION_AUTHORITIES,
+    VALIDATION_AUTHORITY_ADVISORY,
+    VALIDATION_AUTHORITY_MERGE,
+    VALIDATION_PROFILE_NAMES,
     AdvisoryConventionsConfig,
     AdvisoryIssueFilingConfig,
     ContextConfig,
@@ -87,6 +91,7 @@ from .types import (
     StuckDetectionConfig,
     TransportFallbackConfig,
     ValidationConfig,
+    ValidationProfile,
 )
 
 log = logging.getLogger("theforge.config")
@@ -818,6 +823,88 @@ def _validated_gate_timeout_scale(raw: Any) -> str:
 _DEV_VERIFICATION_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
 
+def _validated_validation_profiles(raw: Any) -> tuple[ValidationProfile, ...]:
+    """Validate ``validation.profiles`` (issue #2358).
+
+    A project declares what each of its checks costs and what its result is
+    worth::
+
+        validation:
+          profiles:
+            complete:
+              command: make gate
+              authority: merge
+            fast: make test-fast
+            targeted: make test TARGET={test_target}
+
+    Everything here is a load-time error rather than a runtime surprise, because
+    every one of these mistakes would otherwise be invisible at the only moment
+    it matters — a run whose result is trusted for a merge:
+
+    * an unrecognised profile name would load and then never be selected, since
+      forge selects by meaning and knows only these three;
+    * an empty or non-string command would resolve to a shell no-op that exits
+      zero, which is a passing gate that ran nothing;
+    * zero or several merge-authority profiles would leave "which result decides
+      the merge" ambiguous, which is the exact question profiles exist to answer.
+
+    An absent or empty declaration returns ``()`` — the project declared nothing
+    new and keeps the legacy gate_command/test_command behaviour untouched.
+    """
+    if raw is None:
+        return ()
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "forge.yaml validation.profiles must be a mapping of profile name -> "
+            f"command, got {type(raw).__name__}."
+        )
+    if not raw:
+        return ()
+    entries: list[ValidationProfile] = []
+    for name, spec in raw.items():
+        if not isinstance(name, str) or name not in VALIDATION_PROFILE_NAMES:
+            raise ValueError(
+                f"forge.yaml validation.profiles has an unknown profile name {name!r}: "
+                f"must be one of {', '.join(VALIDATION_PROFILE_NAMES)}. Forge selects a "
+                "profile by meaning, so a name it does not recognise would load and "
+                "then never run."
+            )
+        if isinstance(spec, str):
+            spec = {"command": spec}
+        if not isinstance(spec, dict):
+            raise ValueError(
+                f"forge.yaml validation.profiles.{name} must be a command string or a "
+                f"mapping, got {type(spec).__name__}."
+            )
+        command = spec.get("command")
+        if not isinstance(command, str) or not command.strip():
+            raise ValueError(
+                f"forge.yaml validation.profiles.{name}.command must be a non-empty string."
+            )
+        authority = spec.get("authority", VALIDATION_AUTHORITY_ADVISORY)
+        if not isinstance(authority, str) or authority not in VALIDATION_AUTHORITIES:
+            raise ValueError(
+                f"forge.yaml validation.profiles.{name}.authority must be one of "
+                f"{', '.join(VALIDATION_AUTHORITIES)}, got {authority!r}."
+            )
+        unknown_keys = set(spec) - {"command", "authority"}
+        if unknown_keys:
+            raise ValueError(
+                f"forge.yaml validation.profiles.{name} has unknown key(s) "
+                f"{sorted(unknown_keys)}: only 'command' and 'authority' are supported."
+            )
+        entries.append(ValidationProfile(name=name, command=command.strip(), authority=authority))
+    merge_profiles = [entry.name for entry in entries if entry.is_merge_authority]
+    if len(merge_profiles) != 1:
+        raise ValueError(
+            "forge.yaml validation.profiles must declare exactly one profile with "
+            f"'authority: {VALIDATION_AUTHORITY_MERGE}' (found {len(merge_profiles)}"
+            + (f": {', '.join(merge_profiles)}" if merge_profiles else "")
+            + "). Exactly one result may establish merge authority."
+        )
+    return tuple(entries)
+
+
 def _validated_dev_verification_commands(raw: Any) -> tuple[DevVerificationCommand, ...]:
     """Validate ``validation.dev_verification_commands`` (ADR-0007).
 
@@ -1029,6 +1116,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         dev_verification_max_requests=_validated_dev_verification_max_requests(
             val_data.get("dev_verification_max_requests")
         ),
+        profiles=_validated_validation_profiles(val_data.get("profiles")),
     )
 
     # ── v0.8 models: key ──────────────────────────────────────────────

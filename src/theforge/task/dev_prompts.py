@@ -275,6 +275,12 @@ def build_dev_prompt(
     verification_request_dir: str | None = None,
     verification_response_dir: str | None = None,
     verification_max_requests: int = 0,
+    # Declared validation profiles (#2358). Absent — the legacy two-slot
+    # configuration, and callers like `forge run --dry-run` that pass only a
+    # gate command — reproduces the previous text exactly.
+    test_profile: str | None = None,
+    test_authority: str | None = None,
+    gate_profile: str | None = None,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -452,7 +458,22 @@ def build_dev_prompt(
     policy_section = _render_dev_p2_policy_section(p2_policy)
 
     if test_command and test_command != gate_command:
-        test_section = dedent(f"""\
+        # Named only when the project declared profiles. What the agent needs to
+        # know is not just which command to run but what its result is worth: an
+        # advisory profile that passes is a signal to keep going, never evidence
+        # the story is done (#2358).
+        profile_note = (
+            ""
+            if not test_profile
+            else (
+                f"\nThis is the `{test_profile}` validation profile. Its result is "
+                f"**{test_authority or 'advisory'}**: it does not establish merge "
+                "authority, so a pass here is a signal to keep going, not evidence "
+                "the story is complete.\n"
+            )
+        )
+        test_section = (
+            dedent(f"""\
 
             ## Testing During Development
 
@@ -462,6 +483,8 @@ def build_dev_prompt(
             ```
             Do not hand-roll ad-hoc test invocations — always use this command.
         """)
+            + profile_note
+        )
     else:
         test_section = ""
 
@@ -477,8 +500,16 @@ def build_dev_prompt(
             Gate is disabled for this spec. Skip the gate command.
         """)
     else:
+        gate_label = (
+            f"the full gate command (`{gate_command}`)"
+            if not gate_profile
+            else (
+                f"the `{gate_profile}` validation profile (`{gate_command}`) — the only "
+                "one whose result carries merge authority"
+            )
+        )
         gate_section = dedent(f"""\
-            Do NOT run the full gate command (`{gate_command}`). Gate execution is
+            Do NOT run {gate_label}. Gate execution is
             coordinator-owned: after you complete, the coordinator runs the
             authoritative gate itself, outside your sandbox — running it yourself
             wastes time and can fail on sandbox-restricted operations the
