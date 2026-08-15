@@ -24,6 +24,7 @@ from theforge.config.auth import check_agent_auth
 from theforge.config.profiles import iter_config_profiles
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
+from theforge.coordinator.knowledge_summary_flow import maybe_generate_run_summary
 from theforge.coordinator.redact import redact
 from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import CoordinatorResult
@@ -278,6 +279,10 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
             pass  # best-effort
     # Write per-run JSON record (Phase A dual-write).
     _write_per_run_record(result, config, audit, audits_dir)
+    # Post-DONE knowledge summary (#1859). Runs after the authoritative record
+    # exists and never raises — the audit write path above is what this run's
+    # outcome depends on, not this.
+    maybe_generate_run_summary(config, result, audit)
     return audit_path
 
 

@@ -958,6 +958,11 @@ intake:
   auto_fix: false             # allow a single agent rewrite pass on failure
   auto_fix_mode: comment      # "comment" (post + drop) | "edit" (rewrite body, rerun once)
 
+# ── Post-run knowledge capture (optional) ─────────────────
+# Defaults to disabled. See "Post-run knowledge summaries" below.
+knowledge:
+  run_summaries: false        # emit an evidence-backed summary after a run reaches DONE
+
 # ── Sandbox capability profile (optional) ─────────────────
 # Omit entirely for default write containment. See "Sandbox capability
 # profiles" below.
@@ -1022,6 +1027,35 @@ Controls how the dev agent treats P2 review findings during the current run.
 (`docs/adr/0001-intake-readiness-workflow.md`), "Inline intake remediation
 posture". `forge init` and generated templates emit no `intake.grooming` line
 (so it resolves to `false`); there is no migration path.
+
+### Post-run knowledge summaries (`knowledge.run_summaries`)
+
+Disabled by default. When enabled, a run that reaches DONE is distilled once
+into `.forge/knowledge/summaries/{run_id}.yaml` — what changed, what was
+learned, review insights, and complexity signals — with a
+`authoritative_run_record` backlink to `.forge/audits/runs/{run_id}.json`. The
+run record carries no forward pointer; a run's summary is found by that path
+convention.
+
+Two properties are worth knowing before enabling it:
+
+- **It is not load-bearing.** Generation happens after the DONE transition and
+  after the audit record is written. A summary that fails to generate, parse, or
+  validate leaves the run's outcome and audit trail unchanged.
+- **Claims must cite the run.** Every `what_was_learned` entry must cite a
+  finding id, plan step id, review cycle, changed-file path, or diff ref that
+  actually exists in that run's audit record. A citation that does not resolve
+  rejects the whole summary rather than persisting an unverifiable claim.
+
+Generation dispatches a bounded, tool-free agent over an API transport derived
+from the plan model (via its `transport_fallback` when the plan model is a CLI).
+A plan model with no API transport available skips generation with a warning.
+Its cost is recorded on the artifact under `generation.cost_usd`, because it is
+spent after the run's own cost accounting has closed.
+
+`knowledge.prior_run_context` is reserved for Layer 3 consumption (injecting
+these summaries into future prompts) and does nothing today. Design doctrine
+lives in `docs/plans/knowledge-capture.md`.
 
 ### Adaptive assignment (`assignment:`)
 

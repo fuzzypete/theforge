@@ -766,6 +766,32 @@ class TestAllowedToolsConfig:
         assert overridden.thinking_budget == 0
 
 
+class TestKnowledgeConfig:
+    """Tests for the knowledge.* gates (#1859) — generation ships disabled."""
+
+    def test_run_summaries_defaults_to_disabled(self, tmp_path):
+        config = load_config(_write_config({"project": "p"}, tmp_path))
+        assert config.knowledge.run_summaries is False
+        assert config.knowledge.prior_run_context is False
+
+    def test_run_summaries_can_be_enabled(self, tmp_path):
+        config = load_config(_write_config({"knowledge": {"run_summaries": True}}, tmp_path))
+        assert config.knowledge.run_summaries is True
+        # Layer 3 consumption stays off — the two knobs are independent.
+        assert config.knowledge.prior_run_context is False
+
+    @pytest.mark.parametrize("key", ["run_summaries", "prior_run_context"])
+    def test_a_non_bool_value_is_rejected(self, key, tmp_path):
+        config_path = _write_config({"knowledge": {key: "yes"}}, tmp_path)
+        with pytest.raises(ValueError, match=f"knowledge.{key}"):
+            load_config(config_path)
+
+    def test_a_non_mapping_knowledge_block_is_rejected(self, tmp_path):
+        config_path = _write_config({"knowledge": ["run_summaries"]}, tmp_path)
+        with pytest.raises(ValueError, match="'knowledge' must be a mapping"):
+            load_config(config_path)
+
+
 class TestDefaultFlags:
     """Tests for plan_model_is_default and review_pool_is_default flags."""
 

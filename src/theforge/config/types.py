@@ -1239,6 +1239,27 @@ class IntakeConfig:
 
 
 @dataclass(frozen=True)
+class KnowledgeConfig:
+    """Gates for the run-knowledge pipeline (docs/plans/knowledge-capture.md).
+
+    Generation and consumption are separate knobs with separate readiness
+    points, and both ship disabled. ``run_summaries`` turns on the post-DONE
+    evidence-backed run summary (Layer 2), so a corpus can accumulate while
+    nothing consumes it.
+
+    ``prior_run_context`` gates Layer 3 injection of those summaries into future
+    agent prompts. Nothing reads it yet — it is parsed (and type-checked) here so
+    a project that sets it early gets a config error for a typo rather than
+    silence, but it is deliberately not advertised in the generated starter
+    config: offering an operator a key that does nothing is worse than not
+    offering it.
+    """
+
+    run_summaries: bool = False
+    prior_run_context: bool = False
+
+
+@dataclass(frozen=True)
 class HardConventionsConfig:
     """Mechanically enforced code structure rules."""
 
@@ -1331,6 +1352,7 @@ class ForgeConfig:
     shape_check: ShapeCheckConfig = field(default_factory=ShapeCheckConfig)
     intake: IntakeConfig = field(default_factory=IntakeConfig)
     context: ContextConfig = field(default_factory=ContextConfig)
+    knowledge: KnowledgeConfig = field(default_factory=KnowledgeConfig)
     secrets: dict[str, str] = field(default_factory=dict)
     agents: list[AgentDef] = field(default_factory=list)
     assignment: AssignmentConfig = field(default_factory=AssignmentConfig)

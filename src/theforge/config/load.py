@@ -78,6 +78,7 @@ from .types import (
     HardConventionsConfig,
     HooksConfig,
     IntakeConfig,
+    KnowledgeConfig,
     LogConfig,
     ModelProfile,
     PlanAgentReviewConfig,
@@ -1622,6 +1623,17 @@ def load_config(config_path: Path) -> ForgeConfig:
         auto_fix_mode=intake_auto_fix_mode,
     )
 
+    knowledge_data = raw.get("knowledge", {}) or {}
+    if not isinstance(knowledge_data, dict):
+        raise ValueError(f"forge.yaml 'knowledge' must be a mapping, got {knowledge_data!r}")
+    _knowledge_values: dict[str, bool] = {}
+    for _key in ("run_summaries", "prior_run_context"):
+        _value = knowledge_data.get(_key, getattr(KnowledgeConfig, _key))
+        if not isinstance(_value, bool):
+            raise ValueError(f"forge.yaml 'knowledge.{_key}' must be a bool, got {_value!r}")
+        _knowledge_values[_key] = _value
+    knowledge_cfg = KnowledgeConfig(**_knowledge_values)
+
     context_data = raw.get("context", {})
     context_cfg = ContextConfig(
         preflight_budget=int(context_data.get("preflight_budget", ContextConfig.preflight_budget)),
@@ -1870,6 +1882,7 @@ def load_config(config_path: Path) -> ForgeConfig:
         shape_check=shape_check_cfg,
         intake=intake_cfg,
         context=context_cfg,
+        knowledge=knowledge_cfg,
         secrets=secrets,
         agents=agents_list,
         assignment=assignment_cfg,
