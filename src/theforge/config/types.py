@@ -67,7 +67,7 @@ class RecencyConfig:
     reviewer) run outcomes when ranking models: newer runs count for more than
     stale ones so a model's *current* behavior drives routing, not a lifetime
     cumulative average (ADR-0006 clause 2.4). Consumed by
-    :func:`theforge.model_profiles.get_dev_signal` via a duck-typed read of these
+    :func:`theforge.model_profiles_read_model.get_dev_signal` via a duck-typed read of these
     fields; defaults mirror the module defaults there.
 
     - ``mode``: ``"exponential"`` (run-position decay), ``"window"`` (unweighted

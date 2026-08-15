@@ -746,7 +746,7 @@ def _rerank_by_profiles(
     """
     if not model_profiles or role != "dev":
         return candidates
-    from theforge.model_profiles import (  # noqa: PLC0415
+    from theforge.model_profiles_read_model import (  # noqa: PLC0415
         get_dev_domain_signal,
         get_dev_signal,
         get_observed_cost_tiebreak_signal,
@@ -863,7 +863,7 @@ def _rerank_single_by_reliability(
     """
     if not model_profiles or not candidates or not role:
         return candidates
-    from theforge.model_profiles import get_role_reliability_signal  # noqa: PLC0415
+    from theforge.model_profiles_read_model import get_role_reliability_signal  # noqa: PLC0415
 
     rows: list[tuple[int, int, AgentDef]] = []
     deprioritized: list[str] = []
@@ -1118,7 +1118,7 @@ def _rerank_reviewers_by_completion(
     """
     if not model_profiles or not candidates:
         return candidates
-    from theforge.model_profiles import get_review_signal  # noqa: PLC0415
+    from theforge.model_profiles_read_model import get_review_signal  # noqa: PLC0415
 
     rows: list[tuple[int, int, AgentDef]] = []
     deprioritized: list[str] = []
@@ -1514,7 +1514,7 @@ def _check_promotion(
             floor="fail",
         )
 
-    from theforge.model_profiles import get_dev_signal  # noqa: PLC0415
+    from theforge.model_profiles_read_model import get_dev_signal  # noqa: PLC0415
 
     signal = get_dev_signal(
         profiles,
@@ -3765,7 +3765,7 @@ def assign_models(
             reasoning_effort=dev_requested_reasoning_effort,
         )
         if dev_agent is not None and effective_profiles:
-            from theforge.model_profiles import get_dev_success_rate  # noqa: PLC0415
+            from theforge.model_profiles_read_model import get_dev_success_rate  # noqa: PLC0415
 
             _rate = get_dev_success_rate(
                 model_profiles,
