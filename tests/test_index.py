@@ -7,6 +7,7 @@ import yaml
 
 from theforge.cli.index import cmd_index
 from theforge.indexer import generate_index
+from theforge.knowledge_index import KNOWLEDGE_INDEX_PATH
 
 
 def test_generate_index_writes_modules_yaml(tmp_path: Path) -> None:
@@ -87,7 +88,41 @@ def test_cmd_index_generates_index_file(tmp_path: Path) -> None:
     (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
     (tmp_path / "module.py").write_text("def public_fn():\n    return 1\n", encoding="utf-8")
 
-    rc = cmd_index(type("Args", (), {"config": str(tmp_path / "forge.yaml")})())
+    args = type("Args", (), {"config": str(tmp_path / "forge.yaml"), "knowledge": False})()
+    rc = cmd_index(args)
 
     assert rc == 0
     assert (tmp_path / ".forge" / "index" / "modules.yaml").exists()
+
+
+def test_cmd_index_can_rebuild_the_knowledge_index_and_report_skips(
+    tmp_path: Path, capsys
+) -> None:
+    (tmp_path / "forge.yaml").write_text("project: test\n", encoding="utf-8")
+    summaries = tmp_path / ".forge" / "knowledge" / "summaries"
+    summaries.mkdir(parents=True)
+    (summaries / "run-good.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "run_id": "run-good",
+                "generated_at": "2026-08-14T09:00:00+00:00",
+                "story": {"slug": "api-retry", "name": "API retry", "github_issue": 301},
+                "story_shape": {"work_type": "feature", "complexity": "medium"},
+                "domains": ["backend"],
+                "changed_files": ["src/client.py"],
+                "learned_patterns": ["retry"],
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+    (summaries / "run-bad.yaml").write_text("run_id: [unterminated\n", encoding="utf-8")
+
+    args = type("Args", (), {"config": str(tmp_path / "forge.yaml"), "knowledge": True})()
+    rc = cmd_index(args)
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.strip() == str(tmp_path / KNOWLEDGE_INDEX_PATH)
+    assert "Skipped .forge/knowledge/summaries/run-bad.yaml: invalid YAML:" in captured.err
+    assert not (tmp_path / ".forge" / "index" / "modules.yaml").exists()

@@ -337,11 +337,24 @@ entries:
     summary_path: ".forge/knowledge/summaries/20260410-143022-api-retry.yaml"
 ```
 
+The shipped contract is:
+
+- Path: `.forge/knowledge/index.yaml`
+- Source of truth: only persisted summary artifacts under
+  `.forge/knowledge/summaries/*.yaml`
+- Rebuild behavior: deterministic stable sort by `generated_at` (with nulls
+  sorted first), then `run_id`, then summary path
+- Data boundary: the index copies persisted lookup fields only (`run_id`,
+  `generated_at`, `story`, `story_shape`, `domains`, `changed_files`,
+  `learned_patterns`, `summary_path`) and remains a materialized view rather
+  than an authority over summaries or audits
+- Malformed summaries: invalid YAML, non-mapping roots, mismatched `run_id`,
+  missing required mappings, or non-list lookup fields are skipped with visible
+  diagnostics during rebuild rather than partially indexed
+
 The index is **rebuilt deterministically from summaries** — no LLM in the
-loop. Simple keyword extraction from `what_changed.description`,
-file paths from `files_modified`, and domain from preflight classification
-(already captured in audit). The index is a materialized view, not a source
-of truth. It can be deleted and rebuilt at any time from the summary files.
+loop and no audit reads. It can be deleted and rebuilt at any time from the
+summary files.
 
 #### 3b. Context assembly integration
 
