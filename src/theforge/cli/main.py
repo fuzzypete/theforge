@@ -18,6 +18,7 @@ from theforge.cli import (
     hooks,
     ideate,
     index,
+    knowledge_report,
     migrate_profiles,
     profiles,
     providers,
@@ -89,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     diagnose.register_parser(subparsers)
     rca.register_parser(subparsers)
     batch_report.register_parser(subparsers)
+    knowledge_report.register_parser(subparsers)
     shape.register_parser(subparsers)
     groom.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
@@ -132,6 +134,7 @@ def main() -> None:
         "diagnose": diagnose.cmd_diagnose,
         "rca": rca.cmd_rca,
         "batch-report": batch_report.cmd_batch_report,
+        "knowledge-report": knowledge_report.cmd_knowledge_report,
         "shape": shape.cmd_shape,
         "groom": groom.cmd_groom,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
