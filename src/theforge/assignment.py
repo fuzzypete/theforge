@@ -29,6 +29,16 @@ from .config import (
 from .config.auth import check_agent_auth
 from .config.pricing import price_tiebreak_signal_for
 from .config.profiles import _apply_transport_fallback
+from .model_capabilities import (
+    CAPABILITY_TOOL_STRUCTURED,
+    identity_for_agent,
+    identity_for_profile,
+    signature_for_agent,
+    signature_for_profile,
+)
+from .model_capabilities import (
+    lookup as _capability_lookup,
+)
 from .routing import (
     KNOB_EFFORT,
     KNOB_NONE,
@@ -58,6 +68,10 @@ REASON_TIER_MISMATCH = "tier_mismatch"
 REASON_ANTI_SELF_REVIEW = "anti_self_review"
 REASON_PHASE_ELIGIBILITY = "phase_eligibility"
 REASON_EXPLICIT_OVERRIDE_LOCKED = "explicit_override_locked"
+# The capability the role requires is recorded as demonstrated ABSENT for this
+# candidate's identity (#2466). Never-established and stale records do not
+# produce this reason — only a current, demonstrated absence does.
+REASON_CAPABILITY_ABSENT = "capability_demonstrated_absent"
 REASON_NONE = "none"  # selected / included candidate
 
 EXCLUSION_REASONS: frozenset[str] = frozenset(
@@ -68,9 +82,25 @@ EXCLUSION_REASONS: frozenset[str] = frozenset(
         REASON_ANTI_SELF_REVIEW,
         REASON_PHASE_ELIGIBILITY,
         REASON_EXPLICIT_OVERRIDE_LOCKED,
+        REASON_CAPABILITY_ABSENT,
         REASON_NONE,
     }
 )
+
+
+# ── Demonstrated-capability gate (#2466) ───────────────────────────────
+#
+# Roles whose result is only usable when structured, mapped to the capability
+# the readiness probe establishes for them. ``dev`` and ``preflight`` are absent
+# from this map deliberately: their probes accept unstructured output by design
+# (see provider_readiness._requires_structured_verdict), so no probe ever
+# establishes structured capability for them and gating on it would be gating on
+# a fact nothing writes.
+ROLE_REQUIRED_CAPABILITY: dict[str, str] = {
+    "planner": CAPABILITY_TOOL_STRUCTURED,
+    "plan_review": CAPABILITY_TOOL_STRUCTURED,
+    "code_review": CAPABILITY_TOOL_STRUCTURED,
+}
 
 
 # ── Routing-symmetry invariant (#1389) ─────────────────────────────────
@@ -362,6 +392,113 @@ def _auth_reason(
     if "not found in path" in low or "npx" in low:
         return False, REASON_TRANSPORT_UNAVAILABLE
     return False, REASON_AUTH_MISSING
+
+
+def _capability_exclusions(
+    agents: list[AgentDef],
+    role: str,
+    capability_records: dict | None,
+) -> dict[str, dict[str, object]]:
+    """Which candidates the durable record rules out for ``role`` (#2466).
+
+    Returns ``{agent_name: {capability, established_at, detail, probe_role}}`` —
+    empty when the role requires no recorded capability, when no record has been
+    written, or when nothing in the pool has a *current* demonstrated absence.
+
+    Only demonstrated absence excludes. An identity with no record is
+    never-established, not absent, and stays eligible: the record must not
+    silently narrow the pool to whatever has happened to be probed. A record
+    whose probe subject has since changed is stale and likewise does not
+    exclude — it is reported, not enforced.
+    """
+    capability = ROLE_REQUIRED_CAPABILITY.get(role)
+    if not capability or not capability_records:
+        return {}
+    excluded: dict[str, dict[str, object]] = {}
+    for agent in agents:
+        result = _capability_lookup(
+            capability_records,
+            identity_for_agent(agent),
+            capability,
+            subject_signature=signature_for_agent(agent),
+        )
+        if result.current_absent:
+            excluded[agent.name] = {
+                "capability": capability,
+                "established_at": result.established_at,
+                "detail": result.detail,
+                "probe_role": result.probe_role,
+            }
+    return excluded
+
+
+def _capability_pool(
+    agents: list[AgentDef],
+    excluded: dict[str, dict[str, object]],
+) -> tuple[list[AgentDef], bool]:
+    """Apply a role's capability exclusions to its candidate pool.
+
+    Returns ``(pool, exhausted)``. When every candidate is ruled out the full
+    pool is handed back with ``exhausted=True``: routing still has to seat
+    somebody, and a silently empty pool would surface as an unexplained crash
+    instead of an explained last resort. Callers say so in the rationale.
+    """
+    if not excluded:
+        return agents, False
+    pool = [a for a in agents if a.name not in excluded]
+    if not pool:
+        return agents, True
+    return pool, False
+
+
+def _capability_exclusion_note(
+    excluded: dict[str, dict[str, object]],
+    exhausted: bool,
+) -> str:
+    """Operator-facing rationale fragment for a role's capability exclusions."""
+    if not excluded:
+        return ""
+    capability = next(iter(excluded.values()))["capability"]
+    names = ", ".join(sorted(excluded))
+    stamps = sorted({str(v.get("established_at") or "?") for v in excluded.values()})
+    note = (
+        f"; excluded [{names}] — {capability} demonstrated absent "
+        f"(established {', '.join(stamps)})"
+    )
+    if exhausted:
+        note += (
+            f"; WARNING: no candidate has {capability} available — seated from the "
+            "unfiltered pool as a last resort"
+        )
+    return note
+
+
+def _explicit_capability_warning(
+    profile: ModelProfile,
+    role: str,
+    capability_records: dict | None,
+) -> str:
+    """Warn when an operator's explicit pin has a demonstrated-absent capability.
+
+    An explicit override is operator intent and is never overridden here — but
+    the routing rationale must not read as though the pin were unremarkable when
+    the record says the identity cannot do the job.
+    """
+    capability = ROLE_REQUIRED_CAPABILITY.get(role)
+    if not capability or not capability_records:
+        return ""
+    result = _capability_lookup(
+        capability_records,
+        identity_for_profile(profile),
+        capability,
+        subject_signature=signature_for_profile(profile),
+    )
+    if not result.current_absent:
+        return ""
+    return (
+        f"; WARNING: {capability} demonstrated absent for {profile.model} "
+        f"(established {result.established_at}) — honored as an explicit override"
+    )
 
 
 # ── Data classes ───────────────────────────────────────────────────────
@@ -1477,6 +1614,7 @@ def _enforce_budget(
     dev_floor_tier: str = "cheap",
     planner_floor_tier: str | None = None,
     locked_roles: set[str] | None = None,
+    role_pools: dict[str, list[AgentDef]] | None = None,
 ) -> AssignmentDecision:
     """Downgrade highest-cost non-preflight model if over the per-story routing cost target.
 
@@ -1489,10 +1627,17 @@ def _enforce_budget(
     tier floor) to preserve the assignment guardrail.
     The planner can also carry a tier floor when adaptive routing chose a strong
     planner for a story that already assigned a strong dev model.
+
+    ``role_pools`` maps a role class (``planner`` / ``dev`` / ``plan_review`` /
+    ``code_review``) to the candidates that role may draw from, already filtered
+    by the demonstrated-capability gate (#2466). A cost downgrade is a routing
+    decision like any other, so it must not reach past that filter and seat a
+    model the record rules out. Roles absent from the map use the full pool.
     """
     from dataclasses import replace as _dc_replace
 
     locked_roles = locked_roles or set()
+    role_pools = role_pools or {}
     initial_total = _decision_total(decision)
     preferred_snapshot = _preferred_snapshot(decision, initial_total)
     budget_steps: list[dict[str, object]] = []
@@ -1521,7 +1666,8 @@ def _enforce_budget(
     # Build a lookup from profile name → AgentDef for downgrade
     agent_by_name = {a.name: a for a in agents}
 
-    def _next_cheaper_profile(profile: ModelProfile) -> ModelProfile | None:
+    def _next_cheaper_profile(profile: ModelProfile, role_class: str) -> ModelProfile | None:
+        pool = role_pools.get(role_class, agents)
         agent = agent_by_name.get(profile.name)
         if agent is not None:
             current_tier = agent.tier
@@ -1530,14 +1676,14 @@ def _enforce_budget(
                 return None  # already cheapest
             # Try each tier below current, from next-cheaper down to cheapest
             for cheaper_tier in _TIER_ORDER[idx - 1 :: -1]:
-                cheaper_agents = _agents_by_tier(agents, cheaper_tier)
+                cheaper_agents = _agents_by_tier(pool, cheaper_tier)
                 if cheaper_agents:
                     cheaper = cheaper_agents[0]
                     return cheaper.to_model_profile(allowed_tools=profile.allowed_tools)
             return None
         else:
             # Profile not in agent pool (e.g. explicit override) — find any cheaper agent
-            cheaper_options = [a for a in agents if a.budget_usd < profile.budget_usd]
+            cheaper_options = [a for a in pool if a.budget_usd < profile.budget_usd]
             if not cheaper_options:
                 return None
             cheapest = min(cheaper_options, key=lambda a: a.budget_usd)
@@ -1581,7 +1727,7 @@ def _enforce_budget(
             if role_class in locked_roles:
                 protected_roles.add(role_class)
                 continue
-            cheaper = _next_cheaper_profile(profile)
+            cheaper = _next_cheaper_profile(profile, role_class)
             if cheaper is not None:
                 cheaper_def = agent_by_name.get(cheaper.name)
                 # Guardrail: never downgrade dev below its complexity tier floor.
@@ -1789,20 +1935,49 @@ def _selected_tier(agents: list[AgentDef], name: str, fallback: str | None) -> s
     return fallback
 
 
+def _capability_pool_entry(
+    entry: dict[str, object],
+    record: dict[str, object] | None,
+) -> bool:
+    """Mark a pool entry excluded for a demonstrated-absent capability (#2466).
+
+    Returns True when the entry was marked. ``detail`` carries the capability
+    and when it was established so the operator reads *why* with the decision,
+    not from a failing gate an hour later.
+    """
+    if not record:
+        return False
+    entry["included"] = False
+    entry["reason"] = REASON_CAPABILITY_ABSENT
+    detail: dict[str, object] = {
+        "capability": record.get("capability"),
+        "established_at": record.get("established_at"),
+    }
+    if record.get("detail"):
+        detail["probe_detail"] = record["detail"]
+    if record.get("probe_role"):
+        detail["probe_role"] = record["probe_role"]
+    entry["detail"] = detail
+    return True
+
+
 def _single_model_pool(
     agents: list[AgentDef],
     target_tier: str | None,
     selected_name: str,
     locked: bool,
     secrets: dict[str, str] | None,
+    capability_excluded: dict[str, dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build the candidate pool for a single-model role (preflight/planner/dev).
 
     Every agent is listed with ``included`` and, when excluded, a canonical
     ``reason``. Priority of exclusion reasons is deterministic: the selected
     model is always included; an explicit override locks out the rest; then
-    tier mismatch; then auth/transport unavailability.
+    tier mismatch; then a demonstrated-absent capability; then auth/transport
+    unavailability.
     """
+    capability_excluded = capability_excluded or {}
     pool: list[dict[str, object]] = []
     for a in agents:
         entry: dict[str, object] = {"name": a.name, "tier": a.tier}
@@ -1815,6 +1990,8 @@ def _single_model_pool(
         elif target_tier is not None and a.tier != target_tier:
             entry["included"] = False
             entry["reason"] = REASON_TIER_MISMATCH
+        elif _capability_pool_entry(entry, capability_excluded.get(a.name)):
+            pass
         else:
             ready, reason = _auth_reason(a, secrets)
             if not ready:
@@ -1875,6 +2052,7 @@ def _reviewer_candidate_pool(
     locked: bool,
     secrets: dict[str, str] | None,
     health_deprioritized: set[str] | None = None,
+    capability_excluded: dict[str, dict[str, object]] | None = None,
 ) -> list[dict[str, object]]:
     """Build the candidate pool for a reviewer role (plan_review/code_review).
 
@@ -1887,6 +2065,7 @@ def _reviewer_candidate_pool(
     (a recent provider-shape failure is a transient transport unavailability).
     """
     health_deprioritized = health_deprioritized or set()
+    capability_excluded = capability_excluded or {}
     pool: list[dict[str, object]] = []
     for a in agents:
         entry: dict[str, object] = {"name": a.name, "tier": a.tier}
@@ -1899,6 +2078,8 @@ def _reviewer_candidate_pool(
         elif exclude_model is not None and a.model == exclude_model:
             entry["included"] = False
             entry["reason"] = REASON_ANTI_SELF_REVIEW
+        elif _capability_pool_entry(entry, capability_excluded.get(a.name)):
+            pass
         else:
             ready, reason = _auth_reason(a, secrets)
             if not ready:
@@ -2457,8 +2638,14 @@ def _build_routing_decision(
 
     # Dev pool at the effective (post-promotion) tier, annotated with the
     # profile signals the router actually weighed for each included candidate.
+    capability_exclusions = evidence.capability_exclusions
     dev_pool = _single_model_pool(
-        agents, dev_effective_tier, decision.dev.name, "dev" in explicit_roles, secrets
+        agents,
+        dev_effective_tier,
+        decision.dev.name,
+        "dev" in explicit_roles,
+        secrets,
+        capability_excluded=capability_exclusions.get("dev"),
     )
     dev_domain_signals = evidence.dev_domain_signals
     dev_cost_signals = evidence.dev_cost_signals
@@ -2609,6 +2796,7 @@ def _build_routing_decision(
                 decision.planner.name,
                 "planner" in explicit_roles,
                 secrets,
+                capability_excluded=capability_exclusions.get("planner"),
             ),
             "exploration": dict(exploration),
             **(
@@ -2693,6 +2881,7 @@ def _build_routing_decision(
                 "plan_review" in explicit_roles,
                 secrets,
                 health_deprioritized=pr_depri,
+                capability_excluded=capability_exclusions.get("plan_review"),
             ),
             "demotion_check": _reviewer_demotion_check(
                 pr_fired, pr_depri, pr_fellback, unhealthy_models
@@ -2719,6 +2908,7 @@ def _build_routing_decision(
                 "code_review" in explicit_roles,
                 secrets,
                 health_deprioritized=cr_depri,
+                capability_excluded=capability_exclusions.get("code_review"),
             ),
             "demotion_check": _reviewer_demotion_check(
                 cr_fired, cr_depri, cr_fellback, unhealthy_models
@@ -2741,6 +2931,7 @@ def reconcile_explicit_reviewer_pools(
     plan_reviewers: list[ModelProfile] | None = None,
     code_reviewers: list[ModelProfile] | None = None,
     secrets: dict[str, str] | None = None,
+    capability_records: dict | None = None,
 ) -> dict[str, object]:
     """Reconcile reviewer role blocks with explicit pools spliced post-assign.
 
@@ -2753,10 +2944,34 @@ def reconcile_explicit_reviewer_pools(
     profiles so the persisted block stays reconstructable and consistent with
     runtime (#1391 iter1). Other roles and the block ``origin`` are preserved.
 
+    An explicit pool is operator intent and is never filtered here — but a
+    spliced reviewer whose required capability is recorded demonstrably absent
+    (#2466) carries a ``capability_warning`` on its pool entry, so the block
+    cannot read as though an identity that cannot do the job were an
+    unremarkable inclusion.
+
     Mutates and returns ``routing_decision`` for convenience.
     """
     if not routing_decision:
         return routing_decision
+
+    def _capability_warning(role: str, profile: ModelProfile) -> dict[str, object] | None:
+        capability = ROLE_REQUIRED_CAPABILITY.get(role)
+        if not capability or not capability_records:
+            return None
+        result = _capability_lookup(
+            capability_records,
+            identity_for_profile(profile),
+            capability,
+            subject_signature=signature_for_profile(profile),
+        )
+        if not result.current_absent:
+            return None
+        return {
+            "capability": capability,
+            "established_at": result.established_at,
+            "note": "explicit override honored despite demonstrated absence",
+        }
 
     def _rebuild(role: str, reviewers: list[ModelProfile]) -> None:
         role_block = routing_decision.get(role)
@@ -2773,6 +2988,15 @@ def reconcile_explicit_reviewer_pools(
                 pool.append(
                     {"name": p.name, "tier": None, "included": True, "reason": REASON_NONE}
                 )
+        warnings_by_name = {
+            p.name: warning
+            for p in reviewers
+            if (warning := _capability_warning(role, p)) is not None
+        }
+        for entry in pool:
+            warning = warnings_by_name.get(entry.get("name"))
+            if warning is not None:
+                entry["capability_warning"] = warning
         role_block["candidate_pool"] = pool
         final = role_block.get("final")
         if isinstance(final, dict):
@@ -2833,6 +3057,7 @@ def apply_post_plan_checkpoint(
     domains: list[str] | None = None,
     recency: object | None = None,
     transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
+    capability_records: dict | None = None,
 ) -> AssignmentDecision:
     """Re-evaluate ONLY the dev tier after plan-review completes (#1387).
 
@@ -2860,6 +3085,9 @@ def apply_post_plan_checkpoint(
     agent pick so the cheaper tier is reranked by the same recency-weighted
     success rate and domain tiebreak as the original dev assignment (they are
     optional; omitting them falls back to the deterministic budget/price order).
+    ``capability_records`` is the durable demonstrated-capability record (#2466),
+    applied to the demoted-tier candidate pool on the same terms as in
+    :func:`assign_models`.
 
     Records the outcome into ``routing_decision['dev']['post_plan_checkpoint']``
     with fired/decision/baseline_tier/final_tier/plan_present/rationale, and
@@ -2959,10 +3187,19 @@ def apply_post_plan_checkpoint(
     # reranking and domain tiebreak the original dev assignment used, so the
     # cheaper tier still routes to its best-performing model rather than the raw
     # budget-ordered default (#1387 review P2).
+    # The rerouted dev is dispatched work like any other assignment, so it draws
+    # from the same demonstrated-capability-filtered pool the preflight pass used
+    # (#2466). ``dev`` requires no recorded capability today — no probe
+    # establishes one for it — so this is currently the identity filter; it is
+    # applied by policy rather than by assumption so a future dev capability
+    # cannot be reintroduced through the post-plan path.
+    dev_pool, _dev_pool_exhausted = _capability_pool(
+        agents, _capability_exclusions(agents, "dev", capability_records)
+    )
     target_tier = _reduced_tier(baseline_tier) if baseline_tier else None
     target_agent = (
         _pick_agent(
-            agents,
+            dev_pool,
             target_tier,
             secrets,
             model_profiles=model_profiles,
@@ -3283,6 +3520,7 @@ def assign_models(
     sprint_exploration_budget: int | None = None,
     explore_rng: random.Random | None = None,
     transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
+    capability_records: dict | None = None,
 ) -> AssignmentDecision:
     """Pure deterministic function — no LLM, no I/O.
 
@@ -3299,6 +3537,15 @@ def assign_models(
     window.  Reviewer selection deprioritizes them in favor of any same-tier
     or adjacent-tier healthy alternative; with no healthy alternative, the
     selection proceeds and surfaces the health context in the rationale.
+
+    ``capability_records`` is the durable record of what each identity has been
+    *demonstrated* to do (``.forge/model_capabilities.yaml``, written by
+    ``forge check-providers``). It is an optional pure input: a candidate is
+    skipped for a role only when the capability that role requires is currently
+    recorded as demonstrated absent for that candidate's identity. Never
+    established and stale records leave the candidate eligible, so passing no
+    record — or a record covering nothing in the pool — routes exactly as before
+    (#2466).
     """
     if not agents:
         raise ValueError("assign_models requires a non-empty agents pool")
@@ -3369,6 +3616,31 @@ def assign_models(
     if not adaptive_enabled:
         rationale["adaptive_enabled"] = "false (static band-only routing)"
 
+    # ── Demonstrated-capability gate (#2466) ───────────────────────────
+    # Resolved once, before any candidate scoring, so every selection path for a
+    # role — first pick, tier fallback, pool-exhaustion fallback, and the budget
+    # enforcer's cheaper-model search — draws from the same filtered pool and no
+    # path can reseat an identity the record rules out. Unlike the profile
+    # signals above this is NOT adaptive-only: a demonstrated absence is a hard
+    # eligibility fact about the model, not a learning signal, so static routing
+    # honors it too.
+    # Every routed role is filtered by the same policy, including the ones the
+    # policy currently exempts (dev, preflight): the exemption lives in
+    # ROLE_REQUIRED_CAPABILITY, not in which call sites remembered to filter.
+    capability_excluded = {
+        role: _capability_exclusions(agents, role, capability_records)
+        for role in ("preflight", "planner", "dev", "plan_review", "code_review")
+    }
+    evidence.capability_exclusions = {
+        role: excluded for role, excluded in capability_excluded.items() if excluded
+    }
+    role_pools: dict[str, list[AgentDef]] = {}
+    capability_notes: dict[str, str] = {}
+    for role, excluded in capability_excluded.items():
+        pool, exhausted = _capability_pool(agents, excluded)
+        role_pools[role] = pool
+        capability_notes[role] = _capability_exclusion_note(excluded, exhausted)
+
     # ── Dev tier with promotion ────────────────────────────────────────
     dev_base_tier = (
         _dev_tier_for_score(norm_complexity, score)
@@ -3381,10 +3653,12 @@ def assign_models(
         dev_profile = explicit_profiles["dev"]
         dev_selected_tier: str | None = None
         rationale["dev"] = f"explicit override: {dev_profile.model}"
+        rationale["dev"] += _explicit_capability_warning(dev_profile, "dev", capability_records)
     else:
         # Check promotion
+        dev_pool = role_pools["dev"]
         dev_agent_for_check: AgentDef | None = _pick_agent(
-            agents,
+            dev_pool,
             dev_base_tier,
             secrets,
             model_profiles=effective_profiles,
@@ -3438,7 +3712,7 @@ def assign_models(
 
         evidence.dev_effective_tier = effective_dev_tier
         dev_agent = _pick_agent(
-            agents,
+            dev_pool,
             effective_dev_tier,
             secrets,
             model_profiles=effective_profiles,
@@ -3482,7 +3756,7 @@ def assign_models(
             # mid models on HIGH.  dev_base_tier is the floor (cheap/mid/strong
             # for LOW/MEDIUM/HIGH respectively).
             floor_idx = _TIER_ORDER.index(dev_base_tier) if dev_base_tier in _TIER_ORDER else 0
-            authed = [a for a in agents if _has_auth(a, secrets)]
+            authed = [a for a in dev_pool if _has_auth(a, secrets)]
             floor_authed = [
                 a
                 for a in authed
@@ -3496,7 +3770,7 @@ def assign_models(
                 # agents before ever going below the floor.
                 floor_any = [
                     a
-                    for a in agents
+                    for a in dev_pool
                     if a.tier in _TIER_ORDER and _TIER_ORDER.index(a.tier) >= floor_idx
                 ]
                 if floor_any:
@@ -3516,12 +3790,13 @@ def assign_models(
                         f" WARNING: below {dev_base_tier} floor for {norm_complexity})"
                     )
                 else:
-                    dev_agent = sorted(agents, key=lambda a: a.budget_usd)[0]
+                    dev_agent = sorted(dev_pool, key=lambda a: a.budget_usd)[0]
                     rationale["dev"] += " (fallback: cheapest, no auth checked)"
         dev_selected_tier = dev_agent.tier
         dev_profile = _agent_to_profile(
             dev_agent, role="dev", transport_fallbacks=transport_fallbacks
         )
+        rationale["dev"] += capability_notes["dev"]
 
         # ── Challenger-sampling exploration (#325, ADR-0006 clause 8) ──────
         # The single sanctioned deviation from deterministic routing. Only
@@ -3529,7 +3804,7 @@ def assign_models(
         # decision is reconstructable even in on-policy winner mode.
         if adaptive_enabled:
             _exp = _apply_dev_exploration(
-                agents=agents,
+                agents=dev_pool,
                 incumbent=dev_agent,
                 dev_base_tier=dev_base_tier,
                 norm_complexity=norm_complexity,
@@ -3579,11 +3854,15 @@ def assign_models(
     if "preflight" in explicit_profiles:
         preflight_profile = explicit_profiles["preflight"]
         rationale["preflight"] = f"explicit override: {preflight_profile.model}"
+        rationale["preflight"] += _explicit_capability_warning(
+            preflight_profile, "preflight", capability_records
+        )
     else:
         tier = PHASE_TIER["preflight"][norm_complexity]
         _preflight_tier = tier
+        preflight_pool = role_pools["preflight"]
         agent = _pick_agent(
-            agents,
+            preflight_pool,
             tier,
             secrets,
             model_profiles=effective_profiles,
@@ -3595,21 +3874,26 @@ def assign_models(
             reliability_audit=evidence.preflight_reliability.audit,
         )
         if agent is None:
-            authed = [a for a in agents if _has_auth(a, secrets)]
-            agent = sorted(authed or agents, key=lambda a: a.budget_usd)[0]
+            authed = [a for a in preflight_pool if _has_auth(a, secrets)]
+            agent = sorted(authed or preflight_pool, key=lambda a: a.budget_usd)[0]
         preflight_profile = _agent_to_profile(
             agent,
             role="preflight",
             allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
             transport_fallbacks=transport_fallbacks,
         )
-        rationale["preflight"] = f"tier {tier} (${agent.budget_usd:.2f})"
+        rationale["preflight"] = (
+            f"tier {tier} (${agent.budget_usd:.2f}){capability_notes['preflight']}"
+        )
 
     # ── Planner ────────────────────────────────────────────────────────
     if "planner" in explicit_profiles:
         planner_profile = explicit_profiles["planner"]
         planner_target_tier: str | None = None
         rationale["planner"] = f"explicit override: {planner_profile.model}"
+        rationale["planner"] += _explicit_capability_warning(
+            planner_profile, "planner", capability_records
+        )
     else:
         tier = (
             _plan_tier_for_score(norm_complexity, score)
@@ -3617,8 +3901,9 @@ def assign_models(
             else PHASE_TIER["plan"][norm_complexity]
         )
         planner_target_tier = tier
+        planner_pool = role_pools["planner"]
         agent = _pick_agent(
-            agents,
+            planner_pool,
             tier,
             secrets,
             model_profiles=effective_profiles,
@@ -3630,8 +3915,8 @@ def assign_models(
             reliability_audit=evidence.planner_reliability.audit,
         )
         if agent is None:
-            authed = [a for a in agents if _has_auth(a, secrets)]
-            agent = sorted(authed or agents, key=lambda a: -a.budget_usd)[0]
+            authed = [a for a in planner_pool if _has_auth(a, secrets)]
+            agent = sorted(authed or planner_pool, key=lambda a: -a.budget_usd)[0]
         planner_profile = _agent_to_profile(
             agent, role="review", transport_fallbacks=transport_fallbacks
         )
@@ -3641,11 +3926,15 @@ def assign_models(
             )
         else:
             rationale["planner"] = f"tier {tier} (${agent.budget_usd:.2f})"
+        rationale["planner"] += capability_notes["planner"]
 
     # ── Plan reviewers ─────────────────────────────────────────────────
     if "plan_review" in explicit_profiles:
         plan_reviewers = [explicit_profiles["plan_review"]]
         rationale["plan_review"] = f"explicit override: {explicit_profiles['plan_review'].model}"
+        rationale["plan_review"] += _explicit_capability_warning(
+            explicit_profiles["plan_review"], "plan_review", capability_records
+        )
     else:
         tier = (
             _plan_tier_for_score(norm_complexity, score)
@@ -3667,8 +3956,9 @@ def assign_models(
             )
         )
         planner_model = planner_profile.model
+        plan_review_pool = role_pools["plan_review"]
         selected = _select_reviewers(
-            agents,
+            plan_review_pool,
             tier,
             n,
             assignment_config.prefer_cross_provider,
@@ -3701,17 +3991,25 @@ def assign_models(
             else ""
         )
         health_note = _reviewer_health_rationale(
-            agents, selected, tier, exclude_model=planner_model, unhealthy_models=unhealthy_models
+            plan_review_pool,
+            selected,
+            tier,
+            exclude_model=planner_model,
+            unhealthy_models=unhealthy_models,
         )
         rationale["plan_review"] = (
             f"{len(plan_reviewers)} reviewer(s), tier {tier}, "
             f"providers {providers}{score_note}{shortfall_note}{health_note}"
+            f"{capability_notes['plan_review']}"
         )
 
     # ── Code reviewers ─────────────────────────────────────────────────
     if "code_review" in explicit_profiles:
         code_reviewers = [explicit_profiles["code_review"]]
         rationale["code_review"] = f"explicit override: {explicit_profiles['code_review'].model}"
+        rationale["code_review"] += _explicit_capability_warning(
+            explicit_profiles["code_review"], "code_review", capability_records
+        )
     else:
         tier = (
             _plan_tier_for_score(norm_complexity, score)
@@ -3733,8 +4031,9 @@ def assign_models(
             )
         )
         dev_model = dev_profile.model
+        code_review_pool = role_pools["code_review"]
         selected = _select_reviewers(
-            agents,
+            code_review_pool,
             tier,
             n,
             assignment_config.prefer_cross_provider,
@@ -3768,7 +4067,11 @@ def assign_models(
             else ""
         )
         health_note = _reviewer_health_rationale(
-            agents, selected, tier, exclude_model=dev_model, unhealthy_models=unhealthy_models
+            code_review_pool,
+            selected,
+            tier,
+            exclude_model=dev_model,
+            unhealthy_models=unhealthy_models,
         )
         value_note = _reviewer_value_rationale(
             assignment_config.code_review_value_enabled,
@@ -3778,6 +4081,7 @@ def assign_models(
         rationale["code_review"] = (
             f"{len(code_reviewers)} reviewer(s), tier {tier}, "
             f"providers {providers}{score_note}{shortfall_note}{health_note}{value_note}"
+            f"{capability_notes['code_review']}"
         )
 
     decision = AssignmentDecision(
@@ -3872,6 +4176,7 @@ def assign_models(
         dev_floor_tier=_dev_floor,
         planner_floor_tier=planner_floor_tier,
         locked_roles=locked_roles,
+        role_pools=role_pools,
     )
 
     return _attach_routing_decision(decision)

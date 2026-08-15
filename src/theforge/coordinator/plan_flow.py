@@ -632,6 +632,13 @@ def _apply_post_plan_dev_checkpoint(
     # domain signals the preflight dev assignment used — only under adaptive
     # routing, mirroring assign_models (static mode ignores profile learning).
     _adaptive_enabled = config.assignment.adaptive_enabled
+    # Demonstrated-capability record (#2466): loaded OUTSIDE the adaptive guard.
+    # It is not a learning signal that static routing may ignore — it is a hard
+    # eligibility fact about the identity, so the post-plan reroute honors it in
+    # both modes.
+    from theforge.model_capabilities import capabilities_path, load_capabilities  # noqa: PLC0415
+
+    _capability_records = load_capabilities(capabilities_path(config.project_root))
     _model_profiles = None
     _observed_costs = None
     _recency = None
@@ -671,6 +678,7 @@ def _apply_post_plan_dev_checkpoint(
         domains=_domains,
         recency=_recency,
         transport_fallbacks=config.transport_fallbacks,
+        capability_records=_capability_records,
     )
     state._adaptive_decision = _updated
     if _updated.routing_decision:

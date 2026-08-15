@@ -137,3 +137,8 @@ class RoutingEvidence:
     # Per-phase reasoning-effort axis (#1108). Resolved after budget enforcement
     # so it lands on the profiles that actually run; None until then.
     reasoning_effort_block: dict[str, object] | None = None
+    # Candidates ruled out by the durable capability record (#2466), keyed
+    # role → agent name → {capability, established_at, detail, probe_role}. Only
+    # *current demonstrated absence* appears here; never-established and stale
+    # records leave a candidate eligible and therefore unlisted.
+    capability_exclusions: dict[str, dict[str, dict]] = field(default_factory=dict)
