@@ -14,9 +14,13 @@ either ADR; it connects the pieces into one current model.
 ## The system in one sentence
 
 Static config decides **eligibility**. Adaptive assignment decides
-**preference within the eligible pool** from admissible audit telemetry, with
+**preference among eligible candidates** from admissible audit telemetry, with
 recovery paths, taint exclusion, bounded exploration, and a recorded
 `routing_decision` that explains the result.
+
+"Eligible" means operator-enabled, not same-tier: the story's base tier is a
+prior that measured evidence can override in either direction. See
+[What is adaptive and what is not](#what-is-adaptive-and-what-is-not).
 
 ## Trust boundary: authoritative telemetry vs. derived views
 
@@ -43,7 +47,61 @@ Adaptive assignment never invents a candidate outside operator policy.
   candidate still runs when no better-standing candidate is available.
 
 This is the core ADR-0006 distinction: history affects preference, not
-eligibility.
+eligibility. Note that the pool is bounded by operator config, not by the
+story's base tier — a cross-tier substitution backed by admissible evidence is
+still a preference decision inside operator-set eligibility, which is why
+clause 9 permits it.
+
+## What is adaptive and what is not
+
+"Adaptive routing" is several distinct layers with different owners, and
+conflating them is the usual source of confusion about why a given model was
+selected. The boundary, layer by layer:
+
+| Layer | Owner | Where |
+|---|---|---|
+| Score → base tier (the score-band table) | Static / operator policy | `src/theforge/routing.py`, [Routing Policy](routing-policy.md) |
+| A model's declared `tier` and `capability` | Static / operator policy | model catalog |
+| Preference within the eligible tier | **Adaptive** | profile success rate, domain evidence, recency |
+| Evidence-qualified substitution across tiers | **Adaptive** (since #2392) | `exploration.py` winner selection |
+| Detecting that a declaration looks wrong | Planned (#2308) | reports; does not edit |
+| Rewriting declarations or score bands | **Undecided, unimplemented** | — |
+
+Two things follow that are easy to get backwards.
+
+**The tier table is a prior, not a ceiling.** ADR-0006 clause 5 exempts static
+routing structure — the score-band table, hard tier floors, operator overrides —
+from the symmetry invariant, because it is not history-driven. But clause 9
+allows evidence to route *across* those tiers: a model outside the story's base
+tier can be selected when it has admissible measured evidence for the routing
+key, meets the reliability floor, and has the lower expected completion cost.
+Before #2392 this substitution existed but ranked on success rate with cost
+consulted only on an exact tie, which meant it ran in one direction only and
+concentrated dev selection on the most expensive candidate. It now ranks
+cost-first among candidates that clear the floor.
+
+**Substitution runs both ways.** Story #2434 scored 6, resolved to base tier
+mid, and dispatched opus (declared strong) as the cost-qualified winner for key
+`dev:medium:backend+concurrency+testing` — reliability 0.9077 against a 0.70
+floor, estimated completion cost $5.47. The same mechanism routes score-5 and
+score-7 work to mid-tier models when the slice evidence supports it. A selection
+that disagrees with the base tier is therefore not prima facie a defect.
+
+Consequently, **the routing snapshot in `.forge/routing/` cannot explain a
+selection.** It records the outcome, not the substitution that produced it
+(#2393). Use `forge explain --story <n>`, which reads the per-run
+`routing_decision` block, or the audit record directly.
+
+What no mechanism does today is compare the evidence back against the
+declaration that produced eligibility in the first place. A model declared
+stronger than it behaves gets ranked below its peers and quietly stops being
+selected; a model declared weaker than it behaves is never selected, so produces
+no evidence to the contrary, and the declaration makes itself true. #2308 adds
+the detection report for this and stops there — it recommends, and the declared
+value stays the operator's to set. Whether the system should ever rewrite a
+declaration or a score band is an open question about operator sovereignty
+(ADR-0006 clause 1), not a pending implementation task; it would need a decision
+before it could become an issue.
 
 ## Which signals may move routing
 
@@ -122,6 +180,11 @@ The v0.13 adaptive system spans these major mechanisms and issue owners:
 
 Related follow-ons also exist, notably #1389 for the symmetry invariant and
 #270 / #1391 for the recorded explanation surface.
+
+In v0.14, #2392 made winner selection cost-first among candidates clearing the
+reliability floor, which is what turned cross-tier substitution into a
+bidirectional mechanism rather than a one-way concentration on the most
+expensive candidate.
 
 ## Historical note
 
