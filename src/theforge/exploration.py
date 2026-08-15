@@ -235,7 +235,7 @@ def derive_key_aggregates(
     separate slots. Cost/iteration/duration stay band-level (tie-breakers only;
     the schema keeps no domain-sliced duration).
     """
-    from theforge import model_profiles as mp  # noqa: PLC0415
+    from theforge import model_profiles_read_model as mp  # noqa: PLC0415
 
     aggregates: dict[str, ModelAggregate] = {}
     profiles = model_profiles or {}

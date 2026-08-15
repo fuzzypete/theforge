@@ -1347,7 +1347,7 @@ def _apply_preflight_config(
     # how much history was discounted.
     _excluded_for_taint = max(_excluded_for_taint, _observed_costs_excluded)
 
-    from theforge.model_profiles import load_profiles as _load_profiles  # noqa: PLC0415
+    from theforge.model_profiles_storage import load_profiles as _load_profiles  # noqa: PLC0415
 
     _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
     _model_profiles = _load_profiles(_profiles_path)
@@ -1618,7 +1618,7 @@ def _apply_preflight_config(
     }
 
     def _assignment_entry(profile):  # type: ignore[no-untyped-def]
-        from theforge.model_profiles import canonical_id_from_identity  # noqa: PLC0415
+        from theforge.model_profiles_identity import canonical_id_from_identity  # noqa: PLC0415
 
         canonical = canonical_id_from_identity(
             actual_model=getattr(profile, "model", None),
