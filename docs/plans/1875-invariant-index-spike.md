@@ -81,6 +81,12 @@ Each entry records **provenance and applicability metadata only**:
 | `enforcement` | The project's declared enforcement level |
 | `source_digest` | SHA-256 of the marked body, for staleness reporting |
 
+The body span begins after the opening marker *ends*, which matters because an
+opening marker may wrap across lines — the convention's own documented example
+does. The digest is taken over exactly the line span consumers re-read, so an
+unchanged source can never report as stale over text the render drops. A rule
+sharing a line with its markers is a diagnostic rather than a guess.
+
 The index deliberately **does not copy the rule text**. Consumers re-read the
 source document. That is what keeps the ADR authoritative and the index merely
 useful: an index that drifts is *visibly* stale (digest mismatch, reported in

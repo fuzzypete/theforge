@@ -82,6 +82,31 @@ def test_index_entry_carries_source_anchor_and_line_span_not_prose():
     assert "never drive coordinator control flow" not in serialized
 
 
+def test_body_span_starts_after_a_multi_line_opening_marker():
+    """_MARKED's opening marker wraps, as the documented convention example does.
+
+    Deriving the span from the marker's start line swept the scope and
+    enforcement attribute lines into the body.
+    """
+    (entry,) = extract_from_text(_MARKED, "docs/policy.md")[0]
+
+    lines = _MARKED.splitlines()
+    body = lines[entry["body_start_line"] - 1 : entry["body_end_line"]]
+
+    assert body == ["Summaries advise agents; they never drive coordinator control flow."]
+    assert entry["body_lines"] == 1
+    assert not any("scope=" in line or "enforcement=" in line for line in body)
+
+
+def test_a_body_sharing_a_line_with_its_markers_is_a_diagnostic():
+    entries, diagnostics = extract_from_text(
+        '<!-- forge-invariant id="inline" -->A rule.<!-- /forge-invariant -->\n', "docs/a.md"
+    )
+
+    assert entries == []
+    assert any("shares a line with its markers" in d.reason for d in diagnostics)
+
+
 def test_enforcement_defaults_to_advisory_and_scope_may_be_omitted():
     entries, diagnostics = extract_from_text(
         '<!-- forge-invariant id="bare" -->\nA rule.\n<!-- /forge-invariant -->\n',

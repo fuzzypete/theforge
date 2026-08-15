@@ -190,6 +190,29 @@ def test_dev_receives_a_capsule_when_file_scope_matches(project: Path):
     assert "Introductory prose" not in pack.content
 
 
+def test_a_capsule_from_a_multi_line_marker_renders_only_the_rule(project: Path):
+    """`coordinator-pure` wraps its opening marker, as the convention's example does.
+
+    The rendered capsule used to trail the scope and enforcement attribute lines
+    into the prompt, and the digest computed over the real body then reported the
+    unchanged source as stale.
+    """
+    selection = select_invariants(
+        project, phase="dev", story_text="retry loop", file_list=["src/coordinator/engine.py"]
+    )
+    capsule = next(c for c in selection.candidates if c.invariant_id == "coordinator-pure")
+
+    assert capsule.rendering_mode == RENDER_CAPSULE
+    body = capsule.content.split("\n\n", 1)[1]
+    assert body == "The coordinator is pure Python; no model decides retry or escalation."
+    assert capsule.source_digest_matches is True
+
+    pack = _assembler(project).assemble(
+        phase="dev", story_text="retry loop", file_list=["src/coordinator/engine.py"], budget=400
+    )
+    assert "source regions changed" not in pack.invariant_context["note"]
+
+
 def test_confident_file_scope_mismatch_is_the_only_drop(project: Path):
     manifest = (
         _assembler(project)

@@ -37,7 +37,12 @@ from typing import Any
 import yaml
 
 INVARIANT_INDEX_PATH = Path(".forge") / "knowledge" / "invariants" / "index.yaml"
-INVARIANT_INDEX_SCHEMA_VERSION = 1
+#: v2 corrected ``body_start_line`` (and the digest computed over that span) for
+#: opening markers that wrap across lines. The field set is unchanged, but a v1
+#: entry's span points into the marker's own attributes, so a stale index would
+#: render attribute text as the rule. Rejecting v1 outright makes that a rebuild
+#: prompt rather than a silently wrong capsule.
+INVARIANT_INDEX_SCHEMA_VERSION = 2
 
 #: Enforcement levels a project may declare. ``advisory`` is the default so an
 #: unmarked level never silently claims gate authority.
@@ -212,10 +217,27 @@ def extract_from_text(
         for error in scope_errors:
             diagnostics.append(InvariantIndexDiagnostic(source_path, open_line, error))
 
-        body = text[match.end() : close.start()]
+        # The body begins after the opening marker *ends*, not after the line it
+        # starts on: an opening marker may wrap across lines, and the convention's
+        # own documented example does. Deriving the span from ``match.end()``
+        # keeps the recorded line range off the attribute continuation lines.
         close_line = _line_number(text, close.start())
-        body_start = open_line + 1
-        body_end = max(body_start, close_line - 1)
+        body_start = _line_number(text, match.end()) + 1
+        body_end = close_line - 1
+        if body_end < body_start:
+            diagnostics.append(
+                InvariantIndexDiagnostic(
+                    source_path,
+                    open_line,
+                    f"invariant body for id {invariant_id!r} shares a line with its markers; "
+                    "put the rule on its own lines",
+                )
+            )
+            continue
+
+        # Hash the same line span consumers re-read, so an unchanged source can
+        # never report as stale over a whitespace difference the render drops.
+        body = "\n".join(lines[body_start - 1 : body_end])
         if not body.strip():
             diagnostics.append(
                 InvariantIndexDiagnostic(
