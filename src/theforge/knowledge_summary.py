@@ -248,6 +248,32 @@ def parse_summary_output(text: str) -> dict:
     return data["run_summary"]
 
 
+def _string_list(proposed: dict, key: str, *, limit: int = _FIELD_MAX_LEN) -> list[str]:
+    """Return the non-empty string entries of a list-valued optional field.
+
+    A bare scalar is refused rather than iterated. ``learned_patterns:
+    retry-decorator`` is valid YAML and iterating it yields *characters*, which
+    would fill the pattern index with single letters — an index quietly made of
+    garbage is worse than a summary that was rejected, and these fields exist
+    precisely to be indexed.
+    """
+    raw = proposed.get(key)
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise SummaryValidationError(f"run_summary.{key} must be a list of strings, got {raw!r}")
+    values: list[str] = []
+    for item in raw:
+        if isinstance(item, (dict, list)):
+            raise SummaryValidationError(
+                f"run_summary.{key} entries must be strings, got {item!r}"
+            )
+        text = _text(item, limit=limit)
+        if text:
+            values.append(text)
+    return values
+
+
 def _validate_evidence_item(raw: Any, anchors: RunAnchors, claim: str) -> dict:
     """Normalize one evidence item, or raise if it does not resolve."""
     if not isinstance(raw, dict):
@@ -343,14 +369,8 @@ def validate_proposed_summary(
             )
         )
 
-    patterns = [
-        _text(p, limit=200)
-        for p in (proposed.get("learned_patterns") or [])
-        if _text(p, limit=200)
-    ][:_MAX_PATTERNS]
-    observations = [_text(o) for o in (proposed.get("review_insights") or []) if _text(o)][
-        :_MAX_OBSERVATIONS
-    ]
+    patterns = _string_list(proposed, "learned_patterns", limit=200)[:_MAX_PATTERNS]
+    observations = _string_list(proposed, "review_insights")[:_MAX_OBSERVATIONS]
     complexity = proposed.get("complexity_signal")
     dominant = _text(complexity.get("dominant_difficulty")) if isinstance(complexity, dict) else ""
 

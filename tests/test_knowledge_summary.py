@@ -213,6 +213,41 @@ class TestEvidenceValidation:
                 _proposed(evidence=[evidence]), run_id=RUN_ID, anchors=anchors
             )
 
+    @pytest.mark.parametrize("key", ["learned_patterns", "review_insights"])
+    def test_a_scalar_where_a_list_belongs_is_rejected_not_iterated(self, key: str) -> None:
+        """A bare string is valid YAML and iterates into characters — refuse it.
+
+        These are the fields a later index is built from, so silently accepting
+        ``["r", "e", "t", "r", "y"]`` would fill that index with single letters.
+        """
+        anchors = extract_anchors(_audit())
+        proposed = _proposed()
+        proposed[key] = "retry-decorator"
+
+        with pytest.raises(SummaryValidationError, match=f"{key} must be a list"):
+            validate_proposed_summary(proposed, run_id=RUN_ID, anchors=anchors)
+
+    @pytest.mark.parametrize("key", ["learned_patterns", "review_insights"])
+    def test_a_structured_entry_where_a_string_belongs_is_rejected(self, key: str) -> None:
+        anchors = extract_anchors(_audit())
+        proposed = _proposed()
+        proposed[key] = [{"tag": "retry-decorator"}]
+
+        with pytest.raises(SummaryValidationError, match=f"{key} entries must be strings"):
+            validate_proposed_summary(proposed, run_id=RUN_ID, anchors=anchors)
+
+    def test_absent_list_fields_are_simply_empty(self) -> None:
+        """Strict about malformed, permissive about omitted — these are optional."""
+        anchors = extract_anchors(_audit())
+        proposed = _proposed()
+        del proposed["learned_patterns"]
+        del proposed["review_insights"]
+
+        validated = validate_proposed_summary(proposed, run_id=RUN_ID, anchors=anchors)
+
+        assert validated.patterns == []
+        assert validated.observations == []
+
     def test_an_unknown_evidence_type_is_rejected(self) -> None:
         anchors = extract_anchors(_audit())
 
