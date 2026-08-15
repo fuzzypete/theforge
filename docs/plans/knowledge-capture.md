@@ -344,17 +344,39 @@ The shipped contract is:
   `.forge/knowledge/summaries/*.yaml`
 - Rebuild behavior: deterministic stable sort by `generated_at` (with nulls
   sorted first), then `run_id`, then summary path
-- Data boundary: the index copies persisted lookup fields only (`run_id`,
-  `generated_at`, `story`, `story_shape`, `domains`, `changed_files`,
-  `learned_patterns`, `summary_path`) and remains a materialized view rather
-  than an authority over summaries or audits
+- Data boundary: schema v2 still treats the summary artifact as the source
+  record, but now materializes the deterministic non-LLM facts required to
+  judge summary admissibility before prompt assembly: source-run taint from the
+  authoritative run record, provenance-resolution status against that record's
+  anchors, and cited-source change / move / delete facts from repository
+  history. The view therefore copies persisted lookup fields
+  (`run_id`, `generated_at`, `story`, `story_shape`, `domains`,
+  `changed_files`, `learned_patterns`, `summary_path`) and adds
+  `admissibility_facts` / `admissibility_verdict` for producer-side filtering.
 - Malformed summaries: invalid YAML, non-mapping roots, mismatched `run_id`,
   missing required mappings, or non-list lookup fields are skipped with visible
   diagnostics during rebuild rather than partially indexed
+- Verdict contract: producer-side evaluation emits exactly one of
+  `admissible`, `admissible_with_reduced_rank`, or `inadmissible`. Plainly
+  unchanged, resolved summaries are `admissible`. Relevance drift stays
+  admissible but reduced-rank with machine-readable reasons
+  (`sources_changed`, `sources_moved`, `relevance_indeterminate`). That
+  includes cited files whose source run and provenance still resolve but whose
+  stored git baseline refs are unavailable in the repository being indexed:
+  history uncertainty is relevance drift, not a soundness failure. Soundness
+  failures are `inadmissible` with machine-readable reasons
+  (`source_run_tainted`, `provenance_unresolved`, `cited_source_deleted`,
+  `soundness_indeterminate`). Deleted-source detection is based on committed
+  repository state rather than leftover working-tree files. A persisted record
+  read without an evaluated verdict fails closed as `inadmissible` with
+  `no_verdict`.
+- Consumer boundary: this story only produces the verdict and its facts. Issue
+  `#1860` consumes them in context assembly / manifest reporting.
 
-The index is **rebuilt deterministically from summaries** — no LLM in the
-loop and no audit reads. It can be deleted and rebuilt at any time from the
-summary files.
+The index is **rebuilt deterministically from summaries plus those
+deterministic facts** — no LLM in the loop and no context-assembly dependence.
+It can be deleted and rebuilt at any time from the summary files, their linked
+run records, and repository history.
 
 #### 3b. Context assembly integration
 
