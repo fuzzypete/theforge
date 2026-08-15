@@ -35,6 +35,7 @@ from theforge.knowledge_admissibility import (
     KnowledgeSourceFact,
     KnowledgeSummaryFacts,
     evaluate_summary_admissibility,
+    extract_summary_cited_paths,
 )
 from theforge.knowledge_summary import (
     EVIDENCE_REFERENCE_KEYS,
@@ -46,6 +47,10 @@ KNOWLEDGE_INDEX_PATH = Path(".forge") / "knowledge" / "index.yaml"
 KNOWLEDGE_INDEX_SCHEMA_VERSION = 2
 _DEFAULT_RUN_RECORD_DIR = Path(".forge") / "audits" / "runs"
 _GENERIC_REFERENCE_KEY = "reference"
+_GIT_TIMEOUT_SECONDS = 5.0
+_BASELINE_RESOLVED = "resolved"
+_BASELINE_HISTORY_INDETERMINATE = "history_indeterminate"
+_BASELINE_SOURCE_IDENTITY_UNRESOLVED = "source_identity_unresolved"
 
 
 @dataclass(frozen=True)
@@ -59,6 +64,19 @@ class KnowledgeIndexBuildResult:
     path: Path
     payload: dict[str, object]
     diagnostics: tuple[KnowledgeIndexDiagnostic, ...]
+
+
+@dataclass(frozen=True)
+class _SourceBaseline:
+    status: str
+    baseline_ref: str | None = None
+    path_at_baseline: str | None = None
+
+
+@dataclass(frozen=True)
+class _GitDiffSnapshot:
+    deleted_paths: frozenset[str]
+    rename_targets: dict[str, str]
 
 
 def _summary_sort_key(entry: dict[str, object]) -> tuple[str, str, str]:
@@ -294,38 +312,16 @@ def _provenance_resolution(summary: dict[str, Any], run_record: dict[str, Any]) 
     return RESOLUTION_UNRESOLVED if unresolved else RESOLUTION_RESOLVED
 
 
-def _summary_file_citations(summary: dict[str, Any]) -> tuple[str, ...]:
-    learned = summary.get("what_was_learned")
-    if not isinstance(learned, list):
-        return ()
-
-    cited: set[str] = set()
-    for claim in learned:
-        if not isinstance(claim, dict):
-            continue
-        evidence = claim.get("evidence")
-        if not isinstance(evidence, list):
-            continue
-        for item in evidence:
-            if not isinstance(item, dict):
-                continue
-            if str(item.get("type") or "").strip().lower() != "file":
-                continue
-            path = str(item.get("path") or item.get(_GENERIC_REFERENCE_KEY) or "").strip()
-            if path:
-                cited.add(path)
-    return tuple(sorted(cited))
-
-
 def _cited_source_facts(
     project_root: Path,
     summary: dict[str, Any],
     run_record: dict[str, Any],
 ) -> tuple[KnowledgeSourceFact, ...]:
-    citations = _summary_file_citations(summary)
+    citations = extract_summary_cited_paths(summary)
     if not citations:
         return ()
 
+    changed_paths = _run_record_changed_paths(run_record)
     if not _git_history_available(project_root):
         return tuple(
             KnowledgeSourceFact(
@@ -340,6 +336,7 @@ def _cited_source_facts(
     changed_block = changed if isinstance(changed, dict) else {}
     base_ref = _git_ref_text(changed_block.get("base_ref"))
     head_ref = _git_ref_text(changed_block.get("head_ref"))
+    diff_cache: dict[str, _GitDiffSnapshot | None] = {}
 
     facts: list[KnowledgeSourceFact] = []
     for cited_path in citations:
@@ -349,7 +346,16 @@ def _cited_source_facts(
             head_ref=head_ref,
             base_ref=base_ref,
         )
-        if baseline is None:
+        if baseline.status == _BASELINE_HISTORY_INDETERMINATE and cited_path in changed_paths:
+            facts.append(
+                KnowledgeSourceFact(
+                    cited_path=cited_path,
+                    state=SOURCE_STATE_RELEVANCE_INDETERMINATE,
+                    current_path=_tracked_head_path(project_root, cited_path),
+                )
+            )
+            continue
+        if baseline.status != _BASELINE_RESOLVED:
             facts.append(
                 KnowledgeSourceFact(
                     cited_path=cited_path,
@@ -357,13 +363,16 @@ def _cited_source_facts(
                 )
             )
             continue
-        baseline_ref, path_at_baseline = baseline
+        assert baseline.baseline_ref is not None
+        assert baseline.path_at_baseline is not None
+        baseline_ref = baseline.baseline_ref
+        path_at_baseline = baseline.path_at_baseline
         if not _git_is_ancestor(project_root, baseline_ref, "HEAD"):
             facts.append(
                 KnowledgeSourceFact(
                     cited_path=cited_path,
                     state=SOURCE_STATE_RELEVANCE_INDETERMINATE,
-                    current_path=cited_path if (project_root / cited_path).exists() else None,
+                    current_path=_tracked_head_path(project_root, cited_path),
                 )
             )
             continue
@@ -374,6 +383,7 @@ def _cited_source_facts(
                 cited_path,
                 baseline_ref=baseline_ref,
                 path_at_baseline=path_at_baseline,
+                diff_cache=diff_cache,
             )
         )
 
@@ -392,14 +402,26 @@ def _resolve_source_baseline(
     *,
     head_ref: str | None,
     base_ref: str | None,
-) -> tuple[str, str] | None:
+) -> _SourceBaseline:
+    saw_candidate_ref = False
+    saw_unavailable_ref = False
     for ref in (head_ref, base_ref):
-        if ref is None or not _git_ref_exists(project_root, ref):
+        if ref is None:
+            continue
+        saw_candidate_ref = True
+        if not _git_ref_exists(project_root, ref):
+            saw_unavailable_ref = True
             continue
         exists = _git_path_exists_at_ref(project_root, ref, cited_path)
         if exists:
-            return ref, cited_path
-    return None
+            return _SourceBaseline(
+                status=_BASELINE_RESOLVED,
+                baseline_ref=ref,
+                path_at_baseline=cited_path,
+            )
+    if saw_unavailable_ref or not saw_candidate_ref:
+        return _SourceBaseline(status=_BASELINE_HISTORY_INDETERMINATE)
+    return _SourceBaseline(status=_BASELINE_SOURCE_IDENTITY_UNRESOLVED)
 
 
 def _materialize_source_fact(
@@ -408,8 +430,10 @@ def _materialize_source_fact(
     *,
     baseline_ref: str,
     path_at_baseline: str,
+    diff_cache: dict[str, _GitDiffSnapshot | None],
 ) -> KnowledgeSourceFact:
-    rename_target = _git_rename_target(project_root, baseline_ref, path_at_baseline)
+    snapshot = _git_diff_snapshot(project_root, baseline_ref, diff_cache=diff_cache)
+    rename_target = snapshot.rename_targets.get(path_at_baseline) if snapshot is not None else None
     if rename_target is not None:
         return KnowledgeSourceFact(
             cited_path=cited_path,
@@ -422,8 +446,8 @@ def _materialize_source_fact(
             ),
         )
 
-    current_path = project_root / cited_path
-    if current_path.exists():
+    current_path = _tracked_head_path(project_root, cited_path)
+    if current_path is not None:
         commits_since_summary = _git_commit_count(project_root, baseline_ref, [cited_path])
         if commits_since_summary is None:
             return KnowledgeSourceFact(
@@ -439,8 +463,12 @@ def _materialize_source_fact(
             commits_since_summary=commits_since_summary,
         )
 
-    status = _git_diff_status(project_root, baseline_ref, path_at_baseline)
-    if status == "deleted":
+    if snapshot is None:
+        return KnowledgeSourceFact(
+            cited_path=cited_path,
+            state=SOURCE_STATE_RELEVANCE_INDETERMINATE,
+        )
+    if path_at_baseline in snapshot.deleted_paths:
         return KnowledgeSourceFact(
             cited_path=cited_path,
             state=SOURCE_STATE_DELETED,
@@ -450,15 +478,27 @@ def _materialize_source_fact(
                 [path_at_baseline],
             ),
         )
-    if status == "unknown":
-        return KnowledgeSourceFact(
-            cited_path=cited_path,
-            state=SOURCE_STATE_RELEVANCE_INDETERMINATE,
-        )
     return KnowledgeSourceFact(
         cited_path=cited_path,
         state=SOURCE_STATE_RELEVANCE_INDETERMINATE,
     )
+
+
+def _run_record_changed_paths(run_record: dict[str, Any]) -> frozenset[str]:
+    changed = run_record.get("changed_files")
+    changed_block = changed if isinstance(changed, dict) else {}
+    raw_files = changed_block.get("files")
+    if not isinstance(raw_files, list):
+        return frozenset()
+
+    paths = {
+        path
+        for entry in raw_files
+        if isinstance(entry, dict)
+        for path in (str(entry.get("path") or "").strip(),)
+        if path
+    }
+    return frozenset(paths)
 
 
 def _git_history_available(project_root: Path) -> bool:
@@ -481,7 +521,20 @@ def _git_path_exists_at_ref(project_root: Path, ref: str, path: str) -> bool:
     return result.returncode == 0
 
 
-def _git_rename_target(project_root: Path, baseline_ref: str, path: str) -> str | None:
+def _tracked_head_path(project_root: Path, path: str) -> str | None:
+    return path if _git_path_exists_at_ref(project_root, "HEAD", path) else None
+
+
+def _git_diff_snapshot(
+    project_root: Path,
+    baseline_ref: str,
+    *,
+    diff_cache: dict[str, _GitDiffSnapshot | None],
+) -> _GitDiffSnapshot | None:
+    cached = diff_cache.get(baseline_ref)
+    if baseline_ref in diff_cache:
+        return cached
+
     result = _run_git(
         project_root,
         [
@@ -496,26 +549,25 @@ def _git_rename_target(project_root: Path, baseline_ref: str, path: str) -> str 
         ],
     )
     if result.returncode != 0:
+        diff_cache[baseline_ref] = None
         return None
+
+    deleted_paths: set[str] = set()
+    rename_targets: dict[str, str] = {}
     for line in result.stdout.splitlines():
         parts = line.split("\t")
-        if len(parts) == 3 and parts[0].startswith("R") and parts[1] == path:
-            return parts[2]
-    return None
+        if len(parts) == 3 and parts[0].startswith("R"):
+            rename_targets[parts[1]] = parts[2]
+            continue
+        if len(parts) >= 2 and parts[0] == "D":
+            deleted_paths.add(parts[1])
 
-
-def _git_diff_status(project_root: Path, baseline_ref: str, path: str) -> str:
-    result = _run_git(
-        project_root,
-        ["-c", "core.quotePath=false", "diff", "--name-status", baseline_ref, "HEAD", "--", path],
+    snapshot = _GitDiffSnapshot(
+        deleted_paths=frozenset(deleted_paths),
+        rename_targets=rename_targets,
     )
-    if result.returncode != 0:
-        return "unknown"
-    for line in result.stdout.splitlines():
-        parts = line.split("\t")
-        if len(parts) >= 2 and parts[0] == "D" and parts[1] == path:
-            return "deleted"
-    return "missing"
+    diff_cache[baseline_ref] = snapshot
+    return snapshot
 
 
 def _git_commit_count(project_root: Path, baseline_ref: str, paths: list[str]) -> int | None:
@@ -529,10 +581,20 @@ def _git_commit_count(project_root: Path, baseline_ref: str, paths: list[str]) -
 
 
 def _run_git(project_root: Path, args: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(  # noqa: S603
-        ["git", *args],
-        cwd=project_root,
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    command = ["git", *args]
+    try:
+        return subprocess.run(  # noqa: S603
+            command,
+            cwd=project_root,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return subprocess.CompletedProcess(
+            args=command,
+            returncode=124,
+            stdout="",
+            stderr=str(exc),
+        )

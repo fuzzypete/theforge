@@ -360,11 +360,16 @@ The shipped contract is:
   `admissible`, `admissible_with_reduced_rank`, or `inadmissible`. Plainly
   unchanged, resolved summaries are `admissible`. Relevance drift stays
   admissible but reduced-rank with machine-readable reasons
-  (`sources_changed`, `sources_moved`, `relevance_indeterminate`). Soundness
+  (`sources_changed`, `sources_moved`, `relevance_indeterminate`). That
+  includes cited files whose source run and provenance still resolve but whose
+  stored git baseline refs are unavailable in the repository being indexed:
+  history uncertainty is relevance drift, not a soundness failure. Soundness
   failures are `inadmissible` with machine-readable reasons
   (`source_run_tainted`, `provenance_unresolved`, `cited_source_deleted`,
-  `soundness_indeterminate`). A persisted record read without an evaluated
-  verdict fails closed as `inadmissible` with `no_verdict`.
+  `soundness_indeterminate`). Deleted-source detection is based on committed
+  repository state rather than leftover working-tree files. A persisted record
+  read without an evaluated verdict fails closed as `inadmissible` with
+  `no_verdict`.
 - Consumer boundary: this story only produces the verdict and its facts. Issue
   `#1860` consumes them in context assembly / manifest reporting.
 

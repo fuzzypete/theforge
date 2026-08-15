@@ -694,6 +694,160 @@ def test_non_git_history_absence_down_ranks_relevance(tmp_path: Path) -> None:
     ]
 
 
+def test_unresolvable_history_refs_for_resolved_file_down_rank_relevance(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    _commit_all(tmp_path, "seed")
+
+    _write_run_record(
+        tmp_path,
+        "run-missing-history-refs",
+        base_ref="deadbeef",
+        head_ref="cafebabe",
+        file_paths=("src/client.py",),
+    )
+    _write_summary(
+        tmp_path,
+        "run-missing-history-refs",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-missing-history-refs.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+    entry = _entry_map(result.payload)["run-missing-history-refs"]
+
+    assert entry["admissibility_verdict"] == {
+        "status": STATUS_ADMISSIBLE_WITH_REDUCED_RANK,
+        "rank": "reduced",
+        "reasons": [REASON_RELEVANCE_INDETERMINATE],
+    }
+    assert entry["admissibility_facts"]["cited_sources"] == [
+        {
+            "cited_path": "src/client.py",
+            "state": "relevance_indeterminate",
+            "current_path": "src/client.py",
+        }
+    ]
+
+
+def test_created_file_with_missing_head_ref_down_ranks_relevance(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    _git(tmp_path, "commit", "--allow-empty", "-q", "-m", "seed")
+    baseline = _git(tmp_path, "rev-parse", "HEAD")
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    _commit_all(tmp_path, "create file")
+
+    _write_run_record(
+        tmp_path,
+        "run-created-file-missing-head",
+        base_ref=baseline,
+        head_ref="pruned-head-ref",
+        file_paths=("src/client.py",),
+    )
+    _write_summary(
+        tmp_path,
+        "run-created-file-missing-head",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-created-file-missing-head.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+
+    result = rebuild_knowledge_index(tmp_path)
+    entry = _entry_map(result.payload)["run-created-file-missing-head"]
+
+    assert entry["admissibility_verdict"] == {
+        "status": STATUS_ADMISSIBLE_WITH_REDUCED_RANK,
+        "rank": "reduced",
+        "reasons": [REASON_RELEVANCE_INDETERMINATE],
+    }
+    assert entry["admissibility_facts"]["cited_sources"] == [
+        {
+            "cited_path": "src/client.py",
+            "state": "relevance_indeterminate",
+            "current_path": "src/client.py",
+        }
+    ]
+
+
+def test_deleted_cited_source_ignores_untracked_leftover_copy(tmp_path: Path) -> None:
+    _init_git_repo(tmp_path)
+    src = tmp_path / "src" / "client.py"
+    src.parent.mkdir(parents=True)
+    src.write_text("value = 1\n", encoding="utf-8")
+    baseline = _commit_all(tmp_path, "seed")
+    _write_run_record(tmp_path, "run-deleted-leftover", base_ref=baseline, head_ref=baseline)
+    _write_summary(
+        tmp_path,
+        "run-deleted-leftover",
+        generated_at="2026-08-15T09:00:00+00:00",
+        slug="retry-client",
+        name="Retry client",
+        github_issue=1,
+        work_type="feature",
+        complexity="small",
+        complexity_score=2,
+        contract_change=False,
+        domains=["backend"],
+        changed_files=["src/client.py"],
+        learned_patterns=["retry"],
+        authoritative_run_record=".forge/audits/runs/run-deleted-leftover.json",
+        what_was_learned=_summary_claim(
+            {"type": "file", "path": "src/client.py"},
+            {"type": "review_finding", "finding_id": "f-001"},
+        ),
+    )
+    src.unlink()
+    _commit_all(tmp_path, "delete")
+    src.write_text("stale untracked copy\n", encoding="utf-8")
+
+    result = rebuild_knowledge_index(tmp_path)
+    entry = _entry_map(result.payload)["run-deleted-leftover"]
+
+    assert entry["admissibility_verdict"] == {
+        "status": STATUS_INADMISSIBLE,
+        "rank": "excluded",
+        "reasons": [REASON_CITED_SOURCE_DELETED],
+    }
+    assert entry["admissibility_facts"]["cited_sources"] == [
+        {
+            "cited_path": "src/client.py",
+            "state": "deleted",
+            "commits_since_summary": 1,
+        }
+    ]
+
+
 def test_missing_run_record_is_soundness_indeterminate(tmp_path: Path) -> None:
     _write_summary(
         tmp_path,

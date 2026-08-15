@@ -177,12 +177,12 @@ def interpret_persisted_verdict(raw: Any) -> KnowledgeSummaryVerdict:
     return KnowledgeSummaryVerdict(status=status, rank=rank, reasons=tuple(reasons))
 
 
-def _summary_cited_paths(summary: Mapping[str, Any]) -> frozenset[str]:
+def extract_summary_cited_paths(summary: Mapping[str, Any]) -> tuple[str, ...]:
     """Return the file-path citations named directly by the persisted summary."""
     cited: set[str] = set()
     learned = summary.get("what_was_learned")
     if not isinstance(learned, list):
-        return frozenset()
+        return ()
 
     for claim in learned:
         if not isinstance(claim, Mapping):
@@ -198,7 +198,7 @@ def _summary_cited_paths(summary: Mapping[str, Any]) -> frozenset[str]:
             path = _text(item.get("path") or item.get("reference"))
             if path:
                 cited.add(path)
-    return frozenset(cited)
+    return tuple(sorted(cited))
 
 
 def evaluate_summary_admissibility(
@@ -209,7 +209,7 @@ def evaluate_summary_admissibility(
 
     reasons: list[str] = []
 
-    summary_paths = _summary_cited_paths(summary)
+    summary_paths = frozenset(extract_summary_cited_paths(summary))
     fact_paths = {source.cited_path for source in facts.cited_sources}
     if not summary_paths.issubset(fact_paths):
         reasons.append(REASON_SOUNDNESS_INDETERMINATE)
