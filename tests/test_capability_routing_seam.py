@@ -31,7 +31,9 @@ from coord_test_helpers import _make_config  # noqa: E402
 from theforge.assignment import (  # noqa: E402
     EXCLUSION_REASONS,
     REASON_CAPABILITY_ABSENT,
+    ROLE_REQUIRED_CAPABILITY,
     AssignmentConfig,
+    NoCapableCandidateError,
     assign_models,
 )
 from theforge.cli import providers as _providers  # noqa: E402
@@ -58,6 +60,7 @@ from theforge.config import (  # noqa: E402
 )
 from theforge.coordinator.state import CoordinatorState  # noqa: E402
 from theforge.model_capabilities import (  # noqa: E402
+    CAPABILITY_PLAIN_STRUCTURED,
     CAPABILITY_TOOL_STRUCTURED,
     OUTCOME_ABSENT,
     OUTCOME_DEMONSTRATED,
@@ -484,6 +487,135 @@ def test_reviewer_pool_exhaustion_fallback_does_not_reseat_an_absent_candidate(_
     # Only the one remaining eligible reviewer is seated — a short panel, not a
     # silently refilled one.
     assert seated == {"sonnet"}
+
+
+def _all_absent_records() -> dict:
+    """Every agent in ``_agents()`` recorded demonstrated-absent."""
+    records = _records()
+    for key in ("anthropic/opus/api", "anthropic/sonnet/api"):
+        records["identities"].update(_records(identity_key=key)["identities"])
+    return records
+
+
+def test_routing_refuses_when_no_candidate_can_serve_a_required_capability(_authed):
+    """The last-resort seat is the failure this record exists to prevent."""
+    with pytest.raises(NoCapableCandidateError) as excinfo:
+        assign_models(
+            _agents(),
+            _cfg(),
+            complexity="HIGH",
+            complexity_score=9,
+            capability_records=_all_absent_records(),
+        )
+
+    error = excinfo.value
+    assert error.capability == CAPABILITY_TOOL_STRUCTURED
+    assert error.role in ROLE_REQUIRED_CAPABILITY
+    assert set(error.excluded) == {"sonnet", "opus", "gpt"}
+    # The refusal carries the evidence: which models, and when each was established.
+    message = str(error)
+    assert CAPABILITY_TOOL_STRUCTURED in message
+    assert "2026-08-15T09:00:00Z" in message
+    for name in ("sonnet", "opus", "gpt"):
+        assert name in message
+    # It is a ValueError, so it joins the module's existing unroutable-pool contract.
+    assert isinstance(error, ValueError)
+
+
+@pytest.mark.parametrize("role", ["planner", "plan_review", "code_review"])
+def test_every_structured_role_refuses_rather_than_seating_an_absent_model(_authed, role):
+    """Each role that requires the capability refuses on its own account — the
+    guard is not a property of whichever role happens to be selected first."""
+    explicit = {
+        other: ModelProfile(
+            name="pinned",
+            provider="anthropic",
+            model="pinned-model",
+            budget_usd=1.0,
+            timeout_seconds=300,
+            allowed_tools=("Read",),
+        )
+        for other in ROLE_REQUIRED_CAPABILITY
+        if other != role
+    }
+
+    with pytest.raises(NoCapableCandidateError) as excinfo:
+        assign_models(
+            _agents(),
+            _cfg(),
+            complexity="HIGH",
+            complexity_score=9,
+            explicit_profiles=explicit,
+            capability_records=_all_absent_records(),
+        )
+
+    assert excinfo.value.role == role
+
+
+def test_all_absent_record_for_an_exempt_role_does_not_refuse(_authed):
+    """dev and preflight require no recorded capability, so a record about them
+    is not an eligibility fact and must not stop the run."""
+    records = _records(capability=CAPABILITY_PLAIN_STRUCTURED)
+    for key in ("anthropic/opus/api", "anthropic/sonnet/api"):
+        records["identities"].update(
+            _records(identity_key=key, capability=CAPABILITY_PLAIN_STRUCTURED)["identities"]
+        )
+
+    decision = assign_models(
+        _agents(), _cfg(), complexity="HIGH", complexity_score=9, capability_records=records
+    )
+
+    assert decision.dev.model
+    assert decision.preflight.model
+
+
+def test_explicit_override_survives_an_otherwise_all_absent_pool(_authed):
+    """An operator pin never reaches candidate selection, so the refusal must
+    not fire for a role the operator already decided."""
+    pinned = ModelProfile(
+        name="pinned",
+        provider="anthropic",
+        model="pinned-model",
+        budget_usd=1.0,
+        timeout_seconds=300,
+        allowed_tools=("Read",),
+    )
+    explicit = dict.fromkeys(ROLE_REQUIRED_CAPABILITY, pinned)
+
+    decision = assign_models(
+        _agents(),
+        _cfg(),
+        complexity="HIGH",
+        complexity_score=9,
+        explicit_profiles=explicit,
+        capability_records=_all_absent_records(),
+    )
+
+    assert decision.planner.model == "pinned-model"
+    assert [p.model for p in decision.code_reviewers] == ["pinned-model"]
+
+
+def test_post_plan_checkpoint_preserves_dev_rather_than_failing(_authed):
+    """The checkpoint is an optional demotion: no capable cheaper candidate
+    preserves the seated dev instead of stopping the run."""
+    from theforge.assignment import apply_post_plan_checkpoint
+
+    cfg = _cfg(plan_tier_reduction=True)
+    decision = assign_models(_agents(), cfg, complexity="MEDIUM", complexity_score=5)
+
+    updated = apply_post_plan_checkpoint(
+        decision,
+        _agents(),
+        cfg,
+        "MEDIUM",
+        plan_review_decision="APPROVE",
+        plan_review_cycles=1,
+        p1_count=0,
+        p2_count=0,
+        capability_records=_all_absent_records(),
+    )
+
+    assert updated.dev.model == decision.dev.model
 
 
 @pytest.mark.filterwarnings("ignore:.*routing cost target.*:UserWarning")

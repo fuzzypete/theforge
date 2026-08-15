@@ -245,6 +245,13 @@ probe subject has changed since (a repointed `base_url`, a different CLI binary)
 is treated as stale rather than current. Re-run this command after changing a
 model's endpoint to refresh the record.
 
+If the record rules out *every* candidate for a role, routing refuses the run
+rather than seating a model that has demonstrated it cannot do the job — the
+error names the role, the capability, and when each absence was established.
+Re-run `forge check-providers` if the record is out of date, or configure a model
+that can produce the capability. An explicitly pinned role is exempt: the
+operator's choice stands and is flagged in that role's routing rationale.
+
 ---
 
 ## `forge check-config`

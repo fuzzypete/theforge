@@ -432,45 +432,71 @@ def _capability_exclusions(
     return excluded
 
 
+class NoCapableCandidateError(ValueError):
+    """No candidate can serve a role whose capability requirement is recorded (#2466).
+
+    Raised when the durable record says *every* candidate for a role has
+    demonstrated it cannot produce what that role requires. There is no correct
+    model to seat: dispatching anyway is exactly the failure this record exists
+    to prevent — the phase returns something unusable and the gate reports an
+    absence it cannot explain. Routing refuses instead, naming the role, the
+    capability, and when each absence was established, so the operator reads the
+    reason here rather than reconstructing it from the wreckage.
+
+    A ``ValueError`` subclass so it joins the module's existing unroutable-pool
+    contract (``assign_models`` already raises ``ValueError`` on an empty pool)
+    rather than introducing a second failure shape for callers to handle.
+    """
+
+    def __init__(
+        self,
+        role: str,
+        capability: str,
+        excluded: dict[str, dict[str, object]],
+    ) -> None:
+        self.role = role
+        self.capability = capability
+        self.excluded = excluded
+        detail = ", ".join(
+            f"{name} (established {record.get('established_at') or '?'})"
+            for name, record in sorted(excluded.items())
+        )
+        super().__init__(
+            f"no candidate can serve role {role!r}: every agent in the pool has "
+            f"{capability} demonstrated absent — {detail}. "
+            f"Re-run 'forge check-providers' if this record is out of date, or "
+            f"configure a model that can produce {capability}."
+        )
+
+
 def _capability_pool(
     agents: list[AgentDef],
     excluded: dict[str, dict[str, object]],
-) -> tuple[list[AgentDef], bool]:
+) -> list[AgentDef]:
     """Apply a role's capability exclusions to its candidate pool.
 
-    Returns ``(pool, exhausted)``. When every candidate is ruled out the full
-    pool is handed back with ``exhausted=True``: routing still has to seat
-    somebody, and a silently empty pool would surface as an unexplained crash
-    instead of an explained last resort. Callers say so in the rationale.
+    The filtered pool is returned as-is, **including when it is empty**. An
+    empty pool is a real answer — nothing configured can do this job — and
+    restoring the unfiltered pool to have somebody to seat would hand the role
+    right back to the models the record rules out. Callers refuse instead; see
+    :class:`NoCapableCandidateError`.
     """
     if not excluded:
-        return agents, False
-    pool = [a for a in agents if a.name not in excluded]
-    if not pool:
-        return agents, True
-    return pool, False
+        return agents
+    return [a for a in agents if a.name not in excluded]
 
 
-def _capability_exclusion_note(
-    excluded: dict[str, dict[str, object]],
-    exhausted: bool,
-) -> str:
+def _capability_exclusion_note(excluded: dict[str, dict[str, object]]) -> str:
     """Operator-facing rationale fragment for a role's capability exclusions."""
     if not excluded:
         return ""
     capability = next(iter(excluded.values()))["capability"]
     names = ", ".join(sorted(excluded))
     stamps = sorted({str(v.get("established_at") or "?") for v in excluded.values()})
-    note = (
+    return (
         f"; excluded [{names}] — {capability} demonstrated absent "
         f"(established {', '.join(stamps)})"
     )
-    if exhausted:
-        note += (
-            f"; WARNING: no candidate has {capability} available — seated from the "
-            "unfiltered pool as a last resort"
-        )
-    return note
 
 
 def _explicit_capability_warning(
@@ -3192,10 +3218,11 @@ def apply_post_plan_checkpoint(
     # (#2466). ``dev`` requires no recorded capability today — no probe
     # establishes one for it — so this is currently the identity filter; it is
     # applied by policy rather than by assumption so a future dev capability
-    # cannot be reintroduced through the post-plan path.
-    dev_pool, _dev_pool_exhausted = _capability_pool(
-        agents, _capability_exclusions(agents, "dev", capability_records)
-    )
+    # cannot be reintroduced through the post-plan path. An empty filtered pool
+    # needs no refusal here: this checkpoint is an optional *demotion*, so no
+    # capable cheaper candidate simply preserves the already-seated dev
+    # ("no_reduced_tier_candidate") rather than failing the run.
+    dev_pool = _capability_pool(agents, _capability_exclusions(agents, "dev", capability_records))
     target_tier = _reduced_tier(baseline_tier) if baseline_tier else None
     target_agent = (
         _pick_agent(
@@ -3545,7 +3572,9 @@ def assign_models(
     recorded as demonstrated absent for that candidate's identity. Never
     established and stale records leave the candidate eligible, so passing no
     record — or a record covering nothing in the pool — routes exactly as before
-    (#2466).
+    (#2466). Raises :class:`NoCapableCandidateError` when the record rules out
+    *every* candidate for a role: there is no correct model to seat, and seating
+    one anyway is the failure the record exists to prevent.
     """
     if not agents:
         raise ValueError("assign_models requires a non-empty agents pool")
@@ -3637,9 +3666,17 @@ def assign_models(
     role_pools: dict[str, list[AgentDef]] = {}
     capability_notes: dict[str, str] = {}
     for role, excluded in capability_excluded.items():
-        pool, exhausted = _capability_pool(agents, excluded)
-        role_pools[role] = pool
-        capability_notes[role] = _capability_exclusion_note(excluded, exhausted)
+        role_pools[role] = _capability_pool(agents, excluded)
+        capability_notes[role] = _capability_exclusion_note(excluded)
+    # Refuse rather than seat a model the record says cannot do the job. Checked
+    # here — before any selection runs — so the refusal names the role and the
+    # evidence instead of surfacing later as an empty pool or, worse, as a phase
+    # that returns something unusable. An explicitly overridden role is exempt:
+    # it never reaches candidate selection, and the operator's pin stands (it is
+    # flagged in that role's rationale instead).
+    for role, excluded in capability_excluded.items():
+        if excluded and not role_pools[role] and role not in explicit_profiles:
+            raise NoCapableCandidateError(role, ROLE_REQUIRED_CAPABILITY[role], excluded)
 
     # ── Dev tier with promotion ────────────────────────────────────────
     dev_base_tier = (
