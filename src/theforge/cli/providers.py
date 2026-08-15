@@ -10,10 +10,17 @@ from theforge.cli.provider_readiness import (
     READINESS_STATUS_READY,
     ReadinessResult,
     build_readiness_probes,
+    capability_observations,
     run_readiness_probe,
 )
 from theforge.cli.shared import _find_config
 from theforge.config import load_config
+from theforge.model_capabilities import (
+    capabilities_path,
+    load_capabilities,
+    record_observations,
+    save_capabilities,
+)
 
 _MAX_READINESS_WORKERS = 4
 
@@ -89,6 +96,8 @@ def cmd_check_providers(args: object) -> int:
         )
     )
 
+    _record_capability_evidence(config, config_path, results)
+
     any_failed = False
     for result in results:
         profile = result.probe.profile
@@ -134,6 +143,30 @@ def register_parser(subparsers: object) -> None:
     check_providers_parser.add_argument(
         "--config",
         help="Path to forge.yaml (default: auto-detect)",
+    )
+
+
+def _record_capability_evidence(
+    config: object,
+    config_path: Path,
+    results: list[ReadinessResult],
+) -> None:
+    """Persist what this run demonstrated so routing can consult it later (#2466).
+
+    Thin by design: the probe decides which attempts are evidence and
+    ``model_capabilities`` owns keying, merging and staleness. This function only
+    moves the result from one to the other and tells the operator where it went.
+    """
+    observations = capability_observations(results)
+    if not observations:
+        return
+    project_root = getattr(config, "project_root", None) or config_path.parent
+    path = capabilities_path(Path(project_root))
+    data = record_observations(load_capabilities(path), observations)
+    save_capabilities(path, data)
+    print(
+        f"\n[check-providers] recorded {len(observations)} capability outcome(s) "
+        f"to {path} — routing reads this at dispatch"
     )
 
 

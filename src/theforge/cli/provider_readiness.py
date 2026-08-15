@@ -25,6 +25,15 @@ from theforge.config.auth import check_agent_auth
 from theforge.config.models import mirror_fields_for_transport
 from theforge.config.profiles import iter_config_profiles, iter_plan_phase_profiles
 from theforge.config.types import ModelProfile
+from theforge.model_capabilities import (
+    CAPABILITY_PLAIN_STRUCTURED,
+    CAPABILITY_TOOL_STRUCTURED,
+    OUTCOME_ABSENT,
+    OUTCOME_DEMONSTRATED,
+    CapabilityObservation,
+    identity_for_profile,
+    signature_for_profile,
+)
 from theforge.runners.api import run_api_agent
 from theforge.runners.cli import run_agent
 from theforge.runners.schema_utils import openai_function_tool_request_shape
@@ -43,8 +52,11 @@ READINESS_STATUSES: tuple[str, ...] = (
     READINESS_STATUS_COST_UNAVAILABLE,
 )
 
-READINESS_CAPABILITY_PLAIN_STRUCTURED = "plain-structured"
-READINESS_CAPABILITY_TOOL_STRUCTURED = "tool-structured"
+# Aliases of the durable-record vocabulary (#2466): the probe and the store name
+# the same two capabilities, so they are declared once in model_capabilities and
+# re-exported here rather than restated.
+READINESS_CAPABILITY_PLAIN_STRUCTURED = CAPABILITY_PLAIN_STRUCTURED
+READINESS_CAPABILITY_TOOL_STRUCTURED = CAPABILITY_TOOL_STRUCTURED
 
 _READINESS_PROMPT = (
     "Review this diff: -    x = 1\n+    x = 2\n\n"
@@ -93,7 +105,21 @@ class ReadinessProbe:
 
 @dataclass(frozen=True)
 class ReadinessAttempt:
-    """Outcome of exercising one transport for a readiness probe."""
+    """Outcome of exercising one transport for a readiness probe.
+
+    ``capability_outcome`` is the attempt's *capability* verdict (#2466), which
+    is deliberately not derivable from ``status``. The overall status folds in
+    auth, transport, identity and cost concerns; the capability verdict answers
+    only "did this attempt establish that the identity can produce the probed
+    shape?" and is ``None`` — not evidence — whenever the attempt never
+    validated it. A dev/preflight probe returns READY on unstructured output by
+    design, so its READY establishes nothing here; a CLI attempt that returned a
+    valid structured result but no cost is UNVERIFIED overall yet *did* prove the
+    capability, and says so.
+
+    ``subject`` is the profile actually exercised (transport-substituted), so the
+    recorded identity describes the attempt rather than the declared profile.
+    """
 
     probe: ReadinessProbe
     attempted_transport_kind: str
@@ -102,6 +128,8 @@ class ReadinessAttempt:
     status: str
     detail: str
     outcome: AgentResult | Exception | None = None
+    capability_outcome: str | None = None
+    subject: ModelProfile | None = None
 
     @property
     def ready(self) -> bool:
@@ -153,6 +181,38 @@ class ReadinessResult:
             for attempt in self.attempts
             if not attempt.is_declared_transport and attempt.ready
         )
+
+
+def capability_observations(results: list[ReadinessResult]) -> list[CapabilityObservation]:
+    """Extract the durable capability evidence from a set of probe results (#2466).
+
+    Every attempt that actually established an outcome is reported — including
+    alternate-transport attempts, which exercise a *different* canonical identity
+    (transport is part of the identity) and are therefore evidence in their own
+    right, not a footnote on the declared one. Attempts that established nothing
+    (never exercised, auth failure, runtime error, phase that never validated the
+    shape) are omitted rather than written as absence.
+    """
+    observations: list[CapabilityObservation] = []
+    for result in results:
+        for attempt in result.attempts:
+            if attempt.capability_outcome is None:
+                continue
+            subject = attempt.subject or result.probe.profile
+            identity = identity_for_profile(subject)
+            if identity is None:
+                continue
+            observations.append(
+                CapabilityObservation(
+                    identity=identity,
+                    capability=result.probe.capability,
+                    outcome=attempt.capability_outcome,
+                    subject_signature=signature_for_profile(subject),
+                    detail=attempt.detail,
+                    probe_role=result.probe.role,
+                )
+            )
+    return observations
 
 
 def build_readiness_probes(config: ForgeConfig) -> list[ReadinessProbe]:
@@ -301,6 +361,10 @@ def _run_transport_attempt(
                     "not exercised: no supported OpenAI tool-bearing request shape "
                     "is configured for this model"
                 ),
+                # No request shape exists to carry tools at all — a determination
+                # about the capability itself, not a runtime failure.
+                capability_outcome=OUTCOME_ABSENT,
+                subject=profile,
             )
 
     t0 = time.perf_counter()
@@ -362,6 +426,12 @@ def _run_transport_attempt(
             outcome=result,
         )
 
+    # Capability verdict (#2466): established only where the probe actually
+    # validated the shape. When the phase accepts unstructured output, nothing
+    # about the capability was exercised, so the attempt is not evidence — the
+    # remaining returns carry ``validated`` unchanged, including the ones whose
+    # overall status is degraded for cost reasons that say nothing about it.
+    validated: str | None = None
     if _requires_structured_verdict(probe):
         payload = _structured_payload(result)
         if payload is None or "verdict" not in payload:
@@ -373,7 +443,10 @@ def _run_transport_attempt(
                 status=READINESS_STATUS_FAILED,
                 detail="no valid verdict in structured output",
                 outcome=result,
+                capability_outcome=OUTCOME_ABSENT,
+                subject=profile,
             )
+        validated = OUTCOME_DEMONSTRATED
 
     if result.cost_usd is None:
         if transport.kind == "cli":
@@ -383,6 +456,8 @@ def _run_transport_attempt(
                 detail="not exercised: structured result returned but CLI cost is unavailable",
                 elapsed=elapsed,
                 outcome=result,
+                capability_outcome=validated,
+                subject=profile,
             )
         if not _is_local_endpoint(getattr(profile, "base_url", None)):
             return ReadinessAttempt(
@@ -393,6 +468,8 @@ def _run_transport_attempt(
                 status=READINESS_STATUS_COST_UNAVAILABLE,
                 detail="structured result returned but cost is unavailable",
                 outcome=result,
+                capability_outcome=validated,
+                subject=profile,
             )
 
     return ReadinessAttempt(
@@ -403,6 +480,8 @@ def _run_transport_attempt(
         status=READINESS_STATUS_READY,
         detail=_success_suffix(profile=profile, result=result, elapsed=elapsed),
         outcome=result,
+        capability_outcome=validated,
+        subject=profile,
     )
 
 
@@ -531,6 +610,8 @@ def _unverified_attempt(
     detail: str,
     elapsed: float = 0.0,
     outcome: AgentResult | Exception | None = None,
+    capability_outcome: str | None = None,
+    subject: ModelProfile | None = None,
 ) -> ReadinessAttempt:
     return ReadinessAttempt(
         probe=probe,
@@ -540,6 +621,8 @@ def _unverified_attempt(
         status=READINESS_STATUS_UNVERIFIED,
         detail=detail,
         outcome=outcome,
+        capability_outcome=capability_outcome,
+        subject=subject,
     )
 
 

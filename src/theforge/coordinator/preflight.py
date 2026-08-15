@@ -1352,6 +1352,19 @@ def _apply_preflight_config(
     _profiles_path = config.project_root / ".forge" / "model_profiles.yaml"
     _model_profiles = _load_profiles(_profiles_path)
 
+    # Durable demonstrated-capability record (#2466), written by
+    # ``forge check-providers``. Loaded unconditionally — unlike the learning
+    # profiles above, a demonstrated absence is a hard eligibility fact about the
+    # model, so static routing must honor it too.
+    from theforge.model_capabilities import (  # noqa: PLC0415
+        capabilities_path as _capabilities_path,
+    )
+    from theforge.model_capabilities import (
+        load_capabilities as _load_capabilities,
+    )
+
+    _capability_records = _load_capabilities(_capabilities_path(config.project_root))
+
     from theforge.provider_health import (  # noqa: PLC0415
         load_provider_health as _load_provider_health,
     )
@@ -1424,6 +1437,7 @@ def _apply_preflight_config(
             excluded_for_taint=_excluded_for_taint,
             sprint_exploration_budget=explore_budget,
             transport_fallbacks=config.transport_fallbacks,
+            capability_records=_capability_records,
         )
 
     _explore_remaining = _explore_budget.remaining_budget(
@@ -1561,6 +1575,7 @@ def _apply_preflight_config(
                 plan_reviewers=(_decision.plan_reviewers if _explicit_plan_review_pool else None),
                 code_reviewers=(_decision.code_reviewers if _explicit_review_pool else None),
                 secrets=config.secrets,
+                capability_records=_capability_records,
             )
         state.routing_decision = _routing_block
     _existing_routing_audit = dict(state.complexity_routing_audit or {})
