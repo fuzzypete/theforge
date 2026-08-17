@@ -152,6 +152,7 @@ def maybe_generate_run_summary(
             working_dir=config.project_root,
             secrets=config.secrets,
             quiet=True,
+            plain_text=True,
         )
         if not getattr(agent_result, "success", False):
             _log("  ⚠ knowledge summary skipped: summary agent returned failure")

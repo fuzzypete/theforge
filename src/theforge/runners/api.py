@@ -1008,7 +1008,20 @@ def _run_single_api_model(
 
     Does not handle model-preference iteration — that lives in run_api_agent.
     """
-    if profile.provider in {"anthropic", "google"} and plain_text:
+    if profile.provider == "google" and plain_text:
+        runner_fn = PROVIDER_RUNNERS.get(profile.provider)
+        if not runner_fn:
+            return AgentResult(
+                success=False,
+                output=f"Unknown API provider: {profile.provider}",
+                session_id=None,
+                cost_usd=None,
+                exit_code=1,
+                raw={},
+                profile_name=profile.name,
+            )
+        return runner_fn(prompt, profile, secrets, plain_text=True)
+    elif profile.provider == "anthropic" and plain_text and not profile.allowed_tools:
         runner_fn = PROVIDER_RUNNERS.get(profile.provider)
         if not runner_fn:
             return AgentResult(
@@ -1150,6 +1163,10 @@ def run_api_agent(
     the profile allows tools. Ideation expects raw markdown/text output, and the
     Google loop's review finalization path can otherwise force response_schema
     JSON output that does not match the ideation prompt.
+
+    Anthropic plain-text calls bypass the tool loop only when the profile's tool
+    allowlist is empty. That preserves the tool-free summary path while keeping
+    tool-bearing Anthropic callers on the existing loop transport.
 
     If profile.fallback_models is non-empty, forge tries each model in
     (profile.model, *profile.fallback_models) order. Quota-exhaustion,
