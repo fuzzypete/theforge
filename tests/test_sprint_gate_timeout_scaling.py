@@ -69,6 +69,7 @@ class TestResolveEffectiveGateTimeout:
             observed_host_load=6.68,
         )
         assert r.overcommit is False
+        assert r.warning_host_load == 6.68
 
         r2 = resolve_effective_gate_timeout(
             baseline=60,
@@ -79,6 +80,7 @@ class TestResolveEffectiveGateTimeout:
             observed_host_load=10.1,
         )
         assert r2.overcommit is True
+        assert r2.warning_host_load == 10.1
 
     def test_gate_cpu_cores_none_defaults_to_host_cores_without_warning_on_low_load(self) -> None:
         r = resolve_effective_gate_timeout(
@@ -232,8 +234,25 @@ def test_sprint_emits_overcommit_warning(tmp_path: Path, capsys) -> None:
     err = capsys.readouterr().err
     assert "WARNING" in err
     assert "observed host load (10.10 1m / 10 cores)" in err
-    # And the resolution reasoning line:
+    assert "expanded gate_timeout may still be insufficient" in err
     assert "gate_timeout: baseline=45s" in err
+
+
+def test_sprint_fixed_mode_warning_mentions_unchanged_baseline(tmp_path: Path, capsys) -> None:
+    _make_spec_file(tmp_path, "story-a")
+    manifest_path = _make_manifest(tmp_path, ["story-a"], max_parallel=3)
+    config = _make_config(tmp_path, gate_timeout=45, gate_cpu_cores=7, mode="fixed")
+
+    with (
+        patch("theforge.sprint.runner.run_task", return_value=_ok_result()),
+        patch("os.cpu_count", return_value=10),
+        patch("os.getloadavg", return_value=(10.1, 9.8, 9.4)),
+    ):
+        run_sprint_ctx(config, manifest_path)
+
+    err = capsys.readouterr().err
+    assert "WARNING: gate CPU observed host load (10.10 1m / 10 cores)" in err
+    assert "fixed gate_timeout leaves the baseline unchanged" in err
 
 
 def test_sprint_skips_overcommit_warning_when_load_is_low(tmp_path: Path, capsys) -> None:

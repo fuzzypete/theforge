@@ -29,6 +29,7 @@ class GateTimeoutResolution:
     running_stories: int = 0
     actual_parallel: int = 0
     observed_host_load: float | None = None
+    warning_host_load: float | None = None
 
 
 def resolve_effective_gate_timeout(
@@ -48,7 +49,11 @@ def resolve_effective_gate_timeout(
         demand            = gate_demand_cores * actual_parallel
         factor            = max(1.0, demand / host_cores)
         effective         = baseline if mode == "fixed" else ceil(baseline * factor)
-        overcommit        = observed_host_load > host_cores when load is available
+        warning_host_load = max(0.0, observed_host_load - running_stories) so
+                            inherited stories already counted into
+                            ``actual_parallel`` do not also read as external
+                            host pressure
+        overcommit        = warning_host_load > host_cores when load is available
                             and the operator is actually using parallelism
 
     ``running_stories`` is the count of stories already executing when the
@@ -64,6 +69,9 @@ def resolve_effective_gate_timeout(
     safe_running = max(0, int(running_stories or 0))
     actual_parallel = safe_parallel + safe_running
     safe_observed_load = float(observed_host_load) if observed_host_load is not None else None
+    warning_host_load = (
+        max(0.0, safe_observed_load - safe_running) if safe_observed_load is not None else None
+    )
     gate_demand_cores = gate_cpu_cores if gate_cpu_cores and gate_cpu_cores > 0 else safe_host
     demand = gate_demand_cores * actual_parallel
     factor = max(1.0, demand / safe_host)
@@ -77,7 +85,7 @@ def resolve_effective_gate_timeout(
     else:
         effective = int(math.ceil(baseline * factor))
     overcommit = (
-        safe_observed_load is not None and actual_parallel > 1 and safe_observed_load > safe_host
+        warning_host_load is not None and actual_parallel > 1 and warning_host_load > safe_host
     )
     # Field order is appended-to, never reordered: the reason line is an
     # operator-facing diagnostic that is grepped and asserted on by prefix.
@@ -89,6 +97,8 @@ def resolve_effective_gate_timeout(
     )
     if safe_observed_load is not None:
         reason = f"{reason} observed_host_load={safe_observed_load:.2f}"
+    if warning_host_load is not None and warning_host_load != safe_observed_load:
+        reason = f"{reason} warning_host_load={warning_host_load:.2f}"
     return GateTimeoutResolution(
         effective_timeout=effective,
         baseline=int(baseline),
@@ -102,4 +112,5 @@ def resolve_effective_gate_timeout(
         running_stories=safe_running,
         actual_parallel=actual_parallel,
         observed_host_load=safe_observed_load,
+        warning_host_load=warning_host_load,
     )

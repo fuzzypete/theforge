@@ -99,10 +99,12 @@ def test_running_stories_warns_only_with_high_observed_load() -> None:
         gate_cpu_cores=10,
         mode="adaptive",
         running_stories=2,
-        observed_host_load=10.2,
+        observed_host_load=12.2,
     )
     assert r.overcommit is True
-    assert "observed_host_load=10.20" in r.reason
+    assert r.warning_host_load == 10.2
+    assert "observed_host_load=12.20" in r.reason
+    assert "warning_host_load=10.20" in r.reason
 
 
 # ── Seam: runner supplies the actual load ────────────────────────────
@@ -211,8 +213,35 @@ def test_continuation_timeout_counts_inherited_running_stories(tmp_path: Path, c
         )
 
     err = capsys.readouterr().err
-    assert "running_stories=1 actual_parallel=3 observed_host_load=10.20" in err
-    assert "WARNING: gate CPU observed host load (10.20 1m / 10 cores)" in err
+    assert (
+        "running_stories=1 actual_parallel=3 observed_host_load=10.20 "
+        "warning_host_load=9.20" in err
+    )
+    assert "WARNING: gate CPU" not in err
     # 60s baseline × (10 cores × 3) / 10 host cores = 180s, not the 120s a model
     # blind to the inherited agent would have produced.
     assert captured["gate_timeout"] == 180
+
+
+def test_continuation_warning_requires_load_beyond_inherited_stories(
+    tmp_path: Path, capsys
+) -> None:
+    manifest_path = _make_manifest(tmp_path, ["story-a", "story-b"], max_parallel=2)
+    config = _make_config(tmp_path, gate_timeout=60, gate_cpu_cores=10)
+
+    with (
+        patch("theforge.sprint.runner.run_task", return_value=_ok_result()),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("os.cpu_count", return_value=10),
+        patch("os.getloadavg", return_value=(11.2, 10.9, 10.6)),
+    ):
+        run_sprint_ctx(
+            config,
+            manifest_path,
+            reexec=True,
+            live_story_slugs={"story-a"},
+        )
+
+    err = capsys.readouterr().err
+    assert "WARNING: gate CPU observed host load (11.20 1m / 10 cores)" in err
+    assert "after discounting 1 inherited story (10.20 effective)" in err

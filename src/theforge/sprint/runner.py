@@ -4477,11 +4477,28 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         )
     if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
         _observed = _gate_timeout_resolution.observed_host_load
+        _warning_load = _gate_timeout_resolution.warning_host_load
         _hc = _gate_timeout_resolution.host_cores
+        if _gate_timeout_resolution.mode == "fixed":
+            _warning_suffix = (
+                "already indicates contention; fixed gate_timeout leaves the baseline "
+                "unchanged, so concurrent work on this host may still stretch gate completion"
+            )
+        else:
+            _warning_suffix = (
+                "already indicates contention; the expanded gate_timeout may still be "
+                "insufficient while concurrent work on this host persists"
+            )
+        _warning_load_fragment = ""
+        if _warning_load is not None and _warning_load != _observed:
+            _story_noun = "story" if _gate_timeout_resolution.running_stories == 1 else "stories"
+            _warning_load_fragment = (
+                f" after discounting {_gate_timeout_resolution.running_stories} inherited "
+                f"{_story_noun} ({_warning_load:.2f} effective)"
+            )
         print(
             f"[sprint] WARNING: gate CPU observed host load ({_observed:.2f} 1m / {_hc} cores) "
-            "already indicates contention; adaptive gate_timeout scaling was applied, "
-            "but concurrent work on this host may still stretch gate completion",
+            f"{_warning_load_fragment} {_warning_suffix}".lstrip(),
             file=sys.stderr,
             flush=True,
         )
