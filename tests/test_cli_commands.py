@@ -480,6 +480,77 @@ class TestFgFlag:
             cmd_sprint(args)
             mock_daemonize.assert_not_called()
 
+    def test_sprint_query_detach_parent_uses_full_derived_name(self, tmp_path):
+        """Detached query-mode launch must not truncate the sprint log directory name."""
+        from theforge.cli import cmd_sprint
+
+        config = _make_forge_config(tmp_path)
+        args = _make_sprint_args(
+            tmp_path,
+            fg=False,
+            manifest="",
+            milestone=None,
+            label=None,
+            budget="10",
+        )
+        args.issues = "2164,2160,2139,1993,1980,1945,2169,2156,1108"
+        expected_name = f"issues-{args.issues}"
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch(
+                "theforge.detach.daemonize_run", side_effect=RuntimeError("detach stop")
+            ) as mock_daemonize,
+            patch("theforge.detach.is_detached_child", return_value=False),
+        ):
+            try:
+                cmd_sprint(args)
+            except RuntimeError as exc:
+                assert str(exc) == "detach stop"
+            else:
+                raise AssertionError("cmd_sprint should stop at daemonize_run in parent mode")
+
+        mock_daemonize.assert_called_once()
+        daemonize_args = mock_daemonize.call_args.args
+        assert daemonize_args[1] == expected_name
+        assert len(daemonize_args[1]) > 50
+
+    def test_sprint_query_detached_child_uses_full_derived_name(self, tmp_path, monkeypatch):
+        """Detached child setup must reuse the same full query-mode sprint name."""
+        from theforge.cli import cmd_sprint
+
+        config = _make_forge_config(tmp_path)
+        args = _make_sprint_args(
+            tmp_path,
+            fg=False,
+            manifest="",
+            milestone=None,
+            label=None,
+            budget="10",
+        )
+        args.issues = "2164,2160,2139,1993,1980,1945,2169,2156,1108"
+        expected_name = f"issues-{args.issues}"
+
+        monkeypatch.setenv("FORGE_DETACHED", "1")
+        monkeypatch.setenv("FORGE_DETACHED_RUN_ID", "child-run-id")
+
+        with (
+            patch("theforge.cli.sprint.load_config", return_value=config),
+            patch("theforge.detach.is_detached_child", return_value=True),
+            patch("theforge.detach.setup_detached_child") as mock_setup,
+            patch("theforge.detach.install_cleanup_handler"),
+            patch("theforge.detach.remove_pid"),
+            patch("theforge.sprint.query.fetch_issues_by_numbers", return_value=[]),
+        ):
+            rc = cmd_sprint(args)
+
+        assert rc == 0
+        mock_setup.assert_called_once()
+        setup_args = mock_setup.call_args.args
+        assert setup_args[0] == "child-run-id"
+        assert setup_args[1] == expected_name
+        assert len(setup_args[1]) > 50
+
 
 class TestCmdSprintQueryMode:
     def test_query_mode_defaults_to_sequential_when_parallel_omitted(self, tmp_path):
