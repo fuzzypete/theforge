@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from theforge.escalation_advisor import ACTION_TAXONOMY, action_disposition
+
 if TYPE_CHECKING:
     from theforge.review import ReviewResult
 
@@ -29,7 +31,7 @@ ACCEPT_ACTION = "accept"
 #: not mechanically executable by this run. Keep them recognizable for parsing
 #: stale/manual selections, but do not offer them as real gate choices.
 NON_EXECUTABLE_NAMED_ACTIONS = frozenset(
-    {"land_core_defer_edges", "redirect", "decompose", "elevate"}
+    action for action in ACTION_TAXONOMY if action_disposition(action) == "named"
 )
 
 #: Reason text used when accept cannot be offered/performed. Rendered to the

@@ -631,14 +631,11 @@ def _run_escalate_gate_inner(
     if disposition == "named":
         op = ACTION_FORGE_OPERATIONS.get(norm, norm)
         label = ACTION_LABELS.get(norm, norm)
-        by_advice = _decided_by_advice(state)
-        how = "applied from the advisory on expiry" if by_advice else "selected"
         state.escalate_declined_action = norm
         state.escalate_declined_reason = NAMED_ACTION_UNAVAILABLE_REASON
-        if not by_advice:
-            state.escalate_decision_source = ESCALATE_SOURCE_OPERATOR_DECLINED
+        state.escalate_decision_source = ESCALATE_SOURCE_OPERATOR_DECLINED
         _log(
-            f"  ⚠ Escalate gate: {label} {how} but was not carried out "
+            f"  ⚠ Escalate gate: {label} selected but was not carried out "
             f"({state.escalate_declined_reason}) — DECLINED; named operation remains {op}"
         )
         return _make_escalate_result(
@@ -646,12 +643,6 @@ def _run_escalate_gate_inner(
             message=(
                 f"Escalation preserved: the selected action {label} was not carried out "
                 f"({state.escalate_declined_reason}). "
-                + (
-                    "The gate expired with no operator selection and the advisory "
-                    "recommendation was declined. "
-                    if by_advice
-                    else ""
-                )
                 + f"The named operation remains {op}, and an operator action selection "
                 "is still required."
             ),

@@ -12,11 +12,14 @@ agent lives in ``theforge.coordinator.escalation_advisor_flow``.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 from theforge.escalation_advisor import (
     ACTION_FORGE_OPERATIONS,
     ACTION_LABELS,
     ACTION_TAXONOMY,
     EvidencePacket,
+    action_disposition,
 )
 
 _TAXONOMY_GUIDE: dict[str, str] = {
@@ -49,9 +52,9 @@ _TAXONOMY_GUIDE: dict[str, str] = {
 }
 
 
-def _render_taxonomy() -> str:
+def _render_taxonomy(actions: Sequence[str]) -> str:
     lines: list[str] = []
-    for action in ACTION_TAXONOMY:
+    for action in actions:
         label = ACTION_LABELS.get(action, action)
         guide = _TAXONOMY_GUIDE.get(action, "")
         op = ACTION_FORGE_OPERATIONS.get(action, "")
@@ -140,11 +143,18 @@ def _render_packet(packet: EvidencePacket) -> str:
     return "\n".join(lines)
 
 
-def build_advisor_prompt(packet: EvidencePacket) -> str:
+def build_advisor_prompt(
+    packet: EvidencePacket, available_actions: Sequence[str] | None = None
+) -> str:
     """Build the fresh-context escalation-advisor prompt from an evidence packet."""
-    taxonomy = _render_taxonomy()
+    if available_actions is None:
+        available_actions = [
+            action for action in ACTION_TAXONOMY if action_disposition(action) != "named"
+        ]
+    available_actions = [action for action in available_actions if action in ACTION_TAXONOMY]
+    taxonomy = _render_taxonomy(available_actions)
     packet_text = _render_packet(packet)
-    example_action = ACTION_TAXONOMY[2]  # "redirect"
+    example_action = available_actions[0] if available_actions else ACTION_TAXONOMY[0]
     # An escalation no longer implies the cycle budget ran out: a detected
     # topology walk routes here with cycles still available, precisely so the
     # decision is made while it is still worth something. Saying "exhausted"
@@ -177,9 +187,9 @@ constrained menu of evidence-backed action choices for a human operator.
 An escalation is not just a failed implementation attempt — it is evidence that \
 the current task framing may be invalid. The churn pattern (what reviewers kept \
 flagging, what the dev kept re-breaking) is the most valuable signal. Look for \
-the case where the dev kept attacking an unbounded space (whack-a-mole) when the \
-issue itself already named a winnable primitive — that is usually a Redirect or \
-an Elevate, not another dev cycle.
+the case where the dev kept attacking an unbounded space (whack-a-mole) instead \
+of converging on a concrete, reviewable outcome. Recommend only from the \
+currently executable actions listed below.
 
 ## Action taxonomy (your recommendation and every option's `action` MUST be one \
 of these exact values)
@@ -197,11 +207,11 @@ the block inside a code fence. Free-form prose recommendations are NOT allowed �
 the recommendation must be one of the taxonomy values above.
 
 The YAML mapping must have:
-- `recommendation`: one of {list(ACTION_TAXONOMY)} — your single best action.
+- `recommendation`: one of {list(available_actions)} — your single best action.
 - `rationale`: one or two sentences citing the packet for why.
 - `options`: a non-empty list. Include the recommended action AND any other \
 credible actions. Each option is a mapping with:
-    - `action`: one of {list(ACTION_TAXONOMY)}
+    - `action`: one of {list(available_actions)}
     - `evidence`: what in the packet supports this action (cite cycles/findings/ACs)
     - `forge_operation`: the concrete forge operation this action triggers
     - `risk`: the risk of taking this action
