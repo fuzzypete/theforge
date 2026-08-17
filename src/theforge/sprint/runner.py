@@ -4441,6 +4441,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     _host_cores = os.cpu_count() or 1
     _gate_cpu_raw = _ctx.config.validation.gate_cpu_cores
     _gate_cpu_cores = int(_gate_cpu_raw) if _gate_cpu_raw else None
+    try:
+        _observed_host_load = float(os.getloadavg()[0])
+    except (AttributeError, OSError):
+        _observed_host_load = None
     _mode_raw = _ctx.config.validation.gate_timeout_scale
     if _mode_raw is None:
         _mode = "adaptive"
@@ -4463,6 +4467,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         gate_cpu_cores=_gate_cpu_cores,
         mode=_mode,
         running_stories=len(_live_story_slugs),
+        observed_host_load=_observed_host_load,
     )
     if _gate_timeout_resolution is not None:
         print(
@@ -4471,13 +4476,12 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             flush=True,
         )
     if _gate_timeout_resolution is not None and _gate_timeout_resolution.overcommit:
-        _gpc = _gate_timeout_resolution.gate_cpu_cores
-        _mp = _gate_timeout_resolution.actual_parallel or _gate_timeout_resolution.max_parallel
+        _observed = _gate_timeout_resolution.observed_host_load
         _hc = _gate_timeout_resolution.host_cores
         print(
-            f"[sprint] WARNING: gate CPU demand ({_gpc} cores × parallel {_mp} = "
-            f"{_gpc * _mp} cores) exceeds host capacity ({_hc} cores) by >50%; "
-            "consider lowering --parallel to avoid contention-driven gate timeouts",
+            f"[sprint] WARNING: gate CPU observed host load ({_observed:.2f} 1m / {_hc} cores) "
+            "already indicates contention; adaptive gate_timeout scaling was applied, "
+            "but concurrent work on this host may still stretch gate completion",
             file=sys.stderr,
             flush=True,
         )

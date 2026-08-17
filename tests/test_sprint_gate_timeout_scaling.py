@@ -49,7 +49,7 @@ class TestResolveEffectiveGateTimeout:
         # demand = 21, factor = 2.1, effective = ceil(45*2.1) = 95
         assert r.factor == 2.1
         assert r.effective_timeout == 95
-        assert r.overcommit is True
+        assert r.overcommit is False
 
     def test_fixed_mode_preserves_baseline(self) -> None:
         r = resolve_effective_gate_timeout(
@@ -58,27 +58,49 @@ class TestResolveEffectiveGateTimeout:
         assert r.effective_timeout == 45
         assert r.mode == "fixed"
 
-    def test_overcommit_threshold_is_1_5x_host(self) -> None:
-        # demand = 12, host = 10, ratio = 1.2 → not overcommit
+    def test_observed_host_load_controls_overcommit(self) -> None:
+        # demand still scales the timeout, but warning eligibility follows observed host load.
         r = resolve_effective_gate_timeout(
-            baseline=60, max_parallel=2, host_cores=10, gate_cpu_cores=6, mode="adaptive"
+            baseline=60,
+            max_parallel=2,
+            host_cores=10,
+            gate_cpu_cores=6,
+            mode="adaptive",
+            observed_host_load=6.68,
         )
         assert r.overcommit is False
 
-        # demand = 16, host = 10, ratio = 1.6 → overcommit
         r2 = resolve_effective_gate_timeout(
-            baseline=60, max_parallel=2, host_cores=10, gate_cpu_cores=8, mode="adaptive"
+            baseline=60,
+            max_parallel=2,
+            host_cores=10,
+            gate_cpu_cores=8,
+            mode="adaptive",
+            observed_host_load=10.1,
         )
         assert r2.overcommit is True
 
-    def test_gate_cpu_cores_none_defaults_to_host_cores(self) -> None:
+    def test_gate_cpu_cores_none_defaults_to_host_cores_without_warning_on_low_load(self) -> None:
         r = resolve_effective_gate_timeout(
-            baseline=30, max_parallel=2, host_cores=8, gate_cpu_cores=None, mode="adaptive"
+            baseline=30,
+            max_parallel=2,
+            host_cores=10,
+            gate_cpu_cores=None,
+            mode="adaptive",
+            observed_host_load=6.68,
         )
-        # demand = 8 * 2 = 16, factor = 2.0
-        assert r.gate_cpu_cores == 8
+        # demand = 10 * 2 = 20, factor = 2.0
+        assert r.gate_cpu_cores == 10
         assert r.factor == 2.0
         assert r.effective_timeout == 60
+        assert r.overcommit is False
+
+    def test_load_unavailable_suppresses_overcommit_warning(self) -> None:
+        r = resolve_effective_gate_timeout(
+            baseline=30, max_parallel=4, host_cores=10, gate_cpu_cores=10, mode="adaptive"
+        )
+        assert r.overcommit is False
+        assert r.observed_host_load is None
 
     def test_unknown_mode_raises(self) -> None:
         with pytest.raises(ValueError, match="gate_timeout_scale must be 'adaptive' or 'fixed'"):
@@ -195,7 +217,7 @@ def test_sprint_fixed_mode_keeps_baseline(tmp_path: Path) -> None:
 
 
 def test_sprint_emits_overcommit_warning(tmp_path: Path, capsys) -> None:
-    """When demand exceeds 1.5× host cores, an overcommit WARNING is logged."""
+    """Observed host contention, not synthetic demand alone, triggers the warning."""
     _make_spec_file(tmp_path, "story-a")
     manifest_path = _make_manifest(tmp_path, ["story-a"], max_parallel=3)
     config = _make_config(tmp_path, gate_timeout=45, gate_cpu_cores=7)
@@ -203,14 +225,32 @@ def test_sprint_emits_overcommit_warning(tmp_path: Path, capsys) -> None:
     with (
         patch("theforge.sprint.runner.run_task", return_value=_ok_result()),
         patch("os.cpu_count", return_value=10),
+        patch("os.getloadavg", return_value=(10.1, 9.8, 9.4)),
     ):
         run_sprint_ctx(config, manifest_path)
 
     err = capsys.readouterr().err
     assert "WARNING" in err
-    assert "overcommit" in err.lower() or "consider lowering --parallel" in err
+    assert "observed host load (10.10 1m / 10 cores)" in err
     # And the resolution reasoning line:
     assert "gate_timeout: baseline=45s" in err
+
+
+def test_sprint_skips_overcommit_warning_when_load_is_low(tmp_path: Path, capsys) -> None:
+    _make_spec_file(tmp_path, "story-a")
+    manifest_path = _make_manifest(tmp_path, ["story-a"], max_parallel=2)
+    config = _make_config(tmp_path, gate_timeout=45, gate_cpu_cores=None)
+
+    with (
+        patch("theforge.sprint.runner.run_task", return_value=_ok_result()),
+        patch("os.cpu_count", return_value=10),
+        patch("os.getloadavg", return_value=(6.68, 7.0, 5.52)),
+    ):
+        run_sprint_ctx(config, manifest_path)
+
+    err = capsys.readouterr().err
+    assert "gate_timeout: baseline=45s mode=adaptive parallel=2 gate_cpu_cores=10" in err
+    assert "WARNING: gate CPU" not in err
 
 
 def test_sprint_invalid_gate_timeout_scale_fails_fast(tmp_path: Path) -> None:
