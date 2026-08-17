@@ -308,6 +308,33 @@ class TestRunApiAgentLoopIntegration:
         loop_runner.assert_not_called()
         single_shot_runner.assert_called_once_with("ideate", profile, None, plain_text=True)
 
+    def test_anthropic_plain_text_with_tools_bypasses_loop_runner(self, tmp_path):
+        profile = _make_profile(
+            provider="anthropic",
+            model="claude-sonnet-4-6",
+            allowed_tools=("read_file",),
+        )
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.cost_usd = None
+
+        loop_runner = MagicMock()
+        single_shot_runner = MagicMock(return_value=mock_result)
+        with (
+            patch.dict("theforge.runners.api._LOOP_RUNNERS", {"anthropic": loop_runner}),
+            patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"anthropic": single_shot_runner}),
+        ):
+            run_api_agent(
+                prompt="summarize",
+                profile=profile,
+                working_dir=tmp_path,
+                quiet=True,
+                plain_text=True,
+            )
+
+        loop_runner.assert_not_called()
+        single_shot_runner.assert_called_once_with("summarize", profile, None, plain_text=True)
+
     def test_run_api_agent_no_provider_returns_failure(self, tmp_path):
         profile = ModelProfile(
             name="no-provider",

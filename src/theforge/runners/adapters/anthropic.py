@@ -20,7 +20,11 @@ if TYPE_CHECKING:
 
 
 def _run_anthropic(
-    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
+    prompt: str,
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None = None,
+    *,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Run agent via Anthropic API."""
     import anthropic
@@ -32,23 +36,25 @@ def _run_anthropic(
         api_key=merged.get("ANTHROPIC_API_KEY"),
         timeout=profile.timeout_seconds,
     )
-    schema = review_json_schema()
-
     try:
-        response = client.messages.create(
-            model=profile.model,
-            max_tokens=4096,
-            messages=[{"role": "user", "content": prompt}],
-            tools=[
+        kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "max_tokens": 4096,
+            "messages": [{"role": "user", "content": prompt}],
+            **sampling_control_kwargs(),
+        }
+        if not plain_text:
+            schema = review_json_schema()
+            kwargs["tools"] = [
                 {
                     "name": "review_output",
                     "description": "Structured output for code review.",
                     "input_schema": schema,
                 }
-            ],
-            tool_choice={"type": "tool", "name": "review_output"},
-            **sampling_control_kwargs(),
-        )
+            ]
+            kwargs["tool_choice"] = {"type": "tool", "name": "review_output"}
+
+        response = client.messages.create(**kwargs)
 
         output_text = ""
         structured_data = None
@@ -59,7 +65,7 @@ def _run_anthropic(
                 structured_data = block.input
                 output_text += json.dumps(structured_data, indent=2)
 
-        if structured_data is None:
+        if not plain_text and structured_data is None:
             raise ValueError("Anthropic API did not return structured data in tool_use block.")
 
         cost = _estimate_cost(
