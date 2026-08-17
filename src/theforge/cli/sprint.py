@@ -66,6 +66,17 @@ def _backstop_run_ended(run_id: str, project_root: Path) -> None:
     )
 
 
+def _derive_query_sprint_name(
+    *,
+    name: str | None,
+    milestone: str | None,
+    label: str | None,
+    issues_arg: str | None,
+) -> str:
+    """Return the canonical query-mode sprint name used across launch and runtime."""
+    return name or milestone or label or f"issues-{issues_arg}"
+
+
 def cmd_sprint(args: object) -> int:
     """Run multiple stories via a sprint manifest or GitHub query.
 
@@ -194,13 +205,12 @@ def _cmd_sprint(args: object) -> int:
         issues_arg_local: str | None = getattr(args, "issues", None)
         query_mode_local = bool(milestone_local or label_local or issues_arg_local)
         if query_mode_local:
-            sprint_name_local = (
-                getattr(args, "name", None)
-                or milestone_local
-                or label_local
-                or f"issues-{issues_arg_local}"
+            launch_slug = _derive_query_sprint_name(
+                name=getattr(args, "name", None),
+                milestone=milestone_local,
+                label=label_local,
+                issues_arg=issues_arg_local,
             )
-            launch_slug = sprint_name_local.replace(" ", "-").replace("/", "-").lower()[:50]
         else:
             launch_slug = Path(manifest_arg_local).stem if manifest_arg_local else "sprint"
 
@@ -996,7 +1006,12 @@ def _run_query_mode(
         from theforge import process_group as _process_group  # noqa: PLC0415
 
         _process_group.reap_orphan_agents(config.project_root)
-    gate_sprint_name = getattr(args, "name", None) or milestone or label or f"issues-{issues_arg}"
+    gate_sprint_name = _derive_query_sprint_name(
+        name=getattr(args, "name", None),
+        milestone=milestone,
+        label=label,
+        issues_arg=issues_arg,
+    )
     # Carry-across-re-exec: a prior process may have intake-remediated some
     # issues and stashed their numbers in the environment before re-exec.
     # Consume them here so the post-re-exec gate treats the async-lagging
@@ -1128,10 +1143,12 @@ def _run_query_mode(
             )
             _emit_all_skipped_audit(
                 config=config,
-                sprint_name=getattr(args, "name", None)
-                or milestone
-                or label
-                or f"issues-{issues_arg}",
+                sprint_name=_derive_query_sprint_name(
+                    name=getattr(args, "name", None),
+                    milestone=milestone,
+                    label=label,
+                    issues_arg=issues_arg,
+                ),
                 budget_usd=budget_usd,
                 skipped_issues=skipped_issues,
                 intake_outcomes=entry_intake_outcomes,
@@ -1139,7 +1156,12 @@ def _run_query_mode(
             )
             return 0
 
-    sprint_name: str = getattr(args, "name", None) or milestone or label or f"issues-{issues_arg}"
+    sprint_name = _derive_query_sprint_name(
+        name=getattr(args, "name", None),
+        milestone=milestone,
+        label=label,
+        issues_arg=issues_arg,
+    )
 
     # Build full ResolvedSprint (fetches individual issue bodies via gh)
     try:
