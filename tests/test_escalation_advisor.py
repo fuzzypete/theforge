@@ -444,17 +444,19 @@ options:
 
     def test_prompt_construction_exercises_1365_packet(self):
         # Exercise the #1365 evidence packet through prompt construction (not just
-        # a prewritten report): the fresh-advisor prompt must carry the full
-        # taxonomy AND the per-cycle churn signal so a fresh model can surface the
-        # blocklist-vs-invariant framing.
+        # a prewritten report): the fresh-advisor prompt must carry only the
+        # currently executable actions plus the per-cycle churn signal so a fresh
+        # model cannot recommend a gate action this run will refuse.
         from theforge.task.advisor_prompts import build_advisor_prompt
 
         packet = self._packet_1365()
         prompt = build_advisor_prompt(packet)
 
         # The constrained taxonomy is presented to the advisor.
-        for action in ACTION_TAXONOMY:
+        for action in ("accept", "defer_or_abandon"):
             assert f"`{action}`" in prompt
+        for action in ("land_core_defer_edges", "redirect", "decompose", "elevate"):
+            assert f"`{action}`" not in prompt
         # The churn pattern (each cycle's bypass finding) is in the packet section.
         assert "force-push" in prompt
         assert "case-varied alias" in prompt
@@ -571,6 +573,17 @@ class TestTopologySignalReachesTheAdvisor:
         # The cycle history section is intact — this evidence is additive.
         assert "Review cycle history" in prompt
         assert "Cycle 3" in prompt
+
+    def test_prompt_can_be_shaped_to_the_current_gate_actions(self):
+        from theforge.task.advisor_prompts import build_advisor_prompt
+
+        prompt = build_advisor_prompt(
+            self._packet(dict(_TOPOLOGY_SIGNAL)),
+            ["defer_or_abandon"],
+        )
+
+        assert "`defer_or_abandon`" in prompt
+        assert "`accept`" not in prompt
 
     def test_prompt_does_not_claim_cycles_were_exhausted_on_an_early_escalation(self):
         from theforge.task.advisor_prompts import build_advisor_prompt

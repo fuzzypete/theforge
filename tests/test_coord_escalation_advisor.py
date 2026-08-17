@@ -305,8 +305,8 @@ class TestPendingEscalateGate:
                 )
 
         assert decision == "redirect"
-        assert seen["options"] == list(rp.ACTION_TAXONOMY)
-        assert seen["advisory"]["recommendation"] == "redirect"
+        assert seen["options"] == ["accept", "defer_or_abandon"]
+        assert seen["advisory"]["recommendation"] == ""
         assert seen["decision_required"] is True
 
     def test_timeout_returns_timeout_not_reject(self, tmp_path):
@@ -356,8 +356,8 @@ class TestPendingEscalateGate:
         pending_file = tmp_path / ".forge" / "pending" / "run-preserve.yaml"
         assert pending_file.exists(), "pending checkpoint must survive a timeout"
         data = yaml.safe_load(pending_file.read_text())
-        assert data["options"] == list(rp.ACTION_TAXONOMY)
-        assert data["advisory"]["recommendation"] == "redirect"
+        assert data["options"] == ["accept", "defer_or_abandon"]
+        assert data["advisory"]["recommendation"] == ""
         assert data["timed_out_awaiting_decision"] is True
         assert data.get("decision") is None  # still resolvable — no auto-decision written
 
@@ -401,8 +401,8 @@ class TestPendingEscalateGate:
         assert data["advisory_cost_usd"] == 0.0
         assert "FAILED TO LAUNCH" in data["reason"]
         assert "$0.00" in data["reason"]
-        # Options are still the full taxonomy — the operator must still choose.
-        assert data["options"] == list(rp.ACTION_TAXONOMY)
+        # Only executable actions are offered, even when the advisor is unavailable.
+        assert data["options"] == ["accept", "defer_or_abandon"]
 
     def test_advisory_unavailable_checkpoint_unchanged_without_launch_failure(self, tmp_path):
         """An advisor that ran and produced nothing keeps the plain unavailable wording."""
@@ -563,22 +563,22 @@ class TestRunEscalateGateDispositions:
         assert state.escalate_decision == "reject"
         assert state.escalate_selected_action == "defer_or_abandon"
 
-    def test_redirect_maps_to_named_preserve(self, tmp_path, monkeypatch):
+    def test_redirect_is_declined_not_recorded_as_resolved(self, tmp_path, monkeypatch):
         state, result = self._call(tmp_path, monkeypatch, "redirect")
         assert result is not None and result.success is False
-        # Named action preserves the worktree and records the taxonomy action —
-        # it is NOT a plain reject that discards the work.
-        assert state.escalate_decision == "redirect"
         assert state.escalate_selected_action == "redirect"
-        assert "re-run with constraint" in result.message
+        assert state.escalate_declined_action == "redirect"
+        assert state.escalate_decision is None
+        assert "was not carried out" in result.message
 
-    def test_elevate_maps_to_named_preserve(self, tmp_path, monkeypatch):
+    def test_elevate_is_declined_not_recorded_as_resolved(self, tmp_path, monkeypatch):
         state, result = self._call(
             tmp_path, monkeypatch, "elevate", report=_canned_report("elevate")
         )
         assert result.success is False
-        assert state.escalate_decision == "elevate"
-        assert "bump" in result.message
+        assert state.escalate_declined_action == "elevate"
+        assert state.escalate_decision is None
+        assert "was not carried out" in result.message
 
     def test_timeout_does_not_auto_reject(self, tmp_path, monkeypatch):
         state, result = self._call(tmp_path, monkeypatch, "timeout")

@@ -22,6 +22,7 @@ from theforge.config import DEFAULT_INVESTIGATION_TOOLS
 from theforge.config.model_identity import KNOWN_PHASES
 from theforge.config.pricing import price_tiebreak_signal_for
 from theforge.escalation_advisor import (
+    ACTION_TAXONOMY,
     CycleEvidence,
     EvidencePacket,
     parse_advisory_report,
@@ -35,6 +36,7 @@ from theforge.model_capabilities import (
 from theforge.task.advisor_prompts import build_advisor_prompt
 
 from . import util as _cu
+from .escalate_actions import available_escalate_actions
 
 if TYPE_CHECKING:
     from pathlib import Path
@@ -344,7 +346,8 @@ def run_escalation_advisor(
     packet = build_evidence_packet(state, task, config, workspace_path)
     state.advisory_packet = packet.to_dict()
 
-    prompt = build_advisor_prompt(packet)
+    available_actions, _omitted_actions = available_escalate_actions(state, ACTION_TAXONOMY)
+    prompt = build_advisor_prompt(packet, available_actions)
     try:
         profile = _select_advisor_profile(config)
     except NoCapableCandidateError as exc:

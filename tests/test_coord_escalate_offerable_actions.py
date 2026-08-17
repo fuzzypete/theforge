@@ -29,6 +29,7 @@ from theforge.config import BackendConfig, NotificationConfig
 from theforge.coordinator import review_phase as rp
 from theforge.coordinator.escalate_actions import (
     ACCEPT_UNAVAILABLE_REASON,
+    NAMED_ACTION_UNAVAILABLE_REASON,
     approvable_review_result,
     available_escalate_actions,
 )
@@ -125,14 +126,25 @@ class TestApprovableResolution:
     def test_accept_is_the_only_state_gated_action(self):
         available, omitted = available_escalate_actions(_quorum_collapsed_state(), ACTION_TAXONOMY)
         assert "accept" not in available
-        assert available == [a for a in ACTION_TAXONOMY if a != "accept"]
-        assert omitted == {"accept": ACCEPT_UNAVAILABLE_REASON}
+        assert available == ["defer_or_abandon"]
+        assert omitted == {
+            "accept": ACCEPT_UNAVAILABLE_REASON,
+            "land_core_defer_edges": NAMED_ACTION_UNAVAILABLE_REASON,
+            "redirect": NAMED_ACTION_UNAVAILABLE_REASON,
+            "decompose": NAMED_ACTION_UNAVAILABLE_REASON,
+            "elevate": NAMED_ACTION_UNAVAILABLE_REASON,
+        }
 
     def test_nothing_is_withheld_when_a_result_exists(self):
         state = _quorum_collapsed_state("APPROVE")
         available, omitted = available_escalate_actions(state, ACTION_TAXONOMY)
-        assert available == list(ACTION_TAXONOMY)
-        assert omitted == {}
+        assert available == ["accept", "defer_or_abandon"]
+        assert omitted == {
+            "land_core_defer_edges": NAMED_ACTION_UNAVAILABLE_REASON,
+            "redirect": NAMED_ACTION_UNAVAILABLE_REASON,
+            "decompose": NAMED_ACTION_UNAVAILABLE_REASON,
+            "elevate": NAMED_ACTION_UNAVAILABLE_REASON,
+        }
 
 
 # ── Pending-file gate: what is written to the checkpoint ──────────────────────
@@ -165,12 +177,14 @@ class TestPendingGateOptions:
         )
 
         assert "accept" not in data["options"]
-        assert data["options"] == [a for a in ACTION_TAXONOMY if a != "accept"]
+        assert data["options"] == ["defer_or_abandon"]
         # Withheld, not silently dropped: the reason is legible at the checkpoint.
         assert data["omitted_actions"]["accept"] == ACCEPT_UNAVAILABLE_REASON
+        assert data["omitted_actions"]["redirect"] == NAMED_ACTION_UNAVAILABLE_REASON
         assert "NOT OFFERED" in data["reason"]
         # And the advisory payload does not advertise it as a selectable option.
-        assert [o["action"] for o in data["advisory"]["options"]] == ["redirect"]
+        assert data["advisory"]["options"] == []
+        assert data["advisory"]["recommendation"] == ""
 
     def test_recommendation_the_gate_cannot_honour_is_dropped_and_explained(self, tmp_path):
         state = _quorum_collapsed_state()
@@ -191,16 +205,17 @@ class TestPendingGateOptions:
             tmp_path, state, "run-survivor", _advisory("accept", ["accept", "redirect"])
         )
 
-        assert data["options"] == list(ACTION_TAXONOMY)
-        assert "omitted_actions" not in data
+        assert data["options"] == ["accept", "defer_or_abandon"]
+        assert data["omitted_actions"]["redirect"] == NAMED_ACTION_UNAVAILABLE_REASON
         assert data["advisory"]["recommendation"] == "accept"
 
     def test_unavailable_advisory_checkpoint_also_filters(self, tmp_path):
         state = _quorum_collapsed_state()
         data = self._write(tmp_path, state, "run-noadvisory", None)
 
-        assert "accept" not in data["options"]
+        assert data["options"] == ["defer_or_abandon"]
         assert data["omitted_actions"]["accept"] == ACCEPT_UNAVAILABLE_REASON
+        assert data["omitted_actions"]["redirect"] == NAMED_ACTION_UNAVAILABLE_REASON
         assert ACCEPT_UNAVAILABLE_REASON in data["reason"]
 
 
@@ -317,6 +332,18 @@ class TestApproveDispositionDeclines:
         assert finalized == {}
         assert state.phase == Phase.ESCALATE
         assert "declined" in result.message
+
+    def test_named_action_is_declined_without_recording_resolution(self, tmp_path, monkeypatch):
+        state = _quorum_collapsed_state("APPROVE")
+        result, finalized = self._call(tmp_path, monkeypatch, state, "redirect")
+
+        assert result is not None and result.success is False
+        assert state.escalate_selected_action == "redirect"
+        assert state.escalate_declined_action == "redirect"
+        assert state.escalate_declined_reason == NAMED_ACTION_UNAVAILABLE_REASON
+        assert state.escalate_decision is None
+        assert finalized == {}
+        assert "was not carried out" in result.message
 
     def test_legacy_approve_selection_is_declined_the_same_way(self, tmp_path, monkeypatch):
         state = _quorum_collapsed_state()

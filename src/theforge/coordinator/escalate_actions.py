@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from theforge.escalation_advisor import ACTION_TAXONOMY, action_disposition
+
 if TYPE_CHECKING:
     from theforge.review import ReviewResult
 
@@ -25,6 +27,13 @@ if TYPE_CHECKING:
 #: performability depends on run state rather than on the operator alone.
 ACCEPT_ACTION = "accept"
 
+#: Taxonomy actions that still name historical/manual forge operations but are
+#: not mechanically executable by this run. Keep them recognizable for parsing
+#: stale/manual selections, but do not offer them as real gate choices.
+NON_EXECUTABLE_NAMED_ACTIONS = frozenset(
+    action for action in ACTION_TAXONOMY if action_disposition(action) == "named"
+)
+
 #: Reason text used when accept cannot be offered/performed. Rendered to the
 #: operator at the gate and recorded in the audit trail when a stale selection
 #: is declined, so "why wasn't this offered" and "why was this refused" read the
@@ -33,6 +42,8 @@ ACCEPT_UNAVAILABLE_REASON = (
     "no approvable reviewer result is retained for this run — "
     "there is no verdict the gate could finalize on"
 )
+
+NAMED_ACTION_UNAVAILABLE_REASON = "action is not executable by this run"
 
 
 def approvable_review_result(
@@ -79,6 +90,9 @@ def available_escalate_actions(
     for action in actions:
         if action == ACCEPT_ACTION and not accept_ok:
             omitted[action] = ACCEPT_UNAVAILABLE_REASON
+            continue
+        if action in NON_EXECUTABLE_NAMED_ACTIONS:
+            omitted[action] = NAMED_ACTION_UNAVAILABLE_REASON
             continue
         available.append(action)
     return available, omitted

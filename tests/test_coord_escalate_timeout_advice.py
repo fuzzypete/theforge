@@ -4,8 +4,8 @@ Covers the coordinator boundary issue #2279 touches:
 
 * ``retry.escalate_timeout_policy`` is opt-in, validated at config load, and
   defaults to today's preserve-on-expiry behaviour.
-* an opted-in expiry applies a usable, performable recommendation and reaches the
-  same outcome an operator selecting that action deliberately would.
+* an opted-in expiry applies a usable, performable recommendation, and declines
+  a named recommendation the run cannot execute without claiming it happened.
 * ``elevate`` and every flavour of absent advice still preserve the story, and
   the run states WHICH of those situations occurred.
 * a selection that arrives before expiry governs, whatever the advisor said.
@@ -38,7 +38,6 @@ from theforge.coordinator.resume_persistence import (
 )
 from theforge.coordinator.review_phase import _run_escalate_gate
 from theforge.coordinator.state import (
-    ADVICE_APPLIED,
     ADVICE_ELEVATE,
     ADVICE_LAUNCH_FAILURE,
     ADVICE_NO_RECOMMENDATION,
@@ -48,6 +47,7 @@ from theforge.coordinator.state import (
     ADVICE_UNPARSEABLE,
     ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT,
     ESCALATE_SOURCE_OPERATOR,
+    ESCALATE_SOURCE_OPERATOR_DECLINED,
     ESCALATE_SOURCE_POLICY_AUTO_APPROVE,
     ESCALATE_SOURCE_POLICY_REJECT,
     ESCALATE_SOURCE_TIMEOUT_PENDING,
@@ -319,7 +319,7 @@ class TestDefaultPolicyUnchanged:
 
 
 class TestAppliesAdviceOnExpiry:
-    def test_named_recommendation_is_applied_like_a_deliberate_selection(
+    def test_named_recommendation_is_declined_like_a_deliberate_selection(
         self, tmp_path, monkeypatch
     ):
         state, result = _drive_gate(
@@ -329,13 +329,12 @@ class TestAppliesAdviceOnExpiry:
             report=_report("land_core_defer_edges"),
             timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
         )
-        # Identical to what an operator selecting land_core_defer_edges gets: the
-        # named disposition, the named forge operation, the worktree preserved.
-        assert state.escalate_decision == "land_core_defer_edges"
-        assert state.escalate_selected_action == "land_core_defer_edges"
-        assert "land-core" in result.message
-        assert state.escalate_decision_source == ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
-        assert state.escalate_timeout_advice == ADVICE_APPLIED
+        assert state.escalate_decision == "advisory_pending"
+        assert state.escalate_selected_action is None
+        assert state.escalate_declined_action is None
+        assert "cannot perform it" in result.message
+        assert state.escalate_decision_source == ESCALATE_SOURCE_TIMEOUT_PENDING
+        assert state.escalate_timeout_advice == ADVICE_NOT_PERFORMABLE
 
     def test_accept_recommendation_finalizes_the_approval(self, tmp_path, monkeypatch):
         state, result = _drive_gate(
@@ -382,7 +381,7 @@ class TestAppliesAdviceOnExpiry:
         )
         assert "Human approved via escalate gate" in finalize_calls["message"]
 
-    def test_applied_named_action_message_names_the_expiry(self, tmp_path, monkeypatch):
+    def test_applied_named_action_message_names_the_decline(self, tmp_path, monkeypatch):
         _state, result = _drive_gate(
             tmp_path,
             monkeypatch,
@@ -390,10 +389,10 @@ class TestAppliesAdviceOnExpiry:
             report=_report("land_core_defer_edges"),
             timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
         )
-        assert "advisory recommendation was applied" in result.message
-        assert "Worktree preserved" in result.message
+        assert "recommendation could not be applied" in result.message
+        assert "operator action selection is still required" in result.message
 
-    def test_operator_named_action_message_is_unchanged(self, tmp_path, monkeypatch):
+    def test_operator_named_action_message_reports_decline(self, tmp_path, monkeypatch):
         _state, result = _drive_gate(
             tmp_path,
             monkeypatch,
@@ -402,7 +401,7 @@ class TestAppliesAdviceOnExpiry:
             timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
         )
         assert "advisory recommendation was applied" not in result.message
-        assert "Worktree preserved" in result.message
+        assert "was not carried out" in result.message
 
     def test_defer_or_abandon_recommendation_rejects(self, tmp_path, monkeypatch):
         state, result = _drive_gate(
@@ -563,8 +562,9 @@ class TestOperatorSelectionBeatsAdvice:
                 )
 
         assert state.escalate_selected_action == "redirect"
-        assert state.escalate_decision == "redirect"
-        assert state.escalate_decision_source == ESCALATE_SOURCE_OPERATOR
+        assert state.escalate_decision is None
+        assert state.escalate_declined_action == "redirect"
+        assert state.escalate_decision_source == ESCALATE_SOURCE_OPERATOR_DECLINED
         assert result.success is False
 
 
@@ -611,8 +611,8 @@ class TestPendingCheckpointLifecycle:
             timeout_policy=ESCALATE_TIMEOUT_APPLY_ADVICE,
             run_id="run-applied",
         )
-        assert state.escalate_decision == "land_core_defer_edges"
-        assert not pending_file.exists(), "a decided story must not look still-pending"
+        assert state.escalate_decision == "advisory_pending"
+        assert pending_file.exists(), "an unapplied recommendation must remain operator-actionable"
 
     def test_elevate_leaves_the_checkpoint_for_the_operator(self, tmp_path, monkeypatch):
         state, pending_file = self._run_real_gate(
@@ -647,11 +647,12 @@ class TestDecisionProvenanceIsRecorded:
             CoordinatorResult(success=False, phase=Phase.ESCALATE, state=state, message="m"),
         )
         block = record["escalation"]
-        assert block["decision_source"] == ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
-        assert block["timeout_advice"] == ADVICE_APPLIED
-        assert block["selected_action"] == "land_core_defer_edges"
+        assert block["decision_source"] == ESCALATE_SOURCE_TIMEOUT_PENDING
+        assert block["timeout_advice"] == ADVICE_NOT_PERFORMABLE
+        assert block["selected_action"] is None
+        assert block["declined_action"] is None
         assert block["advisory_recommendation"] == "land_core_defer_edges"
-        assert block["awaiting_operator"] is False
+        assert block["awaiting_operator"] is True
 
     def test_audit_record_marks_a_still_waiting_gate(self, tmp_path, monkeypatch):
         state, _result = _drive_gate(
@@ -681,12 +682,13 @@ class TestDecisionProvenanceIsRecorded:
         )
         block = _escalation_block(state)
         assert block is not None
-        assert block["decision_source"] == ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
-        assert block["timeout_advice"] == ADVICE_APPLIED
-        assert block["awaiting_operator"] is False
+        assert block["decision_source"] == ESCALATE_SOURCE_TIMEOUT_PENDING
+        assert block["timeout_advice"] == ADVICE_NOT_PERFORMABLE
+        assert block["awaiting_operator"] is True
 
         restored = CoordinatorState()
         assert _apply_escalation(restored, block)
-        assert restored.escalate_decision == "land_core_defer_edges"
-        assert restored.escalate_decision_source == ESCALATE_SOURCE_ADVISOR_ON_TIMEOUT
-        assert restored.escalate_timeout_advice == ADVICE_APPLIED
+        assert restored.escalate_decision == "advisory_pending"
+        assert restored.escalate_declined_action is None
+        assert restored.escalate_decision_source == ESCALATE_SOURCE_TIMEOUT_PENDING
+        assert restored.escalate_timeout_advice == ADVICE_NOT_PERFORMABLE
