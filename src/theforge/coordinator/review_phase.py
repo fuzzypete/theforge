@@ -43,6 +43,7 @@ from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
 from .escalate_actions import (
     ACCEPT_UNAVAILABLE_REASON,
+    NAMED_ACTION_UNAVAILABLE_REASON,
     approvable_review_result,
     available_escalate_actions,
 )
@@ -628,26 +629,31 @@ def _run_escalate_gate_inner(
         return None
 
     if disposition == "named":
-        # A middle-taxonomy action (redirect / decompose / elevate /
-        # land-core-defer-edges): v1 names the concrete forge operation and
-        # preserves the worktree for the operator to run it — it is not an
-        # auto-reject that discards the work.
         op = ACTION_FORGE_OPERATIONS.get(norm, norm)
         label = ACTION_LABELS.get(norm, norm)
         by_advice = _decided_by_advice(state)
         how = "applied from the advisory on expiry" if by_advice else "selected"
-        _log(f"  Escalate gate: {label} {how} — next operation: {op}")
+        state.escalate_declined_action = norm
+        state.escalate_declined_reason = NAMED_ACTION_UNAVAILABLE_REASON
+        if not by_advice:
+            state.escalate_decision_source = ESCALATE_SOURCE_OPERATOR_DECLINED
+        _log(
+            f"  ⚠ Escalate gate: {label} {how} but was not carried out "
+            f"({state.escalate_declined_reason}) — DECLINED; named operation remains {op}"
+        )
         return _make_escalate_result(
-            norm,
+            None,
             message=(
-                f"Escalation resolved as {label}: {op}. "
+                f"Escalation preserved: the selected action {label} was not carried out "
+                f"({state.escalate_declined_reason}). "
                 + (
                     "The gate expired with no operator selection and the advisory "
-                    "recommendation was applied. "
+                    "recommendation was declined. "
                     if by_advice
                     else ""
                 )
-                + "Worktree preserved for the operator to run the named operation."
+                + f"The named operation remains {op}, and an operator action selection "
+                "is still required."
             ),
         )
 
