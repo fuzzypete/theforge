@@ -18,6 +18,7 @@ What is pinned here:
 from __future__ import annotations
 
 from pathlib import Path
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -78,6 +79,8 @@ class _FakeAgentResult:
         self.success = success
         self.output = output
         self.cost_usd = 0.12
+        self.model_used = "claude-sonnet-4-5"
+        self.transport_used = "api"
 
 
 def _make_config(project_root: Path, *, run_summaries: bool = True) -> ForgeConfig:
@@ -203,6 +206,36 @@ class TestGeneration:
         profile = calls[0]["profile"]
         assert profile.mode == "api"
         assert profile.allowed_tools == ()
+        assert calls[0]["plain_text"] is True
+
+    def test_summary_dispatch_uses_plain_text_through_the_real_runner_api_seam(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exercise coordinator -> run_agent -> run_api_agent without a fake seam."""
+        from theforge import runners as runner_exports
+        from theforge.runners.cli import run_agent as real_run_agent
+
+        config = _make_config(tmp_path)
+        loop_runner = MagicMock()
+        single_shot_runner = MagicMock(return_value=_FakeAgentResult())
+
+        monkeypatch.setattr(runner_exports, "run_agent", real_run_agent)
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", None)
+        with (
+            patch.dict("theforge.runners.api._LOOP_RUNNERS", {"anthropic": loop_runner}),
+            patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"anthropic": single_shot_runner}),
+        ):
+            path = knowledge_summary_flow.maybe_generate_run_summary(
+                config, _done_result(), _audit()
+            )
+
+        assert path == summary_path(tmp_path, RUN_ID)
+        loop_runner.assert_not_called()
+        prompt, profile, secrets = single_shot_runner.call_args.args
+        assert profile.allowed_tools == ()
+        assert secrets == config.secrets
+        assert "run_summary:" in prompt
+        assert single_shot_runner.call_args.kwargs == {"plain_text": True}
 
     def test_a_cli_plan_model_without_an_api_fallback_is_not_dispatched(
         self, tmp_path: Path, calls: list[dict]

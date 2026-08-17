@@ -308,7 +308,7 @@ class TestRunApiAgentLoopIntegration:
         loop_runner.assert_not_called()
         single_shot_runner.assert_called_once_with("ideate", profile, None, plain_text=True)
 
-    def test_anthropic_plain_text_with_tools_bypasses_loop_runner(self, tmp_path):
+    def test_anthropic_plain_text_with_tools_stays_on_loop_runner(self, tmp_path):
         profile = _make_profile(
             provider="anthropic",
             model="claude-sonnet-4-6",
@@ -332,8 +332,8 @@ class TestRunApiAgentLoopIntegration:
                 plain_text=True,
             )
 
-        loop_runner.assert_not_called()
-        single_shot_runner.assert_called_once_with("summarize", profile, None, plain_text=True)
+        loop_runner.assert_called_once_with("summarize", profile, tmp_path, None, progress_cb=None)
+        single_shot_runner.assert_not_called()
 
     def test_run_api_agent_no_provider_returns_failure(self, tmp_path):
         profile = ModelProfile(
