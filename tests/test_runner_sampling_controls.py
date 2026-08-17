@@ -230,6 +230,37 @@ class TestAnthropicRequests:
         assert kwargs["tool_choice"] == {"type": "tool", "name": "review_output"}
 
     @pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-future-9"])
+    def test_single_shot_plain_text_omits_forced_review_tool(self, model):
+        client = MagicMock()
+        response = MagicMock()
+        text_block = MagicMock()
+        text_block.type = "text"
+        text_block.text = "run_summary:\n  summary: kept as text"
+        response.content = [text_block]
+        response.usage.input_tokens = 10
+        response.usage.output_tokens = 5
+        response.model_dump.return_value = {}
+        client.messages.create.return_value = response
+
+        with patch.dict(sys.modules, _anthropic_modules(client)):
+            from theforge.runners.adapters.anthropic import _run_anthropic
+
+            result = _run_anthropic(
+                "summarize this",
+                _profile(provider="anthropic", model=model),
+                plain_text=True,
+            )
+
+        assert result.success, result.output
+        assert result.output == "run_summary:\n  summary: kept as text"
+        assert result.structured_data is None
+        kwargs = client.messages.create.call_args.kwargs
+        assert "temperature" not in kwargs
+        assert kwargs["max_tokens"] == 4096
+        assert "tools" not in kwargs
+        assert "tool_choice" not in kwargs
+
+    @pytest.mark.parametrize("model", ["claude-sonnet-4-6", "claude-future-9"])
     def test_loop_adapter_omits_temperature_and_keeps_tools(self, model):
         client = MagicMock()
         response = MagicMock()

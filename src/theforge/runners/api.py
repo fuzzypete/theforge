@@ -1008,7 +1008,7 @@ def _run_single_api_model(
 
     Does not handle model-preference iteration — that lives in run_api_agent.
     """
-    if profile.provider == "google" and plain_text:
+    if profile.provider in {"anthropic", "google"} and plain_text:
         runner_fn = PROVIDER_RUNNERS.get(profile.provider)
         if not runner_fn:
             return AgentResult(
