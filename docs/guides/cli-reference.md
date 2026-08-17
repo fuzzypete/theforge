@@ -1007,12 +1007,12 @@ re-enter a stopped story, and they do different things:
 Those diverge whenever a story stopped with both a recorded escalate-gate
 decision and a review cycle it never ran — for example: gate PASS after a fix,
 review cycle 1 returned REQUEST_CHANGES, cycle 2 never ran, escalation decision
-`land_core_defer_edges` recorded.
+`accept` recorded.
 
 | You want | Use | What happens |
 |---|---|---|
 | The unrun review cycle to execute against the fix | `forge review <story>` | Review cycle 2 runs; the recorded decision is not consulted |
-| To honor the recorded pipeline state (the decision you already made) | `forge sprint --resume` / `forge run --resume` | Resume continues from `land_core_defer_edges` and proceeds to landing; **no review runs** |
+| To honor the recorded pipeline state (the decision you already made) | `forge sprint --resume` / `forge run --resume` | Resume continues from `accept` and proceeds to landing; **no review runs** |
 
 Neither is a default: choosing between them is choosing whether the work gets
 reviewed. Check `forge status` first — a story in this state prints an
@@ -1024,7 +1024,7 @@ anything, on its `↺ RESUME` lines — stated for the path you actually invoked
 
 ```
   ↺ RESUME   recovered phase record: escalation
-  ↺ RESUME   recovered escalation decision land_core / defer_edges (from run 20260807-...)
+  ↺ RESUME   recovered escalation decision accept (from run 20260807-...)
   ↺ RESUME   outstanding: REVIEW cycle 2 has not run (last verdict REQUEST_CHANGES, gate PASS)
   ↺ RESUME   this resume continues from that decision and will NOT run REVIEW —
              `forge review` runs REVIEW cycle 2 instead
@@ -1034,7 +1034,7 @@ anything, on its `↺ RESUME` lines — stated for the path you actually invoked
 
 ```
   ↺ RESUME   recovered phase record: escalation
-  ↺ RESUME   recovered escalation decision land_core / defer_edges (from run 20260807-...)
+  ↺ RESUME   recovered escalation decision accept (from run 20260807-...)
   ↺ RESUME   outstanding: REVIEW cycle 2 has not run (last verdict REQUEST_CHANGES, gate PASS)
   ↺ RESUME   `forge review` runs REVIEW cycle 2 now —
              `forge sprint --resume` would continue from that decision and skip it

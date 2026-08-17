@@ -118,10 +118,10 @@ def _pending_escalate_gate(
 ) -> str:
     """Pending-file-based escalate gate with a fresh-context advisory report.
 
-    When ``advisory`` is a valid report, the pending file presents the action
-    taxonomy (Accept / Land-core-defer-edges / Redirect / Decompose / Elevate /
-    Defer-or-Abandon) as the options and embeds the report + evidence packet as
-    structured payload; the operator must select one of those actions.
+    When ``advisory`` is a valid report, the pending file presents the
+    executable subset of the action taxonomy as the options and embeds the
+    report + evidence packet as structured payload; the operator must select one
+    of those actions.
 
     The presented options are the taxonomy filtered to what the current state can
     actually perform (see :mod:`.escalate_actions`) — ``accept`` is withheld when
