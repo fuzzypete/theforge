@@ -70,7 +70,7 @@ def test_running_stories_raises_demand_and_timeout() -> None:
     assert r.actual_parallel == 4
     assert r.factor == 4.0
     assert r.effective_timeout == 240
-    assert r.overcommit is True
+    assert r.overcommit is False
     # Configured parallelism is still reported as itself — the two numbers are
     # different facts and the diagnostic keeps both.
     assert r.max_parallel == 2
@@ -89,6 +89,22 @@ def test_fixed_mode_ignores_inherited_load() -> None:
     )
     assert r.effective_timeout == 60
     assert r.running_stories == 3
+
+
+def test_running_stories_warns_only_with_high_observed_load() -> None:
+    r = resolve_effective_gate_timeout(
+        baseline=60,
+        max_parallel=2,
+        host_cores=10,
+        gate_cpu_cores=10,
+        mode="adaptive",
+        running_stories=2,
+        observed_host_load=12.2,
+    )
+    assert r.overcommit is True
+    assert r.warning_host_load == 10.2
+    assert "observed_host_load=12.20" in r.reason
+    assert "warning_host_load=10.20" in r.reason
 
 
 # ── Seam: runner supplies the actual load ────────────────────────────
@@ -162,12 +178,14 @@ def test_fresh_start_timeout_derives_from_configured_parallel(tmp_path: Path, ca
     with (
         patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
         patch("os.cpu_count", return_value=10),
+        patch("os.getloadavg", return_value=(6.68, 7.0, 5.52)),
     ):
         run_sprint_ctx(config, manifest_path)
 
     err = capsys.readouterr().err
-    assert "running_stories=0 actual_parallel=2" in err
+    assert "running_stories=0 actual_parallel=2 observed_host_load=6.68" in err
     assert captured["gate_timeout"] == 120
+    assert "WARNING: gate CPU" not in err
 
 
 def test_continuation_timeout_counts_inherited_running_stories(tmp_path: Path, capsys) -> None:
@@ -185,6 +203,7 @@ def test_continuation_timeout_counts_inherited_running_stories(tmp_path: Path, c
         patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
         patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
         patch("os.cpu_count", return_value=10),
+        patch("os.getloadavg", return_value=(10.2, 10.0, 9.8)),
     ):
         run_sprint_ctx(
             config,
@@ -194,7 +213,35 @@ def test_continuation_timeout_counts_inherited_running_stories(tmp_path: Path, c
         )
 
     err = capsys.readouterr().err
-    assert "running_stories=1 actual_parallel=3" in err
+    assert (
+        "running_stories=1 actual_parallel=3 observed_host_load=10.20 "
+        "warning_host_load=9.20" in err
+    )
+    assert "WARNING: gate CPU" not in err
     # 60s baseline × (10 cores × 3) / 10 host cores = 180s, not the 120s a model
     # blind to the inherited agent would have produced.
     assert captured["gate_timeout"] == 180
+
+
+def test_continuation_warning_requires_load_beyond_inherited_stories(
+    tmp_path: Path, capsys
+) -> None:
+    manifest_path = _make_manifest(tmp_path, ["story-a", "story-b"], max_parallel=2)
+    config = _make_config(tmp_path, gate_timeout=60, gate_cpu_cores=10)
+
+    with (
+        patch("theforge.sprint.runner.run_task", return_value=_ok_result()),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("os.cpu_count", return_value=10),
+        patch("os.getloadavg", return_value=(11.2, 10.9, 10.6)),
+    ):
+        run_sprint_ctx(
+            config,
+            manifest_path,
+            reexec=True,
+            live_story_slugs={"story-a"},
+        )
+
+    err = capsys.readouterr().err
+    assert "WARNING: gate CPU observed host load (11.20 1m / 10 cores)" in err
+    assert "after discounting 1 inherited story (10.20 effective)" in err
