@@ -300,6 +300,17 @@ retry:
   # sound `land_core_defer_edges` recommendation and lost it.
   escalate_timeout_policy: apply_advice
 
+# Post-run knowledge capture. Generation only: a completed run emits an
+# evidence-backed summary to .forge/knowledge/summaries/{run_id}.yaml, and
+# nothing reads them yet. Turned on 2026-08-16 with v0.15.0rc0, the first
+# runtime carrying the schema — rc6 ignored this block silently.
+#
+# `prior_run_context` (Layer 3 injection) stays off until a corpus exists to
+# read. Enabling both at once would have the first consuming run read an
+# almost-empty corpus.
+knowledge:
+  run_summaries: true
+
 plan:
   enabled: true
 
