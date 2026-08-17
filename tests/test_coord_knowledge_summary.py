@@ -83,7 +83,13 @@ class _FakeAgentResult:
         self.transport_used = "api"
 
 
-def _make_config(project_root: Path, *, run_summaries: bool = True) -> ForgeConfig:
+def _make_config(
+    project_root: Path,
+    *,
+    run_summaries: bool = True,
+    provider: str = "anthropic",
+    model: str | None = None,
+) -> ForgeConfig:
     """A config whose plan model dispatches over an API transport.
 
     The API transport is the containment property under test, not incidental
@@ -111,10 +117,10 @@ def _make_config(project_root: Path, *, run_summaries: bool = True) -> ForgeConf
         plan=PlanConfig(
             enabled=True,
             ref=ModelRef(
-                model="claude-sonnet-4-5",
+                model=model or ("claude-sonnet-4-5" if provider == "anthropic" else "gpt-5.4"),
                 budget_usd=0.5,
                 timeout_seconds=300,
-                provider="anthropic",
+                provider=provider,
             ),
         ),
         knowledge=KnowledgeConfig(run_summaries=run_summaries),
@@ -215,15 +221,15 @@ class TestGeneration:
         from theforge import runners as runner_exports
         from theforge.runners.cli import run_agent as real_run_agent
 
-        config = _make_config(tmp_path)
+        config = _make_config(tmp_path, provider="openai", model="gpt-5.4")
         loop_runner = MagicMock()
         single_shot_runner = MagicMock(return_value=_FakeAgentResult())
 
         monkeypatch.setattr(runner_exports, "run_agent", real_run_agent)
         monkeypatch.setattr(knowledge_summary_flow, "run_agent", None)
         with (
-            patch.dict("theforge.runners.api._LOOP_RUNNERS", {"anthropic": loop_runner}),
-            patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"anthropic": single_shot_runner}),
+            patch.dict("theforge.runners.api._LOOP_RUNNERS", {"openai": loop_runner}),
+            patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"openai": single_shot_runner}),
         ):
             path = knowledge_summary_flow.maybe_generate_run_summary(
                 config, _done_result(), _audit()

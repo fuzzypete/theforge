@@ -1008,8 +1008,8 @@ def _run_single_api_model(
 
     Does not handle model-preference iteration — that lives in run_api_agent.
     """
-    if profile.provider == "google" and plain_text:
-        runner_fn = PROVIDER_RUNNERS.get(profile.provider)
+    runner_fn = PROVIDER_RUNNERS.get(profile.provider)
+    if plain_text and (profile.provider == "google" or not profile.allowed_tools):
         if not runner_fn:
             return AgentResult(
                 success=False,
@@ -1021,20 +1021,7 @@ def _run_single_api_model(
                 profile_name=profile.name,
             )
         return runner_fn(prompt, profile, secrets, plain_text=True)
-    elif profile.provider == "anthropic" and plain_text and not profile.allowed_tools:
-        runner_fn = PROVIDER_RUNNERS.get(profile.provider)
-        if not runner_fn:
-            return AgentResult(
-                success=False,
-                output=f"Unknown API provider: {profile.provider}",
-                session_id=None,
-                cost_usd=None,
-                exit_code=1,
-                raw={},
-                profile_name=profile.name,
-            )
-        return runner_fn(prompt, profile, secrets, plain_text=True)
-    elif profile.allowed_tools:
+    if profile.allowed_tools:
         loop_runner = _LOOP_RUNNERS.get(profile.provider)
         if not loop_runner:
             return AgentResult(
@@ -1047,19 +1034,17 @@ def _run_single_api_model(
                 profile_name=profile.name,
             )
         return loop_runner(prompt, profile, working_dir, secrets, progress_cb=progress_cb)
-    else:
-        runner_fn = PROVIDER_RUNNERS.get(profile.provider)
-        if not runner_fn:
-            return AgentResult(
-                success=False,
-                output=f"Unknown API provider: {profile.provider}",
-                session_id=None,
-                cost_usd=None,
-                exit_code=1,
-                raw={},
-                profile_name=profile.name,
-            )
-        return runner_fn(prompt, profile, secrets)
+    if not runner_fn:
+        return AgentResult(
+            success=False,
+            output=f"Unknown API provider: {profile.provider}",
+            session_id=None,
+            cost_usd=None,
+            exit_code=1,
+            raw={},
+            profile_name=profile.name,
+        )
+    return runner_fn(prompt, profile, secrets)
 
 
 def _estimated_provenance(provider: str | None, model: str | None) -> str:
