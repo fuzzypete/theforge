@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import time
 from unittest.mock import MagicMock, patch
@@ -12,6 +13,7 @@ from theforge.agent_types import ModelUsage
 from theforge.config import ModelProfile
 from theforge.runners.adapters.deepseek import _deepseek_client, _run_deepseek
 from theforge.runners.api import (
+    PROVIDER_RUNNERS,
     AgentLoopManager,
     run_api_agent,
 )
@@ -608,6 +610,39 @@ class TestDeepSeekProvider:
         assert result.success
         call_kwargs = mock_client.chat.completions.create.call_args[1]
         assert "temperature" not in call_kwargs
+
+    def test_run_deepseek_plain_text_omits_structured_response_format(self, tmp_path):
+        profile = self._make_deepseek_profile(model="deepseek-v3")
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices[0].message.content = "plain text summary"
+        mock_response.usage.prompt_tokens = 10
+        mock_response.usage.completion_tokens = 5
+        mock_response.model_dump.return_value = {}
+        mock_client.chat.completions.create.return_value = mock_response
+
+        with patch(
+            "theforge.runners.adapters.deepseek._deepseek_client", return_value=mock_client
+        ):
+            result = _run_deepseek("summarize this", profile, plain_text=True)
+
+        assert result.success
+        assert result.output == "plain text summary"
+        assert result.structured_data is None
+        call_kwargs = mock_client.chat.completions.create.call_args[1]
+        assert "response_format" not in call_kwargs
+
+    def test_all_single_shot_provider_runners_accept_plain_text(self):
+        for provider, runner in PROVIDER_RUNNERS.items():
+            signature = inspect.signature(runner)
+            plain_text = signature.parameters.get("plain_text")
+            assert plain_text is not None, f"{provider} runner must accept plain_text"
+            assert plain_text.kind is inspect.Parameter.KEYWORD_ONLY, (
+                f"{provider} runner must accept plain_text as keyword-only"
+            )
+            assert plain_text.default is False, (
+                f"{provider} runner must default plain_text to False"
+            )
 
     # ── _run_loop_deepseek dispatch ───────────────────────────────────
 

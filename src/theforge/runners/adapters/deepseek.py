@@ -82,7 +82,11 @@ def deepseek_request_kwargs(profile: "ModelProfile") -> dict[str, Any]:
 
 
 def _run_deepseek(
-    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
+    prompt: str,
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None = None,
+    *,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Run via DeepSeek API (OpenAI-compatible Chat Completions).
 
@@ -95,8 +99,9 @@ def _run_deepseek(
         secrets,
         client=client,
         provider="deepseek",
-        response_format={"type": "json_object"},
+        response_format=None if plain_text else {"type": "json_object"},
         extra_kwargs=deepseek_request_kwargs(profile),
+        plain_text=plain_text,
     )
 
 
