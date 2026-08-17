@@ -69,6 +69,16 @@ def _openai_chat_client() -> MagicMock:
     return client
 
 
+def _openai_responses_client(output_text: str = REVIEW_JSON) -> MagicMock:
+    client = MagicMock()
+    response = MagicMock()
+    response.output_text = output_text
+    response.usage.input_tokens = 10
+    response.usage.output_tokens = 5
+    client.responses.create.return_value = response
+    return client
+
+
 class TestSamplingControlPolicy:
     """The shared decision point sends no optional sampling controls."""
 
@@ -123,6 +133,47 @@ class TestOpenAICompatibleRequests:
         kwargs = client.chat.completions.create.call_args.kwargs
         assert "temperature" not in kwargs
         assert kwargs["response_format"]["type"] == "json_schema"
+
+    @pytest.mark.parametrize("model", FUTURE_AND_CURRENT_MODELS)
+    def test_single_shot_plain_text_omits_forced_schema(self, model):
+        from theforge.runners.adapters.openai import _run_openai_chat
+
+        client = _openai_chat_client()
+        client.chat.completions.create.return_value.choices[
+            0
+        ].message.content = "run_summary:\n  summary: kept as text"
+
+        result = _run_openai_chat(
+            "summarize this",
+            _profile(model=model),
+            client=client,
+            plain_text=True,
+        )
+
+        assert result.success
+        assert result.output == "run_summary:\n  summary: kept as text"
+        kwargs = client.chat.completions.create.call_args.kwargs
+        assert "temperature" not in kwargs
+        assert "response_format" not in kwargs
+
+    def test_responses_single_shot_plain_text_omits_forced_schema(self):
+        from theforge.runners.adapters.openai import _run_openai_responses
+
+        client = _openai_responses_client("run_summary:\n  summary: kept as text")
+        with patch(
+            "theforge.runners.adapters.openai._openai_client",
+            return_value=client,
+        ):
+            result = _run_openai_responses(
+                "summarize this",
+                _profile(model="gpt-5.1-codex"),
+                plain_text=True,
+            )
+
+        assert result.success
+        assert result.output == "run_summary:\n  summary: kept as text"
+        kwargs = client.responses.create.call_args.kwargs
+        assert kwargs == {"model": "gpt-5.1-codex", "input": "summarize this"}
 
     @pytest.mark.parametrize("model", FUTURE_AND_CURRENT_MODELS)
     def test_loop_adapter_omits_temperature_and_keeps_tools(self, model):

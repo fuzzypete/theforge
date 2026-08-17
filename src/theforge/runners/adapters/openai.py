@@ -119,6 +119,7 @@ def _openai_result(
     *,
     cache_read_tokens: int = 0,
     thinking_tokens: int = 0,
+    structured_data: Any = ...,
 ) -> AgentResult:
     """Build AgentResult from parsed OpenAI-compatible response fields."""
     cost = _estimate_cost(
@@ -150,7 +151,7 @@ def _openai_result(
         raw=raw,
         profile_name=profile.name,
         model_usage=(model_usage,),
-        structured_data=json.loads(output_text),
+        structured_data=json.loads(output_text) if structured_data is ... else structured_data,
     )
 
 
@@ -162,6 +163,8 @@ def _run_openai_chat(
     provider: str = "openai",
     response_format: dict[str, Any] | None = None,
     extra_kwargs: dict[str, Any] | None = None,
+    *,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Run via OpenAI Chat Completions (/v1/chat/completions).
 
@@ -170,24 +173,26 @@ def _run_openai_chat(
     so a provider wrapper can state a control this generic path knows nothing of,
     without that knowledge leaking back into the shared adapter.
     """
-    from theforge.schemas import review_json_schema
-
     if client is None:
         client = _openai_client(profile, secrets)
-    schema = review_json_schema()
-    if response_format is None:
-        response_format = {
-            "type": "json_schema",
-            "json_schema": {"name": "review_output", "schema": schema, "strict": True},
-        }
+    if not plain_text:
+        from theforge.schemas import review_json_schema
+
+        schema = review_json_schema()
+        if response_format is None:
+            response_format = {
+                "type": "json_schema",
+                "json_schema": {"name": "review_output", "schema": schema, "strict": True},
+            }
     try:
         create_kwargs: dict[str, Any] = {
             "model": profile.model,
             "messages": [{"role": "user", "content": prompt}],
-            "response_format": response_format,
             **sampling_control_kwargs(),
             **(extra_kwargs or {}),
         }
+        if response_format is not None:
+            create_kwargs["response_format"] = response_format
         response = client.chat.completions.create(**create_kwargs)
         output_text = response.choices[0].message.content or ""
         chat_usage = _read_chat_usage(response.usage)
@@ -200,6 +205,7 @@ def _run_openai_chat(
             provider=provider,
             cache_read_tokens=chat_usage.cache_read_tokens,
             thinking_tokens=chat_usage.thinking_tokens,
+            structured_data=None if plain_text else ...,
         )
     except Exception as e:
         return AgentResult(
@@ -214,26 +220,32 @@ def _run_openai_chat(
 
 
 def _run_openai_responses(
-    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
+    prompt: str,
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None = None,
+    *,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Run via OpenAI Responses API (/v1/responses) — required for Codex models."""
-    from theforge.schemas import review_json_schema
-
     client = _openai_client(profile, secrets)
-    schema = review_json_schema()
     try:
-        response = client.responses.create(
-            model=profile.model,
-            input=prompt,
-            text={
+        create_kwargs: dict[str, Any] = {
+            "model": profile.model,
+            "input": prompt,
+        }
+        if not plain_text:
+            from theforge.schemas import review_json_schema
+
+            schema = review_json_schema()
+            create_kwargs["text"] = {
                 "format": {
                     "type": "json_schema",
                     "name": "review_output",
                     "schema": schema,
                     "strict": True,
                 }
-            },
-        )
+            }
+        response = client.responses.create(**create_kwargs)
         output_text = response.output_text
         usage = response.usage
         return _openai_result(
@@ -242,6 +254,7 @@ def _run_openai_responses(
             usage.input_tokens if usage else 0,
             usage.output_tokens if usage else 0,
             {},
+            structured_data=None if plain_text else ...,
         )
     except Exception as e:
         return AgentResult(
@@ -256,12 +269,16 @@ def _run_openai_responses(
 
 
 def _run_openai(
-    prompt: str, profile: "ModelProfile", secrets: dict[str, str] | None = None
+    prompt: str,
+    profile: "ModelProfile",
+    secrets: dict[str, str] | None = None,
+    *,
+    plain_text: bool = False,
 ) -> AgentResult:
     """Dispatch to Chat Completions or Responses API based on model."""
     if uses_openai_responses_api(profile.model):
-        return _run_openai_responses(prompt, profile, secrets)
-    return _run_openai_chat(prompt, profile, secrets)
+        return _run_openai_responses(prompt, profile, secrets, plain_text=plain_text)
+    return _run_openai_chat(prompt, profile, secrets, plain_text=plain_text)
 
 
 def _make_openai_usage(usage: Any, model: str) -> ModelUsage | None:

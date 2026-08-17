@@ -335,6 +335,28 @@ class TestRunApiAgentLoopIntegration:
         loop_runner.assert_called_once_with("summarize", profile, tmp_path, None, progress_cb=None)
         single_shot_runner.assert_not_called()
 
+    def test_openai_plain_text_tool_free_uses_single_shot_runner(self, tmp_path):
+        profile = _make_profile(
+            provider="openai",
+            model="gpt-5.4",
+            allowed_tools=(),
+        )
+        mock_result = MagicMock()
+        mock_result.success = True
+        mock_result.cost_usd = None
+
+        single_shot_runner = MagicMock(return_value=mock_result)
+        with patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"openai": single_shot_runner}):
+            run_api_agent(
+                prompt="summarize",
+                profile=profile,
+                working_dir=tmp_path,
+                quiet=True,
+                plain_text=True,
+            )
+
+        single_shot_runner.assert_called_once_with("summarize", profile, None, plain_text=True)
+
     def test_run_api_agent_no_provider_returns_failure(self, tmp_path):
         profile = ModelProfile(
             name="no-provider",
