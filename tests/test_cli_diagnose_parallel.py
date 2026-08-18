@@ -16,7 +16,10 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from theforge.cli.diagnose import _run_diagnoses, cmd_diagnose, register_parser
+from theforge.cli.substrate import Substrate
 from theforge.coordinator import diagnose_flow
 from theforge.coordinator.diagnose_flow import _emit_dry_run, _run_agent_with_heartbeat
 from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
@@ -366,3 +369,40 @@ class TestCmdDiagnose:
 
         assert rc == 0
         assert "ignored in interactive mode" in capsys.readouterr().err
+
+    def test_stale_runtime_config_error_names_runtime_and_checkout(self, tmp_path, capsys):
+        cfg_path = tmp_path / "forge.yaml"
+        cfg_path.write_text("project: test\n", encoding="utf-8")
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "theforge"\nversion = "0.15.0rc3"\n',
+            encoding="utf-8",
+        )
+        runtime = Substrate(
+            binary="/Users/me/.local/bin/forge",
+            package_file="/tmp/rc16/site-packages/theforge/__init__.py",
+            version="0.13.0rc16",
+            editable=False,
+            source_root=None,
+            git_ref=None,
+        )
+        err_msg = (
+            "Unknown model 'anthropic/sonnet/cli': not in AGENT_REGISTRY. "
+            "Known models: ['claude/opus']"
+        )
+
+        with (
+            patch("theforge.cli.diagnose._find_config", return_value=cfg_path),
+            patch("theforge.cli.diagnose.load_config", side_effect=ValueError(err_msg)),
+            patch("theforge.cli.substrate.detect_substrate", return_value=runtime),
+        ):
+            with pytest.raises(SystemExit) as exc_info:
+                cmd_diagnose(self._args(issue=["1"]))
+
+        assert exc_info.value.code == 2
+        err = capsys.readouterr().err
+        assert err_msg in err
+        assert "Runtime binary:  /Users/me/.local/bin/forge" in err
+        assert "Runtime version: 0.13.0rc16" in err
+        assert "Checkout version: 0.15.0rc3" in err
+        assert f"Checkout root:   {tmp_path}" in err
+        assert "appears ahead of it" in err

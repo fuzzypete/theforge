@@ -12,7 +12,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.config import load_config
 
 
@@ -61,7 +61,11 @@ def cmd_rca(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
     project_root = config.project_root
 
     run_id = args.run_id

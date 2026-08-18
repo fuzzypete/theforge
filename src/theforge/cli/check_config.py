@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from theforge.cli.hooks import post_run_hook_upgrade_warnings
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, print_config_load_error
 from theforge.config import (
     ForgeConfig,
     ModelProfile,
@@ -763,6 +763,9 @@ def cmd_check_config(args: object) -> int:
     config_logger.addHandler(log_handler)
     try:
         config = load_config(config_path)
+    except ValueError as exc:
+        print_config_load_error(config_path, exc, prefix="[check-config] Invalid config")
+        return 2
     except Exception as exc:
         print(f"[check-config] Invalid config: {exc}", file=sys.stderr)
         return 2

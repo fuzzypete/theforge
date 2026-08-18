@@ -6,7 +6,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.indexer import INDEX_PATH, generate_index
 from theforge.invariant_index import rebuild_invariant_index
 from theforge.knowledge_index import rebuild_knowledge_index
@@ -26,7 +26,11 @@ def cmd_index(args: argparse.Namespace) -> int:
     if getattr(args, "invariants", False):
         from theforge.config.load import load_config  # noqa: PLC0415
 
-        config = load_config(config_path)
+        config = load_config_checked(
+            config_path,
+            loader=load_config,
+            emit_startup_auth_warnings=False,
+        )
         result = rebuild_invariant_index(project_root, config.knowledge.invariant_sources)
         for diagnostic in result.diagnostics:
             print(

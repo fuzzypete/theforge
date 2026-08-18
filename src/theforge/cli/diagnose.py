@@ -11,7 +11,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.config import load_config
 from theforge.coordinator.diagnose_flow import run_diagnose_flow
 from theforge.coordinator.log_tee import set_worker_slug
@@ -52,7 +52,11 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
 
     destination = args.output_destination or config.diagnose.output_destination
     if destination not in DIAGNOSE_OUTPUT_DESTINATIONS:
