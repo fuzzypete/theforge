@@ -24,6 +24,12 @@ def _story_content_hash(story_content: str) -> str:
     return hashlib.sha256(story_content.encode("utf-8")).hexdigest()
 
 
+def _cache_mismatch_reason(mismatch_reasons: list[str]) -> str:
+    if len(mismatch_reasons) == 1:
+        return mismatch_reasons[0]
+    return "multiple_components_changed:" + ",".join(mismatch_reasons)
+
+
 def capture_preflight_cache_snapshot(
     *,
     config: "ForgeConfig",
@@ -97,24 +103,20 @@ def validate_preflight_cache(
         validation["reason"] = "git_state_unavailable"
         return False, validation
 
+    mismatch_reasons: list[str] = []
     if snapshot["evaluation_base_branch"] != current_base_branch:
-        validation["status"] = "invalidated"
-        validation["reason"] = "evaluation_base_branch_changed"
-        return False, validation
-
+        mismatch_reasons.append("evaluation_base_branch_changed")
     if snapshot["worktree_head"] != current_worktree_head:
-        validation["status"] = "invalidated"
-        validation["reason"] = "worktree_head_changed"
-        return False, validation
-
+        mismatch_reasons.append("worktree_head_changed")
     if snapshot["evaluation_base_branch_head"] != current_base_branch_head:
-        validation["status"] = "invalidated"
-        validation["reason"] = "evaluation_base_branch_head_changed"
-        return False, validation
-
+        mismatch_reasons.append("evaluation_base_branch_head_changed")
     if snapshot["story_content_hash"] != current_story_content_hash:
+        mismatch_reasons.append("story_content_changed")
+
+    if mismatch_reasons:
         validation["status"] = "invalidated"
-        validation["reason"] = "story_content_changed"
+        validation["reason"] = _cache_mismatch_reason(mismatch_reasons)
+        validation["reasons"] = mismatch_reasons
         return False, validation
 
     validation["status"] = "accepted"
