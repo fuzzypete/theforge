@@ -19,6 +19,7 @@ import yaml
 
 from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.sprint.launch_guard import acquire_launch_story_locks
+from theforge.sprint.preserved_resume import PRESERVED_ESCALATED_DETAIL
 
 
 def _mock_config(tmp_path: Path) -> MagicMock:
@@ -95,7 +96,7 @@ class TestEscalatedWorktreeNotTreatedAsCollision:
 
             release_story_locks(locked_fds)
 
-    def test_escalated_worktree_is_preserved_not_scheduled(self, tmp_path: Path) -> None:
+    def test_escalated_worktree_is_preserved_not_scheduled(self, tmp_path: Path, capsys) -> None:
         """An escalated worktree is excluded from scheduling — no lock, no rerun."""
         _make_worktree_with_audit(tmp_path, "issue-829", final_phase="ESCALATE")
         config = _mock_config(tmp_path)
@@ -116,6 +117,7 @@ class TestEscalatedWorktreeNotTreatedAsCollision:
         assert dropped == {"issue-829": "preserved-escalated"}
         # No lock is held for the preserved escalated worktree.
         assert locked_fds == []
+        assert PRESERVED_ESCALATED_DETAIL in capsys.readouterr().err
 
     def test_reexec_with_escalated_and_pending_story(self, tmp_path: Path) -> None:
         """Scenario from the bug: three stories, middle escalated, third must run.

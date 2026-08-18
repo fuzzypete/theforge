@@ -14,6 +14,7 @@ from .audit import (
     preflight_degraded_row_fields_from_audit,
     preflight_degraded_row_fields_from_row,
 )
+from .preserved_resume import PRESERVED_ESCALATED_DETAIL
 
 
 @dataclass
@@ -818,6 +819,9 @@ def _live_stage_and_detail(story: dict) -> tuple[str, str, str | None]:
         if status_val in {"failed", "skipped"} and final_outcome in {"DONE", "ALREADY_DONE"}:
             canonical_outcome = _nonempty_str(story.get("outcome"))
             final_outcome = canonical_outcome.upper() if canonical_outcome else None
+        preserved_reason = (
+            _nonempty_str(story.get("reason")) if status_val == "preserved" else None
+        )
         skip_reason = _nonempty_str(story.get("reason")) if status_val == "skipped" else None
         # Intake-drop outcomes carry structured rule codes in the detail dict.
         # Surfacing them in the DETAIL column keeps operators from having to
@@ -836,6 +840,12 @@ def _live_stage_and_detail(story: dict) -> tuple[str, str, str | None]:
             and final_outcome in {"SKIPPED", "DROPPED"}
         ):
             return "", skip_reason, complexity
+        if (
+            status_val == "preserved"
+            and preserved_reason == "preserved-escalated"
+            and (final_outcome in {None, "PRESERVED"} or not isinstance(final_outcome, str))
+        ):
+            return "", PRESERVED_ESCALATED_DETAIL, complexity
         if isinstance(final_outcome, str) and final_outcome:
             if final_outcome == "ALREADY_DONE":
                 return (
@@ -1057,6 +1067,11 @@ def _stage_and_detail_from_completed_story(
             detail = "APPROVE"
         elif verdict:
             detail = verdict
+        elif (
+            outcome == "PRESERVED"
+            and _nonempty_str(story.get("drop_reason")) == "preserved-escalated"
+        ):
+            detail = PRESERVED_ESCALATED_DETAIL
         elif outcome in {"SKIPPED", "DROPPED"}:
             detail = (
                 _nonempty_str(story.get("error"))

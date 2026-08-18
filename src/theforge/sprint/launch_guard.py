@@ -17,6 +17,7 @@ from theforge.sprint.preflight import (
     drop_conflicting_running_stories,
     warn_for_running_stories,
 )
+from theforge.sprint.preserved_resume import preserved_escalated_message
 from theforge.sprint.prior_landing import (
     PRIOR_SUCCEEDED_OUTCOMES,
     as_prior_record,
@@ -167,8 +168,7 @@ def acquire_launch_story_locks(
 
     if escalated_slugs:
         print(
-            f"[forge] PRESERVED {', '.join(escalated_slugs)}: escalated worktree "
-            "preserved for human review; not rescheduled.",
+            f"[forge] {preserved_escalated_message(', '.join(escalated_slugs))}.",
             file=sys.stderr,
             flush=True,
         )

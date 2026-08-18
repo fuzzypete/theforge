@@ -137,6 +137,7 @@ from .manifest import (
     _build_task_from_story,
     resolve_from_manifest,
 )
+from .preserved_resume import preserved_escalated_message
 from .prior_landing import landing_settled
 from .query import (
     NormalizedDependencyPlan,
@@ -5924,7 +5925,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             reason = REASON_STRANDED_WORKTREE
             _dropped_slugs[slug] = reason
         if reason == "preserved-escalated":
-            _log(f"PRESERVED {slug} (escalated worktree held for review)")
+            _log(preserved_escalated_message(slug))
             _sprint_state.dag.mark_skipped(slug)
             _set_outcome(_sprint_state, slug, StoryOutcome.PRESERVED, reason=reason)
             _record_current_story_entry(slug, "PRESERVED", error=reason, error_type="dropped")

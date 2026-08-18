@@ -1267,6 +1267,24 @@ def test_stage_and_detail_failed_with_stale_done_does_not_leak() -> None:
     assert detail in {"ESCALATED", "ESCALATE"}
 
 
+def test_stage_and_detail_preserved_names_resume_command() -> None:
+    """A preserved story should state the shipped resume command, not just PRESERVED."""
+    from theforge.sprint.preserved_resume import PRESERVED_ESCALATED_DETAIL
+    from theforge.sprint.status_reader import _stage_and_detail_from_live_story
+
+    story = {
+        "slug": "issue-2475",
+        "path": "Issue #2475",
+        "status": "preserved",
+        "outcome": "preserved",
+        "phase": None,
+        "detail": {"final_outcome": "PRESERVED"},
+        "reason": "preserved-escalated",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_live_story(story)
+    assert detail == PRESERVED_ESCALATED_DETAIL
+
+
 def test_completed_failed_story_with_stale_verdict_does_not_show_approve() -> None:
     """Completed FAILED row with stale verdict=APPROVE must not render APPROVE."""
     from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
@@ -1310,6 +1328,21 @@ def test_completed_skipped_story_with_stale_verdict_does_not_show_approve() -> N
     _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
     assert "APPROVE" not in detail
     assert detail == "SKIPPED"
+
+
+def test_completed_preserved_story_names_resume_command() -> None:
+    """Completed PRESERVED rows should keep the same resume guidance."""
+    from theforge.sprint.preserved_resume import PRESERVED_ESCALATED_DETAIL
+    from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
+
+    story = {
+        "slug": "issue-2475",
+        "path": "Issue #2475",
+        "outcome": "PRESERVED",
+        "drop_reason": "preserved-escalated",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
+    assert detail == PRESERVED_ESCALATED_DETAIL
 
 
 def test_completed_done_story_verdict_is_preserved() -> None:
