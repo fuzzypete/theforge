@@ -13,6 +13,7 @@ from theforge.cli.forge_yaml_guard import (
     evaluate_forge_yaml_guard,
 )
 from theforge.cli.shared import _build_task
+from theforge.cli.substrate import Substrate
 from theforge.sprint.manifest import _build_task_from_story
 from theforge.sprint.sources import GitHubIssueSource
 
@@ -357,3 +358,42 @@ def test_cmd_check_story_config_prints_violating_keys(capsys, tmp_path: Path) ->
     assert "validation, workspace" in err
     assert "allow_mutate_forge_yaml: true" in err
     assert "local story file frontmatter" in err
+
+
+def test_cmd_check_story_config_reports_stale_runtime_provenance(capsys, tmp_path: Path) -> None:
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "theforge"\nversion = "0.15.0rc3"\n',
+        encoding="utf-8",
+    )
+    runtime = Substrate(
+        binary="/Users/me/.local/bin/forge",
+        package_file="/tmp/rc16/site-packages/theforge/__init__.py",
+        version="0.13.0rc16",
+        editable=False,
+        source_root=None,
+        git_ref=None,
+    )
+    err_msg = (
+        "Unknown model 'anthropic/sonnet/cli': not in AGENT_REGISTRY. "
+        "Known models: ['claude/opus']"
+    )
+
+    with (
+        patch("theforge.cli.forge_yaml_guard._find_config", return_value=config_path),
+        patch("theforge.cli.forge_yaml_guard.load_config", side_effect=ValueError(err_msg)),
+        patch("theforge.cli.substrate.detect_substrate", return_value=runtime),
+    ):
+        rc = cmd_check_story_config(SimpleNamespace(config=None))
+
+    assert rc == 2
+    err = capsys.readouterr().err
+    expected_catalog = str(
+        Path("/tmp/rc16/site-packages/theforge/config/data/models.yaml").resolve()
+    )
+    assert "forge.yaml story-mutation guard failed" in err
+    assert err_msg in err
+    assert f"Runtime catalog: {expected_catalog}" in err
+    assert f"Checkout root:   {tmp_path}" in err
+    assert "Checkout version: 0.15.0rc3" in err

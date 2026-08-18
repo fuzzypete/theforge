@@ -13,7 +13,7 @@ import json
 import sys
 from pathlib import Path
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.config import load_config
 
 
@@ -38,7 +38,11 @@ def cmd_batch_report(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
 
     run_id = args.run_id
     summary_path = find_sprint_summary(run_id, config.project_root)

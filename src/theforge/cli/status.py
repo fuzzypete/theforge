@@ -9,7 +9,7 @@ import sys
 import time
 from pathlib import Path
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.cli.status_run_helpers import is_diagnose_run as _is_diagnose_run
 from theforge.cli.status_run_helpers import is_sprint_run as _is_sprint_run
 from theforge.config import load_config
@@ -467,7 +467,11 @@ def cmd_status(args: object) -> int:
     if config_path is None or not config_path.exists():
         print("forge.yaml not found.", file=sys.stderr)
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
     project_root = config.project_root
 
     # Report — never signal — agent process groups orphaned by an abruptly-killed
@@ -763,7 +767,11 @@ def cmd_logs(args: object) -> int:
     if config_path is None or not config_path.exists():
         print("forge.yaml not found.", file=sys.stderr)
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
     project_root = config.project_root
     run_id = args.run_id
 
@@ -923,7 +931,11 @@ def cmd_stop(args: object) -> int:
     if config_path is None or not config_path.exists():
         print("forge.yaml not found.", file=sys.stderr)
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
     project_root = config.project_root
     run_id = args.run_id
 
@@ -1005,7 +1017,11 @@ def cmd_runs_clean(args: object) -> int:
     if config_path is None or not config_path.exists():
         print("forge.yaml not found.", file=sys.stderr)
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
     project_root = config.project_root
 
     logs_dir = project_root / ".forge" / "logs"

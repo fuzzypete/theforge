@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.config import load_config
 from theforge.ideate import generate_ideation_audit, run_ideation
 from theforge.runners import LogLevel
@@ -45,11 +45,11 @@ def cmd_ideate(args: object) -> int:
         )
         return 1
 
-    try:
-        config = load_config(config_path)
-    except ValueError as exc:
-        print(f"Configuration error: {exc}", file=sys.stderr)
-        return 1
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
 
     if getattr(args, "verbose", False):
         runner_set_log_level(LogLevel.VERBOSE)

@@ -12,7 +12,7 @@ from typing import Any
 
 import yaml
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, print_config_load_error
 from theforge.config import load_config
 from theforge.task import (
     ALLOW_MUTATE_FORGE_YAML_KEY,
@@ -301,11 +301,19 @@ def cmd_check_story_config(args: argparse.Namespace) -> int:
 
     try:
         config = load_config(config_path)
+    except ValueError as exc:
+        print_config_load_error(
+            config_path,
+            exc,
+            prefix="forge.yaml story-mutation guard failed",
+        )
+        return 2
+    try:
         result = evaluate_forge_yaml_guard(
             config.project_root,
             base_branch=config.workspace.base_branch,
         )
-    except (RuntimeError, ValueError) as exc:
+    except RuntimeError as exc:
         print(f"forge.yaml story-mutation guard failed: {exc}", file=sys.stderr)
         return 1
 

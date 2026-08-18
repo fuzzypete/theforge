@@ -6,7 +6,7 @@ import sys
 from dataclasses import replace
 from pathlib import Path
 
-from theforge.cli.shared import _build_task, _find_config, _write_audit
+from theforge.cli.shared import _build_task, _find_config, _write_audit, load_config_checked
 from theforge.config import load_config
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.run_setup import REENTRY_MODE_REVIEW
@@ -66,7 +66,11 @@ def cmd_review(args: object) -> int:
         coordinator_set_log_level(LogLevel.VERBOSE)
         runner_set_log_level(LogLevel.VERBOSE)
 
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
     if story_path is not None:
         task = _build_task(story_path, slug=args.slug)
     else:

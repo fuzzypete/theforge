@@ -8,6 +8,7 @@ from theforge.cli.substrate import (
     Substrate,
     detect_mismatch,
     detect_substrate,
+    format_config_validation_provenance_lines,
     format_provenance_lines,
 )
 
@@ -102,6 +103,36 @@ def test_detect_mismatch_silent_for_released_substrate_on_newer_checkout(
 
 def test_detect_mismatch_returns_none_when_no_pyproject(tmp_path: Path) -> None:
     assert detect_mismatch(cwd=tmp_path, sub=_sub()) is None
+
+
+def test_config_validation_provenance_names_runtime_schema_catalog_and_checkout(
+    tmp_path: Path,
+) -> None:
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "theforge"\nversion = "0.11.0.dev0"\n',
+        encoding="utf-8",
+    )
+
+    lines = format_config_validation_provenance_lines(
+        config_path=config_path,
+        sub=_sub(
+            binary="/Users/me/.local/bin/forge",
+            package_file="/tmp/rc16/site-packages/theforge/__init__.py",
+            version="0.10.0rc12",
+            editable=False,
+        ),
+    )
+
+    joined = "\n".join(lines)
+    assert "/Users/me/.local/bin/forge" in joined
+    assert "/tmp/rc16/site-packages/theforge/__init__.py" in joined
+    assert "/tmp/rc16/site-packages/theforge/config/model_catalog.py" in joined
+    assert "/tmp/rc16/site-packages/theforge/config/data/models.yaml" in joined
+    assert f"Checkout root:   {tmp_path}" in joined
+    assert "Checkout version: 0.11.0.dev0" in joined
+    assert "appears ahead of it" in joined
 
 
 def test_detect_substrate_returns_real_runtime_metadata() -> None:
