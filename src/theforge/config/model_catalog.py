@@ -63,7 +63,6 @@ import yaml
 from .model_identity import (
     _DEFAULT_PHASE_ELIGIBILITY,
     CAPABILITY_RANGE,
-    CLOSED_OPERATOR_PHASES,
     COST_RANK_RANGE,
     IDENTITY_STATUS_RETIRED,
     IDENTITY_STATUSES,
@@ -79,6 +78,8 @@ from .model_identity import (
     canonical_model_id,
     custom_model_capability,
     custom_model_dev_capable,
+    is_known_dispatch_phase,
+    is_operator_constrainable_phase,
     transport_for,
 )
 from .pricing import (
@@ -421,13 +422,19 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
         parsed_phases = frozenset(
             _require_str(p, where=f"{where}.routing.phase_eligibility") for p in phases
         )
-        closed_phases = parsed_phases & CLOSED_OPERATOR_PHASES
+        closed_phases = frozenset(
+            phase
+            for phase in parsed_phases
+            if is_known_dispatch_phase(phase) and not is_operator_constrainable_phase(phase)
+        )
         if closed_phases:
             raise ValueError(
                 f"forge.yaml '{where}.routing.phase_eligibility' names known dispatch "
                 f"phase(s) deliberately closed to operator constraint: {sorted(closed_phases)}"
             )
-        unknown_phases = parsed_phases - KNOWN_PHASES
+        unknown_phases = frozenset(
+            phase for phase in parsed_phases if not is_known_dispatch_phase(phase)
+        )
         if unknown_phases:
             raise ValueError(
                 f"forge.yaml '{where}.routing.phase_eligibility' only supports "

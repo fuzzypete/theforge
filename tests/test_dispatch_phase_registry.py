@@ -41,7 +41,16 @@ def test_parser_uses_registry_derived_vocabulary_without_a_second_list(
         )
     )
     monkeypatch.setattr(model_catalog, "KNOWN_PHASES", registry.known_phases)
-    monkeypatch.setattr(model_catalog, "CLOSED_OPERATOR_PHASES", registry.closed_operator_phases)
+    monkeypatch.setattr(
+        model_catalog,
+        "is_known_dispatch_phase",
+        lambda phase: phase in registry.known_phases,
+    )
+    monkeypatch.setattr(
+        model_catalog,
+        "is_operator_constrainable_phase",
+        lambda phase: phase not in registry.closed_operator_phases,
+    )
 
     opened = parse_definition(
         {
@@ -78,24 +87,10 @@ def test_parser_uses_registry_derived_vocabulary_without_a_second_list(
 
 def test_model_profile_phase_sites_do_not_introduce_new_string_literals() -> None:
     repo_root = Path(__file__).resolve().parents[1]
-    guarded = (
-        "src/theforge/config/defaults.py",
-        "src/theforge/config/bridge.py",
-        "src/theforge/config/profiles.py",
-        "src/theforge/config/load.py",
-        "src/theforge/config/types.py",
-        "src/theforge/coordinator/preflight.py",
-        "src/theforge/coordinator/plan_flow.py",
-        "src/theforge/coordinator/escalation_advisor_flow.py",
-        "src/theforge/coordinator/diagnose_flow.py",
-        "src/theforge/coordinator/knowledge_summary_flow.py",
-        "src/theforge/cli/provider_readiness.py",
-        "src/theforge/assignment.py",
-    )
     violations: list[str] = []
 
-    for relative_path in guarded:
-        path = repo_root / relative_path
+    for path in sorted((repo_root / "src/theforge").rglob("*.py")):
+        relative_path = path.relative_to(repo_root).as_posix()
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if not isinstance(node, ast.Call):
@@ -112,6 +107,8 @@ def test_model_profile_phase_sites_do_not_introduce_new_string_literals() -> Non
             elif isinstance(func, ast.Attribute):
                 func_name = func.attr
             if func_name not in {"ModelProfile", "model_ref_to_profile", "replace"}:
+                continue
+            if phase_kw.value.value.upper() == phase_kw.value.value:
                 continue
             violations.append(f"{relative_path}:{node.lineno}:{phase_kw.value.value}")
 

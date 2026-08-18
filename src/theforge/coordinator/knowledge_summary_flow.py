@@ -192,6 +192,19 @@ def _agent_phase_eligibility(config: "ForgeConfig", agent: object) -> frozenset[
     return DEFAULT_PHASE_ELIGIBILITY
 
 
+def _apply_summary_transport_fallback(
+    config: "ForgeConfig",
+    profile: "ModelProfile",
+) -> "ModelProfile":
+    fallbacks = getattr(config, "transport_fallbacks", None) or {}
+    if not fallbacks or profile.api_fallback is not None:
+        return profile
+
+    from theforge.config.profiles import _apply_transport_fallback  # noqa: PLC0415
+
+    return _apply_transport_fallback(profile, fallbacks)
+
+
 def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | None":
     if profile.mode == "api":
         return profile
@@ -212,6 +225,26 @@ def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | Non
     )
 
 
+def _summary_dispatch_profile(
+    summary_envelope: "ModelProfile",
+    selected: "ModelProfile",
+) -> "ModelProfile":
+    """Keep the plan role envelope while swapping in the selected model identity."""
+    return replace(
+        summary_envelope,
+        cli=selected.cli,
+        provider=selected.provider,
+        transport=selected.transport,
+        base_url=selected.base_url,
+        model=selected.model,
+        fallback_models=selected.fallback_models,
+        api_fallback=selected.api_fallback,
+        registry_id=selected.registry_id,
+        registry_source=selected.registry_source,
+        reasoning_mode=selected.reasoning_mode,
+    )
+
+
 def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str | None]:
     """Derive a tool-free API profile for the summary agent, or None.
 
@@ -226,14 +259,15 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
     if ref is None:
         return (None, None)
 
-    base_profile = model_ref_to_profile(
+    summary_envelope = model_ref_to_profile(
         "knowledge_summary",
         ref,
         allowed_tools=(),
         phase=PHASE_KNOWLEDGE_SUMMARY,
         sandbox_mode="read-only",
     )
-    base_profile = _project_summary_api_profile(base_profile)
+    summary_envelope = _apply_summary_transport_fallback(config, summary_envelope)
+    base_profile = _project_summary_api_profile(summary_envelope)
 
     agents = getattr(config, "agents", None) or []
     if not agents:
@@ -250,6 +284,8 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
             "routing.phase_eligibility excludes knowledge_summary for every configured candidate",
         )
 
+    summary_identity = identity_for_profile(summary_envelope)
+    base_identity = identity_for_profile(base_profile) if base_profile is not None else None
     projected: list[ModelProfile] = []
     for agent in phase_eligible:
         candidate = replace(
@@ -257,17 +293,20 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
             phase=PHASE_KNOWLEDGE_SUMMARY,
             sandbox_mode="read-only",
         )
+        candidate = _apply_summary_transport_fallback(config, candidate)
         candidate = _project_summary_api_profile(candidate)
         if candidate is not None:
             projected.append(candidate)
     if not projected:
+        if base_profile is not None and summary_identity is not None:
+            if any(identity_for_agent(agent) == summary_identity for agent in phase_eligible):
+                return (base_profile, None)
         return (
             None,
             "no phase-eligible configured model can dispatch knowledge_summary over a tool-free "
             "API transport",
         )
 
-    base_identity = identity_for_profile(base_profile) if base_profile is not None else None
     if base_identity is not None:
         matching = next(
             (
@@ -278,8 +317,8 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
             None,
         )
         if matching is not None:
-            return (matching, None)
-    return (projected[0], None)
+            return (base_profile, None)
+    return (_summary_dispatch_profile(summary_envelope, projected[0]), None)
 
 
 def _should_generate(config: "ForgeConfig", result: "CoordinatorResult", run_id: str) -> bool:
