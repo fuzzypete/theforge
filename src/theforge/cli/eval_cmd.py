@@ -6,6 +6,7 @@ import sys
 from pathlib import Path
 
 from theforge.cli.shared import _find_config, load_config_checked
+from theforge.config.model_identity import PHASE_PREFLIGHT
 
 
 def _infer_profile(
@@ -44,7 +45,7 @@ def _infer_profile(
             timeout_seconds=timeout_seconds,
             allowed_tools=DEFAULT_TOOLS,
             cli="claude",
-            phase="preflight",
+            phase=PHASE_PREFLIGHT,
         )
     elif model.startswith("gpt-"):
         return ModelProfile(
@@ -54,7 +55,7 @@ def _infer_profile(
             timeout_seconds=timeout_seconds,
             allowed_tools=DEFAULT_TOOLS,
             provider="openai",
-            phase="preflight",
+            phase=PHASE_PREFLIGHT,
         )
     elif model.startswith("deepseek-"):
         return ModelProfile(
@@ -64,7 +65,7 @@ def _infer_profile(
             timeout_seconds=timeout_seconds,
             allowed_tools=DEFAULT_TOOLS,
             provider="deepseek",
-            phase="preflight",
+            phase=PHASE_PREFLIGHT,
         )
     elif model.startswith("gemini-"):
         return ModelProfile(
@@ -74,7 +75,7 @@ def _infer_profile(
             timeout_seconds=timeout_seconds,
             allowed_tools=DEFAULT_TOOLS,
             provider="google",
-            phase="preflight",
+            phase=PHASE_PREFLIGHT,
         )
     else:
         # Best-effort: treat as CLI with model name as cli identifier
@@ -85,7 +86,7 @@ def _infer_profile(
             timeout_seconds=timeout_seconds,
             allowed_tools=DEFAULT_TOOLS,
             cli=model,
-            phase="preflight",
+            phase=PHASE_PREFLIGHT,
         )
 
 

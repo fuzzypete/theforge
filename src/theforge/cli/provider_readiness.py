@@ -22,6 +22,13 @@ from theforge.config import (
     transport_for,
 )
 from theforge.config.auth import check_agent_auth
+from theforge.config.model_identity import (
+    PHASE_DEV,
+    PHASE_PLAN,
+    PHASE_PLAN_REVIEW,
+    PHASE_PREFLIGHT,
+    PHASE_REVIEW,
+)
 from theforge.config.models import mirror_fields_for_transport
 from theforge.config.profiles import iter_config_profiles, iter_plan_phase_profiles
 from theforge.config.types import ModelProfile
@@ -639,19 +646,19 @@ def _probe_for_profile(role: str, profile: ModelProfile) -> ReadinessProbe:
 
 def _stamp_phase(profile: ModelProfile, role: str) -> ModelProfile:
     phase_by_role = {
-        "dev": "dev",
-        "preflight": "preflight",
-        "preflight-fallback": "preflight",
-        "review": "review",
+        "dev": PHASE_DEV,
+        "preflight": PHASE_PREFLIGHT,
+        "preflight-fallback": PHASE_PREFLIGHT,
+        "review": PHASE_REVIEW,
         "synthesis": "synthesis",
-        "plan": "plan",
-        "plan-review": "plan_review",
-        "advisor": "preflight",
-        "agent-dev": "dev",
-        "agent-preflight": "preflight",
-        "agent-planner": "plan",
-        "agent-plan-review": "plan_review",
-        "agent-code-review": "review",
+        "plan": PHASE_PLAN,
+        "plan-review": PHASE_PLAN_REVIEW,
+        "advisor": PHASE_PREFLIGHT,
+        "agent-dev": PHASE_DEV,
+        "agent-preflight": PHASE_PREFLIGHT,
+        "agent-planner": PHASE_PLAN,
+        "agent-plan-review": PHASE_PLAN_REVIEW,
+        "agent-code-review": PHASE_REVIEW,
     }
     phase = phase_by_role.get(role, profile.phase)
     return dataclasses.replace(profile, phase=phase)
@@ -660,21 +667,21 @@ def _stamp_phase(profile: ModelProfile, role: str) -> ModelProfile:
 def _agent_role_probes(agent: object) -> list[ReadinessProbe]:
     planner_profile = _agent_to_profile(
         agent,
-        role="plan",
+        role=PHASE_PLAN,
         allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
     )
     review_tools = DEFAULT_REVIEW_PROFILE.allowed_tools
     plan_review_profile = dataclasses.replace(
-        _agent_to_profile(agent, role="review", allowed_tools=review_tools),
-        phase="plan_review",
+        _agent_to_profile(agent, role=PHASE_REVIEW, allowed_tools=review_tools),
+        phase=PHASE_PLAN_REVIEW,
     )
     return [
-        _probe_for_profile("agent-dev", _agent_to_profile(agent, role="dev")),
+        _probe_for_profile("agent-dev", _agent_to_profile(agent, role=PHASE_DEV)),
         _probe_for_profile(
             "agent-preflight",
             _agent_to_profile(
                 agent,
-                role="preflight",
+                role=PHASE_PREFLIGHT,
                 allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
             ),
         ),
@@ -682,7 +689,7 @@ def _agent_role_probes(agent: object) -> list[ReadinessProbe]:
         _probe_for_profile("agent-plan-review", plan_review_profile),
         _probe_for_profile(
             "agent-code-review",
-            _agent_to_profile(agent, role="review", allowed_tools=review_tools),
+            _agent_to_profile(agent, role=PHASE_REVIEW, allowed_tools=review_tools),
         ),
     ]
 

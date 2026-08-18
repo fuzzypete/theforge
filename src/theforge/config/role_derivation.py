@@ -18,6 +18,7 @@ from .defaults import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
 )
+from .model_identity import PHASE_DEV, PHASE_PLAN, PHASE_PREFLIGHT, PHASE_REVIEW
 from .models import AgentSpec, ModelInfo, _resolve_model_info
 from .pricing import price_tiebreak_signal_for
 from .schema import (
@@ -269,10 +270,10 @@ def derive_roles(
 
     # Phase-eligibility-aware candidate pools — a model's AgentSpec may exclude it
     # from specific phases (e.g. a pro model excluded from preflight to avoid overspend).
-    dev_pool = _phase_candidates(sorted_models, "dev")
-    preflight_pool = _phase_candidates(sorted_models, "preflight")
-    plan_pool = _phase_candidates(sorted_models, "plan")
-    review_pool_sorted = _phase_candidates(sorted_models, "review")
+    dev_pool = _phase_candidates(sorted_models, PHASE_DEV)
+    preflight_pool = _phase_candidates(sorted_models, PHASE_PREFLIGHT)
+    plan_pool = _phase_candidates(sorted_models, PHASE_PLAN)
+    review_pool_sorted = _phase_candidates(sorted_models, PHASE_REVIEW)
 
     # dev: cheapest dev-capable model; fall back to first if none are dev-capable
     dev_candidates = [(k, i) for k, i in dev_pool if i.dev_capable]

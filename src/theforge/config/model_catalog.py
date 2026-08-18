@@ -66,8 +66,8 @@ from .model_identity import (
     COST_RANK_RANGE,
     IDENTITY_STATUS_RETIRED,
     IDENTITY_STATUSES,
-    KNOWN_PHASES,
     MODEL_TIERS,
+    OPERATOR_CONSTRAINABLE_PHASES,
     REASONING_MODES,
     TRANSPORT_KINDS,
     UNCONFIRMED_IDENTITY,
@@ -78,6 +78,8 @@ from .model_identity import (
     canonical_model_id,
     custom_model_capability,
     custom_model_dev_capable,
+    is_known_dispatch_phase,
+    is_operator_constrainable_phase,
     transport_for,
 )
 from .pricing import (
@@ -420,11 +422,23 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
         parsed_phases = frozenset(
             _require_str(p, where=f"{where}.routing.phase_eligibility") for p in phases
         )
-        unknown_phases = parsed_phases - KNOWN_PHASES
+        closed_phases = frozenset(
+            phase
+            for phase in parsed_phases
+            if is_known_dispatch_phase(phase) and not is_operator_constrainable_phase(phase)
+        )
+        if closed_phases:
+            raise ValueError(
+                f"forge.yaml '{where}.routing.phase_eligibility' names known dispatch "
+                f"phase(s) deliberately closed to operator constraint: {sorted(closed_phases)}"
+            )
+        unknown_phases = frozenset(
+            phase for phase in parsed_phases if not is_known_dispatch_phase(phase)
+        )
         if unknown_phases:
             raise ValueError(
                 f"forge.yaml '{where}.routing.phase_eligibility' only supports "
-                f"{sorted(KNOWN_PHASES)}; got {sorted(unknown_phases)}"
+                f"{sorted(OPERATOR_CONSTRAINABLE_PHASES)}; got {sorted(unknown_phases)}"
             )
         routing["phase_eligibility"] = parsed_phases
     if "cost_rank_basis" in routing_raw:

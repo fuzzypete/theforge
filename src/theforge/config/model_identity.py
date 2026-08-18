@@ -142,9 +142,99 @@ class TransportSpec:
             raise ValueError("TransportSpec(kind='api') must not set an executable")
 
 
-_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset(
-    {"preflight", "dev", "plan", "review", "advisor"}
+PHASE_PREFLIGHT = "preflight"
+PHASE_DEV = "dev"
+PHASE_PLAN = "plan"
+PHASE_REVIEW = "review"
+PHASE_PLAN_REVIEW = "plan_review"
+PHASE_ADVISOR = "advisor"
+PHASE_KNOWLEDGE_SUMMARY = "knowledge_summary"
+PHASE_DIAGNOSE = "diagnose"
+
+
+@dataclass(frozen=True)
+class DispatchPhase:
+    """Metadata for one runtime ModelProfile phase token."""
+
+    name: str
+    operator_constrainable: bool = True
+    default_eligible: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.operator_constrainable and self.default_eligible:
+            raise ValueError(
+                f"dispatch phase {self.name!r} cannot be default-eligible when it is closed "
+                "to operator routing.phase_eligibility constraints"
+            )
+
+
+@dataclass(frozen=True)
+class DispatchPhaseRegistry:
+    """Derived views over the dispatch-phase metadata source."""
+
+    phases: tuple[DispatchPhase, ...]
+    by_name: dict[str, DispatchPhase]
+    known_phases: frozenset[str]
+    operator_constrainable_phases: frozenset[str]
+    default_phase_eligibility: frozenset[str]
+    closed_operator_phases: frozenset[str]
+
+
+def build_dispatch_phase_registry(phases: tuple[DispatchPhase, ...]) -> DispatchPhaseRegistry:
+    """Derive the routing-phase vocabulary from phase metadata."""
+    by_name: dict[str, DispatchPhase] = {}
+    for phase in phases:
+        if phase.name in by_name:
+            raise ValueError(f"duplicate dispatch phase metadata for {phase.name!r}")
+        by_name[phase.name] = phase
+    known = frozenset(by_name)
+    operator_constrainable = frozenset(
+        phase.name for phase in phases if phase.operator_constrainable
+    )
+    default_eligible = frozenset(
+        phase.name for phase in phases if phase.operator_constrainable and phase.default_eligible
+    )
+    closed = frozenset(phase.name for phase in phases if not phase.operator_constrainable)
+    return DispatchPhaseRegistry(
+        phases=phases,
+        by_name=by_name,
+        known_phases=known,
+        operator_constrainable_phases=operator_constrainable,
+        default_phase_eligibility=default_eligible,
+        closed_operator_phases=closed,
+    )
+
+
+DISPATCH_PHASES: tuple[DispatchPhase, ...] = (
+    DispatchPhase(PHASE_PREFLIGHT),
+    DispatchPhase(PHASE_DEV),
+    DispatchPhase(PHASE_PLAN),
+    DispatchPhase(PHASE_REVIEW),
+    DispatchPhase(PHASE_PLAN_REVIEW),
+    DispatchPhase(PHASE_ADVISOR),
+    DispatchPhase(PHASE_KNOWLEDGE_SUMMARY),
+    DispatchPhase(PHASE_DIAGNOSE, operator_constrainable=False, default_eligible=False),
 )
+DISPATCH_PHASE_REGISTRY = build_dispatch_phase_registry(DISPATCH_PHASES)
+
+
+def is_operator_constrainable_phase(phase: str) -> bool:
+    """Return True when operators may name the phase in routing.phase_eligibility."""
+    meta = DISPATCH_PHASE_REGISTRY.by_name.get(phase)
+    return bool(meta and meta.operator_constrainable)
+
+
+def is_known_dispatch_phase(phase: str) -> bool:
+    """Return True when the phase is a known runtime dispatch token."""
+    return phase in KNOWN_PHASES
+
+
+_DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = DISPATCH_PHASE_REGISTRY.default_phase_eligibility
+DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+OPERATOR_CONSTRAINABLE_PHASES: frozenset[str] = (
+    DISPATCH_PHASE_REGISTRY.operator_constrainable_phases
+)
+CLOSED_OPERATOR_PHASES: frozenset[str] = DISPATCH_PHASE_REGISTRY.closed_operator_phases
 
 # Domains of the routing fields, kept next to the policy they constrain so both
 # declaration surfaces check the same thing. Each is bounded by what actually
@@ -154,11 +244,10 @@ _DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset(
 # - ``CAPABILITY_RANGE``: the 1-10 scale ``RoutingPolicy.capability`` documents.
 # - ``COST_RANK_RANGE``: the bands role selection reads (1=cheap, 2=mid,
 #   3=strong) — see ``config/pricing.py``.
-# - ``KNOWN_PHASES``: the only phases ever queried, by ``derive_roles()`` in
-#   ``role_derivation.py`` and the single-role advisor selector. It equals the
-#   default set today because every known phase is eligible by default; they are
-#   separate names because a future phase that is *not* default-eligible would
-#   make them diverge.
+# - ``KNOWN_PHASES``: every known runtime dispatch phase token. It is derived
+#   from the dispatch-phase metadata above rather than hand-maintained beside it.
+# - ``DEFAULT_PHASE_ELIGIBILITY``: the constrainable phases a model is eligible
+#   for when it does not declare a narrower list.
 #
 # An unrecognized phase is the sharpest of these: ``_phase_candidates`` falls
 # back to the whole list when filtering empties it, so ``[reviewer]`` for
@@ -167,7 +256,7 @@ _DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = frozenset(
 MODEL_TIERS: frozenset[str] = frozenset({"cheap", "fast", "strong"})
 CAPABILITY_RANGE: tuple[int, int] = (1, 10)
 COST_RANK_RANGE: tuple[int, int] = (1, 3)
-KNOWN_PHASES: frozenset[str] = frozenset({"preflight", "dev", "plan", "review", "advisor"})
+KNOWN_PHASES: frozenset[str] = DISPATCH_PHASE_REGISTRY.known_phases
 
 
 @dataclass(frozen=True)

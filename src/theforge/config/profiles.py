@@ -18,6 +18,7 @@ from .defaults import (
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
 )
+from .model_identity import PHASE_DEV, PHASE_PLAN, PHASE_PREFLIGHT, PHASE_REVIEW
 from .models import AgentDef, AgentSpec, _resolve_model_info
 from .pricing import price_tiebreak_signal_for
 from .types import SUPPORTED_PROVIDERS, ModelProfile, TransportFallbackConfig
@@ -79,6 +80,7 @@ def iter_plan_phase_profiles(config: "ForgeConfig") -> Iterator[tuple[str, Model
                 # the investigation set rather than borrowing preflight's
                 # narrowed surface (#2346).
                 allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
+                phase=PHASE_PLAN,
             ),
         )
     plan_agent_review = getattr(config, "plan_agent_review", None)
@@ -406,7 +408,7 @@ def _auto_assign_models(
         budget_usd=dev_budget,
         timeout_seconds=DEFAULT_DEV_PROFILE.timeout_seconds,
         allowed_tools=DEFAULT_DEV_PROFILE.allowed_tools,
-        phase="dev",
+        phase=PHASE_DEV,
         registry_id=dev_info.registry_id,
         registry_source=dev_info.registry_source,
     )
@@ -420,7 +422,7 @@ def _auto_assign_models(
         budget_usd=preflight_budget,
         timeout_seconds=DEFAULT_PREFLIGHT_PROFILE.timeout_seconds,
         allowed_tools=DEFAULT_PREFLIGHT_PROFILE.allowed_tools,
-        phase="preflight",
+        phase=PHASE_PREFLIGHT,
         registry_id=preflight_info.registry_id,
         registry_source=preflight_info.registry_source,
     )
@@ -435,6 +437,7 @@ def _auto_assign_models(
             budget_usd=reviewer_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
             allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+            phase=PHASE_REVIEW,
             registry_id=i.registry_id,
             registry_source=i.registry_source,
         )
@@ -454,6 +457,7 @@ def _auto_assign_models(
             budget_usd=synthesis_budget,
             timeout_seconds=DEFAULT_REVIEW_PROFILE.timeout_seconds,
             allowed_tools=DEFAULT_REVIEW_PROFILE.allowed_tools,
+            phase=PHASE_REVIEW,
             registry_id=synth_info.registry_id,
             registry_source=synth_info.registry_source,
         )

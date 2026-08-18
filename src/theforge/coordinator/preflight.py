@@ -20,6 +20,7 @@ from theforge.config import (
     model_info_view,
 )
 from theforge.config.bridge import model_ref_to_profile
+from theforge.config.model_identity import PHASE_PLAN
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.review import ReviewFinding
 from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
@@ -1405,7 +1406,7 @@ def _apply_preflight_config(
             # See plan_flow: the plan role names the investigation set rather
             # than borrowing preflight's narrowed one (#2346).
             allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
-            phase="plan",
+            phase=PHASE_PLAN,
         )
         _explicit["planner"] = _explicit_planner
     if config.plan_agent_review.enabled and config.plan_agent_review.profiles:
