@@ -137,6 +137,7 @@ from .manifest import (
     _build_task_from_story,
     resolve_from_manifest,
 )
+from .preserved_resume import preserved_escalated_message
 from .prior_landing import landing_settled
 from .query import (
     NormalizedDependencyPlan,
@@ -1628,35 +1629,49 @@ def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
     return warnings
 
 
-def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
-    """Extract story slugs from a sprint manifest without full validation.
+def parse_manifest_story_refs(
+    config: "ForgeConfig", manifest_path: Path
+) -> tuple[list[str], dict[str, str]]:
+    """Extract manifest slugs plus best-effort canonical refs.
 
-    Returns an empty list if the manifest cannot be parsed or has no stories.
-    Used for pre-launch conflict detection — does not raise on invalid manifests.
+    Returns ``([], {})`` if the manifest cannot be parsed or has no stories.
+    Used for pre-launch conflict detection and operator guidance, so it stays
+    best-effort and does not raise on invalid manifests.
     """
     try:
         with open(manifest_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         if not isinstance(raw, dict):
-            return []
+            return [], {}
         stories = raw.get("stories") or raw.get("specs") or []
         if not isinstance(stories, list):
-            return []
+            return [], {}
         slugs: list[str] = []
+        canonical_refs_by_slug: dict[str, str] = {}
         for entry in stories:
             if isinstance(entry, dict) and "issue" in entry:
-                slugs.append(entry.get("slug", f"issue-{entry['issue']}"))
+                slug = entry.get("slug", f"issue-{entry['issue']}")
+                slugs.append(slug)
+                canonical_refs_by_slug[slug] = f"issue:{entry['issue']}"
             elif isinstance(entry, str):
                 story_path = (config.project_root / entry).resolve()
                 if story_path.exists():
                     task = _build_task_from_story(story_path)
-                    slugs.append(task.slug)
+                    slug = task.slug
                 else:
                     # Fallback: use file stem as slug
-                    slugs.append(Path(entry).stem)
-        return slugs
+                    slug = Path(entry).stem
+                slugs.append(slug)
+                canonical_refs_by_slug[slug] = entry
+        return slugs, canonical_refs_by_slug
     except Exception:
-        return []
+        return [], {}
+
+
+def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
+    """Extract story slugs from a sprint manifest without full validation."""
+    slugs, _canonical_refs_by_slug = parse_manifest_story_refs(config, manifest_path)
+    return slugs
 
 
 #: A collision claim is held while its story is running past the plan gate.
@@ -5924,10 +5939,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             reason = REASON_STRANDED_WORKTREE
             _dropped_slugs[slug] = reason
         if reason == "preserved-escalated":
-            _log(f"PRESERVED {slug} (escalated worktree held for review)")
+            _, _, _canonical_ref = _ctx.slug_to_context[slug]
+            _log(preserved_escalated_message(slug, canonical_ref=_canonical_ref))
             _sprint_state.dag.mark_skipped(slug)
             _set_outcome(_sprint_state, slug, StoryOutcome.PRESERVED, reason=reason)
-            _record_current_story_entry(slug, "PRESERVED", error=reason, error_type="dropped")
+            _record_current_story_entry(
+                slug,
+                "PRESERVED",
+                error=reason,
+                error_type="dropped",
+                extras={"drop_reason": reason},
+            )
         elif reason == REASON_RECONCILE_PRIOR_DONE:
             # The prior generation already completed this story; its worktree
             # collision is a reconcilable success, not a fresh drop. Mark it

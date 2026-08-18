@@ -21,6 +21,7 @@ from theforge.sprint.runner import (
     _extract_plan_footprint,
     _run_fresh,
     parse_manifest_slugs,
+    parse_manifest_story_refs,
 )
 from theforge.sprint.sources import (
     FileSource,
@@ -886,6 +887,30 @@ class TestParseManifestSlugs:
         config.project_root = tmp_path
         slugs = parse_manifest_slugs(config, manifest_path)
         assert slugs == ["custom"]
+
+    def test_story_refs_preserve_file_paths_and_issue_refs(self, tmp_path: Path) -> None:
+        story = tmp_path / "story.md"
+        story.write_text("---\nname: Test\nslug: custom-file\n---\n# Content\n")
+        manifest_path = tmp_path / "sprint.yaml"
+        manifest_path.write_text(
+            yaml.dump(
+                {
+                    "name": "test",
+                    "budget_usd": 10.0,
+                    "stories": ["story.md", {"issue": 42, "slug": "custom-issue"}],
+                }
+            )
+        )
+        config = MagicMock()
+        config.project_root = tmp_path
+
+        slugs, canonical_refs_by_slug = parse_manifest_story_refs(config, manifest_path)
+
+        assert slugs == ["custom-file", "custom-issue"]
+        assert canonical_refs_by_slug == {
+            "custom-file": "story.md",
+            "custom-issue": "issue:42",
+        }
 
 
 # ── Completion: archive and PR body ───────────────────────────────────

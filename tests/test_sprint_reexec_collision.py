@@ -19,6 +19,7 @@ import yaml
 
 from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.sprint.launch_guard import acquire_launch_story_locks
+from theforge.sprint.preserved_resume import preserved_escalated_detail
 
 
 def _mock_config(tmp_path: Path) -> MagicMock:
@@ -95,7 +96,7 @@ class TestEscalatedWorktreeNotTreatedAsCollision:
 
             release_story_locks(locked_fds)
 
-    def test_escalated_worktree_is_preserved_not_scheduled(self, tmp_path: Path) -> None:
+    def test_escalated_worktree_is_preserved_not_scheduled(self, tmp_path: Path, capsys) -> None:
         """An escalated worktree is excluded from scheduling — no lock, no rerun."""
         _make_worktree_with_audit(tmp_path, "issue-829", final_phase="ESCALATE")
         config = _mock_config(tmp_path)
@@ -116,6 +117,101 @@ class TestEscalatedWorktreeNotTreatedAsCollision:
         assert dropped == {"issue-829": "preserved-escalated"}
         # No lock is held for the preserved escalated worktree.
         assert locked_fds == []
+        assert preserved_escalated_detail(slug="issue-829") in capsys.readouterr().err
+
+    def test_multiple_preserved_escalated_worktrees_each_name_runnable_command(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Each preserved slug should render its own runnable review command."""
+        _make_worktree_with_audit(tmp_path, "issue-829", final_phase="ESCALATE")
+        _make_worktree_with_audit(tmp_path, "issue-830", final_phase="ESCALATE")
+        config = _mock_config(tmp_path)
+
+        git_results = [
+            MagicMock(returncode=0, stdout="7\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout="5\n"),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        with patch("theforge.sprint.lock.subprocess.run", side_effect=git_results):
+            locked_fds, launch_error, dropped = acquire_launch_story_locks(
+                slugs=["issue-829", "issue-830"],
+                config=config,
+                resume=False,
+                allow_drop=False,
+            )
+
+        assert launch_error is None
+        assert dropped == {
+            "issue-829": "preserved-escalated",
+            "issue-830": "preserved-escalated",
+        }
+        assert locked_fds == []
+        err = capsys.readouterr().err
+        assert preserved_escalated_detail(slug="issue-829") in err
+        assert preserved_escalated_detail(slug="issue-830") in err
+        assert "PRESERVED issue-829, issue-830" not in err
+        assert "resolve with `forge review`" not in err
+
+    def test_file_backed_preserved_launch_message_names_concrete_story_path(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Launch triage should name the concrete file-backed review command when known."""
+        _make_worktree_with_audit(tmp_path, "feature-a", final_phase="ESCALATE")
+        config = _mock_config(tmp_path)
+
+        git_results = [
+            MagicMock(returncode=0, stdout="4\n"),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        with patch("theforge.sprint.lock.subprocess.run", side_effect=git_results):
+            locked_fds, launch_error, dropped = acquire_launch_story_locks(
+                slugs=["feature-a"],
+                config=config,
+                resume=False,
+                allow_drop=False,
+                canonical_refs_by_slug={"feature-a": "stories/feature-a.md"},
+            )
+
+        assert launch_error is None
+        assert dropped == {"feature-a": "preserved-escalated"}
+        assert locked_fds == []
+        err = capsys.readouterr().err
+        assert (
+            preserved_escalated_detail(
+                canonical_ref="stories/feature-a.md",
+                slug="feature-a",
+            )
+            in err
+        )
+        assert "resolve with `forge review <story-file>`" not in err
+
+    def test_custom_issue_slug_preserved_launch_message_names_issue_review_command(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Launch triage should keep issue-backed guidance runnable for custom slugs."""
+        _make_worktree_with_audit(tmp_path, "custom-issue", final_phase="ESCALATE")
+        config = _mock_config(tmp_path)
+
+        git_results = [
+            MagicMock(returncode=0, stdout="4\n"),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        with patch("theforge.sprint.lock.subprocess.run", side_effect=git_results):
+            locked_fds, launch_error, dropped = acquire_launch_story_locks(
+                slugs=["custom-issue"],
+                config=config,
+                resume=False,
+                allow_drop=False,
+                canonical_refs_by_slug={"custom-issue": "issue:829"},
+            )
+
+        assert launch_error is None
+        assert dropped == {"custom-issue": "preserved-escalated"}
+        assert locked_fds == []
+        err = capsys.readouterr().err
+        assert preserved_escalated_detail(canonical_ref="issue:829", slug="custom-issue") in err
+        assert "resolve with `forge review <story-file>`" not in err
 
     def test_reexec_with_escalated_and_pending_story(self, tmp_path: Path) -> None:
         """Scenario from the bug: three stories, middle escalated, third must run.

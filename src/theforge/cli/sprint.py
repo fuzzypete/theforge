@@ -18,7 +18,7 @@ from theforge.sprint.launch_guard import acquire_launch_story_locks
 from theforge.sprint.live_stories import LivenessResolution
 from theforge.sprint.lock import release_story_locks
 from theforge.sprint.preflight import reacquire_story_locks_in_daemon
-from theforge.sprint.runner import parse_manifest_slugs
+from theforge.sprint.runner import parse_manifest_story_refs
 
 # A run's reported disposition must be derived from how it actually ended, not
 # from the absence of a record saying otherwise. ``_BACKSTOP`` carries the
@@ -35,6 +35,12 @@ _UNKNOWN_END_CAUSE = "sprint process ended before recording a completion"
 # is live and nothing is unresolved. Distinct from a failed lookup, which yields
 # an *unresolved* result (see ``_resolve_story_liveness``).
 _NO_LIVENESS = LivenessResolution()
+
+
+def parse_manifest_slugs(config: object, manifest_path: Path) -> list[str]:
+    """CLI seam for pre-launch slug parsing in manifest mode."""
+    slugs, _canonical_refs_by_slug = parse_manifest_story_refs(config, manifest_path)
+    return slugs
 
 
 def _exc_cause(exc: BaseException) -> str:
@@ -291,6 +297,7 @@ def _cmd_sprint(args: object) -> int:
         return 1
 
     slugs = parse_manifest_slugs(config, manifest_path)
+    _parsed_slugs, canonical_refs_by_slug = parse_manifest_story_refs(config, manifest_path)
     # ``reexec`` was captured at the top of cmd_sprint, before setup_detached_child
     # popped FORGE_PREV_RUN_ID — do not recompute it here (the env signal is gone).
     # On the re-exec path, resolve the prior generation's recorded outcomes so the
@@ -319,6 +326,7 @@ def _cmd_sprint(args: object) -> int:
         prior_outcomes=prior_outcomes,
         live_slugs=set(liveness.live_slugs),
         unresolved_slugs=set(liveness.unresolved_slugs),
+        canonical_refs_by_slug=canonical_refs_by_slug,
     )
     if launch_error is not None:
         return launch_error
@@ -439,6 +447,7 @@ def _acquire_launch_locks(
     prior_outcomes: dict[str, str | dict] | None = None,
     live_slugs: set[str] | None = None,
     unresolved_slugs: set[str] | None = None,
+    canonical_refs_by_slug: dict[str, str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     return acquire_launch_story_locks(
         slugs=slugs,
@@ -449,6 +458,7 @@ def _acquire_launch_locks(
         prior_outcomes=prior_outcomes,
         live_slugs=live_slugs,
         unresolved_slugs=unresolved_slugs,
+        canonical_refs_by_slug=canonical_refs_by_slug,
     )
 
 
@@ -1244,6 +1254,9 @@ def _run_query_mode(
     # ``reexec`` is threaded in from cmd_sprint (captured before the detach
     # handoff popped FORGE_PREV_RUN_ID) — do not recompute it here.
     slugs = [task.slug for task, _src, _ref in resolved.stories]
+    canonical_refs_by_slug = {
+        task.slug: canonical_ref for task, _src, canonical_ref in resolved.stories
+    }
     # On the re-exec path, resolve the prior generation's recorded outcomes so
     # the launch guard can reconcile already-completed worktrees instead of
     # flattening them into fresh collisions. Best-effort — a miss degrades to
@@ -1261,6 +1274,7 @@ def _run_query_mode(
         prior_outcomes=prior_outcomes,
         live_slugs=set(liveness.live_slugs),
         unresolved_slugs=set(liveness.unresolved_slugs),
+        canonical_refs_by_slug=canonical_refs_by_slug,
     )
     if launch_error is not None:
         return launch_error
