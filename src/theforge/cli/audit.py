@@ -188,6 +188,23 @@ def cmd_audit(args: object) -> int:
             dur_str = _fmt_duration(dur) if dur is not None else "—"
             print(f"  {role:<10} {profile:<20} {_cost_str(cost_usd, width=11)}  {dur_str:>10}")
 
+    knowledge_summary = audit.get("knowledge_summary")
+    if isinstance(knowledge_summary, dict):
+        status = knowledge_summary.get("status", "?")
+        attempted = "yes" if knowledge_summary.get("attempted") else "no"
+        written = "yes" if knowledge_summary.get("written") else "no"
+        print()
+        print("  Knowledge Summary")
+        print(f"    Status:    {status}")
+        print(f"    Attempted: {attempted}")
+        print(f"    Written:   {written}")
+        reason = knowledge_summary.get("reason")
+        if reason:
+            print(f"    Reason:    {reason}")
+        path = knowledge_summary.get("path")
+        if path:
+            print(f"    Path:      {path}")
+
     # Reviews
     if reviews:
         print()
