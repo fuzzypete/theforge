@@ -51,8 +51,11 @@ def preserved_review_command(
     issue_number = _issue_number(canonical_ref=canonical_ref, path=path, slug=slug)
     if issue_number is not None:
         return f"forge review --issue {issue_number}"
-    if path is not None:
-        return f"forge review {shlex.quote(path)}"
+    story_path = path
+    if story_path is None and canonical_ref and not canonical_ref.startswith("issue:"):
+        story_path = canonical_ref
+    if story_path is not None:
+        return f"forge review {shlex.quote(story_path)}"
     return PRESERVED_REVIEW_COMMAND
 
 

@@ -26,6 +26,12 @@ def test_preserved_review_command_names_file_backed_story_path() -> None:
     )
 
 
+def test_preserved_review_command_uses_file_backed_canonical_ref_when_path_missing() -> None:
+    assert preserved_review_command(canonical_ref="stories/my story.md", slug="my-story") == (
+        "forge review 'stories/my story.md'"
+    )
+
+
 def test_controller_runbook_preserved_section_matches_runtime_guidance() -> None:
     text = (ROOT / "docs" / "guides" / "controller-runbook.md").read_text()
     preserved_section = text.split("### PRESERVED", 1)[1].split("### Auth readiness gate", 1)[0]
@@ -35,4 +41,5 @@ def test_controller_runbook_preserved_section_matches_runtime_guidance() -> None
         in preserved_section
     )
     assert f"resolve with `{PRESERVED_REVIEW_COMMAND}`" in preserved_section
+    assert "substitutes the concrete path when it already knows it" in preserved_section
     assert "forge run --resume <story-file>" not in preserved_section
