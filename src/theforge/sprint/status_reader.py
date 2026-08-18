@@ -14,7 +14,7 @@ from .audit import (
     preflight_degraded_row_fields_from_audit,
     preflight_degraded_row_fields_from_row,
 )
-from .preserved_resume import PRESERVED_ESCALATED_DETAIL
+from .preserved_resume import preserved_escalated_detail_for_story
 
 
 @dataclass
@@ -279,6 +279,14 @@ def _nonempty_str(value: object) -> str | None:
         return None
     stripped = value.strip()
     return stripped or None
+
+
+def _is_preserved_escalated_story(story: dict) -> bool:
+    """Whether a live/completed row represents a preserved escalated worktree."""
+    for key in ("reason", "drop_reason", "error"):
+        if _nonempty_str(story.get(key)) == "preserved-escalated":
+            return True
+    return False
 
 
 def _parse_status_timestamp(value: object) -> datetime.datetime | None:
@@ -845,7 +853,7 @@ def _live_stage_and_detail(story: dict) -> tuple[str, str, str | None]:
             and preserved_reason == "preserved-escalated"
             and (final_outcome in {None, "PRESERVED"} or not isinstance(final_outcome, str))
         ):
-            return "", PRESERVED_ESCALATED_DETAIL, complexity
+            return "", preserved_escalated_detail_for_story(story), complexity
         if isinstance(final_outcome, str) and final_outcome:
             if final_outcome == "ALREADY_DONE":
                 return (
@@ -1067,11 +1075,8 @@ def _stage_and_detail_from_completed_story(
             detail = "APPROVE"
         elif verdict:
             detail = verdict
-        elif (
-            outcome == "PRESERVED"
-            and _nonempty_str(story.get("drop_reason")) == "preserved-escalated"
-        ):
-            detail = PRESERVED_ESCALATED_DETAIL
+        elif outcome == "PRESERVED" and _is_preserved_escalated_story(story):
+            detail = preserved_escalated_detail_for_story(story)
         elif outcome in {"SKIPPED", "DROPPED"}:
             detail = (
                 _nonempty_str(story.get("error"))

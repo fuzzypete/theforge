@@ -41,7 +41,7 @@ from theforge.sprint.launch_guard import (
     REASON_PRESERVED_ESCALATED,
     REASON_STRANDED_WORKTREE,
 )
-from theforge.sprint.preserved_resume import PRESERVED_ESCALATED_DETAIL
+from theforge.sprint.preserved_resume import preserved_escalated_detail
 from theforge.sprint.story_state import SprintStoryState, StoryOutcome
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -144,11 +144,11 @@ def test_stranded_worktree_drop_also_leaves_a_record(tmp_path: Path) -> None:
     assert REASON_STRANDED_WORKTREE in abnormal["cause"]
 
 
-def test_preserved_drop_log_names_resume_command(tmp_path: Path, capsys) -> None:
-    """The preserved runner log states how the operator exits the held state."""
+def test_preserved_drop_log_names_review_command(tmp_path: Path, capsys) -> None:
+    """The preserved runner log states how the operator reviews the held state."""
     _run_sprint_with_drop(tmp_path, reason=REASON_PRESERVED_ESCALATED)
 
-    assert PRESERVED_ESCALATED_DETAIL in capsys.readouterr().err
+    assert preserved_escalated_detail(slug="issue-2048") in capsys.readouterr().err
 
 
 def test_drop_record_never_overwrites_an_existing_story_audit(tmp_path: Path) -> None:

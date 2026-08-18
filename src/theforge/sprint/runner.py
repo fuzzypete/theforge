@@ -5925,10 +5925,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             reason = REASON_STRANDED_WORKTREE
             _dropped_slugs[slug] = reason
         if reason == "preserved-escalated":
-            _log(preserved_escalated_message(slug))
+            _, _, _canonical_ref = _ctx.slug_to_context[slug]
+            _log(preserved_escalated_message(slug, canonical_ref=_canonical_ref))
             _sprint_state.dag.mark_skipped(slug)
             _set_outcome(_sprint_state, slug, StoryOutcome.PRESERVED, reason=reason)
-            _record_current_story_entry(slug, "PRESERVED", error=reason, error_type="dropped")
+            _record_current_story_entry(
+                slug,
+                "PRESERVED",
+                error=reason,
+                error_type="dropped",
+                extras={"drop_reason": reason},
+            )
         elif reason == REASON_RECONCILE_PRIOR_DONE:
             # The prior generation already completed this story; its worktree
             # collision is a reconcilable success, not a fresh drop. Mark it
