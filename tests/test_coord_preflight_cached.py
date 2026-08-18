@@ -260,6 +260,81 @@ criteria_checked: []
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.preflight_cache_validation["status"] == "invalidated"
         assert result.state.preflight_cache_validation["reason"] == "worktree_head_changed"
+        assert result.state.preflight_cache_validation["reasons"] == ["worktree_head_changed"]
+
+    def test_stale_cached_preflight_reports_all_diverged_fingerprint_components(self, tmp_path):
+        """Simultaneous fingerprint divergence must be reported in stable order."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = replace(
+            CoordinatorState(),
+            preflight_verdict="ALREADY_DONE",
+            preflight_reason="Stale cached verdict.",
+            preflight_complexity="medium",
+            preflight_sufficiency="implementation_ready",
+            preflight_work_type="feature",
+            preflight_cache_snapshot={
+                "worktree_head": "old-head",
+                "evaluation_base_branch": "main",
+                "evaluation_base_branch_head": "old-head",
+                "story_content_hash": _TEST_STORY_CONTENT_HASH,
+            },
+        )
+
+        fresh_preflight = _make_agent_result(
+            output="""\
+```yaml
+verdict: PROCEED
+complexity: small
+sufficiency: implementation_ready
+work_type: bug
+reason: "Heads changed; reevaluated."
+criteria_checked: []
+```
+""",
+            profile_name="preflight",
+        )
+
+        def shell_side_effect(cmd, cwd, **kwargs):
+            rendered = " ".join(cmd) if isinstance(cmd, list) else str(cmd)
+            if rendered.startswith("git rev-parse "):
+                return (True, "new-head")
+            if rendered.startswith("mkdir -p "):
+                Path(cwd, rendered.removeprefix("mkdir -p ").strip()).mkdir(
+                    parents=True, exist_ok=True
+                )
+                return (True, "")
+            return (True, "")
+
+        with (
+            patch("theforge.coordinator.util._run_shell", side_effect=shell_side_effect),
+            patch(
+                "theforge.coordinator.preflight_flow.run_agent",
+                return_value=fresh_preflight,
+            ) as mock_preflight,
+        ):
+            result = run_task(
+                config,
+                task,
+                cached_preflight_state=cached_state,
+                stop_phase=Phase.PREFLIGHT,
+            )
+
+        assert result.success is True
+        assert mock_preflight.call_count == 1
+        assert result.state.preflight_cached is False
+        assert result.state.preflight_verdict == "PROCEED"
+        assert result.state.preflight_cache_validation["status"] == "invalidated"
+        assert result.state.preflight_cache_validation["reason"] == (
+            "multiple_components_changed:worktree_head_changed,evaluation_base_branch_head_changed"
+        )
+        assert result.state.preflight_cache_validation["reasons"] == [
+            "worktree_head_changed",
+            "evaluation_base_branch_head_changed",
+        ]
 
     def test_rewritten_story_body_invalidates_cache_despite_unchanged_git_state(self, tmp_path):
         """A re-scoped story must not reuse a preflight verdict from its old text.
@@ -327,6 +402,7 @@ criteria_checked: []
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.preflight_cache_validation["status"] == "invalidated"
         assert result.state.preflight_cache_validation["reason"] == "story_content_changed"
+        assert result.state.preflight_cache_validation["reasons"] == ["story_content_changed"]
 
 
 class TestResumeStaleCacheRerunsPreflight:
