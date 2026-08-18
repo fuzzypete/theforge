@@ -17,6 +17,7 @@ from pathlib import Path
 import pytest
 
 from theforge.agent_types import COST_PROVIDER_REPORTED, ModelUsage
+from theforge.cli import shared as cli_shared
 from theforge.config import (
     DEFAULT_DEV_PROFILE,
     DEFAULT_PREFLIGHT_PROFILE,
@@ -283,7 +284,7 @@ def _populate_pinned_lists(state: CoordinatorState) -> None:
 
 
 def _build_canonical_record(tmp_path: Path) -> dict:
-    """Generate an audit record from a minimal-but-deterministic state."""
+    """Generate the persisted per-run record from a deterministic single run."""
     config = _make_config(tmp_path)
     task = TaskStory(name="Test", slug="test", story_path=tmp_path / "spec.md")
     state = CoordinatorState()
@@ -291,7 +292,10 @@ def _build_canonical_record(tmp_path: Path) -> dict:
     state.run_id = "deadbeefcafe"
     _populate_pinned_lists(state)
     result = CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
-    return generate_audit_log(config, task, result)
+    cli_shared._write_audit(result, config, task)
+    return json.loads(
+        (tmp_path / ".forge" / "audits" / "runs" / "deadbeefcafe.json").read_text(encoding="utf-8")
+    )
 
 
 def _killed(profile_name: str) -> AgentResult:

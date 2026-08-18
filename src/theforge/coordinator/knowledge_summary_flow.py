@@ -27,7 +27,7 @@ lives in ``theforge.task.summary_prompts``.
 
 from __future__ import annotations
 
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
 from theforge.knowledge_summary import (
@@ -55,6 +55,35 @@ _log = _cu._log
 # tests can replace it. Patch target:
 #   theforge.coordinator.knowledge_summary_flow.run_agent
 run_agent = None
+
+
+@dataclass(frozen=True)
+class RunSummaryOutcome:
+    """Outcome of post-DONE knowledge summary generation for one run."""
+
+    status: str
+    attempted: bool
+    written: bool
+    reason: str | None = None
+    path: "Path | None" = None
+
+    def to_audit_dict(self) -> dict:
+        payload: dict[str, object] = {
+            "status": self.status,
+            "attempted": self.attempted,
+            "written": self.written,
+        }
+        if self.reason:
+            payload["reason"] = self.reason
+        if self.path is not None:
+            payload["path"] = str(self.path)
+        return payload
+
+
+def _record_summary_outcome(audit: dict, outcome: RunSummaryOutcome) -> RunSummaryOutcome:
+    """Persist the generation outcome onto the audit payload in place."""
+    audit["knowledge_summary"] = outcome.to_audit_dict()
+    return outcome
 
 
 def _ensure_runner() -> None:
@@ -121,29 +150,64 @@ def maybe_generate_run_summary(
     config: "ForgeConfig",
     result: "CoordinatorResult",
     audit: dict,
-) -> "Path | None":
-    """Generate and persist this run's knowledge summary; return its path or None.
+) -> RunSummaryOutcome:
+    """Generate and persist this run's knowledge summary; return its outcome.
 
-    Never raises. Returns None whenever the summary was not written, for any
-    reason — the run's outcome and its audit trail are identical either way.
+    Never raises. The run's outcome is unchanged either way, but the audit is
+    annotated so operator-facing surfaces can distinguish not-attempted,
+    attempted-and-written, and attempted-but-not-written outcomes.
     """
     try:
         run_id = str(audit.get("run_id") or "")
         if not _should_generate(config, result, run_id):
-            return None
+            if not getattr(getattr(config, "knowledge", None), "run_summaries", False):
+                reason = "disabled"
+            elif not result.success or result.phase.name != "DONE":
+                reason = "run_not_done"
+            elif not run_id:
+                reason = "missing_run_id"
+            else:
+                reason = "already_exists"
+            return _record_summary_outcome(
+                audit,
+                RunSummaryOutcome(
+                    status="not_attempted",
+                    attempted=False,
+                    written=False,
+                    reason=reason,
+                ),
+            )
 
         anchors = extract_anchors(audit)
         if anchors.is_empty():
-            _log("  ⚠ knowledge summary skipped: run offers no citable evidence")
-            return None
+            reason = "run offers no citable evidence"
+            _log(f"  ⚠ knowledge summary skipped: {reason}")
+            return _record_summary_outcome(
+                audit,
+                RunSummaryOutcome(
+                    status="skipped",
+                    attempted=True,
+                    written=False,
+                    reason=reason,
+                ),
+            )
 
         profile = _summary_profile(config)
         if profile is None:
-            _log(
-                "  ⚠ knowledge summary skipped: no tool-free API transport available "
-                "for the plan model (configure transport_fallback to enable summaries)"
+            reason = (
+                "no tool-free API transport available for the plan model "
+                "(configure transport_fallback to enable summaries)"
             )
-            return None
+            _log(f"  ⚠ knowledge summary skipped: {reason}")
+            return _record_summary_outcome(
+                audit,
+                RunSummaryOutcome(
+                    status="skipped",
+                    attempted=True,
+                    written=False,
+                    reason=reason,
+                ),
+            )
 
         _ensure_runner()
         agent_result = run_agent(
@@ -155,8 +219,17 @@ def maybe_generate_run_summary(
             plain_text=True,
         )
         if not getattr(agent_result, "success", False):
-            _log("  ⚠ knowledge summary skipped: summary agent returned failure")
-            return None
+            reason = "summary agent returned failure"
+            _log(f"  ⚠ knowledge summary skipped: {reason}")
+            return _record_summary_outcome(
+                audit,
+                RunSummaryOutcome(
+                    status="failed",
+                    attempted=True,
+                    written=False,
+                    reason=reason,
+                ),
+            )
 
         proposed = validate_proposed_summary(
             parse_summary_output(getattr(agent_result, "output", "") or ""),
@@ -178,10 +251,29 @@ def maybe_generate_run_summary(
         )
         path = write_summary(config.project_root, run_id, artifact)
         _log(f"  ✓ knowledge summary written: {path}")
-        return path
+        return _record_summary_outcome(
+            audit,
+            RunSummaryOutcome(status="written", attempted=True, written=True, path=path),
+        )
     except SummaryValidationError as exc:
         _log(f"  ⚠ knowledge summary rejected: {exc}")
-        return None
+        return _record_summary_outcome(
+            audit,
+            RunSummaryOutcome(
+                status="rejected",
+                attempted=True,
+                written=False,
+                reason=str(exc),
+            ),
+        )
     except Exception as exc:  # noqa: BLE001 — a side effect must never break a finished run
         _log(f"  ⚠ knowledge summary failed: {exc}")
-        return None
+        return _record_summary_outcome(
+            audit,
+            RunSummaryOutcome(
+                status="failed",
+                attempted=True,
+                written=False,
+                reason=str(exc),
+            ),
+        )

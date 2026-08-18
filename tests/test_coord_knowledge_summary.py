@@ -38,8 +38,10 @@ from theforge.config import (
     WorkspaceConfig,
 )
 from theforge.coordinator import knowledge_summary_flow
+from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.knowledge_summary import summary_path
+from theforge.sprint.status_reader import read_completed_status
 
 RUN_ID = "run-abc123"
 
@@ -189,9 +191,11 @@ class TestGeneration:
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
         config = _make_config(tmp_path)
+        audit = _audit()
 
-        path = knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), _audit())
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), audit)
 
+        path = outcome.path
         assert path == summary_path(tmp_path, RUN_ID)
         artifact = yaml.safe_load(path.read_text(encoding="utf-8"))
         assert artifact["run_id"] == RUN_ID
@@ -199,13 +203,15 @@ class TestGeneration:
         assert artifact["what_was_learned"][0]["evidence"][0]["path"] == "src/client.py"
         assert artifact["changed_files"] == ["src/client.py"]
         assert artifact["generation"]["cost_usd"] == 0.12
+        assert audit["knowledge_summary"]["status"] == "written"
+        assert audit["knowledge_summary"]["written"] is True
         assert len(calls) == 1
 
     def test_dispatch_is_tool_free_over_an_api_transport(
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
         """An empty allowlist is only *narrow* on the API path — pin the path."""
-        knowledge_summary_flow.maybe_generate_run_summary(
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
             _make_config(tmp_path), _done_result(), _audit()
         )
 
@@ -213,6 +219,7 @@ class TestGeneration:
         assert profile.mode == "api"
         assert profile.allowed_tools == ()
         assert calls[0]["plain_text"] is True
+        assert outcome.status == "written"
 
     def test_summary_dispatch_uses_plain_text_through_the_real_runner_api_seam(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -231,10 +238,11 @@ class TestGeneration:
             patch.dict("theforge.runners.api._LOOP_RUNNERS", {"openai": loop_runner}),
             patch.dict("theforge.runners.api.PROVIDER_RUNNERS", {"openai": single_shot_runner}),
         ):
-            path = knowledge_summary_flow.maybe_generate_run_summary(
+            outcome = knowledge_summary_flow.maybe_generate_run_summary(
                 config, _done_result(), _audit()
             )
 
+        path = outcome.path
         assert path == summary_path(tmp_path, RUN_ID)
         loop_runner.assert_not_called()
         prompt, profile, secrets = single_shot_runner.call_args.args
@@ -254,10 +262,11 @@ class TestGeneration:
             plan=replace(config.plan, ref=replace(config.plan.ref, cli="claude", provider=None)),
         )
 
-        assert (
-            knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), _audit())
-            is None
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
         )
+        assert outcome.status == "skipped"
+        assert outcome.attempted is True
         assert calls == []
         assert not summary_path(tmp_path, RUN_ID).exists()
 
@@ -268,10 +277,11 @@ class TestGate:
     ) -> None:
         config = _make_config(tmp_path, run_summaries=False)
 
-        assert (
-            knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), _audit())
-            is None
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
         )
+        assert outcome.status == "not_attempted"
+        assert outcome.reason == "disabled"
         assert calls == []
         assert not summary_path(tmp_path, RUN_ID).exists()
 
@@ -284,12 +294,11 @@ class TestGate:
             success=False, phase=Phase.ESCALATE, state=state, message="escalated"
         )
 
-        assert (
-            knowledge_summary_flow.maybe_generate_run_summary(
-                _make_config(tmp_path), escalated, _audit()
-            )
-            is None
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), escalated, _audit()
         )
+        assert outcome.status == "not_attempted"
+        assert outcome.reason == "run_not_done"
         assert calls == []
 
     def test_an_already_summarised_run_is_not_billed_again(
@@ -302,8 +311,9 @@ class TestGate:
             config, _done_result(), _audit()
         )
 
-        assert first is not None
-        assert second is None
+        assert first.status == "written"
+        assert second.status == "not_attempted"
+        assert second.reason == "already_exists"
         assert len(calls) == 1
 
 
@@ -317,12 +327,11 @@ class TestNonLoadBearing:
             lambda **_: _FakeAgentResult(output=UNEVIDENCED_OUTPUT),
         )
 
-        assert (
-            knowledge_summary_flow.maybe_generate_run_summary(
-                _make_config(tmp_path), _done_result(), _audit()
-            )
-            is None
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), _audit()
         )
+        assert outcome.status == "rejected"
+        assert outcome.attempted is True
         assert not summary_path(tmp_path, RUN_ID).exists()
 
     @pytest.mark.parametrize(
@@ -343,12 +352,11 @@ class TestNonLoadBearing:
     ) -> None:
         monkeypatch.setattr(knowledge_summary_flow, "run_agent", agent)
 
-        assert (
-            knowledge_summary_flow.maybe_generate_run_summary(
-                _make_config(tmp_path), _done_result(), _audit()
-            )
-            is None
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), _audit()
         )
+        assert outcome.attempted is True
+        assert outcome.written is False
         assert not summary_path(tmp_path, RUN_ID).exists()
 
     def test_an_unwritable_summary_dir_does_not_break_the_run(
@@ -359,12 +367,11 @@ class TestNonLoadBearing:
 
         monkeypatch.setattr(knowledge_summary_flow, "write_summary", _boom)
 
-        assert (
-            knowledge_summary_flow.maybe_generate_run_summary(
-                _make_config(tmp_path), _done_result(), _audit()
-            )
-            is None
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), _audit()
         )
+        assert outcome.status == "failed"
+        assert outcome.reason == "read-only file system"
 
 
 class TestTerminalWriterSeams:
@@ -383,7 +390,10 @@ class TestTerminalWriterSeams:
 
         assert audit_path.exists()
         assert summary_path(tmp_path, RUN_ID).exists()
-        assert (tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json").exists()
+        run_record = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+        assert run_record["knowledge_summary"]["status"] == "written"
+        record = (tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json").read_text()
+        assert '"knowledge_summary"' in record
         assert len(calls) == 1
 
     def test_repeated_story_audit_writes_bill_one_summary(
@@ -418,5 +428,54 @@ class TestTerminalWriterSeams:
         audit_path = shared._write_audit(_done_result(), config, _make_task(tmp_path))
 
         assert audit_path.exists()
+        audit = yaml.safe_load(audit_path.read_text(encoding="utf-8"))
+        assert audit["knowledge_summary"]["attempted"] is True
+        assert audit["knowledge_summary"]["written"] is False
+        assert audit["knowledge_summary"]["status"] == "failed"
         assert (tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json").exists()
         assert not summary_path(tmp_path, RUN_ID).exists()
+
+    def test_failed_summary_generation_surfaces_in_completed_sprint_status(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from theforge.sprint.audit import _write_story_audit
+
+        monkeypatch.setattr(
+            knowledge_summary_flow,
+            "run_agent",
+            lambda **_: _FakeAgentResult(output="prose without rooted block"),
+        )
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        result = _done_result()
+        result.state.log_dir = tmp_path / ".forge" / "logs" / "sprint" / "retry-client"
+
+        _write_story_audit(config, task, result)
+        summary_pathname = tmp_path / ".forge" / "logs" / "sprint" / "sprint-summary.yaml"
+        summary_pathname.write_text(
+            yaml.safe_dump(
+                {
+                    "sprint": {"run_id": "run-sprint", "name": "sprint"},
+                    "stories": [
+                        {
+                            "slug": "retry-client",
+                            "path": "Issue #42",
+                            "outcome": "DONE",
+                            "cost_usd": 1.0,
+                            "story_run_id": RUN_ID,
+                        }
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        entries = read_completed_status(summary_pathname)
+
+        assert len(entries) == 1
+        assert "knowledge summary rejected" in entries[0].detail
+        assert "no rooted 'run_summary:' block" in entries[0].detail
+
+
+def test_audit_schema_version_exposes_knowledge_summary_status() -> None:
+    assert CURRENT_RECORD_SCHEMA_VERSION == 30

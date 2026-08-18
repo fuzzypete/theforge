@@ -249,8 +249,12 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
     audit_path = audits_dir / "forge_audit.yaml"
-    with open(audit_path, "w", encoding="utf-8") as f:
-        yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+
+    def _write_yaml_copy(path: Path) -> None:
+        with open(path, "w", encoding="utf-8") as f:
+            yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+
+    _write_yaml_copy(audit_path)
     final_phase = result.phase.name
     if (
         final_phase == "ESCALATE"
@@ -259,8 +263,7 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
     ):
         worktree_audit_path = result.state.workspace_path / AUDIT_PATH
         ensure_parent_dir(worktree_audit_path)
-        with open(worktree_audit_path, "w", encoding="utf-8") as f:
-            yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+        _write_yaml_copy(worktree_audit_path)
         marker_path = result.state.workspace_path / ESCALATED_MARKER_PATH
         ensure_parent_dir(marker_path)
         timestamp = audit.get("ended_at") or audit.get("started_at") or ""
@@ -268,21 +271,29 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
             f"slug: {task.slug}\nfinal_phase: {final_phase}\ntimestamp: {timestamp}\n",
             encoding="utf-8",
         )
+    # Post-DONE knowledge summary (#1859). Runs after the authoritative record
+    # exists and never raises — the audit write path above is what this run's
+    # outcome depends on, not this.
+    maybe_generate_run_summary(config, result, audit)
+    _write_yaml_copy(audit_path)
+    if (
+        final_phase == "ESCALATE"
+        and result.state.workspace_path
+        and result.state.workspace_path.exists()
+    ):
+        worktree_audit_path = result.state.workspace_path / AUDIT_PATH
+        ensure_parent_dir(worktree_audit_path)
+        _write_yaml_copy(worktree_audit_path)
     # Copy to durable per-story log dir (survives worktree cleanup)
     if result.state.log_dir is not None:
         try:
             log_audit_path = result.state.log_dir / "audit.yaml"
             log_audit_path.parent.mkdir(parents=True, exist_ok=True)
-            with open(log_audit_path, "w", encoding="utf-8") as f:
-                yaml.dump(audit, f, default_flow_style=False, sort_keys=False)
+            _write_yaml_copy(log_audit_path)
         except Exception:
             pass  # best-effort
     # Write per-run JSON record (Phase A dual-write).
     _write_per_run_record(result, config, audit, audits_dir)
-    # Post-DONE knowledge summary (#1859). Runs after the authoritative record
-    # exists and never raises — the audit write path above is what this run's
-    # outcome depends on, not this.
-    maybe_generate_run_summary(config, result, audit)
     return audit_path
 
 
