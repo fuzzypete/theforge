@@ -252,7 +252,12 @@ def _replace_canonical_run_file(run_file: Path, record: dict) -> None:
     tmp_path.replace(run_file)
 
 
-def _write_native_story_record(project_root: Path, audit_data: dict) -> None:
+def _write_native_story_record(
+    project_root: Path,
+    audit_data: dict,
+    *,
+    force_replace: bool = False,
+) -> None:
     """Write the canonical per-story run JSON and mirror it into the substrate."""
     run_id = audit_data.get("run_id")
     if not isinstance(run_id, str) or not run_id:
@@ -289,7 +294,7 @@ def _write_native_story_record(project_root: Path, audit_data: dict) -> None:
         runs_dir = audit_substrate.runs_dir(project_root)
         runs_dir.mkdir(parents=True, exist_ok=True)
         run_file = runs_dir / f"{run_id}.json"
-        if not run_file.exists():
+        if force_replace or not run_file.exists():
             _replace_canonical_run_file(run_file, redacted)
             persisted = redacted
         else:
@@ -1545,7 +1550,6 @@ def _write_story_audit(
 
     audits_dir = config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
-    _write_native_story_record(config.project_root, audit_data)
     # Post-DONE knowledge summary (#1859). A sprint calls this writer more than
     # once for the same finished story (pending integration, landing, wrap-up);
     # generation is guarded on the artifact's own existence, so the story is
@@ -1554,7 +1558,9 @@ def _write_story_audit(
         maybe_generate_run_summary,
     )
 
+    _write_native_story_record(config.project_root, audit_data)
     maybe_generate_run_summary(config, result, audit_data)
+    _write_native_story_record(config.project_root, audit_data, force_replace=True)
 
     log_dir = result.state.log_dir
     if log_dir is None:
