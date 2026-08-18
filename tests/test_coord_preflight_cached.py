@@ -260,6 +260,7 @@ criteria_checked: []
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.preflight_cache_validation["status"] == "invalidated"
         assert result.state.preflight_cache_validation["reason"] == "worktree_head_changed"
+        assert result.state.preflight_cache_validation["reasons"] == ["worktree_head_changed"]
 
     def test_stale_cached_preflight_reports_all_diverged_fingerprint_components(self, tmp_path):
         """Simultaneous fingerprint divergence must be reported in stable order."""
@@ -327,7 +328,9 @@ criteria_checked: []
         assert result.state.preflight_cached is False
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.preflight_cache_validation["status"] == "invalidated"
-        assert result.state.preflight_cache_validation["reason"] == "worktree_head_changed"
+        assert result.state.preflight_cache_validation["reason"] == (
+            "multiple_components_changed:worktree_head_changed,evaluation_base_branch_head_changed"
+        )
         assert result.state.preflight_cache_validation["reasons"] == [
             "worktree_head_changed",
             "evaluation_base_branch_head_changed",
@@ -399,6 +402,7 @@ criteria_checked: []
         assert result.state.preflight_verdict == "PROCEED"
         assert result.state.preflight_cache_validation["status"] == "invalidated"
         assert result.state.preflight_cache_validation["reason"] == "story_content_changed"
+        assert result.state.preflight_cache_validation["reasons"] == ["story_content_changed"]
 
 
 class TestResumeStaleCacheRerunsPreflight:

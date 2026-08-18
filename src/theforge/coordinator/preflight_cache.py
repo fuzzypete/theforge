@@ -24,6 +24,12 @@ def _story_content_hash(story_content: str) -> str:
     return hashlib.sha256(story_content.encode("utf-8")).hexdigest()
 
 
+def _cache_mismatch_reason(mismatch_reasons: list[str]) -> str:
+    if len(mismatch_reasons) == 1:
+        return mismatch_reasons[0]
+    return "multiple_components_changed:" + ",".join(mismatch_reasons)
+
+
 def capture_preflight_cache_snapshot(
     *,
     config: "ForgeConfig",
@@ -109,9 +115,8 @@ def validate_preflight_cache(
 
     if mismatch_reasons:
         validation["status"] = "invalidated"
-        validation["reason"] = mismatch_reasons[0]
-        if len(mismatch_reasons) > 1:
-            validation["reasons"] = mismatch_reasons
+        validation["reason"] = _cache_mismatch_reason(mismatch_reasons)
+        validation["reasons"] = mismatch_reasons
         return False, validation
 
     validation["status"] = "accepted"
