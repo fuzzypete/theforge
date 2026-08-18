@@ -187,10 +187,28 @@ def _print_startup_auth_warnings(config: ForgeConfig) -> None:
         )
 
 
+def print_config_load_error(
+    config_path: Path,
+    exc: ValueError,
+    *,
+    prefix: str = "✗ forge.yaml is invalid",
+) -> None:
+    """Print a structural config error plus runtime/checkout provenance, if any."""
+    print(f"{prefix}: {exc}", file=sys.stderr)
+    try:
+        from theforge.cli.substrate import format_config_validation_provenance_lines
+
+        for line in format_config_validation_provenance_lines(config_path=config_path):
+            print(line, file=sys.stderr)
+    except Exception:
+        pass
+
+
 def load_config_checked(
     config_path: Path,
     *,
     loader: Callable[[Path], ForgeConfig] | None = None,
+    emit_startup_auth_warnings: bool = True,
 ) -> ForgeConfig:
     """Load config for a run/sprint entrypoint, enforcing startup contracts.
 
@@ -209,9 +227,10 @@ def load_config_checked(
     try:
         config = load(config_path)
     except ValueError as exc:
-        print(f"✗ forge.yaml is invalid: {exc}", file=sys.stderr)
+        print_config_load_error(config_path, exc)
         raise SystemExit(2) from exc
-    _print_startup_auth_warnings(config)
+    if emit_startup_auth_warnings:
+        _print_startup_auth_warnings(config)
     return config
 
 

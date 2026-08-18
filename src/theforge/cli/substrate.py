@@ -22,6 +22,7 @@ from __future__ import annotations
 import shutil
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,13 @@ class Substrate:
     editable: bool
     source_root: str | None
     git_ref: str | None
+
+
+@dataclass(frozen=True)
+class CheckoutProvenance:
+    root: str
+    pyproject_file: str
+    version: str | None
 
 
 def _read_direct_url_editable(dist_files_root: Path) -> tuple[bool, str | None]:
@@ -159,6 +167,81 @@ def detect_substrate() -> Substrate:
     )
 
 
+def _read_checkout_provenance(pyproject: Path) -> CheckoutProvenance | None:
+    try:
+        data = tomllib.loads(pyproject.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, tomllib.TOMLDecodeError):
+        return None
+
+    project = data.get("project")
+    if not isinstance(project, dict) or project.get("name") != "theforge":
+        return None
+
+    version = project.get("version")
+    if version is not None:
+        version = str(version)
+
+    return CheckoutProvenance(
+        root=str(pyproject.parent),
+        pyproject_file=str(pyproject),
+        version=version,
+    )
+
+
+def _find_checkout_provenance(cwd: Path) -> CheckoutProvenance | None:
+    for parent in [cwd, *cwd.parents]:
+        pyproject = parent / "pyproject.toml"
+        if not pyproject.is_file():
+            continue
+        checkout = _read_checkout_provenance(pyproject)
+        if checkout is not None:
+            return checkout
+    return None
+
+
+def _checkout_version_ahead_of_runtime(checkout_version: str, runtime_version: str) -> bool | None:
+    try:
+        from packaging.version import InvalidVersion, Version
+    except Exception:
+        return None
+
+    try:
+        return Version(checkout_version) > Version(runtime_version)
+    except InvalidVersion:
+        return None
+
+
+def _runtime_schema_catalog_paths(sub: Substrate) -> tuple[str, str] | None:
+    package_file = sub.package_file
+    if not package_file:
+        return None
+    package_root = Path(package_file).resolve().parent
+    return (
+        str(package_root / "config" / "model_catalog.py"),
+        str(package_root / "config" / "data" / "models.yaml"),
+    )
+
+
+def _format_config_validation_relation_line(checkout_version: str, runtime_version: str) -> str:
+    """Describe the version relationship without over-claiming causality."""
+    version_cmp = _checkout_version_ahead_of_runtime(checkout_version, runtime_version)
+    if version_cmp is True:
+        relation = "appears ahead of it"
+        explanation = "That runtime/checkout drift may explain this validation failure."
+    elif version_cmp is False:
+        relation = "does not appear ahead of it"
+        explanation = "The version mismatch may or may not explain this validation failure."
+    else:
+        relation = "differs from it, but their version order could not be determined"
+        explanation = "That version mismatch may explain this validation failure."
+
+    return (
+        f"[forge] This installed runtime is judging a checkout that {relation}. "
+        f"{explanation} Use the checkout-local launcher (for example "
+        "`.venv/bin/forge`) or repoint the managed launcher, then retry."
+    )
+
+
 def format_provenance_lines(sub: Substrate | None = None) -> list[str]:
     """Return operator-facing substrate lines for launch banners.
 
@@ -201,16 +284,8 @@ def detect_mismatch(cwd: Path | None = None, sub: Substrate | None = None) -> st
         sub = detect_substrate()
 
     cwd = cwd or Path.cwd()
-    pyproject = cwd / "pyproject.toml"
-    if not pyproject.is_file():
-        return None
-
-    try:
-        text = pyproject.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return None
-
-    if 'name = "theforge"' not in text:
+    checkout = _find_checkout_provenance(cwd)
+    if checkout is None:
         return None
 
     # Released (non-editable) substrate orchestrating a newer-version theforge
@@ -220,14 +295,7 @@ def detect_mismatch(cwd: Path | None = None, sub: Substrate | None = None) -> st
     if not sub.editable:
         return None
 
-    src_version: str | None = None
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("version") and "=" in stripped:
-            _, _, rhs = stripped.partition("=")
-            src_version = rhs.strip().strip('"').strip("'")
-            break
-
+    src_version = checkout.version
     if not src_version:
         return None
 
@@ -238,11 +306,60 @@ def detect_mismatch(cwd: Path | None = None, sub: Substrate | None = None) -> st
     return (
         f"[forge] WARNING: substrate version {sub.version} (binary: {sub.binary});"
         f"{source_note} does not match this checkout's pyproject version "
-        f"{src_version} (cwd: {cwd}). The editable install resolving as `forge` "
+        f"{src_version} (cwd: {checkout.root}). The editable install resolving as `forge` "
         f"is out of sync with this checkout — either a stale build of this tree "
         f"or an editable install of a different theforge repo is shadowing it. "
         f"Pass --force to bypass."
     )
+
+
+def format_config_validation_provenance_lines(
+    *,
+    config_path: Path | None = None,
+    cwd: Path | None = None,
+    sub: Substrate | None = None,
+) -> list[str]:
+    """Return extra context for a config ValueError when runtime drift is visible.
+
+    Silent on the documented dogfood happy path unless a structural config
+    failure occurs under a non-editable runtime whose version differs from the
+    checkout version that owns ``forge.yaml``.
+    """
+    if sub is None:
+        sub = detect_substrate()
+
+    start = cwd or (config_path.parent if config_path is not None else Path.cwd())
+    checkout = _find_checkout_provenance(start)
+    if checkout is None or checkout.version is None:
+        return []
+    if sub.editable or checkout.version == sub.version:
+        return []
+
+    schema_catalog = _runtime_schema_catalog_paths(sub)
+
+    lines = [
+        "[forge] Runtime/checkout mismatch: this installed runtime is validating a "
+        "different checkout's forge.yaml.",
+        f"[forge] Runtime binary:  {sub.binary}",
+        f"[forge] Runtime package: {sub.package_file}",
+        f"[forge] Runtime version: {sub.version}",
+    ]
+    if schema_catalog is not None:
+        schema_path, catalog_path = schema_catalog
+        lines.extend(
+            [
+                f"[forge] Runtime schema:  {schema_path}",
+                f"[forge] Runtime catalog: {catalog_path}",
+            ]
+        )
+    lines.extend(
+        [
+            f"[forge] Checkout root:   {checkout.root}",
+            f"[forge] Checkout version: {checkout.version}",
+            _format_config_validation_relation_line(checkout.version, sub.version),
+        ]
+    )
+    return lines
 
 
 def emit_provenance(

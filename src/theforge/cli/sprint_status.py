@@ -9,6 +9,7 @@ import textwrap
 from pathlib import Path
 
 from theforge.cli.reentry_display import issue_cost_line
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.coordinator.issue_cost import issue_number_from_slug
 from theforge.coordinator.util import _fmt_cost_total
 
@@ -362,7 +363,6 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
 
 def cmd_sprint_status(args: object) -> int:
     """Show per-story status for a sprint run."""
-    from theforge.cli.shared import _find_config
     from theforge.config import load_config
 
     run_id: str = getattr(args, "run_id", "")
@@ -374,7 +374,11 @@ def cmd_sprint_status(args: object) -> int:
     if config_path is None or not config_path.exists():
         print("forge.yaml not found.", file=sys.stderr)
         return 1
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
     project_root = config.project_root
 
     return display_sprint_status(run_id, project_root)

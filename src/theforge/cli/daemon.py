@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import sys
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 from theforge.config import load_config
 
 
@@ -69,7 +69,11 @@ def cmd_daemon(args: object) -> int:
                 file=sys.stderr,
             )
             return 1
-        config = load_config(config_path)
+        config = load_config_checked(
+            config_path,
+            loader=load_config,
+            emit_startup_auth_warnings=False,
+        )
         if _daemon.is_daemon_running(config.project_root):
             state = _daemon.get_daemon_status(config.project_root)
             pid = state.get("pid", "?")
@@ -93,7 +97,11 @@ def cmd_daemon(args: object) -> int:
         if config_path is None or not config_path.exists():
             print("forge.yaml not found.", file=sys.stderr)
             return 1
-        config = load_config(config_path)
+        config = load_config_checked(
+            config_path,
+            loader=load_config,
+            emit_startup_auth_warnings=False,
+        )
         if not _daemon.is_daemon_running(config.project_root):
             print("No daemon running.")
             return 0
@@ -110,7 +118,11 @@ def cmd_daemon(args: object) -> int:
         if config_path is None or not config_path.exists():
             print("forge.yaml not found.", file=sys.stderr)
             return 1
-        config = load_config(config_path)
+        config = load_config_checked(
+            config_path,
+            loader=load_config,
+            emit_startup_auth_warnings=False,
+        )
         state = _daemon.get_daemon_status(config.project_root)
         _print_daemon_status(state)
         return 0
@@ -122,7 +134,11 @@ def cmd_daemon(args: object) -> int:
         if config_path is None or not config_path.exists():
             print("forge.yaml not found.", file=sys.stderr)
             return 1
-        config = load_config(config_path)
+        config = load_config_checked(
+            config_path,
+            loader=load_config,
+            emit_startup_auth_warnings=False,
+        )
         forge_bin = shutil.which("forge")
         if forge_bin is None:
             print("'forge' binary not found in PATH.", file=sys.stderr)
