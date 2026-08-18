@@ -164,7 +164,7 @@ fix_success_criterion: |
         assert outcome.artifact.confirmed_cause.startswith("The outer envelope closes")
         assert outcome.artifact.is_complete()
 
-    def test_ambiguous_matching_close_is_rejected(self):
+    def test_top_level_fence_after_closed_envelope_is_ignored(self):
         output = """```yaml
 observed_symptom: x
 reproduction_or_evidence: y
@@ -176,10 +176,29 @@ confirmed_cause: c
 affected_code_path: p
 fix_success_criterion: f
 ```
+```python
+print("trailing snippet")
 ```"""
         outcome = parse_diagnose_output_result(output, issue_number=2191)
+        assert outcome.error == ""
+        assert outcome.artifact is not None
+        assert outcome.artifact.confirmed_cause == "c"
+
+    def test_unclosed_yaml_envelope_is_rejected(self):
+        output = """```yaml
+observed_symptom: x
+reproduction_or_evidence: y
+hypotheses:
+  - statement: z
+    status: confirmed
+    evidence: e
+confirmed_cause: c
+affected_code_path: p
+fix_success_criterion: f
+"""
+        outcome = parse_diagnose_output_result(output, issue_number=2191)
         assert outcome.artifact is None
-        assert "multiple closing fences" in outcome.error
+        assert "missing a matching close" in outcome.error
 
     def test_yaml_syntax_error_is_named(self):
         outcome = parse_diagnose_output_result(

@@ -21,6 +21,7 @@ import yaml
 from coord_test_helpers import _make_config
 
 from theforge.diagnose_types import (
+    DiagnosePartialReason,
     DiagnosePhase,
     DiagnoseState,
     DiagnosisArtifact,
@@ -432,6 +433,10 @@ class TestDiagnoseFlow:
         assert mock_post.called
         posted_body = mock_post.call_args[0][1]
         assert "Partial diagnosis" in posted_body
+        assert "did not reach a confirmed cause" in posted_body
+        assert "budget or timeout" not in posted_body
+        assert result.state.artifact is not None
+        assert result.state.artifact.partial_reason is DiagnosePartialReason.UNCLASSIFIED
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")

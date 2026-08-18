@@ -38,6 +38,7 @@ from theforge.coordinator.util import _log as _progress_log
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
     AbsentPremise,
+    DiagnosePartialReason,
     DiagnosePhase,
     DiagnoseResult,
     DiagnoseState,
@@ -1437,14 +1438,21 @@ def _run_diagnose_flow_body(
     # envelope, return the partial work for operator review rather than landing
     # a misleading "fix-ready" artifact. Name the specific reason when known.
     if not artifact.is_complete() or partial:
-        artifact = dataclasses.replace(artifact, partial=True)
-        state.artifact = artifact
         if budget_exceeded:
             partial_phase = DiagnosePhase.BUDGET_EXCEEDED
+            partial_reason = DiagnosePartialReason.BUDGET_EXCEEDED
         elif state.agent_failure_code == "timeout":
             partial_phase = DiagnosePhase.TIMEOUT_PARTIAL
+            partial_reason = DiagnosePartialReason.TIMEOUT
         else:
             partial_phase = DiagnosePhase.UNCLASSIFIED_PARTIAL
+            partial_reason = DiagnosePartialReason.UNCLASSIFIED
+        artifact = dataclasses.replace(
+            artifact,
+            partial=True,
+            partial_reason=partial_reason,
+        )
+        state.artifact = artifact
         emit_phase(partial_phase)
         if interactive and confirm_landing is None:
             confirm_landing = _stdin_confirm

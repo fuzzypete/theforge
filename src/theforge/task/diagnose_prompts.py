@@ -344,16 +344,16 @@ def _extract_yaml_block(output: str) -> str:
         return output
 
     opener = next((fence for fence in fences if fence.opens_yaml), fences[0])
-    closing_candidates = [
-        fence
-        for fence in fences
-        if fence.start > opener.start and fence.is_close and fence.indent <= opener.indent
-    ]
-    if not closing_candidates:
+    closer = next(
+        (
+            fence
+            for fence in fences
+            if fence.start > opener.start and fence.is_close and fence.indent <= opener.indent
+        ),
+        None,
+    )
+    if closer is None:
         raise ValueError("Malformed fenced response: opening fence is missing a matching close.")
-    if len(closing_candidates) > 1:
-        raise ValueError("Malformed fenced response: multiple closing fences match the envelope.")
-    closer = closing_candidates[0]
     start = opener.end
     if start < len(output) and output[start] == "\n":
         start += 1
