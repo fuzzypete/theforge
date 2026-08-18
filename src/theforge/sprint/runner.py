@@ -1629,35 +1629,49 @@ def _agent_cost_tracking_warnings(config: ForgeConfig) -> list[str]:
     return warnings
 
 
-def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
-    """Extract story slugs from a sprint manifest without full validation.
+def parse_manifest_story_refs(
+    config: "ForgeConfig", manifest_path: Path
+) -> tuple[list[str], dict[str, str]]:
+    """Extract manifest slugs plus best-effort canonical refs.
 
-    Returns an empty list if the manifest cannot be parsed or has no stories.
-    Used for pre-launch conflict detection — does not raise on invalid manifests.
+    Returns ``([], {})`` if the manifest cannot be parsed or has no stories.
+    Used for pre-launch conflict detection and operator guidance, so it stays
+    best-effort and does not raise on invalid manifests.
     """
     try:
         with open(manifest_path, encoding="utf-8") as f:
             raw = yaml.safe_load(f) or {}
         if not isinstance(raw, dict):
-            return []
+            return [], {}
         stories = raw.get("stories") or raw.get("specs") or []
         if not isinstance(stories, list):
-            return []
+            return [], {}
         slugs: list[str] = []
+        canonical_refs_by_slug: dict[str, str] = {}
         for entry in stories:
             if isinstance(entry, dict) and "issue" in entry:
-                slugs.append(entry.get("slug", f"issue-{entry['issue']}"))
+                slug = entry.get("slug", f"issue-{entry['issue']}")
+                slugs.append(slug)
+                canonical_refs_by_slug[slug] = f"issue:{entry['issue']}"
             elif isinstance(entry, str):
                 story_path = (config.project_root / entry).resolve()
                 if story_path.exists():
                     task = _build_task_from_story(story_path)
-                    slugs.append(task.slug)
+                    slug = task.slug
                 else:
                     # Fallback: use file stem as slug
-                    slugs.append(Path(entry).stem)
-        return slugs
+                    slug = Path(entry).stem
+                slugs.append(slug)
+                canonical_refs_by_slug[slug] = entry
+        return slugs, canonical_refs_by_slug
     except Exception:
-        return []
+        return [], {}
+
+
+def parse_manifest_slugs(config: "ForgeConfig", manifest_path: Path) -> list[str]:
+    """Extract story slugs from a sprint manifest without full validation."""
+    slugs, _canonical_refs_by_slug = parse_manifest_story_refs(config, manifest_path)
+    return slugs
 
 
 #: A collision claim is held while its story is running past the plan gate.
