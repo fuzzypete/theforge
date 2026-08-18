@@ -17,6 +17,7 @@ What is pinned here:
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -412,6 +413,17 @@ class TestTerminalWriterSeams:
 
         assert summary_path(tmp_path, RUN_ID).exists()
         assert len(calls) == 1
+        audit = yaml.safe_load((result.state.log_dir / "audit.yaml").read_text(encoding="utf-8"))
+        assert audit["knowledge_summary"]["status"] == "written"
+        assert audit["knowledge_summary"]["written"] is True
+
+        run_record = json.loads(
+            (tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert run_record["knowledge_summary"]["status"] == "written"
+        assert run_record["knowledge_summary"]["written"] is True
 
     def test_a_summary_failure_leaves_the_audit_trail_intact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -475,6 +487,32 @@ class TestTerminalWriterSeams:
         assert len(entries) == 1
         assert "knowledge summary rejected" in entries[0].detail
         assert "no rooted 'run_summary:' block" in entries[0].detail
+
+    def test_rejected_sprint_summary_is_persisted_to_canonical_run_record(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from theforge.sprint.audit import _write_story_audit
+
+        monkeypatch.setattr(
+            knowledge_summary_flow,
+            "run_agent",
+            lambda **_: _FakeAgentResult(output="prose without rooted block"),
+        )
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        result = _done_result()
+        result.state.log_dir = tmp_path / ".forge" / "logs" / "sprint" / "retry-client"
+
+        _write_story_audit(config, task, result)
+
+        run_record = json.loads(
+            (tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert run_record["knowledge_summary"]["status"] == "rejected"
+        assert run_record["knowledge_summary"]["attempted"] is True
+        assert run_record["knowledge_summary"]["written"] is False
 
 
 def test_audit_schema_version_exposes_knowledge_summary_status() -> None:

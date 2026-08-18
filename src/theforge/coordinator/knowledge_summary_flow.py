@@ -27,7 +27,9 @@ lives in ``theforge.task.summary_prompts``.
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from theforge.knowledge_summary import (
@@ -44,8 +46,6 @@ from theforge.task.summary_prompts import build_run_summary_prompt
 from . import util as _cu
 
 if TYPE_CHECKING:
-    from pathlib import Path
-
     from theforge.config import ForgeConfig, ModelProfile
     from theforge.coordinator.state import CoordinatorResult
 
@@ -79,11 +79,81 @@ class RunSummaryOutcome:
             payload["path"] = str(self.path)
         return payload
 
+    @classmethod
+    def from_audit_dict(cls, payload: object) -> "RunSummaryOutcome | None":
+        """Decode a previously-recorded audit outcome if it is well-formed."""
+        if not isinstance(payload, dict):
+            return None
+
+        status = payload.get("status")
+        attempted = payload.get("attempted")
+        written = payload.get("written")
+        if not isinstance(status, str):
+            return None
+        if not isinstance(attempted, bool) or not isinstance(written, bool):
+            return None
+
+        reason = payload.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            reason = None
+
+        path_value = payload.get("path")
+        path = path_value if isinstance(path_value, Path) else None
+        if isinstance(path_value, str) and path_value:
+            path = Path(path_value)
+
+        return cls(
+            status=status,
+            attempted=attempted,
+            written=written,
+            reason=reason,
+            path=path,
+        )
+
 
 def _record_summary_outcome(audit: dict, outcome: RunSummaryOutcome) -> RunSummaryOutcome:
     """Persist the generation outcome onto the audit payload in place."""
     audit["knowledge_summary"] = outcome.to_audit_dict()
     return outcome
+
+
+def _existing_summary_outcome(
+    config: "ForgeConfig",
+    run_id: str,
+    audit: dict,
+) -> RunSummaryOutcome | None:
+    """Return the durable outcome already known for this run, if any."""
+    recorded = RunSummaryOutcome.from_audit_dict(audit.get("knowledge_summary"))
+    if recorded is not None:
+        return recorded
+
+    if not run_id:
+        return None
+
+    run_record = config.project_root / ".forge" / "audits" / "runs" / f"{run_id}.json"
+    try:
+        with open(run_record, encoding="utf-8") as f:
+            payload = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return RunSummaryOutcome.from_audit_dict(payload.get("knowledge_summary"))
+
+
+def _not_attempted_reason(
+    config: "ForgeConfig",
+    result: "CoordinatorResult",
+    run_id: str,
+) -> str:
+    """Classify why summary generation was not entered."""
+    if not getattr(getattr(config, "knowledge", None), "run_summaries", False):
+        return "disabled"
+    if not result.success or result.phase.name != "DONE":
+        return "run_not_done"
+    if not run_id:
+        return "missing_run_id"
+    return "already_exists"
 
 
 def _ensure_runner() -> None:
@@ -160,21 +230,16 @@ def maybe_generate_run_summary(
     try:
         run_id = str(audit.get("run_id") or "")
         if not _should_generate(config, result, run_id):
-            if not getattr(getattr(config, "knowledge", None), "run_summaries", False):
-                reason = "disabled"
-            elif not result.success or result.phase.name != "DONE":
-                reason = "run_not_done"
-            elif not run_id:
-                reason = "missing_run_id"
-            else:
-                reason = "already_exists"
+            existing = _existing_summary_outcome(config, run_id, audit)
+            if existing is not None:
+                return _record_summary_outcome(audit, existing)
             return _record_summary_outcome(
                 audit,
                 RunSummaryOutcome(
                     status="not_attempted",
                     attempted=False,
                     written=False,
-                    reason=reason,
+                    reason=_not_attempted_reason(config, result, run_id),
                 ),
             )
 
