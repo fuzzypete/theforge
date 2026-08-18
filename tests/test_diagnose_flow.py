@@ -21,6 +21,7 @@ import yaml
 from coord_test_helpers import _make_config
 
 from theforge.diagnose_types import (
+    DiagnosePartialReason,
     DiagnosePhase,
     DiagnoseState,
     DiagnosisArtifact,
@@ -80,6 +81,16 @@ def _agent_yaml_output(
         "notes": "",
     }
     return f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+
+
+def _load_audit_artifact(tmp_path: Path) -> dict:
+    audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-*.yaml"))
+    assert audit_files, "expected at least one audit file"
+    audit = yaml.safe_load(audit_files[-1].read_text())
+    assert isinstance(audit, dict)
+    artifact = audit.get("artifact")
+    assert isinstance(artifact, dict), "expected artifact in audit payload"
+    return artifact
 
 
 # ── Artifact / rendering tests ────────────────────────────────────────
@@ -303,7 +314,13 @@ class TestEnvironmentBriefing:
 # ── State machine / flow tests ────────────────────────────────────────
 
 
-def _fake_agent_result(output: str, *, success: bool = True, cost: float | None = 0.05):
+def _fake_agent_result(
+    output: str,
+    *,
+    success: bool = True,
+    cost: float | None = 0.05,
+    failure_code: str | None = None,
+):
     """Build a minimal AgentResult-shaped object usable as a runner stub."""
     from theforge.agent_types import AgentResult
 
@@ -314,6 +331,7 @@ def _fake_agent_result(output: str, *, success: bool = True, cost: float | None 
         cost_usd=cost,
         exit_code=0 if success else 1,
         raw={},
+        failure_code=failure_code,
     )
 
 
@@ -420,11 +438,16 @@ class TestDiagnoseFlow:
             output_destination="comment",
         )
         assert not result.success  # partial
-        assert result.state.phase == DiagnosePhase.TIMEOUT_PARTIAL
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
         # Artifact still landed so operator can review
         assert mock_post.called
         posted_body = mock_post.call_args[0][1]
         assert "Partial diagnosis" in posted_body
+        assert "did not reach a confirmed cause" in posted_body
+        assert "budget or timeout" not in posted_body
+        assert result.state.artifact is not None
+        assert result.state.artifact.partial_reason is DiagnosePartialReason.UNCLASSIFIED
+        assert _load_audit_artifact(tmp_path)["partial_reason"] == "unclassified"
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
@@ -621,6 +644,39 @@ class TestDiagnoseFlow:
         loaded = yaml.safe_load(audit_files[0].read_text())
         assert loaded["agent"]["cost_usd"] >= config.diagnose.budget_usd
         assert loaded["artifact"]["partial"] is True
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_timeout_partial_still_reports_timeout_when_agent_timed_out(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 81,
+            "title": "x",
+            "body": "y",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(hypothesis_statuses=("ruled_out", "inconclusive")),
+            success=False,
+            failure_code="timeout",
+        )
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=81,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.agent_failure_code == "timeout"
+        assert result.state.phase == DiagnosePhase.TIMEOUT_PARTIAL
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")

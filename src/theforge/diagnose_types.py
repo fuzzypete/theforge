@@ -27,7 +27,16 @@ class DiagnosePhase(Enum):
     FAILED = auto()
     TIMEOUT_PARTIAL = auto()  # ran out of time/budget; partial artifact returned
     BUDGET_EXCEEDED = auto()
+    UNCLASSIFIED_PARTIAL = auto()  # partial artifact for a non-budget, non-timeout reason
     ALREADY_RESOLVED = auto()  # premise absent from baseline; no diagnosis written
+
+
+class DiagnosePartialReason(Enum):
+    """Operator-visible reason a landed partial diagnosis is incomplete."""
+
+    BUDGET_EXCEEDED = "budget_exceeded"
+    TIMEOUT = "timeout"
+    UNCLASSIFIED = "unclassified"
 
 
 # Output destinations for a completed diagnosis artifact.
@@ -140,6 +149,7 @@ class DiagnosisArtifact:
     affected_code_path: str
     fix_success_criterion: str
     partial: bool = False  # True when the agent ran out of time/budget
+    partial_reason: DiagnosePartialReason = DiagnosePartialReason.UNCLASSIFIED
     notes: str = ""
     baseline_sha: str = ""
     baseline_captured_at: str = ""
@@ -304,11 +314,23 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
         )
     lines: list[str] = ["## Diagnosis"]
     if artifact.partial:
+        if artifact.partial_reason is DiagnosePartialReason.BUDGET_EXCEEDED:
+            warning = (
+                "> ⚠ Partial diagnosis — the investigation exceeded its budget "
+                "before reaching a confirmed cause. Operator review required."
+            )
+        elif artifact.partial_reason is DiagnosePartialReason.TIMEOUT:
+            warning = (
+                "> ⚠ Partial diagnosis — the investigation timed out before "
+                "reaching a confirmed cause. Operator review required."
+            )
+        else:
+            warning = (
+                "> ⚠ Partial diagnosis — the investigation did not reach a "
+                "confirmed cause. Operator review required."
+            )
         lines.append("")
-        lines.append(
-            "> ⚠ Partial diagnosis — the investigation hit its budget or "
-            "timeout before reaching a confirmed cause. Operator review required."
-        )
+        lines.append(warning)
     if artifact.baseline_sha:
         lines.append("")
         ts = artifact.baseline_captured_at or "unknown"

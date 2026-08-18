@@ -12,6 +12,7 @@ import pytest
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
     AbsentPremise,
+    DiagnosePartialReason,
     DiagnosePhase,
     DiagnoseResult,
     DiagnoseState,
@@ -49,6 +50,7 @@ class TestDiagnosePhase:
             "DONE",
             "FAILED",
             "TIMEOUT_PARTIAL",
+            "UNCLASSIFIED_PARTIAL",
             "VERIFY_PREMISE",
             "ALREADY_RESOLVED",
         ):
@@ -367,6 +369,52 @@ class TestRenderArtifactMarkdown:
         md = render_artifact_markdown(artifact)
         assert "Partial diagnosis" in md
         assert "Operator review required" in md
+
+    def test_unclassified_partial_artifact_does_not_claim_budget_or_timeout(self):
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="x",
+            reproduction_or_evidence="y",
+            hypotheses=(Hypothesis("z", "inconclusive", ""),),
+            confirmed_cause="",
+            affected_code_path="?",
+            fix_success_criterion="?",
+            partial=True,
+            partial_reason=DiagnosePartialReason.UNCLASSIFIED,
+        )
+        md = render_artifact_markdown(artifact)
+        assert "did not reach a confirmed cause" in md
+        assert "budget or timeout" not in md
+
+    def test_budget_partial_artifact_names_budget(self):
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="x",
+            reproduction_or_evidence="y",
+            hypotheses=(Hypothesis("z", "inconclusive", ""),),
+            confirmed_cause="",
+            affected_code_path="?",
+            fix_success_criterion="?",
+            partial=True,
+            partial_reason=DiagnosePartialReason.BUDGET_EXCEEDED,
+        )
+        md = render_artifact_markdown(artifact)
+        assert "exceeded its budget" in md
+
+    def test_timeout_partial_artifact_names_timeout(self):
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="x",
+            reproduction_or_evidence="y",
+            hypotheses=(Hypothesis("z", "inconclusive", ""),),
+            confirmed_cause="",
+            affected_code_path="?",
+            fix_success_criterion="?",
+            partial=True,
+            partial_reason=DiagnosePartialReason.TIMEOUT,
+        )
+        md = render_artifact_markdown(artifact)
+        assert "timed out" in md
 
     def test_empty_required_field_renders_placeholder(self):
         # A partial artifact with *some* content renders explicit placeholders
