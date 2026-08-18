@@ -119,7 +119,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 29
+CURRENT_RECORD_SCHEMA_VERSION = 30
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1747,6 +1747,30 @@ def _migrate_v28_to_v29(record: dict) -> dict:
     return {**record, "iterations": {**block, "validation_runs": []}}
 
 
+def _migrate_v29_to_v30(record: dict) -> dict:
+    """Backfill absent knowledge-summary reporting as explicitly unavailable.
+
+    v30 records persist the post-DONE knowledge-summary generation outcome.
+    Older records never carried that signal outside the raw run log, and there
+    is no durable evidence from which to reconstruct whether generation was
+    attempted or why it failed. Rather than inventing success or failure, the
+    reader treats the field as "not attempted" with a legacy marker: newer
+    runs distinguish the real attempted/written states, while older runs keep
+    their pre-v30 uncertainty explicit.
+    """
+    if "knowledge_summary" in record:
+        return record
+    return {
+        **record,
+        "knowledge_summary": {
+            "status": "not_attempted",
+            "attempted": False,
+            "written": False,
+            "reason": "legacy_record",
+        },
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1784,6 +1808,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     26: _migrate_v26_to_v27,
     27: _migrate_v27_to_v28,
     28: _migrate_v28_to_v29,
+    29: _migrate_v29_to_v30,
 }
 
 

@@ -967,6 +967,11 @@ def _stage_and_detail_from_completed_story(
 
     complexity = _normalize_complexity(preflight.get("complexity"))
     stage = _format_terminal_stage(story.get("iteration_usage"))
+    knowledge_summary = (
+        (audit_data or {}).get("knowledge_summary")
+        if isinstance((audit_data or {}).get("knowledge_summary"), dict)
+        else {}
+    )
 
     detail = ""
     is_failure_outcome = outcome in {
@@ -1097,7 +1102,23 @@ def _stage_and_detail_from_completed_story(
     if degraded_note:
         detail = f"{detail} — {degraded_note}" if detail else degraded_note
 
+    summary_note = _knowledge_summary_detail(knowledge_summary)
+    if summary_note:
+        detail = f"{detail} — {summary_note}" if detail else summary_note
+
     return stage, detail, complexity
+
+
+def _knowledge_summary_detail(block: dict) -> str:
+    """Render a persisted knowledge-summary outcome as a row annotation."""
+    if not block or block.get("attempted") is not True or block.get("written") is True:
+        return ""
+    status = _nonempty_str(block.get("status")) or "failed"
+    reason = _nonempty_str(block.get("reason"))
+    text = f"knowledge summary {status}"
+    if reason:
+        text = f"{text}: {reason}"
+    return text
 
 
 def preflight_degraded_state(story: dict, audit_data: dict | None) -> dict | None:

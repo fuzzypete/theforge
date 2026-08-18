@@ -136,6 +136,8 @@ from .audit_storage import (  # noqa: F401  # noqa: F401
     _migrate_v25_to_v26,
     _migrate_v26_to_v27,
     _migrate_v27_to_v28,
+    _migrate_v28_to_v29,
+    _migrate_v29_to_v30,
     _native_rows_are_stale,
     _now_iso,
     _open_validated,
