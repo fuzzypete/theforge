@@ -11,6 +11,13 @@ to replace the direct ForgeConfig construction in load.py.
 
 from __future__ import annotations
 
+from .model_identity import (
+    PHASE_DEV,
+    PHASE_PLAN,
+    PHASE_PLAN_REVIEW,
+    PHASE_PREFLIGHT,
+    PHASE_REVIEW,
+)
 from .schema import (
     DevRoleConfig,
     PlanRoleConfig,
@@ -108,27 +115,27 @@ def role_assignment_to_profiles(ra: RoleAssignment) -> dict[str, object]:
           "synthesis_profile":        ModelProfile | None
           "plan_agent_review_profile": ModelProfile | None
     """
-    dev_profile = _role_config_to_profile("dev", ra.dev, phase="dev")
-    preflight_profile = _role_config_to_profile("preflight", ra.preflight, phase="preflight")
-    plan_profile = _role_config_to_profile("plan", ra.plan, phase="plan")
+    dev_profile = _role_config_to_profile("dev", ra.dev, phase=PHASE_DEV)
+    preflight_profile = _role_config_to_profile("preflight", ra.preflight, phase=PHASE_PREFLIGHT)
+    plan_profile = _role_config_to_profile("plan", ra.plan, phase=PHASE_PLAN)
 
     review_pool: list[ModelProfile] = [
         _role_config_to_profile(
             rc.name if rc.name else rc.ref.model.replace("/", "-"),
             rc,
-            phase="review",
+            phase=PHASE_REVIEW,
         )
         for rc in ra.review_pool
     ]
 
     synthesis_profile: ModelProfile | None = None
     if ra.synthesis is not None:
-        synthesis_profile = _role_config_to_profile("synthesis", ra.synthesis, phase="review")
+        synthesis_profile = _role_config_to_profile("synthesis", ra.synthesis, phase=PHASE_REVIEW)
 
     plan_agent_review_profile: ModelProfile | None = None
     if ra.plan_agent_review is not None:
         plan_agent_review_profile = _role_config_to_profile(
-            "plan-agent-review", ra.plan_agent_review, phase="plan_review"
+            "plan-agent-review", ra.plan_agent_review, phase=PHASE_PLAN_REVIEW
         )
 
     return {

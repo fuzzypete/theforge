@@ -23,6 +23,7 @@ from .. import worker_budget
 from ..advisory_conventions import AdvisoryArtifactError
 from ..config import ForgeConfig, ModelProfile
 from ..config.auth import check_agent_auth
+from ..config.model_identity import PHASE_PREFLIGHT
 from ..coordinator import config_snapshot as config_snapshot_mod
 from ..coordinator import workspace as coordinator_workspace
 from ..coordinator.agent_failure import (
@@ -224,7 +225,7 @@ def _build_intake_agent_caller(
         profile = replace(
             config.dev_profile,
             name="intake-remediation",
-            phase="preflight",
+            phase=PHASE_PREFLIGHT,
             allowed_tools=(),
         )
     except TypeError:

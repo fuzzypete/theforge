@@ -35,7 +35,7 @@ from .model_catalog import (
     resolve_project,
 )
 from .model_duplicates import DuplicateDeclaration, compare_duplicate_declaration
-from .model_identity import MODEL_TIERS
+from .model_identity import MODEL_TIERS, PHASE_PLAN_REVIEW, PHASE_PREFLIGHT
 from .models import (
     AGENT_REGISTRY,
     AgentSpec,
@@ -1222,7 +1222,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             preflight_fallback_profile = dataclasses.replace(
                 preflight_fallback_profile,
                 name="preflight_fallback",
-                phase="preflight",
+                phase=PHASE_PREFLIGHT,
             )
         if synthesis_profile is not None and "synthesis" in overrides:
             synthesis_profile = _apply_profile_overrides(synthesis_profile, overrides["synthesis"])
@@ -1472,6 +1472,7 @@ def load_config(config_path: Path) -> ForgeConfig:
             budget_usd=plan_agent_review_cfg.budget_usd,
             timeout_seconds=plan_agent_review_cfg.timeout,
             allowed_tools=(),
+            phase=PHASE_PLAN_REVIEW,
         )
         legacy_plan_review_profile = _apply_transport_fallback(
             legacy_plan_review_profile, transport_fallbacks

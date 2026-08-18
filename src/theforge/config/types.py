@@ -1092,6 +1092,7 @@ class PlanAgentReviewConfig:
         if ref is None or (not ref.cli and not ref.provider):
             return []
         from .defaults import API_PROVIDER_DEFAULT_TOOLS, DEFAULT_INVESTIGATION_TOOLS
+        from .model_identity import PHASE_PLAN_REVIEW
 
         allowed_tools = (
             API_PROVIDER_DEFAULT_TOOLS
@@ -1108,6 +1109,7 @@ class PlanAgentReviewConfig:
                 timeout_seconds=ref.timeout_seconds,
                 allowed_tools=allowed_tools,
                 api_fallback=ref.api_fallback,
+                phase=PHASE_PLAN_REVIEW,
             )
         ]
 
