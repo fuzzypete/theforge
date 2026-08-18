@@ -7,6 +7,7 @@ plan describes how to *act on* a known cause; diagnose describes how to
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 
 import yaml
@@ -305,23 +306,81 @@ def build_diagnose_reformat_prompt(*, original_output: str, parse_error: str) ->
     )
 
 
+_FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^\n`]*)[ \t]*$", re.MULTILINE)
+
+
+@dataclass(frozen=True)
+class _FenceLine:
+    indent: int
+    info: str
+    start: int
+    end: int
+
+    @property
+    def is_close(self) -> bool:
+        return self.info == ""
+
+    @property
+    def opens_yaml(self) -> bool:
+        return self.info.lower().startswith("yaml")
+
+
+def _iter_fence_lines(output: str) -> list[_FenceLine]:
+    return [
+        _FenceLine(
+            indent=len(match.group("indent")),
+            info=match.group("info").strip(),
+            start=match.start(),
+            end=match.end(),
+        )
+        for match in _FENCE_LINE_RE.finditer(output)
+    ]
+
+
 def _extract_yaml_block(output: str) -> str:
     """Pull the first fenced YAML block out of agent output, falling back to raw."""
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        try:
-            end = output.index("```", start)
-            return output[start:end]
-        except ValueError:
-            return output[start:]
-    if "```" in output:
-        start = output.index("```") + len("```")
-        try:
-            end = output.index("```", start)
-            return output[start:end]
-        except ValueError:
-            return output[start:]
-    return output
+    fences = _iter_fence_lines(output)
+    if not fences:
+        return output
+
+    opener = next((fence for fence in fences if fence.opens_yaml), fences[0])
+    closing_candidates = [
+        fence
+        for fence in fences
+        if fence.start > opener.start and fence.is_close and fence.indent <= opener.indent
+    ]
+    if not closing_candidates:
+        raise ValueError("Malformed fenced response: opening fence is missing a matching close.")
+    if len(closing_candidates) > 1:
+        raise ValueError("Malformed fenced response: multiple closing fences match the envelope.")
+    closer = closing_candidates[0]
+    start = opener.end
+    if start < len(output) and output[start] == "\n":
+        start += 1
+    end = closer.start
+    if end > start and output[end - 1] == "\n":
+        end -= 1
+    return output[start:end]
+
+
+def _parse_yaml_mapping(yaml_text: str) -> dict[object, object]:
+    parsed = yaml.safe_load(yaml_text)
+    if not isinstance(parsed, dict):
+        raise TypeError(type(parsed).__name__)
+    return parsed
+
+
+def _normalize_parse_error(exc: yaml.YAMLError) -> str:
+    detail = " ".join(str(exc).split())
+    return f"YAML syntax error: {detail}"
+
+
+def _normalize_extract_error(exc: ValueError) -> str:
+    return str(exc)
+
+
+def _normalize_root_error(root_type: str) -> str:
+    return f"YAML block did not parse to a mapping of diagnosis keys (root was {root_type})."
 
 
 @dataclass(frozen=True)
@@ -373,18 +432,15 @@ def parse_diagnose_output_result(
     of discarded, so the diagnose flow can put it in the audit trail and in a
     bounded reformat-retry prompt.
     """
-    yaml_text = _extract_yaml_block(output)
     try:
-        parsed = yaml.safe_load(yaml_text)
+        yaml_text = _extract_yaml_block(output)
+        parsed = _parse_yaml_mapping(yaml_text)
+    except ValueError as exc:
+        return DiagnoseParseOutcome(None, _normalize_extract_error(exc))
     except yaml.YAMLError as exc:
-        detail = " ".join(str(exc).split())
-        return DiagnoseParseOutcome(None, f"YAML syntax error: {detail}")
-    if not isinstance(parsed, dict):
-        return DiagnoseParseOutcome(
-            None,
-            "YAML block did not parse to a mapping of diagnosis keys "
-            f"(root was {type(parsed).__name__}).",
-        )
+        return DiagnoseParseOutcome(None, _normalize_parse_error(exc))
+    except TypeError as exc:
+        return DiagnoseParseOutcome(None, _normalize_root_error(str(exc)))
 
     raw_hypotheses = parsed.get("hypotheses") or []
     hypotheses: list[Hypothesis] = []

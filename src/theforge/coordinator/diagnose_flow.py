@@ -1434,14 +1434,17 @@ def _run_diagnose_flow_body(
         return DiagnoseResult(success=False, state=state, message=message)
 
     # If essential fields are missing OR the run breached its budget/timeout
-    # envelope, treat as TIMEOUT_PARTIAL — return the partial work for operator
-    # review rather than landing a misleading "fix-ready" artifact.
+    # envelope, return the partial work for operator review rather than landing
+    # a misleading "fix-ready" artifact. Name the specific reason when known.
     if not artifact.is_complete() or partial:
         artifact = dataclasses.replace(artifact, partial=True)
         state.artifact = artifact
-        partial_phase = (
-            DiagnosePhase.BUDGET_EXCEEDED if budget_exceeded else DiagnosePhase.TIMEOUT_PARTIAL
-        )
+        if budget_exceeded:
+            partial_phase = DiagnosePhase.BUDGET_EXCEEDED
+        elif state.agent_failure_code == "timeout":
+            partial_phase = DiagnosePhase.TIMEOUT_PARTIAL
+        else:
+            partial_phase = DiagnosePhase.UNCLASSIFIED_PARTIAL
         emit_phase(partial_phase)
         if interactive and confirm_landing is None:
             confirm_landing = _stdin_confirm

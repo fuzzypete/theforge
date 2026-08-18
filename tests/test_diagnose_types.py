@@ -49,6 +49,7 @@ class TestDiagnosePhase:
             "DONE",
             "FAILED",
             "TIMEOUT_PARTIAL",
+            "UNCLASSIFIED_PARTIAL",
             "VERIFY_PREMISE",
             "ALREADY_RESOLVED",
         ):

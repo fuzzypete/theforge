@@ -27,6 +27,7 @@ class DiagnosePhase(Enum):
     FAILED = auto()
     TIMEOUT_PARTIAL = auto()  # ran out of time/budget; partial artifact returned
     BUDGET_EXCEEDED = auto()
+    UNCLASSIFIED_PARTIAL = auto()  # partial artifact for a non-budget, non-timeout reason
     ALREADY_RESOLVED = auto()  # premise absent from baseline; no diagnosis written
 
 

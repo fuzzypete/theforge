@@ -136,6 +136,51 @@ def _audit_for(tmp_path: Path, issue_number: int, run_id: str) -> dict:
 
 
 class TestStrictParseReportsReason:
+    def test_nested_fence_inside_yaml_scalar_preserves_following_fields(self):
+        output = """```yaml
+observed_symptom: |
+  diagnose truncates after evidence
+reproduction_or_evidence: |
+  This evidence quotes source:
+    ```
+    def buggy():
+        return True
+    ```
+hypotheses:
+  - statement: Nested fence breaks extraction
+    status: confirmed
+    evidence: Extraction must continue past inner fences
+confirmed_cause: |
+  The outer envelope closes later than the nested fence.
+affected_code_path: |
+  src/theforge/task/diagnose_prompts.py
+fix_success_criterion: |
+  All supplied fields survive parsing.
+```"""
+        outcome = parse_diagnose_output_result(output, issue_number=2191)
+        assert outcome.error == ""
+        assert outcome.artifact is not None
+        assert "def buggy()" in outcome.artifact.reproduction_or_evidence
+        assert outcome.artifact.confirmed_cause.startswith("The outer envelope closes")
+        assert outcome.artifact.is_complete()
+
+    def test_ambiguous_matching_close_is_rejected(self):
+        output = """```yaml
+observed_symptom: x
+reproduction_or_evidence: y
+hypotheses:
+  - statement: z
+    status: confirmed
+    evidence: e
+confirmed_cause: c
+affected_code_path: p
+fix_success_criterion: f
+```
+```"""
+        outcome = parse_diagnose_output_result(output, issue_number=2191)
+        assert outcome.artifact is None
+        assert "multiple closing fences" in outcome.error
+
     def test_yaml_syntax_error_is_named(self):
         outcome = parse_diagnose_output_result(
             _output_with_unterminated_quote(), issue_number=2029
