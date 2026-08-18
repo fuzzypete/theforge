@@ -23,6 +23,7 @@ def test_registry_derives_known_default_and_closed_sets_from_phase_metadata() ->
     )
 
     assert registry.known_phases == frozenset({"synthetic_open", "synthetic_closed"})
+    assert registry.operator_constrainable_phases == frozenset({"synthetic_open"})
     assert registry.default_phase_eligibility == frozenset({"synthetic_open"})
     assert registry.closed_operator_phases == frozenset({"synthetic_closed"})
 
@@ -40,7 +41,11 @@ def test_parser_uses_registry_derived_vocabulary_without_a_second_list(
             ),
         )
     )
-    monkeypatch.setattr(model_catalog, "KNOWN_PHASES", registry.known_phases)
+    monkeypatch.setattr(
+        model_catalog,
+        "OPERATOR_CONSTRAINABLE_PHASES",
+        registry.operator_constrainable_phases,
+    )
     monkeypatch.setattr(
         model_catalog,
         "is_known_dispatch_phase",
@@ -107,8 +112,6 @@ def test_model_profile_phase_sites_do_not_introduce_new_string_literals() -> Non
             elif isinstance(func, ast.Attribute):
                 func_name = func.attr
             if func_name not in {"ModelProfile", "model_ref_to_profile", "replace"}:
-                continue
-            if phase_kw.value.value.upper() == phase_kw.value.value:
                 continue
             violations.append(f"{relative_path}:{node.lineno}:{phase_kw.value.value}")
 

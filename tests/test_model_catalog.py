@@ -678,8 +678,11 @@ class TestProjectDeclarationsAreAsExpressiveAsShipped:
             },
         )
 
-        with pytest.raises(ValueError, match="only supports"):
+        with pytest.raises(ValueError, match="only supports") as excinfo:
             load_config(path)
+        message = str(excinfo.value)
+        assert "diagnose" not in message
+        assert "knowledge_summary" in message
 
     def test_phase_eligibility_closed_phase_names_the_deliberate_closure(self, tmp_path):
         path = _write(

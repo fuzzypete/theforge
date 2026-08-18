@@ -175,6 +175,7 @@ class DispatchPhaseRegistry:
     phases: tuple[DispatchPhase, ...]
     by_name: dict[str, DispatchPhase]
     known_phases: frozenset[str]
+    operator_constrainable_phases: frozenset[str]
     default_phase_eligibility: frozenset[str]
     closed_operator_phases: frozenset[str]
 
@@ -187,6 +188,9 @@ def build_dispatch_phase_registry(phases: tuple[DispatchPhase, ...]) -> Dispatch
             raise ValueError(f"duplicate dispatch phase metadata for {phase.name!r}")
         by_name[phase.name] = phase
     known = frozenset(by_name)
+    operator_constrainable = frozenset(
+        phase.name for phase in phases if phase.operator_constrainable
+    )
     default_eligible = frozenset(
         phase.name for phase in phases if phase.operator_constrainable and phase.default_eligible
     )
@@ -195,6 +199,7 @@ def build_dispatch_phase_registry(phases: tuple[DispatchPhase, ...]) -> Dispatch
         phases=phases,
         by_name=by_name,
         known_phases=known,
+        operator_constrainable_phases=operator_constrainable,
         default_phase_eligibility=default_eligible,
         closed_operator_phases=closed,
     )
@@ -226,6 +231,9 @@ def is_known_dispatch_phase(phase: str) -> bool:
 
 _DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = DISPATCH_PHASE_REGISTRY.default_phase_eligibility
 DEFAULT_PHASE_ELIGIBILITY: frozenset[str] = _DEFAULT_PHASE_ELIGIBILITY
+OPERATOR_CONSTRAINABLE_PHASES: frozenset[str] = (
+    DISPATCH_PHASE_REGISTRY.operator_constrainable_phases
+)
 CLOSED_OPERATOR_PHASES: frozenset[str] = DISPATCH_PHASE_REGISTRY.closed_operator_phases
 
 # Domains of the routing fields, kept next to the policy they constrain so both

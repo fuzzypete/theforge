@@ -66,8 +66,8 @@ from .model_identity import (
     COST_RANK_RANGE,
     IDENTITY_STATUS_RETIRED,
     IDENTITY_STATUSES,
-    KNOWN_PHASES,
     MODEL_TIERS,
+    OPERATOR_CONSTRAINABLE_PHASES,
     REASONING_MODES,
     TRANSPORT_KINDS,
     UNCONFIRMED_IDENTITY,
@@ -438,7 +438,7 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
         if unknown_phases:
             raise ValueError(
                 f"forge.yaml '{where}.routing.phase_eligibility' only supports "
-                f"{sorted(KNOWN_PHASES)}; got {sorted(unknown_phases)}"
+                f"{sorted(OPERATOR_CONSTRAINABLE_PHASES)}; got {sorted(unknown_phases)}"
             )
         routing["phase_eligibility"] = parsed_phases
     if "cost_rank_basis" in routing_raw:
