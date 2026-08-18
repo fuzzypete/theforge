@@ -119,6 +119,40 @@ class TestEscalatedWorktreeNotTreatedAsCollision:
         assert locked_fds == []
         assert preserved_escalated_detail(slug="issue-829") in capsys.readouterr().err
 
+    def test_multiple_preserved_escalated_worktrees_each_name_runnable_command(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        """Each preserved slug should render its own runnable review command."""
+        _make_worktree_with_audit(tmp_path, "issue-829", final_phase="ESCALATE")
+        _make_worktree_with_audit(tmp_path, "issue-830", final_phase="ESCALATE")
+        config = _mock_config(tmp_path)
+
+        git_results = [
+            MagicMock(returncode=0, stdout="7\n"),
+            MagicMock(returncode=0, stdout=""),
+            MagicMock(returncode=0, stdout="5\n"),
+            MagicMock(returncode=0, stdout=""),
+        ]
+        with patch("theforge.sprint.lock.subprocess.run", side_effect=git_results):
+            locked_fds, launch_error, dropped = acquire_launch_story_locks(
+                slugs=["issue-829", "issue-830"],
+                config=config,
+                resume=False,
+                allow_drop=False,
+            )
+
+        assert launch_error is None
+        assert dropped == {
+            "issue-829": "preserved-escalated",
+            "issue-830": "preserved-escalated",
+        }
+        assert locked_fds == []
+        err = capsys.readouterr().err
+        assert preserved_escalated_detail(slug="issue-829") in err
+        assert preserved_escalated_detail(slug="issue-830") in err
+        assert "PRESERVED issue-829, issue-830" not in err
+        assert "resolve with `forge review`" not in err
+
     def test_reexec_with_escalated_and_pending_story(self, tmp_path: Path) -> None:
         """Scenario from the bug: three stories, middle escalated, third must run.
 

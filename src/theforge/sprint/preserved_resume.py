@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import re
+import shlex
 from collections.abc import Mapping
 
 PRESERVED_REVIEW_COMMAND = "forge review <story-file>"
 PRESERVED_REVIEW_GUIDANCE = f"resolve with `{PRESERVED_REVIEW_COMMAND}`"
-_GENERIC_REVIEW_COMMAND = "forge review"
 _ISSUE_PATH_RE = re.compile(r"^Issue #(?P<number>\d+)$")
 _ISSUE_SLUG_RE = re.compile(r"^issue-(?P<number>\d+)$")
 
@@ -51,8 +51,8 @@ def preserved_review_command(
     issue_number = _issue_number(canonical_ref=canonical_ref, path=path, slug=slug)
     if issue_number is not None:
         return f"forge review --issue {issue_number}"
-    if slug and "," in slug:
-        return _GENERIC_REVIEW_COMMAND
+    if path is not None:
+        return f"forge review {shlex.quote(path)}"
     return PRESERVED_REVIEW_COMMAND
 
 

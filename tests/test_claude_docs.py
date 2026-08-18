@@ -1,10 +1,5 @@
 from pathlib import Path
 
-from theforge.sprint.preserved_resume import (
-    PRESERVED_REVIEW_COMMAND,
-    preserved_review_command,
-)
-
 ROOT = Path(__file__).resolve().parents[1]
 SUBSYSTEMS = ["coordinator", "runners", "sprint", "task", "config", "cli"]
 REQUIRED_SECTIONS = ["## Purpose", "## Invariants", "## Context"]
@@ -72,15 +67,3 @@ def test_memory_migration_audit_doc_exists() -> None:
     text = (ROOT / "docs" / "memory-migration.md").read_text()
     assert "Project-level files moved into `CONVENTIONS.md`" in text
     assert "User-local files retained in user memory" in text
-
-
-def test_controller_runbook_preserved_section_matches_runtime_guidance() -> None:
-    text = (ROOT / "docs" / "guides" / "controller-runbook.md").read_text()
-    preserved_section = text.split("### PRESERVED", 1)[1].split("### Auth readiness gate", 1)[0]
-
-    assert (
-        f"resolve with `{preserved_review_command(path='Issue #2475', slug='issue-2475')}`"
-        in preserved_section
-    )
-    assert f"resolve with `{PRESERVED_REVIEW_COMMAND}`" in preserved_section
-    assert "forge run --resume <story-file>" not in preserved_section

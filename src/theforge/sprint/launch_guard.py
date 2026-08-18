@@ -166,9 +166,9 @@ def acquire_launch_story_locks(
     dropped.update({s: REASON_PRESERVED_ESCALATED for s in escalated_slugs})
     schedulable = [s for s in slugs if s not in dropped]
 
-    if escalated_slugs:
+    for slug in escalated_slugs:
         print(
-            f"[forge] {preserved_escalated_message(', '.join(escalated_slugs))}.",
+            f"[forge] {preserved_escalated_message(slug)}.",
             file=sys.stderr,
             flush=True,
         )
