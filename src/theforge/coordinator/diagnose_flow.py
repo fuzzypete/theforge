@@ -665,6 +665,7 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
         "affected_code_path": artifact.affected_code_path,
         "fix_success_criterion": artifact.fix_success_criterion,
         "partial": artifact.partial,
+        "partial_reason": artifact.partial_reason.value,
         "notes": artifact.notes,
         "baseline_sha": artifact.baseline_sha,
         "baseline_captured_at": artifact.baseline_captured_at,

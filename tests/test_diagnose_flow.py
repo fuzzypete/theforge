@@ -83,6 +83,16 @@ def _agent_yaml_output(
     return f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
 
 
+def _load_audit_artifact(tmp_path: Path) -> dict:
+    audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-*.yaml"))
+    assert audit_files, "expected at least one audit file"
+    audit = yaml.safe_load(audit_files[-1].read_text())
+    assert isinstance(audit, dict)
+    artifact = audit.get("artifact")
+    assert isinstance(artifact, dict), "expected artifact in audit payload"
+    return artifact
+
+
 # ── Artifact / rendering tests ────────────────────────────────────────
 
 
@@ -437,6 +447,7 @@ class TestDiagnoseFlow:
         assert "budget or timeout" not in posted_body
         assert result.state.artifact is not None
         assert result.state.artifact.partial_reason is DiagnosePartialReason.UNCLASSIFIED
+        assert _load_audit_artifact(tmp_path)["partial_reason"] == "unclassified"
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
