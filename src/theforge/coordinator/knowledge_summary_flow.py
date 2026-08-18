@@ -141,6 +141,13 @@ def _existing_summary_outcome(
     return RunSummaryOutcome.from_audit_dict(payload.get("knowledge_summary"))
 
 
+def _reuse_existing_outcome(outcome: RunSummaryOutcome | None) -> bool:
+    """Report whether a durable prior outcome should block redispatch."""
+    if outcome is None:
+        return False
+    return outcome.attempted or outcome.written
+
+
 def _not_attempted_reason(
     config: "ForgeConfig",
     result: "CoordinatorResult",
@@ -229,8 +236,10 @@ def maybe_generate_run_summary(
     """
     try:
         run_id = str(audit.get("run_id") or "")
+        existing = _existing_summary_outcome(config, run_id, audit)
+        if _reuse_existing_outcome(existing):
+            return _record_summary_outcome(audit, existing)
         if not _should_generate(config, result, run_id):
-            existing = _existing_summary_outcome(config, run_id, audit)
             if existing is not None:
                 return _record_summary_outcome(audit, existing)
             return _record_summary_outcome(

@@ -425,6 +425,40 @@ class TestTerminalWriterSeams:
         assert run_record["knowledge_summary"]["status"] == "written"
         assert run_record["knowledge_summary"]["written"] is True
 
+    def test_sprint_writes_a_canonical_run_record_before_summary_generation(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from theforge.sprint.audit import _write_story_audit
+
+        seen: dict[str, object] = {}
+
+        def _fake_run_agent(**_kwargs: object) -> _FakeAgentResult:
+            run_file = tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json"
+            seen["exists"] = run_file.exists()
+            if run_file.exists():
+                seen["record"] = json.loads(run_file.read_text(encoding="utf-8"))
+            return _FakeAgentResult()
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _fake_run_agent)
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        result = _done_result()
+        result.state.log_dir = tmp_path / ".forge" / "logs" / "sprint" / "retry-client"
+
+        _write_story_audit(config, task, result)
+
+        assert seen["exists"] is True
+        persisted = seen["record"]
+        assert isinstance(persisted, dict)
+        assert "knowledge_summary" not in persisted
+
+        run_record = json.loads(
+            (tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert run_record["knowledge_summary"]["status"] == "written"
+
     def test_a_summary_failure_leaves_the_audit_trail_intact(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -512,6 +546,40 @@ class TestTerminalWriterSeams:
         )
         assert run_record["knowledge_summary"]["status"] == "rejected"
         assert run_record["knowledge_summary"]["attempted"] is True
+        assert run_record["knowledge_summary"]["written"] is False
+
+    def test_rejected_sprint_summary_is_not_redispatched_on_later_story_audit_writes(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from theforge.sprint.audit import _write_story_audit
+
+        calls = 0
+
+        def _rejecting_agent(**_kwargs: object) -> _FakeAgentResult:
+            nonlocal calls
+            calls += 1
+            return _FakeAgentResult(output="prose without rooted block")
+
+        monkeypatch.setattr(knowledge_summary_flow, "run_agent", _rejecting_agent)
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        result = _done_result()
+        result.state.log_dir = tmp_path / ".forge" / "logs" / "sprint" / "retry-client"
+
+        for _ in range(3):
+            _write_story_audit(config, task, result)
+
+        assert calls == 1
+        audit = yaml.safe_load((result.state.log_dir / "audit.yaml").read_text(encoding="utf-8"))
+        assert audit["knowledge_summary"]["status"] == "rejected"
+        assert audit["knowledge_summary"]["written"] is False
+
+        run_record = json.loads(
+            (tmp_path / ".forge" / "audits" / "runs" / f"{RUN_ID}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert run_record["knowledge_summary"]["status"] == "rejected"
         assert run_record["knowledge_summary"]["written"] is False
 
 
