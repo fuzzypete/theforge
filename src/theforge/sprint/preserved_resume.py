@@ -76,9 +76,6 @@ def preserved_escalated_detail_for_story(story: Mapping[str, object]) -> str:
     )
 
 
-PRESERVED_ESCALATED_DETAIL = preserved_escalated_detail()
-
-
 def preserved_escalated_message(
     slug: str,
     *,

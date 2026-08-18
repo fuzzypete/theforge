@@ -39,14 +39,25 @@ A sprint can report a story as **PRESERVED** when launch triage finds an
 existing escalated worktree from a prior generation and deliberately declines to
 reschedule it in this run. On `forge status` the row stays `status=preserved`
 with phase `—`; in the run log and launch-time stderr the story is reported as:
-"escalated worktree preserved for human review; resolve with `forge run
---resume <story-file>`."
+
+Issue-backed story:
+
+```text
+escalated worktree preserved for human review; resolve with `forge review --issue 2475`
+```
+
+File-backed story:
+
+```text
+escalated worktree preserved for human review; resolve with `forge review <story-file>`
+```
 
 Treat this as a recoverable halt, not a silent drop. The worktree and resume
 record are still on disk; the exit is the command named in the report:
-`forge run --resume <story-file>`. That command triages the existing worktree
-and resumes from the correct phase (REVIEW, DEV, or full pipeline) instead of
-starting over.
+`forge review --issue 2475` for issue-backed stories, or
+`forge review <story-file>` for file-backed stories. `forge review` triages the
+existing worktree and resumes from the correct phase (REVIEW, DEV, or full
+pipeline) instead of starting over.
 
 ### Auth readiness gate (issue #1952)
 
