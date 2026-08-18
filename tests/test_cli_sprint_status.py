@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import datetime
 import io
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 import yaml
@@ -1267,6 +1268,24 @@ def test_stage_and_detail_failed_with_stale_done_does_not_leak() -> None:
     assert detail in {"ESCALATED", "ESCALATE"}
 
 
+def test_stage_and_detail_preserved_names_review_command() -> None:
+    """A preserved issue story should name the runnable review command."""
+    from theforge.sprint.preserved_resume import preserved_escalated_detail_for_story
+    from theforge.sprint.status_reader import _stage_and_detail_from_live_story
+
+    story = {
+        "slug": "issue-2475",
+        "path": "Issue #2475",
+        "status": "preserved",
+        "outcome": "preserved",
+        "phase": None,
+        "detail": {"final_outcome": "PRESERVED"},
+        "reason": "preserved-escalated",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_live_story(story)
+    assert detail == preserved_escalated_detail_for_story(story)
+
+
 def test_completed_failed_story_with_stale_verdict_does_not_show_approve() -> None:
     """Completed FAILED row with stale verdict=APPROVE must not render APPROVE."""
     from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
@@ -1310,6 +1329,80 @@ def test_completed_skipped_story_with_stale_verdict_does_not_show_approve() -> N
     _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
     assert "APPROVE" not in detail
     assert detail == "SKIPPED"
+
+
+def test_completed_preserved_story_names_review_command() -> None:
+    """Completed PRESERVED rows should keep the same review guidance."""
+    from theforge.sprint.preserved_resume import preserved_escalated_detail_for_story
+    from theforge.sprint.status_reader import _stage_and_detail_from_completed_story
+
+    story = {
+        "slug": "issue-2475",
+        "path": "Issue #2475",
+        "outcome": "PRESERVED",
+        "drop_reason": "preserved-escalated",
+    }
+    _stage, detail, _complexity = _stage_and_detail_from_completed_story(story, None)
+    assert detail == preserved_escalated_detail_for_story(story)
+
+
+def test_completed_preserved_story_from_current_entry_error_shape_names_review_command(
+    tmp_path: Path,
+) -> None:
+    """Completed status must render preserved current-entry rows written with only error."""
+    from theforge.sprint.audit import _write_sprint_summary
+    from theforge.sprint.manifest import SprintResult
+    from theforge.sprint.preserved_resume import preserved_escalated_detail_for_story
+    from theforge.sprint.status_reader import read_completed_status
+
+    manifest = MagicMock()
+    manifest.name = "test-sprint"
+    manifest.budget_usd = 1.0
+    manifest.max_parallel = 1
+
+    sprint_result = SprintResult(
+        name="test-sprint",
+        specs_total=1,
+        specs_succeeded=0,
+        specs_failed=1,
+        specs_skipped=0,
+        total_cost_usd=0.0,
+        budget_usd=1.0,
+        results=[],
+    )
+
+    now = datetime.datetime(2026, 8, 18, tzinfo=datetime.timezone.utc)
+    sprint_log_dir = tmp_path / ".forge" / "logs" / "test-sprint"
+    sprint_log_dir.mkdir(parents=True, exist_ok=True)
+    _write_sprint_summary(
+        manifest=manifest,
+        result=sprint_result,
+        canonical_refs=["issue:2475"],
+        started_at=now,
+        finished_at=now,
+        duration=1.0,
+        sprint_log_dir=sprint_log_dir,
+        slug_map={"issue:2475": "issue-2475"},
+        current_story_entries_by_ref={
+            "issue:2475": {
+                "slug": "issue-2475",
+                "path": "Issue #2475",
+                "outcome": "PRESERVED",
+                "error": "preserved-escalated",
+                "error_type": "dropped",
+                "cost_usd": 0.0,
+                "merge": False,
+                "batch": 0,
+                "depends_on": [],
+            }
+        },
+    )
+
+    entries = read_completed_status(sprint_log_dir / "sprint-summary.yaml")
+    assert len(entries) == 1
+    assert entries[0].detail == preserved_escalated_detail_for_story(
+        {"slug": "issue-2475", "path": "Issue #2475"}
+    )
 
 
 def test_completed_done_story_verdict_is_preserved() -> None:

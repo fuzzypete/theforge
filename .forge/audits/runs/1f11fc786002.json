@@ -1,0 +1,4544 @@
+{
+  "schema_version": 29,
+  "run_id": "1f11fc786002",
+  "parent_run_id": null,
+  "forge_version": "0.15.0rc3",
+  "task": {
+    "name": "Each dispatchable phase added to forge needs a separate source edit before an operator can constrain it, so the newest phase is always the one that cannot be restricted",
+    "slug": "issue-2500",
+    "story_path": null,
+    "story_text": "Each dispatchable phase added to forge needs a separate source edit before an operator can constrain it, so the newest phase is always the one that cannot be restricted\n\n## Observed\n\n`KNOWN_PHASES` in `src/theforge/config/model_identity.py` is\n`frozenset({\"preflight\", \"dev\", \"plan\", \"review\", \"advisor\"})`. It is the set of\nphases `routing.phase_eligibility` accepts, and a parsed phase outside it is\nrejected at config load.\n\nThe knowledge-summary flow dispatches under `phase='knowledge_summary'`, which is\nnot a member. An operator therefore cannot name that phase in\n`routing.phase_eligibility` at all \u2014 not to restrict it, not to widen it, not\neven deliberately. A configuration expressing an intent about that phase is\nrefused as invalid rather than applied.\n\n`advisor` became a member only after a p1 bug was filed, diagnosed and fixed,\nbecause the same absence had the same effect there. Before that fix the set held\nfour phases and `advisor` was the phase that could not be constrained; after it,\nthe set holds five and `knowledge_summary` is. The membership list has grown by\none each time a phase's absence caused a visible failure, and each growth\nrequired its own issue.\n\nThe two phases affected so far both drive agents whose output is only usable when\nstructured \u2014 the case where an operator most plausibly wants to say which models\nmay fill the seat.\n\n## Expected\n\nWhether an operator can express a routing constraint about a phase does not\ndepend on whether anyone has yet edited a list to include it. A phase forge\ndispatches is a phase an operator can name, and a phase added later is nameable\non the same terms as one that has existed since the beginning, without a separate\nsource change to make it so.\n\nThis is a statement about the general relationship between dispatched phases and\nthe eligibility vocabulary, not about any particular phase's membership. Adding\nthe missing entry satisfies the symptom for one phase and leaves the next phase\nadded in exactly the position this one is in now, which is the outcome to avoid.\nThe eligibility vocabulary deriving from what forge dispatches is the whole of\nwhat is being asked for here; an accurate error message about a hand-maintained\nlist is not an acceptable substitute for it.\n\nOnce that holds, a phase may still be deliberately closed to operator constraint\n\u2014 that is a legitimate design choice, and `KNOWN_PHASES`' own documentation\nanticipates a phase that is dispatched but not default-eligible. Where it\napplies, the exclusion should be an explicit property of that phase rather than\nits absence from a list, and an operator naming it should learn it is\ndeliberately closed rather than unrecognized. This is a requirement about how\ndeliberate exclusions are expressed *after* the vocabulary derives from dispatch,\nnot an alternative to deriving it.\n\n## Diagnosis\n\n**Baseline:** `ea3956e5a547060451c057e13459b545e873a96d` captured at `2026-08-17T13:10:48.024631+00:00`\n\n**Inspected files:**\n\n- `src/theforge/config/model_identity.py` \u2014 `sha256:a90f5d77f9d970e6fab31f3b47a578651d30ef3c43c892afbfe518b82913619e`\n- `src/theforge/config/model_catalog.py` \u2014 `sha256:1f88d49197eb8920dfe698b5c42cfb5455dc500793b69300390209fdce520e25`\n- `src/theforge/coordinator/knowledge_summary_flow.py` \u2014 `sha256:fa6fbf670b835083879d6c9b570e7d6d7d7dc4ff05408a070dadfb3282161f13`\n- `src/theforge/config/role_derivation.py` \u2014 `sha256:ccef02c52bd2a206d68301d37239f602e8871a1de478e331d616419dffa04d31`\n- `src/theforge/coordinator/escalation_advisor_flow.py` \u2014 `sha256:0b556704eac4dbad6baf32e8ebd335acdbb4f233d2fef459e9a96a6ed23c129e`\n- `src/theforge/cli/explain.py` \u2014 `sha256:d1105dd73533ba207364322ff1658e6f88ceda9055273f4663da61a44c1cd4a1`\n- `src/theforge/assignment.py` \u2014 `sha256:0b4bf05109f9aaeba682a0a38f270808758d925f071801be20a142094fe90090`\n- `src/theforge/config/data/models.yaml` \u2014 `sha256:1113f0553859fe388d81957cf33cd78f61544171a55cd699cb333cb7f4971d02`\n- `src/theforge/config/model_duplicates.py` \u2014 `sha256:96a364614c2490a1a1a5a4cf6ae5eed01fca49128e3bca9238b966313e92f089`\n- `src/theforge/config/models.py` \u2014 `sha256:e55f3549db704cbebecf1f82e823c150ab846e05f935130361f00ef0aa47fb61`\n\n### Observed symptom\n\nAn operator cannot express `routing.phase_eligibility` constraints for the\nknowledge-summary structured-output role. Any forge.yaml declaration naming\n`knowledge_summary` in `phase_eligibility` is rejected at config load with an\n\"unknown phase\" ValueError, because `knowledge_summary` is not a member of\n`KNOWN_PHASES`. This is not specific to knowledge_summary \u2014 it is the general\nshape: `KNOWN_PHASES` is a hand-maintained enumeration that must be edited\nseparately every time a new dispatchable phase/role is added, so any newly\nadded role is unconstrainable until someone notices and files a fix (as\nhappened for `advisor` in #2466, and is happening again here for\n`knowledge_summary`).\n\n### Reproduction / evidence\n\n- `src/theforge/config/model_identity.py:170` defines\n  `KNOWN_PHASES: frozenset[str] = frozenset({\"preflight\", \"dev\", \"plan\", \"review\", \"advisor\"})`\n  \u2014 a fixed literal set, not derived from anything that enumerates dispatched\n  phases.\n- `src/theforge/config/model_catalog.py:414-429` is the only place that\n  validates `routing.phase_eligibility` against `KNOWN_PHASES`: any phase\n  named in a forge.yaml `phase_eligibility` list that is not in `KNOWN_PHASES`\n  raises `ValueError(f\"...only supports {sorted(KNOWN_PHASES)}; got\n  {sorted(unknown_phases)}\")`.\n- `src/theforge/coordinator/knowledge_summary_flow.py:84-89` dispatches the\n  summary role via `model_ref_to_profile(\"knowledge_summary\", ref,\n  allowed_tools=(), phase=\"knowledge_summary\", sandbox_mode=\"read-only\")` \u2014\n  a real, live dispatch phase string that is absent from `KNOWN_PHASES`.\n- Prior confirmation of the exact same shape: `.forge/audits/runs/4b582ddcfba0.json`\n  (and `bf83c4933ec3.json`) record the identical diagnosis and fix for the\n  `advisor` role under #2466 \u2014 `KNOWN_PHASES` was hand-edited from four\n  entries to five to admit `advisor`, after a p1 bug was filed because the\n  same absence made advisor unconstrainable. The list is now five entries and\n  `knowledge_summary` is in the pre-fix position `advisor` was in.\n- `src/theforge/coordinator/escalation_advisor_flow.py:94-113` independently\n  hardcodes `\"advisor\" in _agent_phase_eligibility(...)` as a special check\n  outside the general role-derivation path in\n  `src/theforge/config/role_derivation.py:111-117`\n  (`_filter_by_phase_eligibility`), confirming there is no single shared\n  catalog of \"phases forge actually dispatches\" that both the validator and\n  the dispatchers consult \u2014 each dispatch site invents its own phase string,\n  and only phases someone remembered to add to `KNOWN_PHASES` are\n  operator-nameable.\n\n### Hypotheses tested\n\n- **[confirmed]** KNOWN_PHASES is a hardcoded literal that must be manually kept in sync with every phase string a coordinator flow actually dispatches under, and nothing enforces that sync \u2014 so each new dispatch-phase is unconstrainable by default until a human notices and edits the set.\n  - Evidence: model_identity.py:170 is a plain frozenset literal with no derivation from dispatch call sites. knowledge_summary_flow.py:87 dispatches under phase='knowledge_summary', a string never referenced anywhere near KNOWN_PHASES. The identical gap was previously confirmed and fixed for 'advisor' via the same mechanism (#2466 / audit 4b582ddcfba0), which is direct historical proof that the sync is manual and per-role, not structural.\n- **[ruled out]** The rejection is a deliberate exclusion (a documented policy decision that knowledge_summary should not be operator-constrainable) rather than an omission.\n  - Evidence: The comment block at model_identity.py:149-166 documents KNOWN_PHASES as 'the only phases ever queried... It equals the default set today because every known phase is eligible by default.' There is no retired/excluded-phase concept anywhere in this module (contrast with IDENTITY_STATUS_RETIRED, which IS a stated, justified exclusion mechanism for model identifiers). The error message in model_catalog.py:424-428 is a generic 'unknown phase, only supports {list}' \u2014 indistinguishable from a typo. Nothing marks knowledge_summary (or previously advisor) as intentionally withheld; the advisor precedent shows the fix each time was simply 'add it to the set,' not 'confirm exclusion was intended.'\n\n### Confirmed cause\n\n`KNOWN_PHASES` in `src/theforge/config/model_identity.py:170` is a fixed,\nhand-maintained frozenset that both bounds what `routing.phase_eligibility`\naccepts (validated in `model_catalog.py:414-429`) and is treated by its own\ndocumentation as the complete list of phases forge ever dispatches under \u2014\nbut nothing derives it from, or checks it against, the actual phase strings\ncoordinator flows dispatch with (e.g. `phase=\"knowledge_summary\"` in\n`knowledge_summary_flow.py:87`). Consequently every new dispatchable\nstructured-output role starts unconstrainable, and becoming constrainable\nrequires a separate, manually-authored edit to this literal set \u2014 which is\nexactly what happened for `advisor` (#2466) and has now recurred for\n`knowledge_summary`. There is no mechanism that either (a) keeps the\neligibility vocabulary automatically in sync with dispatched phases, or (b)\ndistinguishes \"phase forge doesn't know about\" from \"phase forge knows about\nbut has deliberately closed to operator constraint\" \u2014 both currently produce\nthe same generic \"unknown phase\" rejection.\n\n### Affected code path\n\nsrc/theforge/config/model_identity.py:145-170 (KNOWN_PHASES /\n_DEFAULT_PHASE_ELIGIBILITY definitions)\nsrc/theforge/config/model_catalog.py:414-429 (phase_eligibility validation\nagainst KNOWN_PHASES)\nsrc/theforge/coordinator/knowledge_summary_flow.py:84-89 (dispatch under\nphase=\"knowledge_summary\", the currently-unrepresented phase)\n\n### Fix-success criterion\n\nThe set of phases an operator may name in `routing.phase_eligibility` is\nderived from the set of phases forge dispatches, so that adding a new\ncoordinator dispatch phase makes it operator-nameable with no edit to any\nseparate eligibility-vocabulary literal. Verify by adding a dispatch phase\nthat appears in no hand-maintained list and confirming an operator can name\nit; `knowledge_summary` is the instance that must work today, and the *next*\nphase added after this fix must work without its own follow-up issue.\n\nRetaining a hand-maintained list and improving its error message does not\nsatisfy this. A phase deliberately closed to operator constraint is carried\nas an explicit property of that phase, and naming it yields an error saying\nit is deliberately closed rather than unrecognized \u2014 a requirement on how\nexclusions are expressed once the vocabulary derives from dispatch, not an\nalternative to deriving it.\n\n### Related findings (out of scope)\n\n> These are adjacent problems noticed during investigation. They are **not** the cause of this issue's symptom and are **out of scope for this fix** \u2014 triage them separately under the linked issue. Do not implement them as part of this issue.\n\n- escalation_advisor_flow.py hardcodes a bespoke 'advisor' phase-eligibility check (_agent_phase_eligibility / line 108) outside the shared role_derivation.py filtering path used by other roles \u2014 a second, independent place that would need updating if the eligibility vocabulary's shape changes structurally. (related: #2466)\n- cli/explain.py:42 hardcodes a human-readable phase_eligibility exclusion message keyed generically, not per-phase \u2014 worth checking it stays coherent if unknown-phase vs deliberately-excluded-phase become distinguishable error states.\n\n### Notes\n\nThis is a structural/recurrence issue, not a one-line KNOWN_PHASES edit \u2014\nthe issue body explicitly asks for the general relationship to be fixed, not\njust the knowledge_summary instance (which would just move the bug to\nwhatever role is added next, as happened between advisor and this one). I\ndid not find a single canonical registry of \"phase strings forge dispatches\nunder\" anywhere in the coordinator package; each flow (dev_phase.py,\nreview_phase.py, escalation_advisor_flow.py, knowledge_summary_flow.py, ...)\npicks its own phase string as a literal at the call site. A structural fix\nlikely needs to either (a) derive KNOWN_PHASES from those call sites\nmechanically, or (b) introduce a registration point each dispatch site must\nuse, so the vocabulary and the dispatch surface cannot drift apart again. I\ndid not fully enumerate every coordinator phase dispatch site (budget); a\nfix implementer should grep for `phase=\"` / `phase=f\"` across\nsrc/theforge/coordinator/ to find the complete current set before deciding\nthe derivation mechanism.\n\n",
+    "github_issue": 2500,
+    "fix_ready": true,
+    "readiness_warnings": []
+  },
+  "agent_invocation": {
+    "infrastructure_failure": null,
+    "no_judgment_failures": [],
+    "degraded_pools": []
+  },
+  "shared_infrastructure_failures": [],
+  "abnormal_termination": null,
+  "phase_recovery": {
+    "status": "recovered",
+    "reason": "story_content_match",
+    "recovered_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "source_run_id": "90d595448c2c",
+    "recorded_phases": [
+      "preflight",
+      "routing_decision",
+      "plan_review"
+    ],
+    "reentry_impact": null,
+    "block_selection": [
+      {
+        "action": "replaced_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "incoming_run_id": "74054308fa3a",
+        "phase": "preflight",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 2
+        },
+        "prior_run_id": "9838f40b0127",
+        "reason": "incoming_block_more_founded"
+      },
+      {
+        "action": "replaced_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "incoming_run_id": "74054308fa3a",
+        "phase": "routing_decision",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 2
+        },
+        "prior_run_id": "9838f40b0127",
+        "reason": "incoming_block_more_founded"
+      },
+      {
+        "action": "replaced_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "incoming_run_id": "74054308fa3a",
+        "phase": "complexity_routing_audit",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 2
+        },
+        "prior_run_id": "9838f40b0127",
+        "reason": "incoming_block_more_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "3704718f3b5c",
+        "phase": "preflight",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "74054308fa3a",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "3704718f3b5c",
+        "phase": "routing_decision",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "74054308fa3a",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "3704718f3b5c",
+        "phase": "complexity_routing_audit",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "74054308fa3a",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "90d595448c2c",
+        "phase": "preflight",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "3704718f3b5c",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "90d595448c2c",
+        "phase": "routing_decision",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "3704718f3b5c",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "90d595448c2c",
+        "phase": "complexity_routing_audit",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "3704718f3b5c",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "90d595448c2c",
+        "phase": "preflight",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "90d595448c2c",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "90d595448c2c",
+        "phase": "routing_decision",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "90d595448c2c",
+        "reason": "incoming_block_less_founded"
+      },
+      {
+        "action": "kept_existing",
+        "incoming_foundation": {
+          "degraded": false,
+          "examined": 1
+        },
+        "incoming_run_id": "90d595448c2c",
+        "phase": "complexity_routing_audit",
+        "prior_foundation": {
+          "degraded": false,
+          "examined": 3
+        },
+        "prior_run_id": "90d595448c2c",
+        "reason": "incoming_block_less_founded"
+      }
+    ]
+  },
+  "outcome": {
+    "success": true,
+    "final_phase": "DONE",
+    "message": "Task 'Each dispatchable phase added to forge needs a separate source edit before an operator can constrain it, so the newest phase is always the one that cannot be restricted' completed. Review approved after 3 cycle(s), 3 dev iteration(s). Branch: feat/issue-2500",
+    "error_type": null,
+    "start_phase": null,
+    "stop_phase": null
+  },
+  "configuration": {
+    "source_path": "/Users/pwickersham/src/theforge/forge.yaml",
+    "source_sha256": "08c95acd63dc97ed1f6f3c33f8c7e0d90fcc9925fa15a3ae0aa435172eae8771",
+    "resolved_sha256": "9a0f8427ec687b4acf92d85f0aabf71fce4260b258f40a64f5a05edb6b157485",
+    "source_sha256_at_finish": "08c95acd63dc97ed1f6f3c33f8c7e0d90fcc9925fa15a3ae0aa435172eae8771",
+    "changed_during_run": false,
+    "finish_read_error": null
+  },
+  "timing": {
+    "started_at": "2026-08-18T19:24:41.089662+00:00",
+    "finished_at": "2026-08-18T20:07:17.857378+00:00",
+    "duration_seconds": 2556.767716
+  },
+  "workspace": {
+    "path": "/Users/pwickersham/src/theforge/.forge/worktrees/issue-2500",
+    "branch": "feat/issue-2500",
+    "story_provenance": null,
+    "inherited_superseded_work": false,
+    "inherited_work_surfaced_to_dev": false,
+    "sandbox_capabilities": {
+      "profile": null,
+      "write_roots": [],
+      "mach_services": []
+    },
+    "dev_verification_requests": []
+  },
+  "iterations": {
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 3,
+    "review_cycles": 3,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 3,
+    "gate_decisions": [
+      "PASS",
+      "PASS",
+      "PASS"
+    ],
+    "gate_runs": 3,
+    "validation_runs": [
+      {
+        "profile": "complete",
+        "authority": "merge",
+        "command": "make gate",
+        "result": "PASS",
+        "commit": "e4064453e734a55e29b8b2c9dd134b80eff8e51b",
+        "skipped": false,
+        "declared": false,
+        "widened": false
+      },
+      {
+        "profile": "complete",
+        "authority": "merge",
+        "command": "make gate",
+        "result": "PASS",
+        "commit": "5d817b2e6cfd7a212f56ae7b9baeaa98922cee18",
+        "skipped": false,
+        "declared": false,
+        "widened": false
+      },
+      {
+        "profile": "complete",
+        "authority": "merge",
+        "command": "make gate",
+        "result": "PASS",
+        "commit": "4c3ceca64dbc273db2e7b003655dea69c9ec9861",
+        "skipped": false,
+        "declared": false,
+        "widened": false
+      }
+    ],
+    "dev_loop": [
+      {
+        "cycle": 0,
+        "iteration": 1,
+        "max_iterations": 5,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 1.4802092500000001,
+        "duration_s": 930.99,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/assignment.py",
+          "src/theforge/cli/provider_readiness.py",
+          "src/theforge/config/bridge.py",
+          "src/theforge/config/defaults.py",
+          "src/theforge/config/load.py",
+          "src/theforge/config/model_catalog.py",
+          "src/theforge/config/model_identity.py",
+          "src/theforge/config/profiles.py",
+          "src/theforge/config/role_derivation.py",
+          "src/theforge/config/types.py",
+          "src/theforge/coordinator/diagnose_flow.py",
+          "src/theforge/coordinator/escalation_advisor_flow.py",
+          "src/theforge/coordinator/knowledge_summary_flow.py",
+          "src/theforge/coordinator/plan_flow.py",
+          "src/theforge/coordinator/preflight.py",
+          "tests/test_coord_knowledge_summary.py",
+          "tests/test_dispatch_phase_registry.py",
+          "tests/test_model_catalog.py"
+        ],
+        "files_changed_count": 18,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 1,
+        "iteration": 1,
+        "max_iterations": 5,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 0.8948627499999999,
+        "duration_s": 569.18,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/cli/eval_cmd.py",
+          "src/theforge/config/model_catalog.py",
+          "src/theforge/coordinator/knowledge_summary_flow.py",
+          "src/theforge/sprint/runner.py",
+          "tests/test_coord_knowledge_summary.py",
+          "tests/test_dispatch_phase_registry.py"
+        ],
+        "files_changed_count": 6,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      },
+      {
+        "cycle": 2,
+        "iteration": 2,
+        "max_iterations": 5,
+        "gate_result": "PASS",
+        "failed_tests": [],
+        "gate_output_format_recognized": true,
+        "gate_output_fingerprint": null,
+        "cost_usd": 0.5251837500000001,
+        "duration_s": 308.06,
+        "meaningful_progress": true,
+        "files_changed": [
+          "src/theforge/config/model_catalog.py",
+          "src/theforge/config/model_identity.py",
+          "tests/test_dispatch_phase_registry.py",
+          "tests/test_model_catalog.py"
+        ],
+        "files_changed_count": 4,
+        "tests_fixed_count": 0,
+        "sandboxed": true,
+        "containment": "native",
+        "sandbox_capabilities": {
+          "profile": null,
+          "write_roots": [],
+          "mach_services": []
+        },
+        "agent_exit_code": 0,
+        "runner_failure_code": null,
+        "runner_failure_summary": null,
+        "cli_quota_error_observed": false,
+        "transport_fallback_fired": false,
+        "transport_fallback_reason": null,
+        "transport_used": "cli",
+        "model_used": "gpt-5.4",
+        "transport_retry_count": 0,
+        "transport_retry_events": [],
+        "verification_requests": []
+      }
+    ],
+    "gate_debug": [],
+    "gate_process_teardowns": [],
+    "gate_diagnostic": [],
+    "review_loop": [
+      {
+        "iteration": 1,
+        "max_iterations": 5,
+        "verdict": "REQUEST_CHANGES",
+        "finding_counts": {
+          "P1": 1,
+          "P2": 3
+        },
+        "new_findings_by_severity": {
+          "P1": 1,
+          "P2": 3
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 4,
+        "restated_findings": 0,
+        "cost_usd": 3.462986,
+        "duration_s": 258.97
+      },
+      {
+        "iteration": 2,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 2
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 2
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 2,
+        "restated_findings": 0,
+        "cost_usd": 2.874437,
+        "duration_s": 102.35
+      },
+      {
+        "iteration": 3,
+        "max_iterations": 5,
+        "verdict": "APPROVE",
+        "finding_counts": {
+          "P1": 0,
+          "P2": 0
+        },
+        "new_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "repeated_findings_by_severity": {
+          "P1": 0,
+          "P2": 0
+        },
+        "novel_findings": 0,
+        "restated_findings": 0,
+        "cost_usd": 3.878432,
+        "duration_s": 146.81
+      }
+    ],
+    "usage_summary": {
+      "dev": {
+        "used": 2,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true
+      },
+      "review": {
+        "used": 3,
+        "max": 5,
+        "hit_limit": false,
+        "early_finish": true,
+        "early_terminated": false
+      }
+    },
+    "adaptive_limits": {
+      "enabled": true,
+      "complexity_score_input": 7,
+      "complexity_band_input": "medium",
+      "floor_dev": 3,
+      "floor_review": 3,
+      "cap_dev": 5,
+      "cap_review": 5,
+      "model_name": "openai-gpt-5.4-cli",
+      "model_actual": "gpt-5.4",
+      "model_provider": null,
+      "model_cli": "codex",
+      "headroom_factor": 1.5,
+      "min_profile_runs": 3,
+      "base_timeout_seconds": 1350,
+      "base_dev_cost_estimate_usd": 6.0762,
+      "static_dev_max": 3,
+      "estimate_headroom_factor": 1.25,
+      "complexity_score_used": 7,
+      "base_review": 5,
+      "profile_history_runs": 88,
+      "profile_avg_iterations": 7.2614,
+      "profile_avg_cost_usd": 0.717911,
+      "score_cost_history_runs": 45,
+      "score_cost_avg_usd": 7.936874,
+      "profile_raw_dev_max": 10.8921,
+      "dev_cost_estimate_basis": {
+        "source": "profile_observed_score",
+        "band": "medium",
+        "complexity_score": 7,
+        "statistic": "avg_cost_usd",
+        "scope": "dev_phase",
+        "sample_count": 45,
+        "headroom_multiplier": 1.25,
+        "headroom_basis": "allocation_headroom",
+        "allocation_comparable": true,
+        "reason": "profile_score_history"
+      },
+      "iteration_derived_timeout_seconds": 2250,
+      "profile_max_duration_s": 7261.34,
+      "profile_max_killed_timeout_s": 0.0,
+      "duration_floor_seconds": 10893,
+      "kill_floor_seconds": 0,
+      "timeout_floored_on_observation": true,
+      "chosen_dev_max": 5,
+      "chosen_dev_timeout_seconds": 10893,
+      "chosen_dev_cost_estimate_usd": 9.9211,
+      "review_history_sample_size": 30,
+      "p75_review": 2,
+      "chosen_review_max": 5,
+      "rationale": "derived dev limits from 88 medium-band profile runs with 1.5x iteration headroom and 2.0x budget headroom; timeout floored on observed run duration+headroom (10893s). Dev cost estimate from 45 score-7 run(s) across all models (avg $7.94 x 1.25x allocation headroom) \u2014 the population the story allocation is drawn from. review history stayed within the complexity-derived review base.",
+      "review_cycle_planning": {
+        "planned_cost_usd": 3.1721,
+        "basis": "observed_complexity_score",
+        "fallback_configured_usd": 12.1524,
+        "sample_count": 13,
+        "median_usd": 2.5377,
+        "p90_usd": 3.4493,
+        "max_usd": 3.6065,
+        "headroom_multiplier": 1.25,
+        "reason": "derived from median observed review-cycle spend $2.54 x 1.25 headroom over 13 cycle(s) on stories at complexity score 7",
+        "excluded_for_taint": 5,
+        "composition": [
+          "anthropic-opus-cli",
+          "openai-gpt-5.5-cli"
+        ],
+        "complexity_score": 7,
+        "requested_complexity_score": 7
+      },
+      "review_cycle_reconciliation": {
+        "requested_review_max": 5,
+        "reconciled_review_max": 5,
+        "affordable_review_cycles": 8,
+        "allocation_usd": 38.28,
+        "spent_so_far_usd": 0.2016,
+        "dev_cost_estimate_usd": 9.9211,
+        "review_cycle_cost_usd": 3.1721,
+        "review_cycle_cost_basis": "observed_complexity_score",
+        "review_cycle_cost_sample_count": 13,
+        "review_cycle_cost_median_usd": 2.5377,
+        "review_cycle_cost_p90_usd": 3.4493,
+        "review_cycle_cost_max_usd": 3.6065,
+        "review_cycle_cost_headroom_multiplier": 1.25,
+        "review_cycle_cost_reason": "derived from median observed review-cycle spend $2.54 x 1.25 headroom over 13 cycle(s) on stories at complexity score 7",
+        "review_cycle_cost_composition": [
+          "anthropic-opus-cli",
+          "openai-gpt-5.5-cli"
+        ],
+        "review_cycle_cost_complexity_score": 7,
+        "review_cycle_cost_requested_complexity_score": 7,
+        "review_cycle_cost_comparable": true,
+        "dev_cost_estimate_basis": "profile_observed_score",
+        "dev_cost_estimate_basis_reason": "profile_score_history",
+        "dev_cost_estimate_statistic": "avg_cost_usd",
+        "dev_cost_estimate_scope": "dev_phase",
+        "dev_cost_estimate_band": "medium",
+        "dev_cost_estimate_complexity_score": 7,
+        "dev_cost_estimate_sample_count": 45,
+        "dev_cost_estimate_headroom_multiplier": 1.25,
+        "dev_cost_estimate_headroom_basis": "allocation_headroom",
+        "dev_cost_estimate_comparable": true,
+        "remaining_after_dev_usd": 28.1573,
+        "reserved_review_cycles": 5,
+        "reserved_review_usd": 15.8605,
+        "action": "within_allocation",
+        "basis": "substrate_band",
+        "complexity_score": 7
+      },
+      "review_funding_reservation": {
+        "allocation_usd": 38.28,
+        "reserved_review_usd": 15.8605,
+        "reserved_review_cycles": 5,
+        "review_cycle_cost_usd": 3.1721,
+        "action": "within_allocation",
+        "nonreview_allocation_usd": 22.4195,
+        "released": true,
+        "release_reason": "approve_final",
+        "release_review_cycle": 3,
+        "review_observed_at_release_usd": 10.2159,
+        "retained_review_cycles": 0,
+        "retained_review_usd": 0.0,
+        "released_review_usd": 0.0,
+        "release_count": 2
+      },
+      "story_ceiling_cap": {
+        "raw_timeout_seconds": 10893,
+        "story_ceiling_seconds": 13500,
+        "max_invocations": 5,
+        "share": 0.8,
+        "capped": true,
+        "cap_seconds": 2160,
+        "floor_seconds": 900,
+        "floor_applied": false,
+        "dev_share_seconds": 10800,
+        "floor_capped_by_share": false,
+        "final_timeout_seconds": 2160,
+        "rationale": "per-invocation timeout capped 10893s \u2192 2160s to fit 5 invocation(s) inside the 13500s story ceiling (share 0.8)"
+      }
+    },
+    "dev_timeout_clamps": [],
+    "budget_consumption_log": [
+      {
+        "cycle": 0,
+        "cycle_count": 1,
+        "total_count": 1,
+        "timestamp": "2026-08-18T19:24:43.735813+00:00"
+      },
+      {
+        "cycle": 1,
+        "cycle_count": 1,
+        "total_count": 2,
+        "timestamp": "2026-08-18T19:45:59.761739+00:00"
+      },
+      {
+        "cycle": 2,
+        "cycle_count": 2,
+        "total_count": 3,
+        "timestamp": "2026-08-18T19:58:21.731229+00:00"
+      }
+    ]
+  },
+  "cost": {
+    "total_usd": 13.31766555,
+    "dev_usd": 2.9002557500000004,
+    "review_usd": 10.215854499999999,
+    "dev_invocations": 3,
+    "review_invocations": 6,
+    "agents": [
+      {
+        "role": "preflight",
+        "profile": "preflight",
+        "cost_usd": 0.20155530000000005,
+        "duration_seconds": 21.685306459199637,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": null,
+          "cost_usd": 0.20155530000000005,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 8557,
+            "output_tokens": 1827,
+            "cache_read_tokens": 71871,
+            "cache_creation_tokens": 24034,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 8553,
+              "output_tokens": 18,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.008643,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 4,
+              "output_tokens": 1809,
+              "cache_read_tokens": 71871,
+              "cache_creation_tokens": 24034,
+              "thinking_tokens": 0,
+              "cost_usd": 0.19291230000000004,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-haiku-4-5-20251001",
+            "input_tokens": 8553,
+            "output_tokens": 18,
+            "cache_read_tokens": 0,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.008643
+          },
+          {
+            "model": "claude-sonnet-5",
+            "input_tokens": 4,
+            "output_tokens": 1809,
+            "cache_read_tokens": 71871,
+            "cache_creation_tokens": 24034,
+            "cost_usd": 0.19291230000000004
+          }
+        ],
+        "model_used": "sonnet",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4-cli",
+        "cost_usd": 1.4802092500000001,
+        "duration_seconds": 930.9943398330361,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "openai-gpt-5.4-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": "high",
+          "cost_usd": 1.4802092500000001,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.4",
+            "transport": "cli",
+            "identity": "openai/gpt-5.4/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.4",
+            "transport": "cli",
+            "identity": "openai/gpt-5.4/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6827025,
+            "output_tokens": 40318,
+            "cache_read_tokens": 6628224,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 16352
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.4",
+                "transport": "cli",
+                "identity": "openai/gpt-5.4/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 6827025,
+              "output_tokens": 40318,
+              "cache_read_tokens": 6628224,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 16352,
+              "cost_usd": 1.4802092500000001,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.4",
+            "input_tokens": 6827025,
+            "output_tokens": 40318,
+            "cache_read_tokens": 6628224,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.4802092500000001
+          }
+        ],
+        "model_used": "gpt-5.4",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4-cli",
+        "cost_usd": 0.8948627499999999,
+        "duration_seconds": 569.1848740829155,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "openai-gpt-5.4-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": "high",
+          "cost_usd": 0.8948627499999999,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.4",
+            "transport": "cli",
+            "identity": "openai/gpt-5.4/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.4",
+            "transport": "cli",
+            "identity": "openai/gpt-5.4/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 4197735,
+            "output_tokens": 23539,
+            "cache_read_tokens": 4077952,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 10137
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.4",
+                "transport": "cli",
+                "identity": "openai/gpt-5.4/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 4197735,
+              "output_tokens": 23539,
+              "cache_read_tokens": 4077952,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 10137,
+              "cost_usd": 0.8948627499999999,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.4",
+            "input_tokens": 4197735,
+            "output_tokens": 23539,
+            "cache_read_tokens": 4077952,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.8948627499999999
+          }
+        ],
+        "model_used": "gpt-5.4",
+        "transport_used": "cli"
+      },
+      {
+        "role": "dev",
+        "profile": "openai-gpt-5.4-cli",
+        "cost_usd": 0.5251837500000001,
+        "duration_seconds": 308.06457362510264,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "dev",
+          "profile": "openai-gpt-5.4-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": "high",
+          "cost_usd": 0.5251837500000001,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.4",
+            "transport": "cli",
+            "identity": "openai/gpt-5.4/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.4",
+            "transport": "cli",
+            "identity": "openai/gpt-5.4/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 2623867,
+            "output_tokens": 9655,
+            "cache_read_tokens": 2534400,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 2720
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.4",
+                "transport": "cli",
+                "identity": "openai/gpt-5.4/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 2623867,
+              "output_tokens": 9655,
+              "cache_read_tokens": 2534400,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 2720,
+              "cost_usd": 0.5251837500000001,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.4",
+            "input_tokens": 2623867,
+            "output_tokens": 9655,
+            "cache_read_tokens": 2534400,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.5251837500000001
+          }
+        ],
+        "model_used": "gpt-5.4",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.99481,
+        "duration_seconds": 129.38425410399213,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": "high",
+          "cost_usd": 0.99481,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 928472,
+            "output_tokens": 4655,
+            "cache_read_tokens": 841600,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 2066
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 928472,
+              "output_tokens": 4655,
+              "cache_read_tokens": 841600,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 2066,
+              "cost_usd": 0.99481,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 928472,
+            "output_tokens": 4655,
+            "cache_read_tokens": 841600,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.99481
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 2.4681759999999997,
+        "duration_seconds": 129.38425410399213,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": null,
+          "cost_usd": 2.4681759999999997,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 1751,
+            "output_tokens": 16286,
+            "cache_read_tokens": 2232922,
+            "cache_creation_tokens": 93581,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 1751,
+              "output_tokens": 16286,
+              "cache_read_tokens": 2232922,
+              "cache_creation_tokens": 93581,
+              "thinking_tokens": 0,
+              "cost_usd": 2.4681759999999997,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 1751,
+            "output_tokens": 16286,
+            "cache_read_tokens": 2232922,
+            "cache_creation_tokens": 93581,
+            "cost_usd": 2.4681759999999997
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 0.656629,
+        "duration_seconds": 51.01239077048376,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": "high",
+          "cost_usd": 0.656629,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 427445,
+            "output_tokens": 4042,
+            "cache_read_tokens": 355968,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 1795
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 427445,
+              "output_tokens": 4042,
+              "cache_read_tokens": 355968,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 1795,
+              "cost_usd": 0.656629,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 427445,
+            "output_tokens": 4042,
+            "cache_read_tokens": 355968,
+            "cache_creation_tokens": 0,
+            "cost_usd": 0.656629
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 2.217808,
+        "duration_seconds": 51.01239077048376,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": null,
+          "cost_usd": 2.217808,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 9,
+            "output_tokens": 6590,
+            "cache_read_tokens": 740126,
+            "cache_creation_tokens": 168295,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 9,
+              "output_tokens": 6590,
+              "cache_read_tokens": 740126,
+              "cache_creation_tokens": 168295,
+              "thinking_tokens": 0,
+              "cost_usd": 2.217808,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 9,
+            "output_tokens": 6590,
+            "cache_read_tokens": 740126,
+            "cache_creation_tokens": 168295,
+            "cost_usd": 2.217808
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "openai-gpt-5.5-cli",
+        "cost_usd": 1.178007,
+        "duration_seconds": 73.31219583330676,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": "high",
+          "cost_usd": 1.178007,
+          "cost_provenance": "estimated",
+          "configured_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "gpt-5.5",
+            "transport": "cli",
+            "identity": "openai/gpt-5.5/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 991383,
+            "output_tokens": 6670,
+            "cache_read_tokens": 884224,
+            "cache_creation_tokens": 0,
+            "thinking_tokens": 3137
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "gpt-5.5",
+                "transport": "cli",
+                "identity": "openai/gpt-5.5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 991383,
+              "output_tokens": 6670,
+              "cache_read_tokens": 884224,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 3137,
+              "cost_usd": 1.178007,
+              "cost_provenance": "estimated"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "gpt-5.5",
+            "input_tokens": 991383,
+            "output_tokens": 6670,
+            "cache_read_tokens": 884224,
+            "cache_creation_tokens": 0,
+            "cost_usd": 1.178007
+          }
+        ],
+        "model_used": "gpt-5.5",
+        "transport_used": "cli"
+      },
+      {
+        "role": "review",
+        "profile": "anthropic-opus-cli",
+        "cost_usd": 2.7004245,
+        "duration_seconds": 73.31219583330676,
+        "success": true,
+        "exit_code": 0,
+        "ledger": {
+          "version": 1,
+          "role": "review",
+          "profile": "anthropic-opus-cli",
+          "complexity": "medium",
+          "complexity_score": 7,
+          "reasoning_effort": null,
+          "cost_usd": 2.7004245,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "opus",
+            "transport": "cli",
+            "identity": "anthropic/opus/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 6,
+            "output_tokens": 2720,
+            "cache_read_tokens": 523369,
+            "cache_creation_tokens": 237071,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-opus-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-opus-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 6,
+              "output_tokens": 2720,
+              "cache_read_tokens": 523369,
+              "cache_creation_tokens": 237071,
+              "thinking_tokens": 0,
+              "cost_usd": 2.7004245,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        },
+        "process_teardown": null,
+        "model_usage": [
+          {
+            "model": "claude-opus-5",
+            "input_tokens": 6,
+            "output_tokens": 2720,
+            "cache_read_tokens": 523369,
+            "cache_creation_tokens": 237071,
+            "cost_usd": 2.7004245
+          }
+        ],
+        "model_used": "opus",
+        "transport_used": "cli"
+      }
+    ],
+    "story_allocation": {
+      "allocation_usd": 38.28,
+      "basis": "substrate_band",
+      "complexity_score": 7,
+      "sample_count": 31,
+      "median_usd": 10.9749,
+      "p90_usd": 18.0775,
+      "max_usd": 30.627,
+      "fallback_configured_usd": 50.0,
+      "reason": "derived from 31 admissible run(s) at complexity score 7 (max $30.63 x 1.25)",
+      "excluded_for_taint": 6,
+      "excluded_for_unsuccessful_outcome": 70,
+      "scaled_profiles": {
+        "preflight": 6.0762,
+        "plan": 0.6076,
+        "dev": 6.0762,
+        "review_pool[0]": 6.0762,
+        "review_pool[1]": 6.0762,
+        "plan_agent_review[0]": 6.0762,
+        "plan_agent_review[1]": 6.0762,
+        "synthesis": 1.2152
+      },
+      "observed_usd": 13.3177,
+      "status": "within_allocation",
+      "exceeded": false
+    },
+    "allocation_exhausted": null,
+    "reviewer_budget_overruns": [
+      {
+        "reviewer": "anthropic-opus-cli",
+        "cycle": 3,
+        "measured_usd": 7.386408,
+        "share_usd": 6.0762,
+        "overrun_usd": 1.310208
+      }
+    ]
+  },
+  "preflight": {
+    "verdict": "cached",
+    "reason": "KNOWN_PHASES remains a hardcoded literal in model_identity.py, and phase_eligibility validation in model_catalog.py still rejects any phase not in it; knowledge_summary_flow.py dispatches phase='knowledge_summary' which is unrepresented, exactly as diagnosed.",
+    "complexity": "medium",
+    "complexity_score": 7,
+    "implementation_complexity_score": 7,
+    "validation_complexity_score": 3,
+    "complexity_projection": "max_implementation_validation",
+    "complexity_evidence": [
+      {
+        "rule_id": "implementation_model_score",
+        "signal": "preflight model sized the code-change envelope at 7",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "implementation_contract_change",
+        "signal": "contract change forces at least medium implementation complexity (shared-interface blast radius)",
+        "dimension": "implementation"
+      },
+      {
+        "rule_id": "validation_surface_count",
+        "signal": "4 operator-visible surfaces enumerated in acceptance criteria: bf83c4933ec3.json, forge.yaml, forge/audits/runs/4b582ddcfba0.json, src/theforge/config/data/models.yaml",
+        "dimension": "validation"
+      }
+    ],
+    "work_type": "bug",
+    "domains": [
+      "backend",
+      "config"
+    ],
+    "contract_change": true,
+    "bundle_candidate": false,
+    "batch_group": null,
+    "cost_usd": 0.20155530000000005,
+    "cached": true,
+    "original_verdict": "PROCEED",
+    "source_run_id": "3704718f3b5c",
+    "cache_snapshot": {
+      "worktree_head": "7104f0adac54ea6aa8fd37f8aab3263ac68f43de",
+      "evaluation_base_branch": "release/v0.15",
+      "evaluation_base_branch_head": "7104f0adac54ea6aa8fd37f8aab3263ac68f43de",
+      "story_content_hash": "11845722f6003ffb7e1aff48dc350ff8d2b20201f2d73502bc4ec31bf8bebf46"
+    },
+    "cache_validation": {
+      "cached": true,
+      "cached_worktree_head": "7104f0adac54ea6aa8fd37f8aab3263ac68f43de",
+      "current_worktree_head": "7104f0adac54ea6aa8fd37f8aab3263ac68f43de",
+      "cached_evaluation_base_branch": "release/v0.15",
+      "current_evaluation_base_branch": "release/v0.15",
+      "cached_evaluation_base_branch_head": "7104f0adac54ea6aa8fd37f8aab3263ac68f43de",
+      "current_evaluation_base_branch_head": "7104f0adac54ea6aa8fd37f8aab3263ac68f43de",
+      "cached_story_content_hash": "11845722f6003ffb7e1aff48dc350ff8d2b20201f2d73502bc4ec31bf8bebf46",
+      "current_story_content_hash": "11845722f6003ffb7e1aff48dc350ff8d2b20201f2d73502bc4ec31bf8bebf46",
+      "status": "accepted",
+      "reason": "git_state_match"
+    },
+    "degraded": false,
+    "degraded_reason": null,
+    "risk_signals": [],
+    "failure_action": null,
+    "complexity_source": "preflight",
+    "partial_evidence": null,
+    "attempts": [
+      {
+        "profile_name": "preflight",
+        "model": "sonnet",
+        "provider": null,
+        "cli": "claude",
+        "cost_usd": 0.20155530000000005,
+        "duration_s": 21.69,
+        "success": true,
+        "exit_code": 0,
+        "completed": true,
+        "ledger": {
+          "version": 1,
+          "role": "preflight",
+          "profile": "preflight",
+          "complexity": null,
+          "complexity_score": null,
+          "reasoning_effort": null,
+          "cost_usd": 0.20155530000000005,
+          "cost_provenance": "provider_reported",
+          "configured_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "resolved_primary_identity": {
+            "raw": "sonnet",
+            "transport": "cli",
+            "identity": "anthropic/sonnet/cli",
+            "resolution": "canonical"
+          },
+          "configured_differs_from_resolved": false,
+          "usage": {
+            "input_tokens": 8557,
+            "output_tokens": 1827,
+            "cache_read_tokens": 71871,
+            "cache_creation_tokens": 24034,
+            "thinking_tokens": 0
+          },
+          "billed_components": [
+            {
+              "identity": {
+                "raw": "claude-haiku-4-5-20251001",
+                "transport": "cli",
+                "identity": "anthropic/claude-haiku-4-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 8553,
+              "output_tokens": 18,
+              "cache_read_tokens": 0,
+              "cache_creation_tokens": 0,
+              "thinking_tokens": 0,
+              "cost_usd": 0.008643,
+              "cost_provenance": "provider_reported"
+            },
+            {
+              "identity": {
+                "raw": "claude-sonnet-5",
+                "transport": "cli",
+                "identity": "anthropic/claude-sonnet-5/cli",
+                "resolution": "canonical"
+              },
+              "input_tokens": 4,
+              "output_tokens": 1809,
+              "cache_read_tokens": 71871,
+              "cache_creation_tokens": 24034,
+              "thinking_tokens": 0,
+              "cost_usd": 0.19291230000000004,
+              "cost_provenance": "provider_reported"
+            }
+          ]
+        }
+      }
+    ],
+    "complexity_routing": {
+      "complexity": "medium",
+      "complexity_score": 7,
+      "adaptive_enabled": true,
+      "source": "adaptive_assignment",
+      "explicit_overrides": [],
+      "role_sources": {
+        "preflight": "adaptive",
+        "planner": "adaptive",
+        "plan_review": "adaptive",
+        "dev": "adaptive",
+        "code_review": "adaptive"
+      },
+      "assignments": {
+        "preflight": {
+          "model": "gpt-5.4-mini",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4-mini/cli"
+        },
+        "planner": {
+          "model": "gpt-5.5",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.5/cli"
+        },
+        "plan_reviewers": [
+          {
+            "model": "gpt-5.6-sol",
+            "source": "forge.yaml",
+            "canonical_id": "openai/gpt-5.6-sol/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ],
+        "dev": {
+          "model": "gpt-5.4",
+          "source": "builtin",
+          "canonical_id": "openai/gpt-5.4/cli"
+        },
+        "code_reviewers": [
+          {
+            "model": "gpt-5.5",
+            "source": "builtin",
+            "canonical_id": "openai/gpt-5.5/cli"
+          },
+          {
+            "model": "opus",
+            "source": "builtin",
+            "canonical_id": "anthropic/opus/cli"
+          }
+        ]
+      },
+      "rationale": {
+        "dev": "complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 0.88 \u2265 threshold 0.60 over 218 admissible runs \u2014 pre-promotion held) (profile success_rate=0.88 @ MEDIUM); EXPLORATION cost-qualified winner gpt-5.4 (tier mid, declared strong) routed for key dev:medium:backend+config \u2014 completion cost $0.97, reliability 0.7379 >= floor 0.7; per-story routing cost target: unset",
+        "preflight": "tier cheap ($5.00)",
+        "planner": "complexity score 7 \u2192 tier strong ($5.00); per-story routing cost target: unset",
+        "plan_review": "2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 7; per-story routing cost target: unset",
+        "code_review": "2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 7 [value check: evaluated 2 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset",
+        "per_story_routing_cost_target": "unset \u2014 adaptive routes by complexity; no per-story routing cost target enforcement"
+      },
+      "per_story_routing_cost_target": {
+        "target_usd": null,
+        "initial_total_usd": 35.0,
+        "final_total_usd": 35.0,
+        "within_target": true,
+        "downgraded": false,
+        "steps": [],
+        "preferred": {
+          "dev": {
+            "model": "gpt-5.4",
+            "budget_usd": 5.0
+          },
+          "planner": {
+            "model": "gpt-5.5",
+            "budget_usd": 5.0
+          },
+          "plan_reviewers": [
+            {
+              "model": "gpt-5.6-sol",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "opus",
+              "budget_usd": 5.0
+            }
+          ],
+          "code_reviewers": [
+            {
+              "model": "gpt-5.5",
+              "budget_usd": 5.0
+            },
+            {
+              "model": "opus",
+              "budget_usd": 5.0
+            }
+          ],
+          "total_usd": 35.0
+        }
+      },
+      "config_model_routing": {
+        "complexity": "medium",
+        "complexity_score": 7,
+        "derived_plan_model": "opus",
+        "derived_dev_model": "opus",
+        "derived_review_pool": [
+          "gemini-3.5-flash",
+          "gpt-5.4",
+          "gemini-3.1-pro-preview",
+          "gpt-5.6-terra",
+          "gpt-5.5",
+          "gpt-5.6-sol"
+        ],
+        "source": "complexity_adaptive"
+      },
+      "story_allocation": {
+        "allocation_usd": 38.28,
+        "basis": "substrate_band",
+        "complexity_score": 7,
+        "sample_count": 31,
+        "median_usd": 10.9749,
+        "p90_usd": 18.0775,
+        "max_usd": 30.627,
+        "fallback_configured_usd": 50.0,
+        "reason": "derived from 31 admissible run(s) at complexity score 7 (max $30.63 x 1.25)",
+        "excluded_for_taint": 6,
+        "excluded_for_unsuccessful_outcome": 70,
+        "scaled_profiles": {
+          "preflight": 6.0762,
+          "plan": 0.6076,
+          "dev": 6.0762,
+          "review_pool[0]": 6.0762,
+          "review_pool[1]": 6.0762,
+          "plan_agent_review[0]": 6.0762,
+          "plan_agent_review[1]": 6.0762,
+          "synthesis": 1.2152
+        }
+      },
+      "complexity_source": "preflight",
+      "preflight_degraded": {
+        "degraded": false,
+        "degraded_reason": null,
+        "failure_action": null,
+        "risk_signals": [],
+        "complexity_source": "preflight"
+      }
+    }
+  },
+  "context_manifests": [
+    {
+      "phase": "dev",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 23
+        }
+      ],
+      "items_dropped": [],
+      "prior_run_context": {
+        "enabled": false,
+        "phase": "",
+        "rendering_mode": "",
+        "included": [],
+        "dropped": [],
+        "note": "prior-run context disabled (knowledge.prior_run_context)"
+      },
+      "invariant_context": {
+        "enabled": false,
+        "phase": "",
+        "selection_mode": "",
+        "included": [],
+        "dropped": [],
+        "uncertain": [],
+        "note": "invariant context disabled (knowledge.invariant_context)"
+      }
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 23
+        }
+      ],
+      "items_dropped": [],
+      "prior_run_context": {
+        "enabled": false,
+        "phase": "",
+        "rendering_mode": "",
+        "included": [],
+        "dropped": [],
+        "note": "prior-run context disabled (knowledge.prior_run_context)"
+      },
+      "invariant_context": {
+        "enabled": false,
+        "phase": "",
+        "selection_mode": "",
+        "included": [],
+        "dropped": [],
+        "uncertain": [],
+        "note": "invariant context disabled (knowledge.invariant_context)"
+      }
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 23
+        }
+      ],
+      "items_dropped": [],
+      "prior_run_context": {
+        "enabled": false,
+        "phase": "",
+        "rendering_mode": "",
+        "included": [],
+        "dropped": [],
+        "note": "prior-run context disabled (knowledge.prior_run_context)"
+      },
+      "invariant_context": {
+        "enabled": false,
+        "phase": "",
+        "selection_mode": "",
+        "included": [],
+        "dropped": [],
+        "uncertain": [],
+        "note": "invariant context disabled (knowledge.invariant_context)"
+      }
+    },
+    {
+      "phase": "review",
+      "context_budget": 80,
+      "git_sha": null,
+      "items_included": [
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/config",
+          "lines": 11
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_invariants",
+          "type": "invariant",
+          "reason": "invariants for src/theforge/coordinator",
+          "lines": 13
+        },
+        {
+          "source_path": "src/theforge/coordinator/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/coordinator",
+          "lines": 24
+        },
+        {
+          "source_path": "src/theforge/config/CONVENTIONS.md",
+          "kind": "claude_advisory",
+          "type": "advisory",
+          "reason": "advisory for src/theforge/config",
+          "lines": 23
+        }
+      ],
+      "items_dropped": [],
+      "prior_run_context": {
+        "enabled": false,
+        "phase": "",
+        "rendering_mode": "",
+        "included": [],
+        "dropped": [],
+        "note": "prior-run context disabled (knowledge.prior_run_context)"
+      },
+      "invariant_context": {
+        "enabled": false,
+        "phase": "",
+        "selection_mode": "",
+        "included": [],
+        "dropped": [],
+        "uncertain": [],
+        "note": "invariant context disabled (knowledge.invariant_context)"
+      }
+    }
+  ],
+  "dev_handoffs": [
+    {
+      "iteration": 1,
+      "source": "structured_output",
+      "path": "/Users/pwickersham/src/theforge/.forge/handoffs/issue-2500/iter_1.yaml",
+      "handoff": {
+        "summary": "Introduced a single dispatch-phase metadata registry in src/theforge/config/model_identity.py and derived both KNOWN_PHASES and the default phase_eligibility set from it. Wired runtime consumers to that shared source by switching dispatch/profile construction to shared phase constants, fixing adaptive plan-review profiles to carry plan_review, making advisor fallback use derived default eligibility, and making knowledge-summary selection honor phase eligibility across configured candidates while preserving the tool-free API constraint. Updated catalog and seam tests, added deliberate-closure coverage for diagnose, and added a source guard plus registry-builder tests so future dispatch phases do not require a second manual eligibility-list edit.",
+        "commits": [
+          {
+            "sha": "e4064453",
+            "message": "fix(config): derive phase eligibility from dispatch metadata"
+          }
+        ],
+        "acceptance_criteria": [
+          {
+            "criterion": "A phase forge dispatches is a phase an operator can name, without a separate source edit to extend a hand-maintained eligibility vocabulary.",
+            "status": "MET",
+            "notes": "KNOWN_PHASES and the default eligibility set now derive from shared dispatch-phase metadata; knowledge_summary and plan_review are in the derived operator-constrainable set, and registry-builder tests cover the no-second-list property."
+          },
+          {
+            "criterion": "An operator can express routing.phase_eligibility constraints for knowledge_summary, and runtime selection honors that constraint.",
+            "status": "MET",
+            "notes": "forge.yaml can now declare knowledge_summary in routing.phase_eligibility, and the knowledge-summary seam test proves an excluded plan model is not selected when an eligible API-capable configured candidate exists."
+          },
+          {
+            "criterion": "A dispatched phase that is deliberately closed to operator constraint is represented explicitly and rejected as deliberately closed rather than unknown.",
+            "status": "MET",
+            "notes": "diagnose is registered as a known-but-closed dispatch phase, config validation emits a deliberate-closure error for it, and tests cover that distinction."
+          }
+        ],
+        "gate_delegated": true,
+        "gate_result": "BLOCKED",
+        "story_deviations": "none",
+        "deferred_items": "none"
+      }
+    },
+    {
+      "iteration": 2,
+      "source": "missing",
+      "path": null,
+      "handoff": null
+    },
+    {
+      "iteration": 3,
+      "source": "missing",
+      "path": null,
+      "handoff": null
+    }
+  ],
+  "dev_prompt_injections": [
+    {
+      "iteration": 1,
+      "finding_ids": []
+    },
+    {
+      "iteration": 2,
+      "finding_ids": [
+        "c2a50563a8c0a21a"
+      ]
+    },
+    {
+      "iteration": 3,
+      "finding_ids": []
+    }
+  ],
+  "reviews": [
+    {
+      "cycle": 1,
+      "commit": "e4064453e734a55e29b8b2c9dd134b80eff8e51b",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "e4064453e734a55e29b8b2c9dd134b80eff8e51b",
+        "gate_runs": 1,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "anthropic-opus-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "anthropic-opus-cli"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "anthropic-opus-cli": "anthropic/opus/cli"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "anthropic-opus-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "REQUEST_CHANGES",
+      "summary": "[openai-gpt-5.5-cli] The change satisfies the phase-eligibility vocabulary requirements, with targeted symptom and registry tests passing. | [anthropic-opus-cli] Dispatch-phase registry derivation is sound, but the rewritten knowledge-summary selector discards the plan-derived profile whenever config.agents is populated, which silently disables summaries for CLI pools relying on provider-level transport_fallback (repro'd) and swaps the plan role's budget/timeout for the agent pool's; coordinator gate verdict for e4064453 is PASS (dev handoff's BLOCKED claim is stale).",
+      "sanitization_audit": null,
+      "p1_count": 1,
+      "p2_count": 3,
+      "findings": [
+        {
+          "severity": "P1",
+          "file": "src/theforge/coordinator/knowledge_summary_flow.py",
+          "line": 263,
+          "description": "With a CLI model pool and a provider-level transport_fallback configured, run-summary generation now skips with 'no phase-eligible configured model can dispatch knowledge_summary over a tool-free API transport', even though the plan reference carries a resolved API fallback that produced a valid tool-free profile before this change, because the candidate profiles built from the agent pool never have the provider-level transport fallback applied to them.",
+          "reviewers": [
+            "anthropic-opus-cli"
+          ],
+          "reporter": "anthropic-opus-cli"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/coordinator/knowledge_summary_flow.py",
+          "line": 282,
+          "description": "When the plan model is itself in the agent pool and eligible, the selector returns the agent-pool-derived profile rather than the plan-derived one, so the dispatch runs under the agent pool's budget and timeout and under the agent's name instead of the plan role's configured budget, timeout, and the 'knowledge_summary' profile name (observed: budget 0.25 to 3.0 and timeout 300 to 900 for the same model).",
+          "reviewers": [
+            "anthropic-opus-cli"
+          ],
+          "reporter": "anthropic-opus-cli"
+        },
+        {
+          "severity": "P2",
+          "file": "tests/test_dispatch_phase_registry.py",
+          "line": 91,
+          "description": "The guard that stops new phase string literals from appearing at profile construction sites enumerates a hardcoded tuple of twelve source paths, so a dispatch site added in a file not on that list is unguarded and reintroduces the drift the change is meant to prevent.",
+          "reviewers": [
+            "anthropic-opus-cli"
+          ],
+          "reporter": "anthropic-opus-cli"
+        },
+        {
+          "severity": "P2",
+          "file": "src/theforge/config/model_identity.py",
+          "line": 229,
+          "description": "The helpers is_operator_constrainable_phase and is_known_dispatch_phase are defined but never called anywhere in the codebase or tests.",
+          "reviewers": [
+            "anthropic-opus-cli"
+          ],
+          "reporter": "anthropic-opus-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "A phase forge dispatches is a phase an operator can name, without a separate source edit to extend a hand-maintained eligibility vocabulary.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/model_identity.py:182 derives known/default/closed phase sets from DispatchPhase metadata, src/theforge/config/model_identity.py:203 registers plan_review and knowledge_summary in that metadata, and src/theforge/config/model_identity.py:227 plus src/theforge/config/model_identity.py:251 make DEFAULT_PHASE_ELIGIBILITY and KNOWN_PHASES consume the derived registry. Runtime construction was moved onto shared phase constants at src/theforge/coordinator/knowledge_summary_flow.py:229, src/theforge/assignment.py:4023, src/theforge/config/load.py:1467, and src/theforge/config/types.py:1103. tests/test_dispatch_phase_registry.py:13 verifies derived registry views, tests/test_dispatch_phase_registry.py:30 verifies parser use of registry-derived vocabulary, and tests/test_dispatch_phase_registry.py:79 guards listed ModelProfile construction sites against reintroducing raw phase literals. Targeted pytest selection passed: 6 passed.; model_identity.py:145-251 replaces the two literal frozensets with DISPATCH_PHASES plus build_dispatch_phase_registry, and KNOWN_PHASES / _DEFAULT_PHASE_ELIGIBILITY / CLOSED_OPERATOR_PHASES are all derived from it; tests/test_dispatch_phase_registry.py proves the parser vocabulary follows a synthetic registry with no second list, and tests/test_model_catalog.py::test_phase_eligibility_accepts_knowledge_summary_in_forge_yaml shows knowledge_summary and plan_review are now nameable at load."
+        },
+        {
+          "criterion": "An operator can express routing.phase_eligibility constraints for knowledge_summary, and runtime selection honors that constraint.",
+          "status": "PARTIAL",
+          "evidence": "src/theforge/config/model_identity.py:151 and src/theforge/config/model_identity.py:210 register knowledge_summary as operator-constrainable, src/theforge/config/model_catalog.py:415 validates phase_eligibility against the derived known phase set, and src/theforge/coordinator/knowledge_summary_flow.py:242 filters configured candidates by PHASE_KNOWLEDGE_SUMMARY before dispatch. tests/test_model_catalog.py:620 loads forge.yaml with phase_eligibility containing knowledge_summary and plan_review, and tests/test_coord_knowledge_summary.py:230 proves a knowledge_summary-ineligible plan model is skipped in favor of an eligible API candidate. Targeted pytest selection passed: 6 passed.; Config-load acceptance is verified (test_model_catalog.py new case) and the seam test test_phase_eligibility_can_move_summary_to_another_api_candidate shows an excluded plan model being routed around. But the same selection path regresses configs it should leave alone: for a CLI agent pool whose API transport comes from provider-level transport_fallback, _summary_profile now returns None and the summary is skipped (knowledge_summary_flow.py:253-268, reproduced directly), so honouring the constraint came at the cost of the unconstrained path."
+        },
+        {
+          "criterion": "A dispatched phase that is deliberately closed to operator constraint is represented explicitly and rejected as deliberately closed rather than unknown.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/model_identity.py:152 defines PHASE_DIAGNOSE, src/theforge/config/model_identity.py:211 registers it with operator_constrainable=False and default_eligible=False, and src/theforge/coordinator/diagnose_flow.py:714 stamps diagnose profiles with that phase constant. src/theforge/config/model_catalog.py:424 checks CLOSED_OPERATOR_PHASES before unknown phases and emits a deliberately closed error. tests/test_model_catalog.py:684 verifies forge.yaml naming diagnose is rejected with a deliberately closed message, and tests/test_dispatch_phase_registry.py:62 covers the same distinction through the registry-derived parser path. Targeted pytest selection passed: 6 passed.; DispatchPhase(PHASE_DIAGNOSE, operator_constrainable=False, default_eligible=False) in model_identity.py, the CLOSED_OPERATOR_PHASES check in model_catalog.py:424-429 raising a distinct 'deliberately closed' error before the unknown-phase check, and both test_phase_eligibility_closed_phase_names_the_deliberate_closure and test_phase_eligibility_unknown_phase_still_fails_at_load pinning the two distinct error states."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 2,
+      "commit": "5d817b2e6cfd7a212f56ae7b9baeaa98922cee18",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "5d817b2e6cfd7a212f56ae7b9baeaa98922cee18",
+        "gate_runs": 2,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "anthropic-opus-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "anthropic-opus-cli"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "anthropic-opus-cli": "anthropic/opus/cli"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "anthropic-opus-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] Prior CLI-pool transport fallback regression is fixed; no blocking regressions found. | [anthropic-opus-cli] Both prior-cycle findings are resolved and verified by direct repro \u2014 provider-level transport_fallback now reaches summary candidates and the plan role's budget/timeout/name envelope is preserved on the selected model; remaining findings are non-blocking (one operator-message inconsistency), gate verdict for HEAD 5d817b2e is PASS.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 2,
+      "findings": [
+        {
+          "severity": "P2",
+          "file": "src/theforge/config/model_catalog.py",
+          "line": 439,
+          "description": "An operator who names an unrecognized phase in routing.phase_eligibility is told the field 'only supports' a list that includes 'diagnose', but naming 'diagnose' is itself rejected with a deliberate-closure error, so the remediation the message suggests is one the loader refuses.",
+          "reviewers": [
+            "anthropic-opus-cli"
+          ],
+          "reporter": "anthropic-opus-cli"
+        },
+        {
+          "severity": "P2",
+          "file": "tests/test_dispatch_phase_registry.py",
+          "line": 111,
+          "description": "The source guard that forbids new phase string literals at profile construction sites silently skips any literal whose value is already uppercase, so a phase token written in capitals at a guarded call site would pass the guard unreported.",
+          "reviewers": [
+            "anthropic-opus-cli"
+          ],
+          "reporter": "anthropic-opus-cli"
+        }
+      ],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: knowledge_summary was rejected as an unknown routing.phase_eligibility phase, so operators could not constrain the run-summary dispatch phase.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/model_identity.py:203 defines dispatch-phase metadata including PHASE_KNOWLEDGE_SUMMARY and derives KNOWN_PHASES from that registry at src/theforge/config/model_identity.py:251; src/theforge/config/model_catalog.py:425 validates configured phase names through known/closed dispatch-phase checks; and src/theforge/coordinator/knowledge_summary_flow.py:262 dispatches the summary profile with PHASE_KNOWLEDGE_SUMMARY while filtering configured agents by that same phase at src/theforge/coordinator/knowledge_summary_flow.py:276. tests/test_model_catalog.py:620 verifies forge.yaml accepts knowledge_summary and plan_review; tests/test_dispatch_phase_registry.py:30 verifies parser behavior against a synthetic registry-derived phase; tests/test_coord_knowledge_summary.py:233 verifies phase eligibility can route summaries to another API candidate; and tests/test_coord_knowledge_summary.py:283 verifies the prior CLI-pool plus provider-level transport_fallback failure now writes a summary. Targeted review tests passed: 6 passed."
+        },
+        {
+          "criterion": "A phase forge dispatches is a phase an operator can name, without a separate source edit to extend a hand-maintained eligibility vocabulary.",
+          "status": "VERIFIED",
+          "evidence": "model_identity.py:145-251 replaces the two literal frozensets with DISPATCH_PHASES plus build_dispatch_phase_registry; KNOWN_PHASES, _DEFAULT_PHASE_ELIGIBILITY and the closed set are all derived from it, and model_catalog.py:422-441 validates through is_known_dispatch_phase / is_operator_constrainable_phase rather than a second literal. tests/test_dispatch_phase_registry.py proves the parser vocabulary follows a synthetic registry with no second list, its repo-wide AST guard now scans all of src/theforge, and tests/test_model_catalog.py::test_phase_eligibility_accepts_knowledge_summary_in_forge_yaml shows knowledge_summary and plan_review are nameable at load."
+        },
+        {
+          "criterion": "An operator can express routing.phase_eligibility constraints for knowledge_summary, and runtime selection honors that constraint.",
+          "status": "VERIFIED",
+          "evidence": "knowledge_summary_flow.py:259-321 filters configured candidates by knowledge_summary eligibility, applies provider-level transport fallback to both the plan envelope and each candidate (_apply_summary_transport_fallback), and swaps only the model identity onto the plan envelope (_summary_dispatch_profile). Verified by direct calls to _summary_profile: a CLI pool with provider-level transport_fallback now yields an API profile named knowledge_summary with the plan budget 0.5 / timeout 300 (previously None), and an excluded plan model routes to the other candidate while keeping those limits. Covered by test_phase_eligibility_can_move_summary_to_another_api_candidate, test_provider_level_transport_fallback_keeps_cli_pool_summary_dispatchable, test_matching_pool_model_keeps_plan_derived_summary_limits and test_phase_eligible_matching_cli_pool_model_can_use_plan_ref_api_fallback (27 tests pass in the two touched modules)."
+        },
+        {
+          "criterion": "A dispatched phase that is deliberately closed to operator constraint is represented explicitly and rejected as deliberately closed rather than unknown.",
+          "status": "VERIFIED",
+          "evidence": "DispatchPhase(PHASE_DIAGNOSE, operator_constrainable=False, default_eligible=False) in model_identity.py with a __post_init__ guard against an incoherent closed-but-default phase, the closed-phase branch in model_catalog.py:425-434 raising a distinct 'deliberately closed' error ahead of the unknown-phase check, and both test_phase_eligibility_closed_phase_names_the_deliberate_closure and test_phase_eligibility_unknown_phase_still_fails_at_load pinning the two distinct error states."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    },
+    {
+      "cycle": 3,
+      "commit": "4c3ceca64dbc273db2e7b003655dea69c9ec9861",
+      "verification": {
+        "state": "gate_passed",
+        "gate_decision": "PASS",
+        "gate_commit": "4c3ceca64dbc273db2e7b003655dea69c9ec9861",
+        "gate_runs": 3,
+        "validate_blocks": 0,
+        "story_validation_verdict": null
+      },
+      "pool_models": [
+        "openai-gpt-5.5-cli",
+        "anthropic-opus-cli"
+      ],
+      "successful": [
+        "openai-gpt-5.5-cli",
+        "anthropic-opus-cli"
+      ],
+      "resolved_by_reviewer": {
+        "openai-gpt-5.5-cli": "openai/gpt-5.5/cli",
+        "anthropic-opus-cli": "anthropic/opus/cli"
+      },
+      "failed": [],
+      "failed_detail": {},
+      "synthesized": false,
+      "parse_retries": 0,
+      "transient_retries": {},
+      "transient_outcomes": {
+        "openai-gpt-5.5-cli": "succeeded",
+        "anthropic-opus-cli": "succeeded"
+      },
+      "quorum_threshold": 2,
+      "quorum_met": true,
+      "degraded_quorum": false,
+      "degraded_quorum_warning": null,
+      "verdict": "APPROVE",
+      "summary": "[openai-gpt-5.5-cli] The prior CLI-pool transport_fallback regression is fixed, knowledge_summary is now operator-constrainable, and targeted tests passed. | [anthropic-opus-cli] All prior findings are resolved and verified at HEAD 4c3ceca6 \u2014 the CLI-pool transport_fallback regression, the plan-envelope budget/timeout/name preservation, the unknown-phase message now listing only operator-constrainable phases (diagnose absent), and the AST guard now scanning all of src/theforge with the casing escape hatch removed; 67 tests in the three touched modules pass and the coordinator gate verdict for this commit is PASS.",
+      "sanitization_audit": null,
+      "p1_count": 0,
+      "p2_count": 0,
+      "findings": [],
+      "ac_verification": [
+        {
+          "criterion": "Symptom resolution: routing.phase_eligibility could not name the knowledge_summary dispatch phase.",
+          "status": "VERIFIED",
+          "evidence": "src/theforge/config/model_identity.py:145-237 defines dispatch phase metadata with PHASE_KNOWLEDGE_SUMMARY included in the operator-constrainable/default eligibility sets; src/theforge/config/model_catalog.py:416-443 validates phase_eligibility through that dispatch vocabulary while keeping unknown and deliberately closed phases distinct; src/theforge/coordinator/knowledge_summary_flow.py:262-321 dispatches summaries with PHASE_KNOWLEDGE_SUMMARY and applies phase eligibility when selecting summary candidates. tests/test_model_catalog.py:620-650 verifies forge.yaml accepts knowledge_summary, tests/test_dispatch_phase_registry.py:31-90 verifies the parser consumes registry-derived vocabulary including closed-phase errors, tests/test_coord_knowledge_summary.py:233-281 verifies phase eligibility can route summaries to another candidate, and tests/test_coord_knowledge_summary.py:283-319 verifies the prior CLI-pool provider transport_fallback skip no longer occurs. Targeted run: pytest tests/test_coord_knowledge_summary.py tests/test_dispatch_phase_registry.py tests/test_model_catalog.py -q passed with 66 passed and 1 skipped."
+        },
+        {
+          "criterion": "A phase forge dispatches is a phase an operator can name, without a separate source edit to extend a hand-maintained eligibility vocabulary.",
+          "status": "VERIFIED",
+          "evidence": "model_identity.py:145-259 replaces both literal frozensets with DISPATCH_PHASES plus build_dispatch_phase_registry, and KNOWN_PHASES, OPERATOR_CONSTRAINABLE_PHASES, DEFAULT_PHASE_ELIGIBILITY and CLOSED_OPERATOR_PHASES are all derived views over it; a repo-wide grep confirms KNOWN_PHASES now exists only as a derived binding and its own predicate in model_identity.py, with model_catalog.py:422-441 validating through is_known_dispatch_phase / is_operator_constrainable_phase. Runtime check of the derived sets returns known = advisor/dev/diagnose/knowledge_summary/plan/ plan_review/preflight/review and constrainable = the same minus diagnose. tests/test_dispatch_phase_registry.py pins the derivation against a synthetic registry and its AST guard now walks every file under src/theforge with no casing exemption; tests/test_model_catalog.py::test_phase_eligibility_accepts_knowledge_summary_in_forge_yaml shows knowledge_summary and plan_review are nameable at load."
+        },
+        {
+          "criterion": "An operator can express routing.phase_eligibility constraints for knowledge_summary, and runtime selection honors that constraint.",
+          "status": "VERIFIED",
+          "evidence": "knowledge_summary_flow.py:259-321 filters configured candidates by knowledge_summary eligibility, runs both the plan envelope and each candidate through _apply_summary_transport_fallback before the tool-free API projection, and swaps only the model identity onto the plan envelope via _summary_dispatch_profile so budget, timeout and profile name stay the plan role's. Verified by direct _summary_profile calls: a CLI pool with provider-level transport_fallback yields an API profile named knowledge_summary at budget 0.5 / timeout 300, and an excluded plan model routes to the other candidate keeping those limits. Covered by test_phase_eligibility_can_move_summary_to_another_api_candidate, test_provider_level_transport_fallback_keeps_cli_pool_summary_dispatchable, test_matching_pool_model_keeps_plan_derived_summary_limits and test_phase_eligible_matching_cli_pool_model_can_use_plan_ref_api_fallback."
+        },
+        {
+          "criterion": "A dispatched phase that is deliberately closed to operator constraint is represented explicitly and rejected as deliberately closed rather than unknown.",
+          "status": "VERIFIED",
+          "evidence": "DispatchPhase(PHASE_DIAGNOSE, operator_constrainable=False, default_eligible=False) with a __post_init__ guard against a closed-but-default phase, and model_catalog.py:425-441 raising the deliberate-closure error ahead of the unknown-phase error whose supported list is now OPERATOR_CONSTRAINABLE_PHASES. Confirmed at runtime: naming 'diagnose' yields 'names known dispatch phase(s) deliberately closed to operator constraint', and naming 'launch' lists the seven constrainable phases with diagnose absent. Pinned by test_phase_eligibility_closed_phase_names_the_deliberate_closure and test_phase_eligibility_unknown_phase_still_fails_at_load, which now asserts 'diagnose' is not in the message."
+        }
+      ],
+      "criteria_enumerable": true,
+      "criteria_enumerable_rationale": null,
+      "parse_errors": []
+    }
+  ],
+  "reviewer_attempts": [
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "anthropic-opus-cli",
+      "provider": null,
+      "model": "opus",
+      "cli": "claude",
+      "canonical_id": "anthropic/opus/cli",
+      "resolved_model": "anthropic/opus/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 1
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "anthropic-opus-cli",
+      "provider": null,
+      "model": "opus",
+      "cli": "claude",
+      "canonical_id": "anthropic/opus/cli",
+      "resolved_model": "anthropic/opus/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 2
+    },
+    {
+      "name": "openai-gpt-5.5-cli",
+      "provider": null,
+      "model": "gpt-5.5",
+      "cli": "codex",
+      "canonical_id": "openai/gpt-5.5/cli",
+      "resolved_model": "openai/gpt-5.5/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "completed",
+      "failure_reason": null,
+      "cycle": 3
+    },
+    {
+      "name": "anthropic-opus-cli",
+      "provider": null,
+      "model": "opus",
+      "cli": "claude",
+      "canonical_id": "anthropic/opus/cli",
+      "resolved_model": "anthropic/opus/cli",
+      "completed_parseable_verdict": true,
+      "outcome": "budget_overrun",
+      "failure_reason": "ran over its derived share; verdict retained",
+      "cycle": 3
+    }
+  ],
+  "human_review": null,
+  "plan_review": {
+    "reviewer": "agent",
+    "mode": "agent",
+    "decision": "approve",
+    "regenerated": false,
+    "waited_seconds": 0,
+    "findings": "- [P1-impl] [openai-gpt-5.6-sol-cli] Step 1 proposes registering confirmed dispatch-profile phases such as plan_review and diagnose, but Step 3 only replaces their phase strings with constants. diagnose_flow._build_diagnose_profile() reuses config.preflight_profile without selecting by diagnose eligibility, while plan-review candidates are selected through paths including assignment.py, which is absent from the plan and does not currently apply phase_eligibility. Those configurations would load successfully yet not constrain which model fills the seat.\n  Suggestion: Enumerate every phase added to the registry and either wire its actual candidate-selection path to that phase's eligibility or mark it explicitly closed. Add runtime selection tests for each operator-constrainable phase, especially diagnose and plan_review, and include assignment.py and any other discovered selectors in Step 3.\n- [P1-impl] [anthropic-opus-cli] Step 5's 'lightweight source guard for model-backed dispatch call sites' is the only thing enforcing the no-second-edit property, but the dispatch surface is not uniform enough for a naive literal scan. Verified call shapes differ: knowledge_summary_flow.py:193 and preflight.py:1408 pass phase= to model_ref_to_profile; review_phase.py:2398 passes phase='review' elsewhere; diagnose_flow.py:716 sets phase='diagnose' via dataclasses.replace on preflight_profile, never touching model_ref_to_profile; and review_phase.py is dense with phase='REVIEW' logger/status labels and phase=state.phase forwards that a grep would sweep up.\n  Suggestion: Anchor the guard on ModelProfile construction/replacement sites (model_ref_to_profile calls plus dataclasses.replace(..., phase=...) on a ModelProfile) and assert the phase argument is a registry constant rather than a bare string literal, instead of grepping for phase= across src/theforge/coordinator/.\n- [P2] [anthropic-opus-cli] Step 1 hedges the initial membership ('any confirmed dispatch-profile phases such as plan_review or diagnose'). 'diagnose' is confirmed real (diagnose_flow.py:716); 'plan_review' is not \u2014 profiles.py:85 yields plan-review profiles without setting a phase, so registering it may be speculative.\n  Suggestion: Register only phases with a confirmed ModelProfile.phase value; treat plan_review as needing verification before inclusion so the guard test does not encode a phase nothing dispatches.\n- [P2] [anthropic-opus-cli] Step 4 lists three test files, but widening the default eligibility set touches other assertions: tests/test_model_catalog.py:140 (_ALL_PHASES tuple) is covered, while tests/test_promoted_models_catalog.py:80 and tests/test_config_transport_identity.py:436 also read phase_eligibility (these use explicit lists so are probably unaffected, but were not enumerated).\n  Suggestion: Run the full suite rather than only the three named files; update any default-set assertion the widening surfaces.",
+    "cost_usd": 0,
+    "plan_finding_registry": [],
+    "plan_match_provenance": [
+      "  finding[0]: UNMATCHED \u2014 no prior findings to match against\n  finding[1]: UNMATCHED \u2014 no prior findings to match against\n  finding[2]: UNMATCHED \u2014 no prior findings to match against\n  finding[3]: UNMATCHED \u2014 no prior findings to match against"
+    ]
+  },
+  "plan_validation": {
+    "skipped": false,
+    "findings": [],
+    "finding_count": 0
+  },
+  "merge": {
+    "action": "merge-pr",
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2534",
+    "merged": false,
+    "merge_queued": true,
+    "success": true,
+    "error": null,
+    "auto_merge_queued": true,
+    "landing_path": "fresh-merge",
+    "guard_evidence": {
+      "branch": "feat/issue-2500",
+      "pr_url": "https://github.com/fuzzypete/theforge/pull/2534",
+      "merge_queued": true
+    }
+  },
+  "landing": {
+    "outcome": "merge-queued",
+    "landing_path": "fresh-merge",
+    "fresh_pr_created": true,
+    "merged": false,
+    "merge_queued": true,
+    "pr_url": "https://github.com/fuzzypete/theforge/pull/2534",
+    "pr_merged_at": null
+  },
+  "landing_status": "pending_integration",
+  "landing_review": {
+    "source": "merged_cycle_review",
+    "verdict": "APPROVE"
+  },
+  "landing_event": {
+    "landing_status": "pending_integration",
+    "landed": false,
+    "timestamp": "2026-08-18T20:07:17.857378+00:00"
+  },
+  "timeout_escalation": null,
+  "escalation": null,
+  "error": null,
+  "error_type": null,
+  "story_validation": null,
+  "convention_violations": [
+    {
+      "rule": "max_test_file_lines",
+      "file": "tests/test_model_catalog.py",
+      "detail": "tests/test_model_catalog.py has 1048 lines (limit 1000)",
+      "blocking": false
+    }
+  ],
+  "validate_blocks": null,
+  "finding_registry": [
+    {
+      "finding_id": "c2a50563a8c0a21a",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/knowledge_summary_flow.py",
+      "line": 263,
+      "severity": "P1",
+      "description": "With a CLI model pool and a provider-level transport_fallback configured, run-summary generation now skips with 'no phase-eligible configured model can dispatch knowledge_summary over a tool-free API transport', even though the plan reference carries a resolved API fallback that produced a valid tool-free profile before this change, because the candidate profiles built from the agent pool never have the provider-level transport fallback applied to them.",
+      "reporter": "anthropic-opus-cli",
+      "disposition": "fixed"
+    },
+    {
+      "finding_id": "83817ca79aa1392e",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/coordinator/knowledge_summary_flow.py",
+      "line": 282,
+      "severity": "P2",
+      "description": "When the plan model is itself in the agent pool and eligible, the selector returns the agent-pool-derived profile rather than the plan-derived one, so the dispatch runs under the agent pool's budget and timeout and under the agent's name instead of the plan role's configured budget, timeout, and the 'knowledge_summary' profile name (observed: budget 0.25 to 3.0 and timeout 300 to 900 for the same model).",
+      "reporter": "anthropic-opus-cli",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "3320c071655b2cee",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "tests/test_dispatch_phase_registry.py",
+      "line": 91,
+      "severity": "P2",
+      "description": "The guard that stops new phase string literals from appearing at profile construction sites enumerates a hardcoded tuple of twelve source paths, so a dispatch site added in a file not on that list is unguarded and reintroduces the drift the change is meant to prevent.",
+      "reporter": "anthropic-opus-cli",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "44b8279fc3b23619",
+      "cycle_first_seen": 1,
+      "cycle_last_seen": 1,
+      "file": "src/theforge/config/model_identity.py",
+      "line": 229,
+      "severity": "P2",
+      "description": "The helpers is_operator_constrainable_phase and is_known_dispatch_phase are defined but never called anywhere in the codebase or tests.",
+      "reporter": "anthropic-opus-cli",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "1e84624c2e0a7fc7",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "src/theforge/config/model_catalog.py",
+      "line": 439,
+      "severity": "P2",
+      "description": "An operator who names an unrecognized phase in routing.phase_eligibility is told the field 'only supports' a list that includes 'diagnose', but naming 'diagnose' is itself rejected with a deliberate-closure error, so the remediation the message suggests is one the loader refuses.",
+      "reporter": "anthropic-opus-cli",
+      "disposition": "net_new"
+    },
+    {
+      "finding_id": "7c10e2aa7ca20733",
+      "cycle_first_seen": 2,
+      "cycle_last_seen": 2,
+      "file": "tests/test_dispatch_phase_registry.py",
+      "line": 111,
+      "severity": "P2",
+      "description": "The source guard that forbids new phase string literals at profile construction sites silently skips any literal whose value is already uppercase, so a phase token written in capitals at a guarded call site would pass the guard unreported.",
+      "reporter": "anthropic-opus-cli",
+      "disposition": "net_new"
+    }
+  ],
+  "review_topology_signal": null,
+  "non_blocking_p1s": [],
+  "conventions": {
+    "soft": [
+      "Coordinator is pure Python \u2014 no LLM calls for routing or process decisions",
+      "Schema validation is the integrity boundary \u2014 do not relax cross-validation rules",
+      "Keep modules single-purpose. Extract when a responsibility separates from its neighbours \u2014 never to satisfy a line count. Putting a change in an already-large module is correct if that is where it belongs; a module carved at whatever line got the count down is worse than the large module it came from.",
+      "Keep pure-data types in low-dependency modules with stdlib-only imports",
+      "Separate prompt construction, output parsing, and coordinator control flow",
+      "When adding or modifying data that flows between coordinator phases, instrument the change so the actual values are visible in the audit trail \u2014 diagnosing sprint failures requires tracing real data, not reconstructing it",
+      "Do not create files outside src/, tests/, or docs/. If you need a scratch file for exploration, delete it before committing.",
+      "Changes that affect coordinator phase boundaries, state handoff between phases, or adaptive routing/config propagation must include seam-level integration tests covering the touched boundary. Unit tests alone are insufficient when correctness depends on cross-phase state flow."
+    ]
+  },
+  "symptom_test_escalations": null,
+  "routing_decision": {
+    "origin": "preflight",
+    "excluded_for_taint": 13,
+    "reasoning_effort": {
+      "axis": "reasoning_effort",
+      "description": "Model reasoning-effort / thinking budget",
+      "score": 7,
+      "score_controlled": true,
+      "enabled": true,
+      "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+      "phases": {
+        "plan": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "plan",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            }
+          ],
+          "provider_support": "supported_metered",
+          "varies_by_provider": false
+        },
+        "dev": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "dev",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.4-cli",
+              "model": "gpt-5.4",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            }
+          ],
+          "provider_support": "supported_metered",
+          "varies_by_provider": false
+        },
+        "review": {
+          "axis": "reasoning_effort",
+          "description": "Model reasoning-effort / thinking budget",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 plan leads dev by one band; effort scales with score within the tier",
+          "phase": "review",
+          "applied": true,
+          "bucket": "high",
+          "range": [
+            7,
+            10
+          ],
+          "output": "high",
+          "models": [
+            {
+              "name": "openai-gpt-5.6-sol-cli",
+              "model": "gpt-5.6-sol",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            },
+            {
+              "name": "openai-gpt-5.5-cli",
+              "model": "gpt-5.5",
+              "transport": "codex",
+              "knob": "effort",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "supported_metered",
+              "applied": true,
+              "field": "reasoning_effort",
+              "value": "high"
+            },
+            {
+              "name": "anthropic-opus-cli",
+              "model": "opus",
+              "transport": "claude",
+              "knob": "none",
+              "bucket": "high",
+              "range": [
+                7,
+                10
+              ],
+              "thresholds": [
+                3,
+                6,
+                10
+              ],
+              "output": "high",
+              "provider_support": "provider_unsupported",
+              "applied": false,
+              "field": null,
+              "value": null,
+              "reason": "provider_has_no_reasoning_effort_passthrough"
+            }
+          ],
+          "provider_support": "mixed",
+          "varies_by_provider": false
+        }
+      },
+      "applied": true
+    },
+    "preflight": {
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": false,
+            "tainted_runs": 13,
+            "selected": true
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 6,
+            "completed": 5,
+            "raw": 0.8333,
+            "weighted": 0.8345,
+            "rate": 0.8345,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4-mini",
+        "tier": "cheap",
+        "rationale": "[preflight] tier cheap ($5.00)"
+      }
+    },
+    "planner": {
+      "score_policy": {
+        "plan_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": false,
+          "reason": "tier_mismatch"
+        }
+      ],
+      "exploration": {
+        "mode": "winner"
+      },
+      "reliability_check": {
+        "mechanism": "role_reliability",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 34,
+            "completed": 34,
+            "raw": 1.0,
+            "weighted": 1.0,
+            "rate": 1.0,
+            "floor": "pass",
+            "schema_ok": true,
+            "tainted_runs": 2,
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          },
+          "anthropic-opus-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "schema_ok": true,
+            "tainted_runs": 0,
+            "selected": false
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.5",
+        "tier": "strong",
+        "rationale": "[preflight] complexity score 7 \u2192 tier strong ($5.00); per-story routing cost target: unset"
+      }
+    },
+    "dev": {
+      "score": 7,
+      "base_tier_from_score": "strong",
+      "score_policy": {
+        "dev_tier": {
+          "axis": "dev_tier",
+          "description": "Dev-phase model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            3,
+            6,
+            10
+          ],
+          "rationale": "3 buckets \u2014 splits the legacy MEDIUM band so localized work (1-3) stays cheap while broad cross-module work (7-10) escalates sooner",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            7,
+            10
+          ],
+          "output": "strong"
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": false,
+          "reason": "tier_mismatch"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "domain_match": {
+        "domains": [
+          "backend",
+          "config"
+        ],
+        "influenced": false,
+        "complexity_only_head": "anthropic-opus-cli",
+        "domain_head": "anthropic-opus-cli",
+        "selected_model_slice": null,
+        "reason": "domain_signal_did_not_change_selection"
+      },
+      "promotion_check": {
+        "mechanism": "_check_promotion",
+        "fired": false,
+        "outcome": "recovered_at_or_above_threshold",
+        "model": "anthropic-opus-cli",
+        "complexity": "MEDIUM",
+        "raw_success_rate": 0.9083,
+        "weighted_success_rate": 0.8811,
+        "sample_size": 218,
+        "tainted_runs": 0,
+        "threshold": 0.6,
+        "min_runs": 5,
+        "floor": "pass",
+        "resulting_tier": "strong"
+      },
+      "routing_rationale": {
+        "state": "stayed_at_preflight_tier",
+        "mechanism": null,
+        "from_tier": "mid",
+        "to_tier": "mid"
+      },
+      "demotion_check": {
+        "mechanism": "dev_recency_recovery",
+        "applicable": true,
+        "fired": true,
+        "checked": {
+          "weighted_success_rate": 0.8811,
+          "threshold": 0.6,
+          "sample_size": 218,
+          "min_runs": 5
+        },
+        "reason": "weighted_rate_recovered_to_or_above_threshold"
+      },
+      "post_plan_checkpoint": {
+        "fired": false,
+        "decision": "pending",
+        "reason": "checkpoint_runs_after_plan_review"
+      },
+      "exploration": {
+        "mode": "winner",
+        "routing_key": "dev:medium:backend+config",
+        "pool": [
+          "anthropic-sonnet-cli",
+          "anthropic-opus-cli",
+          "openai-gpt-5.4-cli",
+          "openai-gpt-5.4-mini-cli",
+          "openai-gpt-5.5-cli",
+          "openai-gpt-5.6-sol-cli",
+          "openai-gpt-5.6-terra-cli",
+          "anthropic-claude-haiku-4-5-cli",
+          "google-gemini-3.5-flash-api",
+          "google-gemini-3.1-pro-preview-api"
+        ],
+        "selected": "openai-gpt-5.4-cli",
+        "winner": "openai-gpt-5.4-cli",
+        "reason": "sprint_cap_reached",
+        "domains": [
+          "backend",
+          "config"
+        ],
+        "evidence": {
+          "selected_model": "openai-gpt-5.4-cli",
+          "declared_tier": "strong",
+          "selected_tier": "mid",
+          "selection": "cost_qualified_exploitation",
+          "reliability_floor": 0.7,
+          "observed_reliability": 0.7379,
+          "sample_size": 40,
+          "cost_status": "measured",
+          "estimated_completion_cost_usd": 0.9729109635451958,
+          "completion_cost_formula": "avg_cost_usd / success_rate",
+          "winner_selection_reason": "cost_qualified",
+          "cross_tier_promotion_blocked": false,
+          "below_reliability_floor": [],
+          "unmeasured_cost": [],
+          "completion_costs_usd": {
+            "anthropic-opus-cli": 6.535919069029357,
+            "openai-gpt-5.4-cli": 0.9729109635451958
+          }
+        }
+      },
+      "final": {
+        "model": "gpt-5.4",
+        "tier": "mid",
+        "rationale": "[preflight] complexity score 7 (MEDIUM) \u2192 tier strong (recency recovery: weighted success_rate 0.88 \u2265 threshold 0.60 over 218 admissible runs \u2014 pre-promotion held) (profile success_rate=0.88 @ MEDIUM); EXPLORATION cost-qualified winner gpt-5.4 (tier mid, declared strong) routed for key dev:medium:backend+config \u2014 completion cost $0.97, reliability 0.7379 >= floor 0.7; per-story routing cost target: unset"
+      }
+    },
+    "plan_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "attempted": 48,
+            "completed": 46,
+            "raw": 0.9583,
+            "weighted": 0.947,
+            "rate": 0.947,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 240,
+            "completed": 229,
+            "raw": 0.9542,
+            "weighted": 0.9787,
+            "rate": 0.9787,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 42,
+            "completed": 38,
+            "raw": 0.9048,
+            "weighted": 0.9094,
+            "rate": 0.9094,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-opus-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "plan_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.6-sol-cli": {
+            "runs": 3,
+            "tainted_runs": 1,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 109.8672,
+              "weighted": 109.8672,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "anthropic-opus-cli": {
+            "runs": 4,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": 84.3794,
+              "weighted": 84.3794,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-cli",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.6-sol-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 3,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-opus-cli": {
+              "raw": 1.0,
+              "weighted": 1.0,
+              "runs": 4,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.6-sol",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 7; per-story routing cost target: unset"
+      }
+    },
+    "code_review": {
+      "score_policy": {
+        "reviewer_tier": {
+          "axis": "plan_tier",
+          "description": "Planner and reviewer model tier",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            5,
+            10
+          ],
+          "rationale": "2 buckets \u2014 planning quality is bimodal: mid planner for mechanical stories (1-5), strong planner for design-heavy ones (6-10)",
+          "applied": true,
+          "bucket": "strong",
+          "range": [
+            6,
+            10
+          ],
+          "output": "strong"
+        },
+        "reviewer_count": {
+          "axis": "reviewer_count",
+          "description": "Number of plan-review / code-review reviewers",
+          "score": 7,
+          "score_controlled": true,
+          "thresholds": [
+            4,
+            7,
+            10
+          ],
+          "rationale": "3 buckets \u2014 min reviewers for low-risk (1-4), configured midpoint for medium (5-7), max for high-risk (8-10), bounded by min_reviewers/max_reviewers",
+          "applied": true,
+          "bucket": "mid",
+          "range": [
+            5,
+            7
+          ],
+          "output": "mid",
+          "resolved_count": 2,
+          "min_reviewers": 1,
+          "max_reviewers": 3,
+          "seated_count": 2
+        }
+      },
+      "candidate_pool": [
+        {
+          "name": "anthropic-sonnet-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-opus-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.4-cli",
+          "tier": "mid",
+          "included": false,
+          "reason": "anti_self_review"
+        },
+        {
+          "name": "openai-gpt-5.4-mini-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.5-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-sol-cli",
+          "tier": "strong",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "openai-gpt-5.6-terra-cli",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "anthropic-claude-haiku-4-5-cli",
+          "tier": "cheap",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.5-flash-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        },
+        {
+          "name": "google-gemini-3.1-pro-preview-api",
+          "tier": "mid",
+          "included": true,
+          "reason": "none"
+        }
+      ],
+      "demotion_check": {
+        "mechanism": "provider_health",
+        "fired": false,
+        "deprioritized": [],
+        "fell_back": [],
+        "reason": "no_unhealthy_candidates"
+      },
+      "completion_check": {
+        "mechanism": "reviewer_completion_rate",
+        "fired": false,
+        "threshold": 0.5,
+        "min_runs": 5,
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "attempted": 314,
+            "completed": 310,
+            "raw": 0.9873,
+            "weighted": 0.9851,
+            "rate": 0.9851,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 22,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-opus-cli": {
+            "attempted": 48,
+            "completed": 46,
+            "raw": 0.9583,
+            "weighted": 0.947,
+            "rate": 0.947,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "attempted": 240,
+            "completed": 229,
+            "raw": 0.9542,
+            "weighted": 0.9787,
+            "rate": 0.9787,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "attempted": 0,
+            "completed": 0,
+            "raw": null,
+            "weighted": null,
+            "rate": null,
+            "floor": "fail",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "attempted": 42,
+            "completed": 38,
+            "raw": 0.9048,
+            "weighted": 0.9094,
+            "rate": 0.9094,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "attempted": 56,
+            "completed": 47,
+            "raw": 0.8393,
+            "weighted": 0.8379,
+            "rate": 0.8379,
+            "floor": "pass",
+            "recovery": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false
+            },
+            "selected": false
+          }
+        },
+        "reinclusion_check": {
+          "mechanism": "reviewer_completion_reinclusion",
+          "fired": false,
+          "clean_attempts_required": 5,
+          "reincluded": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "clean_streak": 22,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-sol-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-opus-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "clean_streak": 69,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "clean_streak": 8,
+              "clean_attempts_required": 5,
+              "recovered": true,
+              "below_threshold": false
+            },
+            "anthropic-sonnet-cli": {
+              "clean_streak": 0,
+              "clean_attempts_required": 5,
+              "recovered": false,
+              "below_threshold": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_met_clean_attempt_streak"
+        }
+      },
+      "value_check": {
+        "mechanism": "reviewer_value",
+        "phase": "code_review",
+        "fired": false,
+        "uniqueness_threshold": 0.34,
+        "min_runs": 5,
+        "complexity": "MEDIUM",
+        "deprioritized": [],
+        "signals": {
+          "openai-gpt-5.5-cli": {
+            "runs": 15,
+            "tainted_runs": 3,
+            "uniqueness_rate": {
+              "raw": 0.6667,
+              "weighted": 0.6499,
+              "rate": 0.6499,
+              "floor": "pass"
+            },
+            "latency_per_p1": {
+              "raw": 122.274,
+              "weighted": 119.8574,
+              "rate": 119.8574,
+              "floor": "pass"
+            },
+            "selected": true
+          },
+          "openai-gpt-5.6-sol-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-opus-cli": {
+            "runs": 10,
+            "tainted_runs": 2,
+            "uniqueness_rate": {
+              "raw": 0.6,
+              "weighted": 0.5987,
+              "rate": 0.5987,
+              "floor": "pass"
+            },
+            "latency_per_p1": {
+              "raw": 70.362,
+              "weighted": 69.5315,
+              "rate": 69.5315,
+              "floor": "pass"
+            },
+            "selected": true
+          },
+          "google-gemini-3.5-flash-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.6-terra-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "google-gemini-3.1-pro-preview-api": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "openai-gpt-5.4-mini-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-claude-haiku-4-5-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          },
+          "anthropic-sonnet-cli": {
+            "runs": 0,
+            "tainted_runs": 0,
+            "uniqueness_rate": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "latency_per_p1": {
+              "raw": null,
+              "weighted": null,
+              "rate": null,
+              "floor": "fail"
+            },
+            "selected": false
+          }
+        },
+        "recovery_check": {
+          "mechanism": "reviewer_value_recency_recovery",
+          "fired": false,
+          "uniqueness_threshold": 0.34,
+          "recovered": [],
+          "checked": [
+            "anthropic-claude-haiku-4-5-cli",
+            "anthropic-opus-cli",
+            "anthropic-sonnet-cli",
+            "google-gemini-3.1-pro-preview-api",
+            "google-gemini-3.5-flash-api",
+            "openai-gpt-5.4-mini-cli",
+            "openai-gpt-5.5-cli",
+            "openai-gpt-5.6-sol-cli",
+            "openai-gpt-5.6-terra-cli"
+          ],
+          "checked_detail": {
+            "openai-gpt-5.5-cli": {
+              "raw": 0.6667,
+              "weighted": 0.6499,
+              "runs": 15,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-sol-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-opus-cli": {
+              "raw": 0.6,
+              "weighted": 0.5987,
+              "runs": 10,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.5-flash-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.6-terra-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "google-gemini-3.1-pro-preview-api": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "openai-gpt-5.4-mini-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-claude-haiku-4-5-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            },
+            "anthropic-sonnet-cli": {
+              "raw": null,
+              "weighted": null,
+              "runs": 0,
+              "below_threshold_lifetime": false,
+              "recovered": false
+            }
+          },
+          "reason": "no_below_threshold_reviewer_recovered_on_recent_uniqueness"
+        }
+      },
+      "exploration": {
+        "mode": "winner"
+      },
+      "final": {
+        "models": [
+          "gpt-5.5",
+          "opus"
+        ],
+        "rationale": "[preflight] 2 reviewer(s), tier strong, providers ['openai', 'anthropic'], complexity score 7 [value check: evaluated 2 reviewer(s) above the sample floor, none below the uniqueness threshold]; per-story routing cost target: unset"
+      }
+    }
+  },
+  "trust_checks": [
+    {
+      "check": "reviewer_tree_currency",
+      "result": "pass",
+      "producer": "coordinator.review_context.reviewer_tree_currency",
+      "evidence": {
+        "base_branch": "release/v0.15",
+        "expected_commits": [
+          "e4064453 fix(config): derive phase eligibility from dispatch metadata"
+        ],
+        "actual_commits": [
+          "e4064453 fix(config): derive phase eligibility from dispatch metadata"
+        ],
+        "missing_from_branch": [],
+        "omitted_from_handoff": []
+      }
+    }
+  ],
+  "trust_status": "trusted",
+  "changed_files": {
+    "base_ref": "7104f0adac54ea6aa8fd37f8aab3263ac68f43de",
+    "head_ref": "4c3ceca64dbc273db2e7b003655dea69c9ec9861",
+    "files": [
+      {
+        "path": "src/theforge/assignment.py",
+        "insertions": 3,
+        "deletions": 2,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/cli/eval_cmd.py",
+        "insertions": 6,
+        "deletions": 5,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/cli/provider_readiness.py",
+        "insertions": 25,
+        "deletions": 18,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/bridge.py",
+        "insertions": 13,
+        "deletions": 6,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/defaults.py",
+        "insertions": 4,
+        "deletions": 2,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/load.py",
+        "insertions": 3,
+        "deletions": 2,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/model_catalog.py",
+        "insertions": 17,
+        "deletions": 3,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/model_identity.py",
+        "insertions": 97,
+        "deletions": 8,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/profiles.py",
+        "insertions": 6,
+        "deletions": 2,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/role_derivation.py",
+        "insertions": 5,
+        "deletions": 4,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/config/types.py",
+        "insertions": 2,
+        "deletions": 0,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/coordinator/diagnose_flow.py",
+        "insertions": 2,
+        "deletions": 1,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/coordinator/escalation_advisor_flow.py",
+        "insertions": 4,
+        "deletions": 4,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/coordinator/knowledge_summary_flow.py",
+        "insertions": 129,
+        "deletions": 20,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/coordinator/plan_flow.py",
+        "insertions": 2,
+        "deletions": 0,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/coordinator/preflight.py",
+        "insertions": 2,
+        "deletions": 1,
+        "binary": false
+      },
+      {
+        "path": "src/theforge/sprint/runner.py",
+        "insertions": 2,
+        "deletions": 1,
+        "binary": false
+      },
+      {
+        "path": "tests/test_coord_knowledge_summary.py",
+        "insertions": 167,
+        "deletions": 0,
+        "binary": false
+      },
+      {
+        "path": "tests/test_dispatch_phase_registry.py",
+        "insertions": 118,
+        "deletions": 0,
+        "binary": false
+      },
+      {
+        "path": "tests/test_model_catalog.py",
+        "insertions": 101,
+        "deletions": 1,
+        "binary": false
+      }
+    ]
+  },
+  "phases": {
+    "preflight": {
+      "cost_usd": 0.201555,
+      "duration_s": 21.69,
+      "outcome": "proceed"
+    },
+    "plan": null,
+    "plan_review": {
+      "cost_usd": 0,
+      "duration_s": 215.93,
+      "iterations": 0,
+      "outcome": "approve"
+    },
+    "dev": {
+      "cost_usd": 2.900256,
+      "duration_s": 1808.24,
+      "iterations": 3,
+      "outcome": "success"
+    },
+    "validate": {
+      "cost_usd": 0.0,
+      "duration_s": 224.58,
+      "outcome": "pass",
+      "gate_debug": [],
+      "gate_diagnostic": []
+    },
+    "review": {
+      "cost_usd": 10.215854,
+      "duration_s": 507.42,
+      "cycles": 3,
+      "outcome": "approve",
+      "per_reviewer": {
+        "openai-gpt-5.5-cli": {
+          "cost": 2.829446,
+          "verdict": "APPROVE"
+        },
+        "anthropic-opus-cli": {
+          "cost": 7.386408,
+          "verdict": "APPROVE"
+        }
+      },
+      "per_reviewer_value": [
+        {
+          "cycle": 1,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 129.38,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 1,
+          "reviewer": "anthropic-opus-cli",
+          "complexity": "medium",
+          "unique_p1_count": 1,
+          "total_p1_count": 1,
+          "latency_s": 129.38,
+          "latency_per_p1_s": 129.38,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 51.01,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 2,
+          "reviewer": "anthropic-opus-cli",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 51.01,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 3,
+          "reviewer": "openai-gpt-5.5-cli",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 73.31,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        },
+        {
+          "cycle": 3,
+          "reviewer": "anthropic-opus-cli",
+          "complexity": "medium",
+          "unique_p1_count": 0,
+          "total_p1_count": 0,
+          "latency_s": 73.31,
+          "latency_per_p1_s": null,
+          "parse_error_count": 0
+        }
+      ]
+    }
+  },
+  "totals": {
+    "cost_usd": 13.317666,
+    "duration_s": 2777.86,
+    "dev_attempts_total": 3,
+    "dev_iterations_productive": 3,
+    "review_cycles_total": 3,
+    "review_cycles_opened_by_validate": 0,
+    "dev_iterations": 3,
+    "review_cycles": 3
+  },
+  "sprint_id": "ba6902cee354",
+  "sprint_name": "issues-2191,2216,2500,2475,2138"
+}
