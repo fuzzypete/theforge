@@ -27,6 +27,7 @@ from .config import (
     TransportFallbackConfig,
 )
 from .config.auth import check_agent_auth
+from .config.model_identity import PHASE_PLAN_REVIEW, PHASE_REVIEW
 from .config.pricing import price_tiebreak_signal_for
 from .config.profiles import _apply_transport_fallback
 from .model_capabilities import (
@@ -4020,7 +4021,7 @@ def assign_models(
             value_audit=evidence.plan_review.value.audit,
         )
         plan_reviewers = [
-            _agent_to_profile(a, role="review", transport_fallbacks=transport_fallbacks)
+            _agent_to_profile(a, role=PHASE_PLAN_REVIEW, transport_fallbacks=transport_fallbacks)
             for a in selected
         ]
         providers = [a.effective_provider for a in selected]
@@ -4096,7 +4097,7 @@ def assign_models(
             value_phase="code_review",
         )
         code_reviewers = [
-            _agent_to_profile(a, role="review", transport_fallbacks=transport_fallbacks)
+            _agent_to_profile(a, role=PHASE_REVIEW, transport_fallbacks=transport_fallbacks)
             for a in selected
         ]
         providers = [a.effective_provider for a in selected]

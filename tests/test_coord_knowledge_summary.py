@@ -18,6 +18,7 @@ What is pinned here:
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -30,6 +31,7 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    AgentDef,
     ForgeConfig,
     KnowledgeConfig,
     LogConfig,
@@ -37,7 +39,10 @@ from theforge.config import (
     PlanConfig,
     RetryPolicy,
     WorkspaceConfig,
+    transport_for,
 )
+from theforge.config.model_identity import DEFAULT_PHASE_ELIGIBILITY, PHASE_KNOWLEDGE_SUMMARY
+from theforge.config.models import AGENT_REGISTRY
 from theforge.coordinator import knowledge_summary_flow
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
@@ -221,6 +226,53 @@ class TestGeneration:
         assert profile.allowed_tools == ()
         assert calls[0]["plain_text"] is True
         assert outcome.status == "written"
+
+    def test_phase_eligibility_can_move_summary_to_another_api_candidate(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        excluded = replace(
+            AGENT_REGISTRY["openai/gpt-5.4/api"],
+            routing=replace(
+                AGENT_REGISTRY["openai/gpt-5.4/api"].routing,
+                phase_eligibility=frozenset(DEFAULT_PHASE_ELIGIBILITY - {PHASE_KNOWLEDGE_SUMMARY}),
+            ),
+        )
+        eligible = AGENT_REGISTRY["google/gemini-2.5-pro/api"]
+        config = replace(
+            _make_config(tmp_path, provider="openai", model="gpt-5.4"),
+            agents=[
+                AgentDef(
+                    name="openai-gpt-5-4",
+                    provider="openai",
+                    model="gpt-5.4",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    transport=transport_for("openai", "api"),
+                ),
+                AgentDef(
+                    name="google-gemini-2-5-pro",
+                    provider="google",
+                    model="gemini-2.5-pro",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    transport=transport_for("google", "api"),
+                ),
+            ],
+            model_registry={
+                "openai/gpt-5.4/api": excluded,
+                "google/gemini-2.5-pro/api": eligible,
+            },
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "written"
+        assert calls[0]["profile"].model == "gemini-2.5-pro"
+        assert calls[0]["profile"].phase == PHASE_KNOWLEDGE_SUMMARY
 
     def test_summary_dispatch_uses_plain_text_through_the_real_runner_api_seam(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

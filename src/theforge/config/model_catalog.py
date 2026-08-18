@@ -63,6 +63,7 @@ import yaml
 from .model_identity import (
     _DEFAULT_PHASE_ELIGIBILITY,
     CAPABILITY_RANGE,
+    CLOSED_OPERATOR_PHASES,
     COST_RANK_RANGE,
     IDENTITY_STATUS_RETIRED,
     IDENTITY_STATUSES,
@@ -420,6 +421,12 @@ def parse_definition(entry: Any, *, where: str) -> ParsedDefinition:
         parsed_phases = frozenset(
             _require_str(p, where=f"{where}.routing.phase_eligibility") for p in phases
         )
+        closed_phases = parsed_phases & CLOSED_OPERATOR_PHASES
+        if closed_phases:
+            raise ValueError(
+                f"forge.yaml '{where}.routing.phase_eligibility' names known dispatch "
+                f"phase(s) deliberately closed to operator constraint: {sorted(closed_phases)}"
+            )
         unknown_phases = parsed_phases - KNOWN_PHASES
         if unknown_phases:
             raise ValueError(
