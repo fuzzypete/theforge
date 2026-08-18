@@ -43,6 +43,7 @@ from theforge.config.model_catalog import (
     resolve_packaged,
     resolve_project,
 )
+from theforge.config.model_identity import DEFAULT_PHASE_ELIGIBILITY, PHASE_DIAGNOSE
 from theforge.config.models import AGENT_REGISTRY, RETIRED_MODEL_REGISTRY, transport_for
 from theforge.config.pricing import (
     COST_BAND_BASIS_DECLARED_POLICY,
@@ -137,7 +138,7 @@ class TestLayering:
 # no test change, while re-tiering one of these fails until the expectation is
 # updated in the same commit. A silent re-tier is the failure #2217 was about,
 # and moving the set into YAML is what made it a one-line edit.
-_ALL_PHASES = ("advisor", "dev", "plan", "preflight", "review")
+_ALL_PHASES = tuple(sorted(DEFAULT_PHASE_ELIGIBILITY))
 _SHIPPED_ROUTING: dict[str, tuple[str, int, int, bool, tuple[str, ...]]] = {
     "anthropic/opus/cli": ("strong", 10, 3, True, _ALL_PHASES),
     "anthropic/sonnet/cli": ("fast", 7, 1, True, _ALL_PHASES),
@@ -615,6 +616,105 @@ class TestProjectDeclarationsAreAsExpressiveAsShipped:
         )
         spec = (load_config(path).model_registry or {})["google/gemini-4-pro/api"]
         assert spec.phase_eligibility == frozenset(_ALL_PHASES)
+
+    def test_phase_eligibility_accepts_knowledge_summary_in_forge_yaml(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": [
+                        {
+                            "provider": "google",
+                            "model": "gemini-4-pro",
+                            "transport": {"kind": "api"},
+                            "routing": {
+                                "tier": "strong",
+                                "capability": 10,
+                                "cost_rank": 3,
+                                "phase_eligibility": ["knowledge_summary", "plan_review"],
+                            },
+                            "cost": {
+                                "input_per_mtok": 2.0,
+                                "output_per_mtok": 12.0,
+                                "pricing_provenance": "gemini-4-pro-2026-08",
+                            },
+                        }
+                    ]
+                },
+                "budget_usd": 30.0,
+            },
+        )
+
+        spec = (load_config(path).model_registry or {})["google/gemini-4-pro/api"]
+        assert spec.phase_eligibility == frozenset({"knowledge_summary", "plan_review"})
+
+    def test_phase_eligibility_unknown_phase_still_fails_at_load(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": [
+                        {
+                            "provider": "google",
+                            "model": "gemini-4-pro",
+                            "transport": {"kind": "api"},
+                            "routing": {
+                                "tier": "strong",
+                                "capability": 10,
+                                "cost_rank": 3,
+                                "phase_eligibility": ["launch"],
+                            },
+                            "cost": {
+                                "input_per_mtok": 2.0,
+                                "output_per_mtok": 12.0,
+                                "pricing_provenance": "gemini-4-pro-2026-08",
+                            },
+                        }
+                    ]
+                },
+                "budget_usd": 30.0,
+            },
+        )
+
+        with pytest.raises(ValueError, match="only supports") as excinfo:
+            load_config(path)
+        message = str(excinfo.value)
+        assert "diagnose" not in message
+        assert "knowledge_summary" in message
+
+    def test_phase_eligibility_closed_phase_names_the_deliberate_closure(self, tmp_path):
+        path = _write(
+            tmp_path,
+            {
+                "project": "p",
+                "models": {
+                    "enabled": [
+                        {
+                            "provider": "google",
+                            "model": "gemini-4-pro",
+                            "transport": {"kind": "api"},
+                            "routing": {
+                                "tier": "strong",
+                                "capability": 10,
+                                "cost_rank": 3,
+                                "phase_eligibility": [PHASE_DIAGNOSE],
+                            },
+                            "cost": {
+                                "input_per_mtok": 2.0,
+                                "output_per_mtok": 12.0,
+                                "pricing_provenance": "gemini-4-pro-2026-08",
+                            },
+                        }
+                    ]
+                },
+                "budget_usd": 30.0,
+            },
+        )
+
+        with pytest.raises(ValueError, match="deliberately closed"):
+            load_config(path)
 
     def test_models_custom_accepts_the_canonical_schema(self, tmp_path):
         """A reusable declaration is as expressive as an inline one.

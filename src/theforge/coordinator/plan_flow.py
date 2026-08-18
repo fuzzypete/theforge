@@ -34,6 +34,7 @@ from theforge.config import (
     apply_model_info,
 )
 from theforge.config.bridge import model_ref_to_profile
+from theforge.config.model_identity import PHASE_PLAN
 from theforge.config.profiles import _apply_transport_fallback
 from theforge.log_level import _LOG_LEVEL, LogLevel
 from theforge.plan_finding_classifier import (
@@ -894,6 +895,7 @@ def _run_plan_phase(
             # deliberately narrower (no Bash, #2346) and the plan agent has no
             # reason to inherit that narrowing.
             allowed_tools=DEFAULT_INVESTIGATION_TOOLS,
+            phase=PHASE_PLAN,
             timeout_seconds=_plan_timeout,
         )
         plan_profile = _apply_transport_fallback(plan_profile, config.transport_fallbacks)

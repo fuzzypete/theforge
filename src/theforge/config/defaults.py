@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from .model_identity import PHASE_DEV, PHASE_PREFLIGHT, PHASE_REVIEW
 from .types import ModelProfile, ValidationConfig, WorkspaceConfig
 
 DEFAULT_DEV_PROFILE = ModelProfile(
@@ -12,7 +13,7 @@ DEFAULT_DEV_PROFILE = ModelProfile(
     budget_usd=2.00,
     timeout_seconds=900,
     allowed_tools=("Read", "Edit", "Write", "Bash", "Glob", "Grep", "WebFetch"),
-    phase="dev",
+    phase=PHASE_DEV,
 )
 
 DEFAULT_REVIEW_PROFILE = ModelProfile(
@@ -23,6 +24,7 @@ DEFAULT_REVIEW_PROFILE = ModelProfile(
     budget_usd=1.00,
     timeout_seconds=300,
     allowed_tools=("Read", "Bash", "Glob", "Grep"),
+    phase=PHASE_REVIEW,
 )
 
 # Preflight is a read-only classifier and is deliberately denied Bash (#2346).
@@ -120,7 +122,7 @@ DEFAULT_PREFLIGHT_PROFILE = ModelProfile(
     budget_usd=1.00,
     timeout_seconds=300,
     allowed_tools=PREFLIGHT_READ_ONLY_TOOLS,
-    phase="preflight",
+    phase=PHASE_PREFLIGHT,
 )
 
 DEFAULT_WORKSPACE = WorkspaceConfig(

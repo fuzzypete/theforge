@@ -19,7 +19,7 @@ from typing import TYPE_CHECKING
 
 from theforge.assignment import NoCapableCandidateError, _capability_exclusions, _capability_pool
 from theforge.config import DEFAULT_INVESTIGATION_TOOLS
-from theforge.config.model_identity import KNOWN_PHASES
+from theforge.config.model_identity import DEFAULT_PHASE_ELIGIBILITY, PHASE_ADVISOR
 from theforge.config.pricing import price_tiebreak_signal_for
 from theforge.escalation_advisor import (
     ACTION_TAXONOMY,
@@ -97,7 +97,7 @@ def _agent_phase_eligibility(config: "ForgeConfig", agent: object) -> frozenset[
     spec = _agent_registry_spec(config, agent)
     if spec is not None:
         return spec.phase_eligibility
-    return KNOWN_PHASES
+    return DEFAULT_PHASE_ELIGIBILITY
 
 
 def _select_advisor_profile(config: "ForgeConfig") -> object:
@@ -107,7 +107,7 @@ def _select_advisor_profile(config: "ForgeConfig") -> object:
         raise ValueError("no configured model candidates are available for the advisor role")
 
     phase_eligible = [
-        agent for agent in agents if "advisor" in _agent_phase_eligibility(config, agent)
+        agent for agent in agents if PHASE_ADVISOR in _agent_phase_eligibility(config, agent)
     ]
     if not phase_eligible:
         raise ValueError(
@@ -142,7 +142,7 @@ def _select_advisor_profile(config: "ForgeConfig") -> object:
     return replace(
         config.preflight_profile,
         name="advisor",
-        phase="advisor",
+        phase=PHASE_ADVISOR,
         cli=selected.cli,
         provider=selected.provider,
         transport=selected.transport,

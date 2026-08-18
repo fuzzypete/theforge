@@ -32,6 +32,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from theforge.config.model_identity import DEFAULT_PHASE_ELIGIBILITY, PHASE_KNOWLEDGE_SUMMARY
 from theforge.knowledge_summary import (
     SummaryValidationError,
     build_summary_artifact,
@@ -41,6 +42,7 @@ from theforge.knowledge_summary import (
     validate_proposed_summary,
     write_summary,
 )
+from theforge.model_capabilities import identity_for_agent, identity_for_profile
 from theforge.task.summary_prompts import build_run_summary_prompt
 
 from . import util as _cu
@@ -172,27 +174,38 @@ def _ensure_runner() -> None:
     run_agent = _r.run_agent
 
 
-def _summary_profile(config: "ForgeConfig") -> "ModelProfile | None":
-    """Derive a tool-free API profile for the summary agent, or None.
+def _agent_registry_spec(config: "ForgeConfig", agent: object) -> object | None:
+    registry = getattr(config, "model_registry", None) or {}
+    registry_id = getattr(agent, "registry_id", None)
+    spec = registry.get(registry_id) if registry_id else None
+    if spec is None:
+        identity = identity_for_agent(agent)
+        if identity is not None:
+            spec = registry.get(identity.key)
+    return spec
 
-    Built from ``config.plan.ref`` — the plan model is the cheap bounded-writing
-    role and the summary is the same kind of work. A CLI-transport ref is
-    projected onto its configured same-provider API fallback; without one there
-    is no dispatch path that is mechanically tool-free, and the caller skips.
-    """
-    from theforge.config.bridge import model_ref_to_profile  # noqa: PLC0415
 
-    ref = getattr(getattr(config, "plan", None), "ref", None)
-    if ref is None:
-        return None
+def _agent_phase_eligibility(config: "ForgeConfig", agent: object) -> frozenset[str]:
+    spec = _agent_registry_spec(config, agent)
+    if spec is not None:
+        return spec.phase_eligibility
+    return DEFAULT_PHASE_ELIGIBILITY
 
-    profile = model_ref_to_profile(
-        "knowledge_summary",
-        ref,
-        allowed_tools=(),
-        phase="knowledge_summary",
-        sandbox_mode="read-only",
-    )
+
+def _apply_summary_transport_fallback(
+    config: "ForgeConfig",
+    profile: "ModelProfile",
+) -> "ModelProfile":
+    fallbacks = getattr(config, "transport_fallbacks", None) or {}
+    if not fallbacks or profile.api_fallback is not None:
+        return profile
+
+    from theforge.config.profiles import _apply_transport_fallback  # noqa: PLC0415
+
+    return _apply_transport_fallback(profile, fallbacks)
+
+
+def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | None":
     if profile.mode == "api":
         return profile
 
@@ -210,6 +223,102 @@ def _summary_profile(config: "ForgeConfig") -> "ModelProfile | None":
         base_url=fallback.base_url if fallback.base_url is not None else profile.base_url,
         api_fallback=None,
     )
+
+
+def _summary_dispatch_profile(
+    summary_envelope: "ModelProfile",
+    selected: "ModelProfile",
+) -> "ModelProfile":
+    """Keep the plan role envelope while swapping in the selected model identity."""
+    return replace(
+        summary_envelope,
+        cli=selected.cli,
+        provider=selected.provider,
+        transport=selected.transport,
+        base_url=selected.base_url,
+        model=selected.model,
+        fallback_models=selected.fallback_models,
+        api_fallback=selected.api_fallback,
+        registry_id=selected.registry_id,
+        registry_source=selected.registry_source,
+        reasoning_mode=selected.reasoning_mode,
+    )
+
+
+def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str | None]:
+    """Derive a tool-free API profile for the summary agent, or None.
+
+    Built from ``config.plan.ref`` — the plan model is the cheap bounded-writing
+    role and the summary is the same kind of work. A CLI-transport ref is
+    projected onto its configured same-provider API fallback; without one there
+    is no dispatch path that is mechanically tool-free, and the caller skips.
+    """
+    from theforge.config.bridge import model_ref_to_profile  # noqa: PLC0415
+
+    ref = getattr(getattr(config, "plan", None), "ref", None)
+    if ref is None:
+        return (None, None)
+
+    summary_envelope = model_ref_to_profile(
+        "knowledge_summary",
+        ref,
+        allowed_tools=(),
+        phase=PHASE_KNOWLEDGE_SUMMARY,
+        sandbox_mode="read-only",
+    )
+    summary_envelope = _apply_summary_transport_fallback(config, summary_envelope)
+    base_profile = _project_summary_api_profile(summary_envelope)
+
+    agents = getattr(config, "agents", None) or []
+    if not agents:
+        return (base_profile, None)
+
+    phase_eligible = [
+        agent
+        for agent in agents
+        if PHASE_KNOWLEDGE_SUMMARY in _agent_phase_eligibility(config, agent)
+    ]
+    if not phase_eligible:
+        return (
+            None,
+            "routing.phase_eligibility excludes knowledge_summary for every configured candidate",
+        )
+
+    summary_identity = identity_for_profile(summary_envelope)
+    base_identity = identity_for_profile(base_profile) if base_profile is not None else None
+    projected: list[ModelProfile] = []
+    for agent in phase_eligible:
+        candidate = replace(
+            agent.to_model_profile(allowed_tools=()),
+            phase=PHASE_KNOWLEDGE_SUMMARY,
+            sandbox_mode="read-only",
+        )
+        candidate = _apply_summary_transport_fallback(config, candidate)
+        candidate = _project_summary_api_profile(candidate)
+        if candidate is not None:
+            projected.append(candidate)
+    if not projected:
+        if base_profile is not None and summary_identity is not None:
+            if any(identity_for_agent(agent) == summary_identity for agent in phase_eligible):
+                return (base_profile, None)
+        return (
+            None,
+            "no phase-eligible configured model can dispatch knowledge_summary over a tool-free "
+            "API transport",
+        )
+
+    if base_identity is not None:
+        matching = next(
+            (
+                candidate
+                for candidate in projected
+                if identity_for_profile(candidate) == base_identity
+            ),
+            None,
+        )
+        if matching is not None:
+            return (base_profile, None)
+    return (_summary_dispatch_profile(summary_envelope, projected[0]), None)
 
 
 def _should_generate(config: "ForgeConfig", result: "CoordinatorResult", run_id: str) -> bool:
@@ -266,9 +375,9 @@ def maybe_generate_run_summary(
                 ),
             )
 
-        profile = _summary_profile(config)
+        profile, profile_reason = _summary_profile(config)
         if profile is None:
-            reason = (
+            reason = profile_reason or (
                 "no tool-free API transport available for the plan model "
                 "(configure transport_fallback to enable summaries)"
             )

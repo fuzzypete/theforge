@@ -32,6 +32,7 @@ import yaml
 
 from theforge import detach
 from theforge.config import DEFAULT_INVESTIGATION_TOOLS, ForgeConfig, ModelProfile
+from theforge.config.model_identity import PHASE_DIAGNOSE
 from theforge.coordinator.diagnose_evidence import build_starting_evidence
 from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
 from theforge.coordinator.util import _log as _progress_log
@@ -713,7 +714,7 @@ def _build_diagnose_profile(
         timeout_seconds=(
             timeout_seconds if timeout_seconds is not None else config.diagnose.timeout_seconds
         ),
-        phase="diagnose",
+        phase=PHASE_DIAGNOSE,
     )
 
 
