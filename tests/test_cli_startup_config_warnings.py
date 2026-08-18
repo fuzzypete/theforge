@@ -8,12 +8,14 @@ config errors into exit code 2 rather than a generic exit-1 crash.
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
 
 from theforge.cli import shared
+from theforge.cli.substrate import Substrate
 from theforge.config import ModelProfile
 
 
@@ -54,6 +56,19 @@ def _fake_config(**overrides) -> SimpleNamespace:
     )
     base.update(overrides)
     return SimpleNamespace(**base)
+
+
+def _installed_substrate(**overrides) -> Substrate:
+    base = dict(
+        binary="/Users/me/.local/bin/forge",
+        package_file="/tmp/rc16/site-packages/theforge/__init__.py",
+        version="0.13.0rc16",
+        editable=False,
+        source_root=None,
+        git_ref=None,
+    )
+    base.update(overrides)
+    return Substrate(**base)
 
 
 # ── Startup auth warnings ───────────────────────────────────────────────
@@ -155,6 +170,46 @@ def test_structural_error_exits_code_2(capsys):
     err = capsys.readouterr().err
     assert "forge.yaml is invalid" in err
     assert "bad key" in err
+
+
+def test_structural_error_includes_stale_runtime_provenance(tmp_path, capsys):
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+    (tmp_path / "pyproject.toml").write_text(
+        '[project]\nname = "theforge"\nversion = "0.15.0rc3"\n',
+        encoding="utf-8",
+    )
+    err_msg = (
+        "Unknown model 'anthropic/sonnet/cli': not in AGENT_REGISTRY. "
+        "Known models: ['claude/opus']"
+    )
+
+    with (
+        patch("theforge.cli.shared.load_config", side_effect=ValueError(err_msg)),
+        patch(
+            "theforge.cli.substrate.detect_substrate",
+            return_value=_installed_substrate(),
+        ),
+    ):
+        with pytest.raises(SystemExit) as exc_info:
+            shared.load_config_checked(config_path)
+
+    assert exc_info.value.code == 2
+    err = capsys.readouterr().err
+    expected_schema = str(
+        Path("/tmp/rc16/site-packages/theforge/config/model_catalog.py").resolve()
+    )
+    expected_catalog = str(
+        Path("/tmp/rc16/site-packages/theforge/config/data/models.yaml").resolve()
+    )
+    assert err_msg in err
+    assert "Runtime binary:  /Users/me/.local/bin/forge" in err
+    assert "Runtime package: /tmp/rc16/site-packages/theforge/__init__.py" in err
+    assert f"Runtime schema:  {expected_schema}" in err
+    assert f"Runtime catalog: {expected_catalog}" in err
+    assert f"Checkout root:   {tmp_path}" in err
+    assert "Checkout version: 0.15.0rc3" in err
+    assert "appears ahead of it" in err
 
 
 def test_unclassifiable_profile_is_skipped_not_fatal(monkeypatch, capsys):

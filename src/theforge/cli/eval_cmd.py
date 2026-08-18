@@ -5,7 +5,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from theforge.cli.shared import _find_config
+from theforge.cli.shared import _find_config, load_config_checked
 
 
 def _infer_profile(
@@ -106,7 +106,11 @@ def cmd_eval_preflight(args: object) -> int:
         print("[eval-preflight] No forge.yaml found", file=sys.stderr)
         return 1
 
-    config = load_config(config_path)
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
 
     # ── Golden set ───────────────────────────────────────────────────────────
     golden_set_path_str = getattr(args, "golden_set", None)
