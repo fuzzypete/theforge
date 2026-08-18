@@ -222,6 +222,26 @@ def _runtime_schema_catalog_paths(sub: Substrate) -> tuple[str, str] | None:
     )
 
 
+def _format_config_validation_relation_line(checkout_version: str, runtime_version: str) -> str:
+    """Describe the version relationship without over-claiming causality."""
+    version_cmp = _checkout_version_ahead_of_runtime(checkout_version, runtime_version)
+    if version_cmp is True:
+        relation = "appears ahead of it"
+        explanation = "That runtime/checkout drift may explain this validation failure."
+    elif version_cmp is False:
+        relation = "does not appear ahead of it"
+        explanation = "The version mismatch may or may not explain this validation failure."
+    else:
+        relation = "differs from it, but their version order could not be determined"
+        explanation = "That version mismatch may explain this validation failure."
+
+    return (
+        f"[forge] This installed runtime is judging a checkout that {relation}. "
+        f"{explanation} Use the checkout-local launcher (for example "
+        "`.venv/bin/forge`) or repoint the managed launcher, then retry."
+    )
+
+
 def format_provenance_lines(sub: Substrate | None = None) -> list[str]:
     """Return operator-facing substrate lines for launch banners.
 
@@ -299,7 +319,7 @@ def format_config_validation_provenance_lines(
     cwd: Path | None = None,
     sub: Substrate | None = None,
 ) -> list[str]:
-    """Return extra context for a config ValueError caused by runtime drift.
+    """Return extra context for a config ValueError when runtime drift is visible.
 
     Silent on the documented dogfood happy path unless a structural config
     failure occurs under a non-editable runtime whose version differs from the
@@ -316,11 +336,6 @@ def format_config_validation_provenance_lines(
         return []
 
     schema_catalog = _runtime_schema_catalog_paths(sub)
-    version_cmp = _checkout_version_ahead_of_runtime(checkout.version, sub.version)
-    if version_cmp is False:
-        relation = "does not match it"
-    else:
-        relation = "appears ahead of it"
 
     lines = [
         "[forge] Runtime/checkout mismatch: this installed runtime is validating a "
@@ -341,9 +356,7 @@ def format_config_validation_provenance_lines(
         [
             f"[forge] Checkout root:   {checkout.root}",
             f"[forge] Checkout version: {checkout.version}",
-            f"[forge] This installed runtime is judging a checkout that {relation}. "
-            "Use the checkout-local launcher (for example `.venv/bin/forge`) or "
-            "repoint the managed launcher, then retry.",
+            _format_config_validation_relation_line(checkout.version, sub.version),
         ]
     )
     return lines

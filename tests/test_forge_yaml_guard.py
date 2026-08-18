@@ -397,3 +397,24 @@ def test_cmd_check_story_config_reports_stale_runtime_provenance(capsys, tmp_pat
     assert f"Runtime catalog: {expected_catalog}" in err
     assert f"Checkout root:   {tmp_path}" in err
     assert "Checkout version: 0.15.0rc3" in err
+
+
+def test_cmd_check_story_config_reports_guard_value_error(capsys, tmp_path: Path) -> None:
+    config_path = tmp_path / "forge.yaml"
+    config_path.write_text("project: test\n", encoding="utf-8")
+    config = SimpleNamespace(project_root=tmp_path, workspace=SimpleNamespace(base_branch="main"))
+    guard_error = "main:forge.yaml is not valid YAML: while parsing a flow mapping"
+
+    with (
+        patch("theforge.cli.forge_yaml_guard._find_config", return_value=config_path),
+        patch("theforge.cli.forge_yaml_guard.load_config", return_value=config),
+        patch(
+            "theforge.cli.forge_yaml_guard.evaluate_forge_yaml_guard",
+            side_effect=ValueError(guard_error),
+        ),
+    ):
+        rc = cmd_check_story_config(SimpleNamespace(config=None))
+
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert f"forge.yaml story-mutation guard failed: {guard_error}" in err

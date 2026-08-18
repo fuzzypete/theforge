@@ -313,7 +313,7 @@ def cmd_check_story_config(args: argparse.Namespace) -> int:
             config.project_root,
             base_branch=config.workspace.base_branch,
         )
-    except RuntimeError as exc:
+    except (RuntimeError, ValueError) as exc:
         print(f"forge.yaml story-mutation guard failed: {exc}", file=sys.stderr)
         return 1
 
