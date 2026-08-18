@@ -36,7 +36,12 @@ from theforge.sprint.abnormal import (
     build_abnormal_cause,
     derive_failure_cause,
 )
-from theforge.sprint.launch_guard import REASON_ACTIVE_WORKTREE, REASON_STRANDED_WORKTREE
+from theforge.sprint.launch_guard import (
+    REASON_ACTIVE_WORKTREE,
+    REASON_PRESERVED_ESCALATED,
+    REASON_STRANDED_WORKTREE,
+)
+from theforge.sprint.preserved_resume import preserved_escalated_detail
 from theforge.sprint.story_state import SprintStoryState, StoryOutcome
 
 # ── helpers ──────────────────────────────────────────────────────────
@@ -137,6 +142,39 @@ def test_stranded_worktree_drop_also_leaves_a_record(tmp_path: Path) -> None:
     abnormal = _story_audits(tmp_path)["issue-2048"]["abnormal_termination"]
     assert abnormal["kind"] == ABNORMAL_LAUNCH_GUARD_DROP
     assert REASON_STRANDED_WORKTREE in abnormal["cause"]
+
+
+def test_preserved_drop_log_names_review_command(tmp_path: Path, capsys) -> None:
+    """The preserved runner log states how the operator reviews the held state."""
+    _run_sprint_with_drop(tmp_path, reason=REASON_PRESERVED_ESCALATED)
+
+    assert preserved_escalated_detail(slug="issue-2048") in capsys.readouterr().err
+
+
+def test_file_backed_preserved_drop_log_names_concrete_story_path(tmp_path: Path, capsys) -> None:
+    """The runner log uses the known file-backed story path, not a placeholder."""
+    _make_spec_file(tmp_path, "Feature A", "feature-a")
+    _make_spec_file(tmp_path, "Feature B", "feature-b")
+    manifest_path = _make_manifest(tmp_path, ["feature-a.md", "feature-b.md"])
+    config = _make_config(tmp_path)
+
+    with (
+        patch("theforge.sprint.runner._triage_spec", side_effect=_triage_full),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value={}),
+        patch("theforge.sprint.runner.run_task", return_value=_make_coordinator_result()),
+        patch("theforge.sprint.runner._run_baseline_gate") as mock_gate,
+    ):
+        mock_gate.return_value = {"passed": True, "message": "ok"}
+        run_sprint_ctx(
+            config,
+            manifest_path,
+            run_id="run-2030-file-backed",
+            dropped_slugs={"feature-a": REASON_PRESERVED_ESCALATED},
+        )
+
+    err = capsys.readouterr().err
+    assert preserved_escalated_detail(canonical_ref="feature-a.md", slug="feature-a") in err
+    assert "resolve with `forge review <story-file>`" not in err
 
 
 def test_drop_record_never_overwrites_an_existing_story_audit(tmp_path: Path) -> None:

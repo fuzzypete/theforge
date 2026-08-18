@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from collections.abc import Mapping
 from typing import Any
 
 from theforge.sprint.lock import (
@@ -17,6 +18,7 @@ from theforge.sprint.preflight import (
     drop_conflicting_running_stories,
     warn_for_running_stories,
 )
+from theforge.sprint.preserved_resume import preserved_escalated_message
 from theforge.sprint.prior_landing import (
     PRIOR_SUCCEEDED_OUTCOMES,
     as_prior_record,
@@ -70,6 +72,7 @@ def acquire_launch_story_locks(
     prior_outcomes: dict[str, str | dict] | None = None,
     live_slugs: set[str] | None = None,
     unresolved_slugs: set[str] | None = None,
+    canonical_refs_by_slug: Mapping[str, str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     """Acquire launch-time story locks after checking for active worktrees.
 
@@ -105,6 +108,11 @@ def acquire_launch_story_locks(
     evidence that no agent is running, and classifying such a story as a foreign
     ``REASON_ACTIVE_WORKTREE`` collision is what produced #2079 — a sprint
     dropping its own committed work and advising the operator to delete it.
+
+    ``canonical_refs_by_slug`` is best-effort operator context for launch-time
+    preserved messages only. Lock ownership and collision classification remain
+    keyed by slug; the extra ref lets file-backed and custom-slug issue stories
+    name a runnable ``forge review`` command before the full sprint resolves.
 
     Invariants the callers rely on:
 
@@ -165,10 +173,10 @@ def acquire_launch_story_locks(
     dropped.update({s: REASON_PRESERVED_ESCALATED for s in escalated_slugs})
     schedulable = [s for s in slugs if s not in dropped]
 
-    if escalated_slugs:
+    for slug in escalated_slugs:
+        canonical_ref = (canonical_refs_by_slug or {}).get(slug)
         print(
-            f"[forge] PRESERVED {', '.join(escalated_slugs)}: escalated worktree "
-            "preserved for human review; not rescheduled.",
+            f"[forge] {preserved_escalated_message(slug, canonical_ref=canonical_ref)}.",
             file=sys.stderr,
             flush=True,
         )
