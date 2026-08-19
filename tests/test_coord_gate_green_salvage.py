@@ -113,6 +113,13 @@ def _state_at_terminal_gate_fail(
     state.branch_name = "forge/issue-246"
     state.retry_reason = RetryReason.GATE_FAIL
     state.gate_decisions = ["PASS", "FAIL"]
+    # The PASS ran on "a"*40; the FAIL that ended the story ran on "b"*40. The
+    # two are deliberately different so nothing can pass by reading the latest
+    # gate commit and calling it the green one.
+    state.validation_runs = [
+        {"profile": "complete", "result": "PASS", "commit": "a" * 40, "skipped": False},
+        {"profile": "complete", "result": "FAIL", "commit": "b" * 40, "skipped": False},
+    ]
     state.last_gate_commit = "b" * 40
     state.last_gate_decision = "FAIL"
     state.gate_green_checkpoint = checkpoint
@@ -275,6 +282,9 @@ class TestSalvageDecision:
         task = _make_task(tmp_path)
         state = _state_at_terminal_gate_fail(checkpoint=None)
         state.gate_decisions = ["FAIL", "FAIL"]
+        state.validation_runs = [
+            {"profile": "complete", "result": "FAIL", "commit": "b" * 40, "skipped": False}
+        ]
         state.last_gate_commit = None
 
         with patch_gate_shell(side_effect=_shell_at_head("c" * 40)):
@@ -300,7 +310,46 @@ class TestSalvageDecision:
             result = self._salvage(state, config, task, workspace=tmp_path)
 
         assert result.success is False
-        assert state.gate_green_salvage_declined["reason"] == "gate_green_never_approved"
+        declined = state.gate_green_salvage_declined
+        assert declined["reason"] == "gate_green_never_approved"
+        # The message must name the commit that actually went green, not the one
+        # the *latest* gate judged — on this story that is the failing commit.
+        assert declined["detail"].startswith("the gate passed at aaaaaaaa")
+        assert "b" * 8 not in declined["detail"]
+
+    def test_suppressed_gate_is_not_reported_as_gate_green(self, tmp_path):
+        """A story ``gate:`` override is a skipped gate, not a passing one.
+
+        ``gate_decisions`` gains a synthetic ``PASS`` on the skip path, so
+        reading it would tell the operator a gate passed at a commit no gate
+        ever ran on.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _state_at_terminal_gate_fail(checkpoint=None)
+        state.validation_runs = [
+            {"profile": "skipped", "result": "SKIPPED", "commit": "a" * 40, "skipped": True},
+            {"profile": "complete", "result": "FAIL", "commit": "b" * 40, "skipped": False},
+        ]
+
+        with patch_gate_shell(side_effect=_shell_at_head("c" * 40)):
+            result = self._salvage(state, config, task, workspace=tmp_path)
+
+        assert result.success is False
+        assert state.gate_green_salvage_declined is None
+
+    def test_legacy_state_without_validation_runs_claims_no_gate_green(self, tmp_path):
+        """A pre-#2358 record carries no validation runs; absence is not a pass."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _state_at_terminal_gate_fail(checkpoint=None)
+        state.validation_runs = []
+
+        with patch_gate_shell(side_effect=_shell_at_head("c" * 40)):
+            result = self._salvage(state, config, task, workspace=tmp_path)
+
+        assert result.success is False
+        assert state.gate_green_salvage_declined is None
 
     def test_non_gate_failure_is_not_salvaged(self, tmp_path):
         config = _make_config(tmp_path)
@@ -682,6 +731,15 @@ def test_p2_cleanup_that_breaks_the_gate_lands_the_checkpoint(mock_dev, mock_poo
     assert salvage["dropped_head"] == redder
     assert salvage["outstanding_p2_count"] >= 1
     assert result.state.landing_review_source == "gate_green_checkpoint"
+    # The decline path reads validation_runs to name the gate-green commit;
+    # assert against what VALIDATE really wrote, so the helper cannot drift onto
+    # a key production never produces.
+    passing = [
+        r
+        for r in result.state.validation_runs
+        if r.get("result") == "PASS" and not r.get("skipped")
+    ]
+    assert [r["commit"] for r in passing] == [green]
 
 
 @patch("theforge.coordinator.review_pool.run_agent_pool")

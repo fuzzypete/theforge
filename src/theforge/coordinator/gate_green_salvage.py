@@ -27,6 +27,15 @@ fails, its work is discarded, and RCA classifies it as iteration exhaustion.
 Salvage happens only when forge can name a specific commit that a gate passed
 and a reviewer approved, and can prove that commit is an ancestor of what the
 worktree holds now.
+
+That is narrower than #2028's AC1, which says "the gate passed at some commit":
+a gate-green commit no review approved is deliberately NOT landed, because
+resetting onto an unreviewed tree would ship unreviewed code to escape a failure
+(``merge-pr`` also fails closed without a review to post). The narrowing is not
+silent — :func:`salvage_gate_green_landing` records a ``gate_green_never_approved``
+decline on ``state.gate_green_salvage_declined``, which reaches the audit, so
+"nothing to salvage" and "salvageable but forge would not land it" stay
+distinguishable. See :func:`record_gate_green_checkpoint` for the full rationale.
 """
 
 from __future__ import annotations
@@ -85,13 +94,26 @@ def record_gate_green_checkpoint(
     """Remember the reviewed, gate-green commit before P2 cleanup re-enters DEV.
 
     Returns the recorded checkpoint, or ``None`` when this cycle does not
-    establish one. The bar is deliberately higher than "a gate passed and a
-    review approved": the *same commit* must be both. VALIDATE records the gate's
-    commit before its own post-PASS dirty-worktree auto-commit, so a PASS
-    followed by that auto-commit leaves ``last_gate_commit`` pointing at the
-    parent of what the reviewers then judged. ``ReviewedCommitVerification``
-    already derives that mismatch as ``gate_stale``; this reads its verdict
-    rather than re-deriving a weaker one from the raw fields.
+    establish one. The bar is deliberately set in two places above what #2028's
+    AC1 asks for ("the gate passed at some commit"), and both narrowings are
+    intentional:
+
+    1. **The commit must also have been approved by a review cycle.** Landing is
+       what the salvage ends in, and ``merge-pr`` fails closed without a
+       ``ReviewResult`` to post (see ``land_story``'s ``missing-review`` path).
+       More importantly, resetting a branch onto a tree no reviewer ever judged
+       would ship unreviewed code to escape a failure — a worse outcome than the
+       failure. A gate-green commit that no review approved is therefore left to
+       fail, and :func:`salvage_gate_green_landing` records that as a
+       ``gate_green_never_approved`` decline so the operator can tell it apart
+       from "nothing gate-green ever existed".
+    2. **The gate and the review must have judged the *same* commit.** VALIDATE
+       records the gate's commit before its own post-PASS dirty-worktree
+       auto-commit, so a PASS followed by that auto-commit leaves
+       ``last_gate_commit`` pointing at the parent of what the reviewers then
+       judged. ``ReviewedCommitVerification`` already derives that mismatch as
+       ``gate_stale``; this reads its verdict rather than re-deriving a weaker
+       one from the raw ``last_gate_*`` fields.
     """
     meta = state.review_cycle_metadata[-1] if state.review_cycle_metadata else None
     verification = getattr(meta, "verification", None) if meta is not None else None
@@ -136,6 +158,29 @@ def _decline(state: CoordinatorState, reason: str, detail: str) -> None:
     _log(f"  ↷ SALVAGE declined ({reason}): {detail}")
 
 
+def _last_gate_green_commit(state: CoordinatorState) -> str | None:
+    """Commit of the most recent validation run that actually returned PASS.
+
+    ``last_gate_commit`` cannot answer this: it is the commit the *latest* gate
+    judged, so on the PASS-then-FAIL story this feature exists for it names the
+    failing commit, not the green one. ``gate_decisions`` cannot either — it
+    gains a synthetic ``PASS`` on the story-``gate:``-override skip path, so a
+    suppressed gate would read as a passing one.
+
+    ``validation_runs`` records each run's result, commit, and whether it was
+    skipped, which is exactly the pair needed. Returns ``None`` when no
+    un-skipped PASS is on record, including for legacy/pre-#2358 sidecars that
+    carry no validation runs at all.
+    """
+    for run in reversed(state.validation_runs):
+        if not isinstance(run, dict) or run.get("skipped"):
+            continue
+        if run.get("result") == "PASS":
+            commit = run.get("commit")
+            return commit if isinstance(commit, str) and commit else None
+    return None
+
+
 def _head_commit(workspace_path: Path) -> str | None:
     ok, out = _run_shell("git rev-parse HEAD", workspace_path)
     sha = out.strip() if ok else ""
@@ -166,7 +211,8 @@ def salvage_gate_green_landing(
 
     Returns ``result`` unchanged when this run has nothing safely landable —
     which is the common case and the one AC4 protects: a story with no
-    gate-green commit in its history still fails exactly as it did before.
+    review-approved gate-green commit in its history still fails exactly as it
+    did before, with the same classification and the same recovery advice.
 
     On success the result is mutated in place to the same shape
     ``_finalize_approve`` produces for a deferred landing (success, ``Phase.DONE``,
@@ -192,12 +238,14 @@ def salvage_gate_green_landing(
         # Separate the two absences: a gate that never went green is untouched by
         # this feature; a gate that went green on a commit no review approved is
         # something forge could see but deliberately would not land.
-        if state.last_gate_commit and "PASS" in state.gate_decisions:
+        green = _last_gate_green_commit(state)
+        if green:
             _decline(
                 state,
                 "gate_green_never_approved",
-                f"the gate passed at {state.last_gate_commit[:8]} but no review cycle "
-                "approved that exact commit, so no reviewed commit exists to land",
+                f"the gate passed at {green[:8]} but no review cycle approved that "
+                "exact commit, so there is no reviewed tree to reset onto — landing "
+                "it would ship unreviewed code to escape a failure",
             )
         return result
 
