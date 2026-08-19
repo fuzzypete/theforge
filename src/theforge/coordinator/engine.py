@@ -787,7 +787,25 @@ def _coordinator_loop(
                 state_update_fn=state_update_fn,
             )
             if _val_outcome == _ValidateOutcome.ESCALATE:
-                return _val_result  # type: ignore[return-value]
+                # A terminal gate failure discards everything the story built —
+                # including a commit an earlier gate passed and an earlier review
+                # approved. When one exists, land that instead of failing (#2028).
+                # Every other escalation, and every story with no such commit,
+                # falls straight through to the failure it had before.
+                from .gate_green_salvage import (  # noqa: PLC0415
+                    salvage_gate_green_landing,
+                )
+
+                return salvage_gate_green_landing(
+                    state,
+                    config,
+                    task,
+                    _val_result,  # type: ignore[arg-type]
+                    workspace_path=workspace_path,
+                    branch_name=branch_name,
+                    auto_merge=auto_merge,
+                    logger=logger,
+                )
             if _val_outcome == _ValidateOutcome.ALREADY_COMPLETE:
                 # Dev cycle determined no work was needed and the handoff
                 # documents this with verifiable cited commits. Short-circuit

@@ -121,3 +121,78 @@ def test_unknown_landing_path_falls_through_to_raw() -> None:
     assert record is not None
     assert record["outcome"] == "some-future-path"
     assert record["fresh_pr_created"] is False
+
+
+# ── Gate-green rollback (#2028) ───────────────────────────────────────────────
+
+
+def _gate_green_merge(**overrides) -> dict:
+    merge = {
+        "action": "merge",
+        "merged": True,
+        "landing_path": "gate-green-rollback",
+        "underlying_landing_path": "fresh-merge",
+        "gate_green_rollback": {
+            "checkpoint_commit": "2dd9f135" + "0" * 32,
+            "landed_commit": "2dd9f135" + "0" * 32,
+            "rebase_expected": False,
+            "review_cycle": 2,
+            "dropped_head": "f" * 40,
+            "dropped_commits": [{"sha": "f" * 40, "subject": "fix: P2 that broke the gate"}],
+            "dropped_commit_count": 1,
+            "dropped_reason": "the final dev iteration left the gate red",
+            "outstanding_p2_count": 1,
+        },
+    }
+    merge.update(overrides)
+    return merge
+
+
+def test_gate_green_rollback_is_a_distinct_outcome() -> None:
+    """A story that landed an earlier commit did not land what it built."""
+    record = build_landing_record(_gate_green_merge())
+    assert record is not None
+    assert record["outcome"] == "merged-gate-green-rollback"
+    assert record["landing_path"] == "gate-green-rollback"
+    # A PR/merge really did ship underneath the rollback label.
+    assert record["underlying_landing_path"] == "fresh-merge"
+    assert record["fresh_pr_created"] is True
+    assert record["merged"] is True
+
+
+def test_gate_green_rollback_names_the_commit_and_the_dropped_work() -> None:
+    record = build_landing_record(_gate_green_merge())
+    rollback = record["gate_green_rollback"]
+    assert rollback["checkpoint_commit"].startswith("2dd9f135")
+    assert rollback["landed_commit"] == rollback["checkpoint_commit"]
+    assert rollback["gate_green"] is True
+    assert rollback["review_approved"] is True
+    assert rollback["dropped_commit_count"] == 1
+    assert rollback["dropped_commits"][0]["subject"] == "fix: P2 that broke the gate"
+    assert rollback["outstanding_p2_count"] == 1
+    assert rollback["rebased"] is False
+
+
+def test_gate_green_rollback_reports_a_rebase_rather_than_a_false_sha() -> None:
+    """merge-pr rebases onto an advanced base, rewriting the checkpoint SHA."""
+    merge = _gate_green_merge()
+    merge["gate_green_rollback"] = {
+        **merge["gate_green_rollback"],
+        "landed_commit": None,
+        "rebase_expected": True,
+    }
+    record = build_landing_record(merge)
+    rollback = record["gate_green_rollback"]
+    assert rollback["rebased"] is True
+    assert rollback["landed_commit"] is None
+    assert rollback["checkpoint_commit"].startswith("2dd9f135")
+
+
+def test_gate_green_rollback_failure_is_not_reported_as_landed() -> None:
+    record = build_landing_record(
+        {"action": "merge", "merged": False, "landing_path": "gate-green-rollback-failed"}
+    )
+    assert record is not None
+    assert record["outcome"] == "gate-green-rollback-failed"
+    assert record["fresh_pr_created"] is False
+    assert record["merged"] is False
