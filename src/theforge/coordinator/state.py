@@ -783,6 +783,26 @@ class CoordinatorState:
     # preflight succeeded or the failed run left nothing observable. Consumed by
     # the PLAN phase to avoid re-reading the same files.
     preflight_partial_evidence: dict | None = None
+    # ── Policy-assertion provenance (#2137) ───────────────────────────────
+    # Which kind of blocker a BLOCKED verdict declared. Only "policy_assertion"
+    # is subject to provenance adjudication; every other basis blocks as before.
+    preflight_blocking_basis: str | None = None
+    # Assertions the preflight check cited, as the agent gave them (advisory).
+    preflight_policy_assertions_cited: list[dict] = field(default_factory=list)
+    # The same assertions after registry resolution — each carries the decided
+    # provenance class ("ratified" | "generated") and how it was matched. This is
+    # the field consumers gate on; the cited form is evidence, not authority.
+    preflight_policy_assertions_resolved: list[dict] = field(default_factory=list)
+    # Assertions contradicted by chartered work that carry no operator decision.
+    preflight_policy_retraction_candidates: list[dict] = field(default_factory=list)
+    # Cited assertions the registry never recorded — surfaced so an unmarked but
+    # real operator decision can be ratified instead of silently demoted.
+    preflight_policy_ratification_candidates: list[dict] = field(default_factory=list)
+    # True when a ratified assertion is what upheld a BLOCKED verdict.
+    preflight_policy_blocking_authority: bool = False
+    # Full adjudication record for the audit trail; empty when no BLOCKED verdict
+    # founded on a policy assertion was weighed.
+    preflight_policy_adjudication: dict = field(default_factory=dict)
     plan_results: list[AgentResult] = field(default_factory=list)
     plan_output: str | None = (
         None  # contents of the worktree plan file, passed to dev (raw string for audit)

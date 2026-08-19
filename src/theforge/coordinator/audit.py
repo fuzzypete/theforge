@@ -896,6 +896,24 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 # Exploration salvaged from a failed preflight run (#706): files
                 # inspected, tool calls, partial conclusion. None on success.
                 "partial_evidence": state.preflight_partial_evidence,
+                # Policy-assertion provenance (#2137). Which kind of blocker a
+                # BLOCKED verdict declared, the standing policy it cited, how each
+                # citation resolved against the ratified-policy registry, and the
+                # retraction/ratification candidates that fell out. Present on
+                # every record so "no assertion was cited" is a readable fact.
+                "blocking_basis": state.preflight_blocking_basis,
+                "policy_assertions_cited": list(state.preflight_policy_assertions_cited or []),
+                "policy_assertions_resolved": list(
+                    state.preflight_policy_assertions_resolved or []
+                ),
+                "policy_retraction_candidates": list(
+                    state.preflight_policy_retraction_candidates or []
+                ),
+                "policy_ratification_candidates": list(
+                    state.preflight_policy_ratification_candidates or []
+                ),
+                "policy_blocking_authority": state.preflight_policy_blocking_authority,
+                "policy_adjudication": dict(state.preflight_policy_adjudication or {}),
                 "attempts": (
                     list(state.preflight_result.raw.get("attempts", []))
                     if state.preflight_result is not None

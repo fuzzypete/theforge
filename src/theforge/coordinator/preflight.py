@@ -22,6 +22,11 @@ from theforge.config import (
 from theforge.config.bridge import model_ref_to_profile
 from theforge.config.model_identity import PHASE_PLAN
 from theforge.config.profiles import _apply_transport_fallback
+from theforge.policy_provenance import (
+    BLOCKING_BASES,
+    PolicyAssertionCitation,
+    parse_citations,
+)
 from theforge.review import ReviewFinding
 from theforge.routing import DEV_COMPLEXITY_TIER, score_to_dev_tier
 
@@ -622,6 +627,35 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
             }
         )
     return result
+
+
+def _parse_preflight_blocking_basis(output: str) -> str:
+    """Extract ``blocking_basis`` from preflight output.
+
+    Returns ``"none"`` when absent or outside the fixed enum. The value only
+    matters for BLOCKED verdicts, where it names *which kind* of blocker fired so
+    the coordinator can adjudicate policy-assertion blockers (#2137) without
+    touching missing-credential or direct-contradiction refusals.
+    """
+    parsed = _parse_preflight_mapping(output)
+    if parsed is not None:
+        raw = str(parsed.get("blocking_basis", "")).strip().lower()
+        if raw in BLOCKING_BASES:
+            return raw
+    return "none"
+
+
+def _parse_preflight_policy_assertions(output: str) -> list[PolicyAssertionCitation]:
+    """Extract ``policy_assertions_cited`` from preflight output.
+
+    Returns ``[]`` when the field is absent or unreadable. An absent citation list
+    is a fact, not a failure: it means the refusal named no standing policy, and
+    the caller weighs that against the reason prose itself.
+    """
+    parsed = _parse_preflight_mapping(output)
+    if parsed is None:
+        return []
+    return parse_citations(parsed.get("policy_assertions_cited"))
 
 
 _VALID_SYMPTOM_VERIFICATION_STATUSES = frozenset(

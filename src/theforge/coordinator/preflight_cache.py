@@ -174,3 +174,27 @@ def apply_cached_preflight_state(
     state.preflight_cache_snapshot = dict(
         getattr(cached_state, "preflight_cache_snapshot", {}) or {}
     )
+    # Policy-assertion provenance (#2137). A batch preflight adjudicates the
+    # verdict and then stops; the story's real run reads it from here. Without
+    # these fields a ratified refusal could not name its assertion, and the
+    # retraction/ratification candidates a downgrade produced would vanish from
+    # the run's audit record.
+    state.preflight_blocking_basis = getattr(cached_state, "preflight_blocking_basis", None)
+    state.preflight_policy_assertions_cited = copy.deepcopy(
+        list(getattr(cached_state, "preflight_policy_assertions_cited", None) or [])
+    )
+    state.preflight_policy_assertions_resolved = copy.deepcopy(
+        list(getattr(cached_state, "preflight_policy_assertions_resolved", None) or [])
+    )
+    state.preflight_policy_retraction_candidates = copy.deepcopy(
+        list(getattr(cached_state, "preflight_policy_retraction_candidates", None) or [])
+    )
+    state.preflight_policy_ratification_candidates = copy.deepcopy(
+        list(getattr(cached_state, "preflight_policy_ratification_candidates", None) or [])
+    )
+    state.preflight_policy_blocking_authority = bool(
+        getattr(cached_state, "preflight_policy_blocking_authority", False)
+    )
+    state.preflight_policy_adjudication = copy.deepcopy(
+        dict(getattr(cached_state, "preflight_policy_adjudication", None) or {})
+    )
