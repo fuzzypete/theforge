@@ -234,7 +234,7 @@ class TestGeneration:
         assert calls[0]["plain_text"] is True
         assert outcome.status == "written"
 
-    def test_phase_eligibility_does_not_override_the_plan_derived_summary_model(
+    def test_phase_eligibility_only_gates_the_plan_derived_summary_model(
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
         excluded = replace(
@@ -283,6 +283,44 @@ class TestGeneration:
         assert calls[0]["profile"].budget_usd == 0.5
         assert calls[0]["profile"].timeout_seconds == 300
         assert calls[0]["profile"].phase == PHASE_KNOWLEDGE_SUMMARY
+
+    def test_phase_eligibility_can_block_summary_generation(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        excluded = replace(
+            AGENT_REGISTRY["openai/gpt-5.4/api"],
+            routing=replace(
+                AGENT_REGISTRY["openai/gpt-5.4/api"].routing,
+                phase_eligibility=frozenset(DEFAULT_PHASE_ELIGIBILITY - {PHASE_KNOWLEDGE_SUMMARY}),
+            ),
+        )
+        config = replace(
+            _make_config(tmp_path, provider="openai", model="gpt-5.4"),
+            agents=[
+                AgentDef(
+                    name="openai-gpt-5-4",
+                    provider="openai",
+                    model="gpt-5.4",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    transport=transport_for("openai", "api"),
+                ),
+            ],
+            model_registry={"openai/gpt-5.4/api": excluded},
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "skipped"
+        assert outcome.attempted is True
+        expected = (
+            "routing.phase_eligibility excludes knowledge_summary for every configured candidate"
+        )
+        assert outcome.reason == expected
+        assert calls == []
 
     def test_explicit_knowledge_ref_selects_the_summary_model(
         self, tmp_path: Path, calls: list[dict]

@@ -42,7 +42,7 @@ from theforge.knowledge_summary import (
     validate_proposed_summary,
     write_summary,
 )
-from theforge.model_capabilities import identity_for_agent, identity_for_profile
+from theforge.model_capabilities import identity_for_agent
 from theforge.task.summary_prompts import build_run_summary_prompt
 
 from . import util as _cu
@@ -212,28 +212,13 @@ def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | Non
     )
 
 
-def _summary_dispatch_profile(
-    summary_envelope: "ModelProfile",
-    selected: "ModelProfile",
-) -> "ModelProfile":
-    """Keep the summary role envelope while swapping in the selected model identity."""
-    return replace(
-        summary_envelope,
-        cli=selected.cli,
-        provider=selected.provider,
-        transport=selected.transport,
-        base_url=selected.base_url,
-        model=selected.model,
-        fallback_models=selected.fallback_models,
-        api_fallback=selected.api_fallback,
-        registry_id=selected.registry_id,
-        registry_source=selected.registry_source,
-        reasoning_mode=selected.reasoning_mode,
-    )
-
-
 def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str | None]:
-    """Resolve a tool-free API profile for the summary agent, or None."""
+    """Resolve the tool-free API summary profile after eligibility checks.
+
+    Model selection is authoritative from ``knowledge.ref`` when present,
+    otherwise from the inherited ``plan.ref``. The configured agent pool only
+    gates whether ``knowledge_summary`` is allowed to run at all.
+    """
     from theforge.config.bridge import model_ref_to_profile  # noqa: PLC0415
 
     knowledge_cfg = getattr(config, "knowledge", None)
@@ -275,40 +260,7 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
             "routing.phase_eligibility excludes knowledge_summary for every configured candidate",
         )
 
-    base_identity = identity_for_profile(base_profile) if base_profile is not None else None
-    projected: list[ModelProfile] = []
-    for agent in phase_eligible:
-        candidate = replace(
-            agent.to_model_profile(allowed_tools=()),
-            phase=PHASE_KNOWLEDGE_SUMMARY,
-            sandbox_mode="read-only",
-        )
-        candidate = _project_summary_api_profile(candidate)
-        if candidate is not None:
-            projected.append(candidate)
-    if not projected:
-        if base_profile is not None:
-            return (base_profile, None)
-        return (
-            None,
-            "no phase-eligible configured model can dispatch knowledge_summary over a tool-free "
-            "API transport",
-        )
-
-    if base_identity is not None:
-        matching = next(
-            (
-                candidate
-                for candidate in projected
-                if identity_for_profile(candidate) == base_identity
-            ),
-            None,
-        )
-        if matching is not None:
-            return (base_profile, None)
-    if base_profile is not None:
-        return (base_profile, None)
-    return (_summary_dispatch_profile(summary_envelope, projected[0]), None)
+    return (base_profile, None)
 
 
 def _should_generate(config: "ForgeConfig", result: "CoordinatorResult", run_id: str) -> bool:
