@@ -13,10 +13,12 @@ only there is a number the run passes rather than a number that binds it.
 
 The two moments differ in what they do with an *unverifiable* answer, and only
 in that. Dispatch refuses to launch new work against a total it knows is a lower
-bound. The in-flight checkpoint acts on ``exhausted`` alone: killing a story
-that has already been paid for, because some other spend was unmeasured, would
-destroy work to protect a comparison the sprint will re-run at its next dispatch
-boundary anyway.
+bound. The in-flight checkpoint acts on ``exhausted`` alone: a running story is
+still cancelled when its measured lower bound has definitely met the cap, but it
+is not cancelled merely because some spend was unmeasured and the comparison is
+therefore unverifiable. Killing a story that has already been paid for to
+protect only that second case would destroy work for a comparison the sprint
+will re-run at its next dispatch boundary anyway.
 
 The load-bearing rule is that a cap can only be enforced against a number that
 means what it says. ``accumulated_cost`` is a sum over measured spend; when a

@@ -40,6 +40,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.config.types import SprintBatchConfig, SprintConfig
 from theforge.coordinator.cancellation import (
     BUDGET_CANCEL_ERROR_TYPE,
     StopSignal,
@@ -90,6 +91,13 @@ def _make_resolved(
         budget_usd=budget_usd,
         stories=stories,
         max_parallel=max_parallel,
+    )
+
+
+def _make_batch_config(tmp_path: Path) -> ForgeConfig:
+    return replace(
+        _make_config(tmp_path),
+        sprint=SprintConfig(batch=SprintBatchConfig(max_stories=2, max_complexity_budget=2)),
     )
 
 
@@ -234,6 +242,133 @@ def test_worker_exception_recovery_promotes_the_last_measured_spend() -> None:
 
     ledger.record_story_cost("story-b", 1.5, measured=1.5)
     assert round(ledger.snapshot().spent_including_in_flight, 2) == 5.5
+
+
+def test_worker_exception_recovery_keeps_a_lower_bound_total_unmeasured() -> None:
+    """Promoting an unmeasured-phase lower bound must not certify the sprint total."""
+    ledger = SprintCostLedger()
+    ledger.record_in_flight_cost("story-a", 6.0, measured=False)
+
+    recovered = ledger.recover_in_flight_cost("story-a")
+
+    assert recovered.accumulated == 6.0
+    assert recovered.measured is False
+    assert recovered.unmeasured == ("story-a",)
+
+
+def test_batched_worker_exception_recovers_the_shared_spend_once(tmp_path: Path) -> None:
+    """A shared worker future must not charge its spend once per member slug."""
+    config = _make_batch_config(tmp_path)
+    resolved = _make_resolved(tmp_path, ("story-a", "story-b"), budget_usd=100.0)
+    states: dict[str, CoordinatorState] = {}
+    for slug in ("story-a", "story-b"):
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_complexity = "small"
+        state.preflight_work_type = "bug"
+        state.preflight_sufficiency = "implementation_ready"
+        state.preflight_likely_files = [f"src/{slug}.py"]
+        states[slug] = state
+
+    def _fake_run_batch_group(
+        _config,
+        leader_task,
+        member_tasks,
+        _sprint_run_id,
+        _sprint_name,
+        _interactive,
+        _notify,
+        _effective_auto_merge,
+        state_update_fns,
+        _no_pull,
+        _preflight_states,
+        _stop_event,
+        *,
+        base_lands_locally=None,
+        lands_in_project_root=None,
+    ):
+        del base_lands_locally, lands_in_project_root
+        state_update_fns[leader_task.slug]({"phase": "DEV", "cost_usd": 4.0})
+        for member in member_tasks:
+            state_update_fns[member.slug]({"phase": "DEV", "cost_usd": 4.0, "cost_mirrored": True})
+        raise RuntimeError("batch exploded")
+
+    with (
+        patch("theforge.sprint.runner.enforce_sprint_auth_readiness"),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value=states),
+        patch("theforge.sprint.runner._run_batch_group", side_effect=_fake_run_batch_group),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
+        patch("theforge.sprint.runner._write_story_audit"),
+    ):
+        result = run_sprint_ctx(config, resolved)
+
+    assert result.specs_failed == 2
+    assert result.total_cost_usd == 4.0
+    assert result.cost_complete is True
+
+
+def test_worker_exception_lower_bound_recovery_keeps_sprint_cost_incomplete(
+    tmp_path: Path,
+) -> None:
+    """A raised worker cannot turn a lower bound into a measured sprint total."""
+    config = _make_config(tmp_path)
+    resolved = _make_resolved(tmp_path, ("story-a",), budget_usd=100.0)
+    lower_bound_state = CoordinatorState()
+    lower_bound_state.preflight_result = MagicMock(cost_usd=6.0)
+    lower_bound_state.dev_results.append(MagicMock(cost_usd=None))
+    assert lower_bound_state.total_cost_measured is None
+    assert lower_bound_state.total_cost == 6.0
+
+    def _fake_run_single_story(
+        _config,
+        _task,
+        _triage,
+        _sprint_run_id,
+        _sprint_name,
+        _interactive,
+        _notify,
+        _resume,
+        _effective_auto_merge,
+        state_update_fn,
+        _no_pull=False,
+        _plan_gate=None,
+        _preflight_states=None,
+        _stop_event=None,
+        base_lands_locally=None,
+        lands_in_project_root=None,
+    ):
+        del base_lands_locally, lands_in_project_root
+        state_update_fn(
+            {
+                "phase": "REVIEW",
+                "cost_usd": None,
+                "coordinator_state": lower_bound_state,
+            }
+        )
+        raise RuntimeError("agent crashed after unmeasured phase")
+
+    with (
+        patch("theforge.sprint.runner.enforce_sprint_auth_readiness"),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner._run_single_story", side_effect=_fake_run_single_story),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
+        patch("theforge.sprint.runner._write_story_audit"),
+    ):
+        result = run_sprint_ctx(config, resolved)
+
+    assert result.total_cost_usd == 6.0
+    assert result.cost_complete is False
+    assert result.unmeasured_spend_sources == ("story-a",)
+    assert result.budget_verification_spend_usd == 6.0
 
 
 def test_a_budget_halt_is_not_labelled_as_a_worker_timeout(tmp_path: Path) -> None:

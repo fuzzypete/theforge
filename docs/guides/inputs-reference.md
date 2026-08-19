@@ -121,9 +121,10 @@ story never gets blocked for going "over budget."
   slightly past its budget. Where it does, `forge sprint-status` marks the
   overrun beside the cost and budget, and `budget_status` /
   `budget_overrun_usd` record it in `sprint-summary.yaml` and the sprint audit.
-  Spend that could not be measured is a separate case: the cap cannot be
-  evaluated against a total known to be a lower bound, so the sprint refuses to
-  dispatch further work rather than cancelling what is already running.
+  Spend that could not be measured is a separate case: the sprint will still
+  cancel a running story if the measured lower bound already exhausts the cap,
+  but it will not cancel that story merely because the remaining spend is
+  unknown. In that unverifiable-only case, it refuses further dispatch instead.
 
 - **Per-story dollar values (estimates, not enforced).** The per-story dollar
   value is a *cost estimate* derived from historical cost data for the model and
