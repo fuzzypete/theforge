@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -131,6 +132,15 @@ def apply_cached_preflight_state(
     """Copy preflight outputs from cached_state onto the live coordinator state."""
     state.preflight_verdict = cached_state.preflight_verdict
     state.preflight_reason = cached_state.preflight_reason
+    state.preflight_degraded = cached_state.preflight_degraded
+    state.preflight_degraded_reason = cached_state.preflight_degraded_reason
+    state.preflight_failure_action = cached_state.preflight_failure_action
+    state.preflight_risk_signals = list(cached_state.preflight_risk_signals or [])
+    state.preflight_partial_evidence = (
+        None
+        if cached_state.preflight_partial_evidence is None
+        else copy.deepcopy(cached_state.preflight_partial_evidence)
+    )
     state.preflight_complexity = cached_state.preflight_complexity
     state.preflight_complexity_score = cached_state.preflight_complexity_score
     state.preflight_implementation_complexity_score = (

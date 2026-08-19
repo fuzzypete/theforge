@@ -691,6 +691,18 @@ criteria_checked: []
 
 
 class TestParsePreflightComplexity:
+    def test_complexity_with_nested_fence_in_reason(self):
+        output = """```yaml
+verdict: PROCEED
+reason: |
+  Example:
+    ```text
+    nested fence
+    ```
+complexity: large
+```"""
+        assert _parse_preflight_complexity(output) == "large"
+
     def test_complexity_parsed_small(self):
         assert _parse_preflight_complexity(_PREFLIGHT_PROCEED_SMALL) == "small"
 

@@ -49,6 +49,18 @@ class TestParsePreflightDomains:
     def test_no_fences_still_parses(self):
         assert _parse_preflight_domains("verdict: PROCEED\ndomains: [cli]\n") == ["cli"]
 
+    def test_shorter_inner_fence_in_longer_wrapper_does_not_truncate_to_later_domains(self):
+        out = """````yaml
+verdict: PROCEED
+reason: "outer fence must survive inner snippet"
+```python
+print("inner snippet")
+```
+domains: [api]
+````
+"""
+        assert _parse_preflight_domains(out) == []
+
 
 class TestPreflightPromptDomains:
     def test_prompt_advertises_taxonomy_and_field(self, tmp_path: Path):
