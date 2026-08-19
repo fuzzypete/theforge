@@ -34,8 +34,7 @@ from typing import Any
 from theforge.config.model_identity import AgentSpec
 from theforge.model_profiles_identity import COMPLEXITY_BANDS
 from theforge.model_profiles_read_model import (
-    dev_evidence_contributors,
-    get_dev_signal,
+    get_dev_signal_for_keys,
     list_dev_evidence_keys,
 )
 from theforge.model_profiles_storage import canonical_id_for_legacy_key
@@ -134,6 +133,11 @@ def build_model_strength_report(
     (``config.model_registry``), so packaged defaults and ``forge.yaml`` overlays
     are both reflected. ``profiles`` is the stored profiles dict. Pure: no disk
     access, no LLM call, and no mutation of either input.
+
+    Every stored key is classified exactly once, by
+    :func:`_partition_evidence`: it is either claimed by one live dev-capable
+    canonical identity and counted in that model's rows, or it is unattributable
+    and reported separately. No key can be both.
     """
     floor = max(1, int(evidence_floor))
     resolver = resolve_key if resolve_key is not None else canonical_id_for_legacy_key
@@ -151,26 +155,30 @@ def build_model_strength_report(
         )
     )
 
-    observations = _observe(dev_models, profiles, floor=floor, recency=recency)
+    claimed, unattributed = _partition_evidence(
+        profiles,
+        dev_models,
+        model_registry or {},
+        resolver,
+    )
+    observations = _observe(dev_models, profiles, claimed, floor=floor, recency=recency)
     peers = _peer_rates(dev_models, observations, floor=floor)
 
     rows: list[DeclaredStrengthRow] = []
     for canonical_id in sorted(dev_models):
         spec = dev_models[canonical_id]
-        identity = _identity_key(spec)
         for band in COMPLEXITY_BANDS:
-            observed = observations[(canonical_id, band)]
             peer_rates = sorted(
                 rate
-                for peer_identity, rate in peers.get((spec.routing.tier, band), {}).items()
-                if peer_identity != identity
+                for peer_id, rate in peers.get((spec.routing.tier, band), {}).items()
+                if peer_id != canonical_id
             )
             rows.append(
                 _row(
                     canonical_id=canonical_id,
                     spec=spec,
                     band=band,
-                    observed=observed,
+                    observed=observations[(canonical_id, band)],
                     peer_rates=peer_rates,
                     floor=floor,
                 )
@@ -178,32 +186,76 @@ def build_model_strength_report(
 
     return ModelStrengthReport(
         rows=tuple(rows),
-        unattributed=_unattributed(profiles, dev_models, model_registry or {}, resolver),
+        unattributed=unattributed,
         evidence_floor=floor,
         excluded_non_dev_models=excluded,
     )
 
 
+def _partition_evidence(
+    profiles: dict[str, Any],
+    dev_models: dict[str, AgentSpec],
+    model_registry: dict[str, AgentSpec],
+    resolver: Callable[[str, dict], str | None],
+) -> tuple[dict[str, list[dict]], tuple[UnattributedEvidenceRow, ...]]:
+    """Assign every stored dev key to one live identity, or to no one.
+
+    Canonical resolution is the *single* classification the report runs on. The
+    router's own identity matching is deliberately looser — it matches on
+    ``(provider, model)`` so a candidate finds its history under whatever key it
+    was recorded with — and reusing it here let a key be counted in a live
+    model's rate *and* listed as unattributable evidence in the same report
+    (#2308 review). A key that cannot be named, names something outside the live
+    catalog, or names a model that is not dev-capable is claimed by nobody.
+    """
+    claimed: dict[str, list[dict]] = {canonical_id: [] for canonical_id in dev_models}
+    unattributed: list[UnattributedEvidenceRow] = []
+    for record in list_dev_evidence_keys(profiles, resolve=resolver):
+        canonical_id = record["canonical_id"]
+        if canonical_id in dev_models:
+            claimed[canonical_id].append(record)
+            continue
+        runs = max(int(record["entry_runs"]), sum(record["runs_by_band"].values()))
+        if runs <= 0:
+            continue
+        if canonical_id is None:
+            reason = REASON_UNRESOLVED
+        elif canonical_id not in model_registry:
+            reason = REASON_NOT_IN_CATALOG
+        else:
+            reason = REASON_NOT_DEV_CAPABLE
+        unattributed.append(
+            UnattributedEvidenceRow(
+                key=record["key"],
+                reason=reason,
+                canonical_id=canonical_id,
+                runs=runs,
+                runs_by_band=dict(record["runs_by_band"]),
+            )
+        )
+    return claimed, tuple(unattributed)
+
+
 def _observe(
     dev_models: dict[str, AgentSpec],
     profiles: dict[str, Any],
+    claimed: dict[str, list[dict]],
     *,
     floor: int,
     recency: Any | None,
 ) -> dict[tuple[str, str], dict[str, Any]]:
-    """Read the dev signal for every (live dev model, band) pair."""
+    """Read the dev signal for every (live dev model, band) pair.
+
+    Scoped to the keys that model *claims* — not to whatever the router's
+    identity matching would sweep up — so the population behind a row is exactly
+    the population the report says it is.
+    """
     observations: dict[tuple[str, str], dict[str, Any]] = {}
-    for canonical_id, spec in dev_models.items():
+    for canonical_id in dev_models:
+        records = claimed.get(canonical_id, [])
+        keys = [record["key"] for record in records]
         for band in COMPLEXITY_BANDS:
-            signal = get_dev_signal(
-                profiles,
-                canonical_id,
-                band,
-                floor,
-                actual_model=spec.model,
-                provider=spec.provider,
-                recency=recency,
-            )
+            signal = get_dev_signal_for_keys(profiles, keys, band, floor, recency=recency)
             observations[(canonical_id, band)] = {
                 "runs": int(signal["runs"]),
                 # Floor-gated: the value a comparison may be drawn against.
@@ -211,27 +263,12 @@ def _observe(
                 # Ungated: what the (possibly too-thin) evidence says so far.
                 "weighted": signal["weighted"],
                 "contributors": tuple(
-                    dev_evidence_contributors(
-                        profiles,
-                        canonical_id,
-                        band,
-                        actual_model=spec.model,
-                        provider=spec.provider,
-                    )
+                    record["key"]
+                    for record in records
+                    if int(record["runs_by_band"].get(band, 0)) > 0
                 ),
             }
     return observations
-
-
-def _identity_key(spec: AgentSpec) -> str:
-    """``provider/model`` — identity *without* transport.
-
-    Profile evidence is aggregated per (provider, model), so a catalog carrying
-    both a CLI and an API entry for one model reports the same rate under both
-    canonical IDs. Counting those as two peers would manufacture a peer range out
-    of a single population, so the peer set is deduplicated on this key.
-    """
-    return f"{spec.provider}/{spec.model}"
 
 
 def _peer_rates(
@@ -244,15 +281,18 @@ def _peer_rates(
 
     The peer set is concrete: same declared tier, same complexity band, and
     enough evidence of its own to be compared against. A model whose declaration
-    has never been tested is not a baseline for anyone else's.
+    has never been tested is not a baseline for anyone else's. Peers are keyed by
+    canonical ID, which now says all it needs to: each identity's population is
+    the set of keys it claims, so two transports of one model are two peers only
+    when each has evidence of its own.
     """
     grouped: dict[tuple[str, str], dict[str, float]] = {}
     for (canonical_id, band), observed in observations.items():
         rate = observed["rate"]
         if rate is None or observed["runs"] < floor:
             continue
-        spec = dev_models[canonical_id]
-        grouped.setdefault((spec.routing.tier, band), {})[_identity_key(spec)] = float(rate)
+        tier = dev_models[canonical_id].routing.tier
+        grouped.setdefault((tier, band), {})[canonical_id] = float(rate)
     return grouped
 
 
@@ -296,36 +336,3 @@ def _row(
         peer_count=len(peer_rates),
         contributing_keys=observed["contributors"],
     )
-
-
-def _unattributed(
-    profiles: dict[str, Any],
-    dev_models: dict[str, AgentSpec],
-    model_registry: dict[str, AgentSpec],
-    resolver: Callable[[str, dict], str | None],
-) -> tuple[UnattributedEvidenceRow, ...]:
-    """Flag stored dev evidence that no live dev-capable model can claim."""
-    rows: list[UnattributedEvidenceRow] = []
-    for record in list_dev_evidence_keys(profiles, resolve=resolver):
-        runs = max(int(record["entry_runs"]), sum(record["runs_by_band"].values()))
-        if runs <= 0:
-            continue
-        canonical_id = record["canonical_id"]
-        if canonical_id in dev_models:
-            continue
-        if canonical_id is None:
-            reason = REASON_UNRESOLVED
-        elif canonical_id not in model_registry:
-            reason = REASON_NOT_IN_CATALOG
-        else:
-            reason = REASON_NOT_DEV_CAPABLE
-        rows.append(
-            UnattributedEvidenceRow(
-                key=record["key"],
-                reason=reason,
-                canonical_id=canonical_id,
-                runs=runs,
-                runs_by_band=dict(record["runs_by_band"]),
-            )
-        )
-    return tuple(rows)

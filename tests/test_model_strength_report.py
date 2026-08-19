@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 
 from theforge.config.model_identity import AgentSpec, RoutingPolicy, TransportSpec
-from theforge.model_profiles_read_model import dev_evidence_contributors, list_dev_evidence_keys
+from theforge.model_profiles_read_model import get_dev_signal_for_keys, list_dev_evidence_keys
 from theforge.model_strength_report import (
     REASON_NOT_DEV_CAPABLE,
     REASON_NOT_IN_CATALOG,
@@ -204,16 +204,21 @@ class TestPeerComparison:
         )
         assert _row(report, "acme/delta/cli", "large").status == STATUS_OBSERVED
 
-    def test_one_model_declared_on_two_transports_is_not_two_peers(self):
+    def test_evidence_recorded_under_one_transport_does_not_peer_for_the_other(self):
+        """The API entry claims no key, so it is not a second peer for delta."""
         registry = _registry()
         registry["acme/alpha/api"] = _spec("acme", "alpha", kind="api")
         del registry["acme/beta/cli"]
         report = build_model_strength_report(
-            model_registry=registry, profiles=_underperformer_profiles(), evidence_floor=10
+            model_registry=registry,
+            profiles=_underperformer_profiles(),
+            evidence_floor=10,
+            resolve_key=lambda key, entry: key,
         )
         row = _row(report, "acme/delta/cli", "large")
         assert row.peer_count == 1
         assert row.status == STATUS_OBSERVED
+        assert _row(report, "acme/alpha/api", "large").status == STATUS_UNOBSERVED
 
 
 class TestUnattributedEvidence:
@@ -261,6 +266,65 @@ class TestUnattributedEvidence:
         assert [entry.reason for entry in report.unattributed] == [REASON_NOT_DEV_CAPABLE]
         assert "acme/epsilon/cli" in report.excluded_non_dev_models
         assert all(row.canonical_id != "acme/epsilon/cli" for row in report.rows)
+
+    def test_excluded_key_is_never_also_counted_in_a_live_row(self):
+        """#2308 review: identity metadata must not smuggle excluded evidence back in.
+
+        ``impostor`` cannot be named canonically, but its ``_identity`` shares
+        ``(provider, model)`` with a live entry — exactly what the router's
+        matching keys on. It must land in one place only: excluded.
+        """
+        profiles = {
+            "models": {
+                "acme/alpha/cli": _dev_entry({"large": (40, 0.9)}),
+                "impostor": _dev_entry({"large": (60, 0.1)}, identity=("acme", "alpha")),
+            }
+        }
+        report = build_model_strength_report(
+            model_registry=_registry(),
+            profiles=profiles,
+            evidence_floor=10,
+            resolve_key=lambda key, entry: key if key in _registry() else None,
+        )
+        row = _row(report, "acme/alpha/cli", "large")
+        assert row.runs == 40
+        assert row.observed_rate == 0.9
+        assert "impostor" not in row.contributing_keys
+        assert [entry.key for entry in report.unattributed] == ["impostor"]
+        assert report.unattributed[0].reason == REASON_UNRESOLVED
+
+    def test_key_resolving_to_a_retired_identity_is_only_excluded(self):
+        """Same partition rule for a key that resolves, but not to a live model."""
+        profiles = {
+            "models": {
+                "acme/alpha/cli": _dev_entry({"large": (40, 0.9)}),
+                "acme/alpha-legacy/cli": _dev_entry(
+                    {"large": (60, 0.1)}, identity=("acme", "alpha")
+                ),
+            }
+        }
+        report = build_model_strength_report(
+            model_registry=_registry(),
+            profiles=profiles,
+            evidence_floor=10,
+            resolve_key=lambda key, entry: key,
+        )
+        row = _row(report, "acme/alpha/cli", "large")
+        assert (row.runs, row.observed_rate) == (40, 0.9)
+        assert [entry.reason for entry in report.unattributed] == [REASON_NOT_IN_CATALOG]
+
+    def test_non_dev_capable_evidence_is_not_borrowed_by_a_sibling_transport(self):
+        registry = _registry()
+        registry["acme/alpha/api"] = _spec("acme", "alpha", kind="api", dev_capable=False)
+        profiles = {"models": {"acme/alpha/api": _dev_entry({"large": (60, 0.1)})}}
+        report = build_model_strength_report(
+            model_registry=registry,
+            profiles=profiles,
+            evidence_floor=10,
+            resolve_key=lambda key, entry: key,
+        )
+        assert _row(report, "acme/alpha/cli", "large").status == STATUS_UNOBSERVED
+        assert [entry.reason for entry in report.unattributed] == [REASON_NOT_DEV_CAPABLE]
 
     def test_legacy_key_contributing_to_a_live_model_is_named_on_the_row(self):
         profiles = {
@@ -340,7 +404,7 @@ class TestEvidenceAttributionReadModel:
         profiles = {"models": {"acme/alpha/cli": _dev_entry({"large": (40, 0.9)})}}
         assert list_dev_evidence_keys(profiles)[0]["last_updated"] is None
 
-    def test_contributors_name_every_key_behind_a_band_rate(self):
+    def test_signal_for_keys_aggregates_exactly_the_named_keys(self):
         profiles = {
             "models": {
                 "acme/alpha/cli": _dev_entry({"large": (40, 0.9)}),
@@ -348,16 +412,26 @@ class TestEvidenceAttributionReadModel:
                 "acme/beta/cli": _dev_entry({"large": (10, 0.5)}),
             }
         }
-        contributors = dev_evidence_contributors(
-            profiles, "acme/alpha/cli", "large", actual_model="alpha", provider="acme"
+        signal = get_dev_signal_for_keys(
+            profiles, ["acme/alpha/cli", "alpha-shorthand"], "large", 10
         )
-        assert contributors == ["acme/alpha/cli", "alpha-shorthand"]
+        assert signal["runs"] == 50
+        assert signal["rate"] == 0.82
 
-    def test_contributors_skip_bands_with_no_runs(self):
+    def test_signal_for_keys_ignores_identity_metadata_of_unnamed_keys(self):
+        """An unnamed key stays out however its ``_identity`` reads (#2308 review)."""
+        profiles = {
+            "models": {
+                "acme/alpha/cli": _dev_entry({"large": (40, 0.9)}),
+                "impostor": _dev_entry({"large": (60, 0.1)}, identity=("acme", "alpha")),
+            }
+        }
+        signal = get_dev_signal_for_keys(profiles, ["acme/alpha/cli"], "large", 10)
+        assert signal["runs"] == 40
+        assert signal["rate"] == 0.9
+
+    def test_signal_for_keys_tolerates_unknown_keys_and_empty_bands(self):
         profiles = {"models": {"acme/alpha/cli": _dev_entry({"large": (40, 0.9)})}}
-        assert (
-            dev_evidence_contributors(
-                profiles, "acme/alpha/cli", "small", actual_model="alpha", provider="acme"
-            )
-            == []
-        )
+        assert get_dev_signal_for_keys(profiles, ["acme/alpha/cli"], "small", 10)["runs"] == 0
+        assert get_dev_signal_for_keys(profiles, ["nope"], "large", 10)["runs"] == 0
+        assert get_dev_signal_for_keys(profiles, [], "large", 10)["rate"] is None

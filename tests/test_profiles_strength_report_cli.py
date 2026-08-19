@@ -144,6 +144,26 @@ class TestEvidenceAttribution:
         assert "46 runs" in out
         assert "unobserved" in _row(out, "anthropic/opus/cli", "medium")
 
+    def test_excluded_key_matching_a_live_identity_is_not_counted_in_its_row(
+        self, tmp_path, capsys
+    ):
+        """#2308 review: excluded evidence must not also inflate a live row."""
+        impostor = _entry({"large": (60, 0.1)})
+        # Provider/model only — enough for the router's identity matching to
+        # claim it for anthropic/opus, not enough to name it canonically.
+        impostor["_identity"] = {"provider": "anthropic", "model": "opus"}
+        root = _project(
+            tmp_path,
+            {"anthropic/opus/cli": _entry({"large": (40, 0.9)}), "impostor": impostor},
+        )
+
+        assert _run(root, "--complexity", "large") == 0
+
+        out = capsys.readouterr().out
+        row = _row(out, "anthropic/opus/cli", "large")
+        assert row.split()[3:5] == ["0.90", "40"]
+        assert "impostor (unresolved_identity" in out
+
     def test_recency_of_evidence_is_declared_unknown(self, tmp_path, capsys):
         root = _project(tmp_path, {"anthropic/opus/cli": _entry({"large": (40, 0.9)})})
 

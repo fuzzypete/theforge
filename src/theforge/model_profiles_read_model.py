@@ -223,7 +223,6 @@ def get_dev_signal(
       population describing one model from one describing several. Empty when no
       consulted observation recorded a served version.
     """
-    mode, half_life, window = _recency_params(recency)
     matching = _matching_profile_entries(
         profiles,
         model,
@@ -231,46 +230,56 @@ def get_dev_signal(
         provider=provider,
         cli=cli,
     )
+    return _aggregate_dev_signal(
+        [entry for _, entry in matching],
+        complexity=complexity,
+        min_runs=min_runs,
+        recency=recency,
+    )
+
+
+def _aggregate_dev_signal(
+    entries: list[dict],
+    *,
+    complexity: str | None,
+    min_runs: int,
+    recency: Any | None,
+) -> dict:
+    """Aggregate dev history over already-selected profile entries.
+
+    The single arithmetic path behind every dev signal — which entries are
+    *selected* is the caller's question, and the two callers answer it
+    differently on purpose: :func:`get_dev_signal` selects by the router's
+    identity matching, :func:`get_dev_signal_for_keys` by an explicit key set.
+    Keeping the sums, the recency weighting and the sample floor here is what
+    stops those two selections from also becoming two ways to compute a rate.
+    """
+    mode, half_life, window = _recency_params(recency)
     runs = 0
     successes = 0.0
     tainted = 0
     recent: list[int] = []
     consulted: list[dict] = []
-    if matching:
-        if complexity is None:
-            for _, entry in matching:
-                dev = entry.get("dev")
-                if not isinstance(dev, dict):
-                    continue
-                consulted.append(dev)
-                tainted += int(dev.get("tainted_runs", 0))
-                ring = dev.get("_recent")
-                if isinstance(ring, list):
-                    recent.extend(int(v) for v in ring)
-                entry_runs = int(dev.get("runs", 0))
-                if entry_runs <= 0:
-                    continue
-                runs += entry_runs
-                successes += _success_count(dev, entry_runs)
-        else:
-            band = _normalize_band(complexity)
-            for _, entry in matching:
-                dev = entry.get("dev")
-                if not isinstance(dev, dict):
-                    continue
-                bc = (dev.get("by_complexity") or {}).get(band)
-                if not isinstance(bc, dict):
-                    continue
-                consulted.append(bc)
-                tainted += int(bc.get("tainted_runs", 0))
-                ring = bc.get("_recent")
-                if isinstance(ring, list):
-                    recent.extend(int(v) for v in ring)
-                entry_runs = int(bc.get("runs", 0))
-                if entry_runs <= 0:
-                    continue
-                runs += entry_runs
-                successes += _success_count(bc, entry_runs)
+    band = _normalize_band(complexity) if complexity is not None else None
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        dev = entry.get("dev")
+        if not isinstance(dev, dict):
+            continue
+        section = dev if band is None else (dev.get("by_complexity") or {}).get(band)
+        if not isinstance(section, dict):
+            continue
+        consulted.append(section)
+        tainted += int(section.get("tainted_runs", 0))
+        ring = section.get("_recent")
+        if isinstance(ring, list):
+            recent.extend(int(v) for v in ring)
+        entry_runs = int(section.get("runs", 0))
+        if entry_runs <= 0:
+            continue
+        runs += entry_runs
+        successes += _success_count(section, entry_runs)
     raw = round(successes / runs, 4) if runs > 0 else None
     # The weighted value is gated on the *ring* reaching the same sample floor,
     # not just lifetime ``runs``: a legacy/migrated bucket can pass ``min_runs``
@@ -1085,40 +1094,38 @@ def list_dev_evidence_keys(
     return records
 
 
-def dev_evidence_contributors(
+def get_dev_signal_for_keys(
     profiles: dict,
-    model: str,
+    keys: list[str] | tuple[str, ...],
     complexity: str | None = None,
+    min_runs: int = 3,
     *,
-    actual_model: str | None = None,
-    provider: str | None = None,
-    cli: str | None = None,
-) -> list[str]:
-    """Which stored keys contribute to :func:`get_dev_signal` for this model.
+    recency: Any | None = None,
+) -> dict:
+    """Return the dev signal over an **explicitly named** set of stored keys.
 
-    Same identity matching as the signal itself, so an operator reading a rate
-    can see whether it rests partly on shorthand history (``claude-opus``) whose
-    recency is unknown, rather than on the canonical key alone (#2308). Only
-    keys with admissible runs in the requested band are returned.
+    Same shape and arithmetic as :func:`get_dev_signal`; the difference is how
+    the population is chosen. The router's signal selects entries by identity
+    matching on ``(provider, model)``, which is deliberately loose: it is how a
+    candidate finds its own history under whatever key it was recorded with.
+
+    A caller that has *already* decided which keys belong to which identity —
+    the declared-vs-observed report, which partitions the store by canonical ID
+    so evidence it excludes as unattributable cannot also be counted (#2308) —
+    needs the population to be exactly that decision and nothing else. Passing
+    the key set explicitly is what makes the two answers one answer: a key
+    absent from ``keys`` contributes nothing, however its identity metadata
+    reads. Unknown keys are ignored rather than raising.
     """
-    band = _normalize_band(complexity) if complexity is not None else None
-    contributors: list[str] = []
-    for key, entry in _matching_profile_entries(
-        profiles,
-        model,
-        actual_model=actual_model,
-        provider=provider,
-        cli=cli,
-    ):
-        dev = entry.get("dev")
-        if not isinstance(dev, dict):
-            continue
-        section = dev if band is None else (dev.get("by_complexity") or {}).get(band)
-        if not isinstance(section, dict):
-            continue
-        if int(section.get("runs", 0)) > 0:
-            contributors.append(key)
-    return contributors
+    models = (profiles or {}).get("models") or {}
+    if not isinstance(models, dict):
+        models = {}
+    return _aggregate_dev_signal(
+        [models[key] for key in keys if isinstance(models.get(key), dict)],
+        complexity=complexity,
+        min_runs=min_runs,
+        recency=recency,
+    )
 
 
 def _matching_profile_entries(

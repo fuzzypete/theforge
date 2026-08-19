@@ -991,6 +991,16 @@ dev-capable model (legacy shorthands, role names, unresolved identities) are
 listed separately rather than folded into some live model's rate, and evidence
 recency is reported as unknown because profiles carry no per-key timestamp.
 
+Attribution is by canonical model ID, transport included, and every stored key
+is classified exactly once: a key is either claimed by one live dev-capable
+model and counted in its rows, or it is listed as excluded. This is stricter
+than the adaptive router's own matching, which resolves a candidate's history on
+`(provider, model)` alone — deliberately so, since a report that argues with a
+declaration must not draw on evidence it reports as unattributable. A
+consequence worth knowing: evidence recorded under `openai/gpt-5.4/cli` counts
+for that entry only, and `openai/gpt-5.4/api` reads as unobserved until it has
+runs of its own.
+
 The command is advisory and strictly read-only: it never edits a catalog
 declaration or the profile store. Acting on a reported disagreement — editing
 `tier`/`capability` in `forge.yaml` — stays the operator's call.
