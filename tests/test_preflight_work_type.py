@@ -88,6 +88,20 @@ def _make_plan_agent_review_config(tmp_path: Path, *, dual_reviewer: bool = Fals
 
 
 class TestParsePreflightWorkType:
+    def test_nested_fence_inside_reason_preserves_work_type(self):
+        output = """\
+```yaml
+verdict: PROCEED
+reason: |
+  Example:
+    ```python
+    rename("old", "new")
+    ```
+work_type: refactor
+```
+"""
+        assert _parse_preflight_work_type(output) == "refactor"
+
     def test_feature(self):
         output = """\
 ```yaml
@@ -659,6 +673,70 @@ class TestWorkTypeStoredOnState:
 
         assert result.state.preflight_work_type == "feature"
 
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_nested_fence_in_preflight_reason_reaches_state(
+        self,
+        mock_shell,
+        mock_dev_agent,
+        mock_preflight,
+        mock_plan_agent,
+        mock_pool,
+        tmp_path,
+    ):
+        """Quoted fenced examples in preflight YAML must not truncate later fields."""
+        from coord_test_helpers import _make_plan_config
+
+        config = _make_plan_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        preflight_output = """\
+```yaml
+verdict: PROCEED
+reason: |
+  Example:
+    ```python
+    rename("old", "new")
+    ```
+work_type: refactor
+contract_change: true
+complexity: small
+sufficiency: implementation_ready
+```
+"""
+        preflight_result = _make_agent_result(success=True, output=preflight_output, cost_usd=0.02)
+        plan_result = _make_agent_result(success=True, output="# Plan\n\nStep 1.", cost_usd=0.10)
+        dev_result = _make_agent_result(success=True, output="Done.", cost_usd=0.30)
+
+        call_idx = {"n": 0}
+        results = [plan_result, dev_result]
+
+        def side_effect(**kwargs):
+            idx = min(call_idx["n"], len(results) - 1)
+            call_idx["n"] += 1
+            return results[idx]
+
+        mock_preflight.return_value = preflight_result
+        mock_plan_agent.side_effect = mock_dev_agent
+        mock_dev_agent.side_effect = side_effect
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.state.preflight_work_type == "refactor"
+        assert result.state.preflight_contract_change is True
+        assert result.state.preflight_complexity == "medium"
+        assert result.state.preflight_sufficiency == "needs_planning"
+
 
 # ── Refactor + human plan review (advisory) ──────────────────────────
 
@@ -939,6 +1017,20 @@ class TestAuditLogIncludesWorkType:
 
 
 class TestParsePreflightContractChange:
+    def test_nested_fence_inside_reason_preserves_contract_change(self):
+        output = """\
+```yaml
+verdict: PROCEED
+reason: |
+  Example:
+    ```python
+    print("nested")
+    ```
+contract_change: true
+```
+"""
+        assert _parse_preflight_contract_change(output) is True
+
     def test_true_when_set(self):
         output = """\
 ```yaml

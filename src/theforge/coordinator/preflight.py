@@ -380,16 +380,7 @@ def _parse_preflight_verdict(output: str) -> tuple[str, str, bool]:
     return PROCEED with degraded=True — a confused classifier should not become
     process truth (same principle as the success=False path in preflight_flow).
     """
-    # Extract YAML block from markdown fences
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -423,17 +414,29 @@ _VALID_SUFFICIENCIES = frozenset({"implementation_ready", "needs_planning"})
 _VALID_WORK_TYPES = frozenset({"feature", "refactor", "mechanical", "bug"})
 
 
+def _extract_preflight_yaml_text(output: str) -> str:
+    """Return the outer fenced YAML body when present, else the raw output.
+
+    Preflight responses sometimes include quoted fenced material inside a YAML
+    scalar. Only an unindented closing fence should terminate the outer
+    envelope; nested fences remain part of the YAML payload.
+    """
+    fence_re = re.compile(r"^```(?:yaml)?[^\n]*$", re.MULTILINE)
+    match = fence_re.search(output)
+    if match is None:
+        return output
+
+    close_match = re.search(r"^```[ \t]*$", output[match.end() :], re.MULTILINE)
+    if close_match is None:
+        return output[match.end() :]
+    start = match.end()
+    end = start + close_match.start()
+    return output[start:end]
+
+
 def _parse_preflight_contract_change(output: str) -> bool:
     """Extract contract_change from preflight agent output. Defaults to False."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -453,15 +456,7 @@ def _parse_preflight_contract_change(output: str) -> bool:
 
 def _parse_preflight_work_type(output: str) -> str:
     """Extract work_type from preflight agent output. Defaults to 'feature' if absent."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -487,15 +482,7 @@ def _parse_preflight_domains(output: str) -> list[str]:
     """
     from theforge.domains import validate_domains  # noqa: PLC0415
 
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -509,15 +496,7 @@ def _parse_preflight_domains(output: str) -> list[str]:
 
 def _parse_preflight_warnings(output: str) -> list[str]:
     """Extract warnings list from preflight agent output. Returns [] if absent."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -537,15 +516,7 @@ def _parse_preflight_likely_files(output: str) -> list[str] | None:
     Returns None when the agent did not explicitly provide a valid list so that
     zero-footprint remains an explicit assertion rather than a parser default.
     """
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -563,15 +534,7 @@ def _parse_preflight_likely_files(output: str) -> list[str] | None:
 
 def _parse_preflight_complexity(output: str) -> str:
     """Extract complexity from preflight agent output. Defaults to 'medium' if absent."""
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -593,15 +556,7 @@ def _parse_preflight_complexity_score(output: str, fallback_band: str | None = N
     derives a score from ``fallback_band`` (the legacy string enum) if given,
     else returns None so callers can detect the missing signal.
     """
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -631,15 +586,7 @@ def _parse_preflight_sufficiency(output: str) -> str:
     Returns 'implementation_ready' or 'needs_planning'.
     Defaults to 'needs_planning' on parse failure — fail-safe toward full pipeline.
     """
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -662,15 +609,7 @@ def _parse_preflight_criteria_checked(output: str) -> list[dict]:
     Returns [] on parse failure, missing key, or non-list value so that
     callers can treat an absent map as insufficient evidence (conservative).
     """
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)
@@ -715,15 +654,7 @@ def _parse_preflight_symptom_verification(output: str) -> dict:
     Returns {} when the field is absent so the caller can distinguish "agent
     did not address symptom" from "agent addressed and gave a status".
     """
-    yaml_text = output
-    if "```yaml" in output:
-        start = output.index("```yaml") + len("```yaml")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
-    elif "```" in output:
-        start = output.index("```") + len("```")
-        end = output.index("```", start)
-        yaml_text = output[start:end]
+    yaml_text = _extract_preflight_yaml_text(output)
 
     try:
         parsed = yaml.safe_load(yaml_text)

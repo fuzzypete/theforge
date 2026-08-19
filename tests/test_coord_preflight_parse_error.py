@@ -28,6 +28,20 @@ from theforge.coordinator.state import Phase
 
 
 class TestParsePreflightVerdictUnit:
+    def test_nested_fence_inside_yaml_scalar_keeps_outer_payload(self):
+        output = """```yaml
+verdict: PROCEED
+reason: |
+  Example:
+    ```python
+    print("nested")
+    ```
+```"""
+        verdict, reason, degraded = _parse_preflight_verdict(output)
+        assert verdict == "PROCEED"
+        assert degraded is False
+        assert "Example:" in reason
+
     def test_yaml_parse_failure_returns_proceed_degraded(self):
         """YAML parse error → PROCEED + degraded=True, not BLOCKED."""
         output = "```yaml\n: invalid: yaml: [\n```"

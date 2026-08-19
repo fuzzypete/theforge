@@ -22,6 +22,20 @@ from theforge.task import TaskStory, build_preflight_prompt
 
 
 class TestParsePreflightSufficiency:
+    def test_parse_sufficiency_with_nested_fence_in_reason(self):
+        output = """\
+```yaml
+verdict: PROCEED
+reason: |
+  Example:
+    ```bash
+    make dev-check
+    ```
+sufficiency: implementation_ready
+```
+"""
+        assert _parse_preflight_sufficiency(output) == "implementation_ready"
+
     def test_parse_sufficiency_implementation_ready(self):
         """YAML with sufficiency: implementation_ready returns 'implementation_ready'."""
         output = """\
