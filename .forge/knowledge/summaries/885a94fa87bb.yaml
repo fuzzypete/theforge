@@ -1,0 +1,147 @@
+schema_version: 1
+run_id: 885a94fa87bb
+authoritative_run_record: .forge/audits/runs/885a94fa87bb.json
+generated_at: '2026-08-18T16:00:44.431008+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01253125
+story:
+  slug: issue-2191
+  name: A config-contract change is validated by the runtime it replaces, so correct
+    work is rejected
+  github_issue: 2191
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+domains:
+- cli
+- config
+changed_files: &id001
+- src/theforge/cli/batch_report.py
+- src/theforge/cli/check_config.py
+- src/theforge/cli/daemon.py
+- src/theforge/cli/diagnose.py
+- src/theforge/cli/eval_cmd.py
+- src/theforge/cli/forge_yaml_guard.py
+- src/theforge/cli/ideate.py
+- src/theforge/cli/index.py
+- src/theforge/cli/providers.py
+- src/theforge/cli/rca.py
+- src/theforge/cli/review.py
+- src/theforge/cli/shared.py
+- src/theforge/cli/sprint_status.py
+- src/theforge/cli/status.py
+- src/theforge/cli/substrate.py
+- tests/test_cli_diagnose_parallel.py
+- tests/test_cli_startup_config_warnings.py
+- tests/test_cli_substrate.py
+- tests/test_forge_yaml_guard.py
+what_changed:
+  description: The run added runtime/checkout provenance around config-validation
+    failures across CLI entrypoints, especially when a non-editable installed runtime
+    differs from the checkout whose forge.yaml is being read. It also updated the
+    story-config guard path so guard failures remain controlled command failures rather
+    than uncaught crashes.
+  approach: The change was implemented centrally in shared CLI/config-loading substrate
+    code and then wired through multiple commands, with regression tests added for
+    stale-runtime warnings, provenance emission, diagnose behavior, substrate behavior,
+    and forge-yaml guard handling.
+  files_modified: *id001
+what_was_learned:
+- claim: When reporting config-validation failures across runtime boundaries, provenance
+    must be attached narrowly enough to distinguish version-mismatch cases from ordinary
+    config errors.
+  evidence:
+  - type: review_finding
+    finding_id: 7c0515af9734ab01
+    description: This finding records that provenance was being emitted for any config
+      ValueError under version skew, which misattributed ordinary forge.yaml typos
+      to runtime/checkout mismatch.
+  - type: file
+    path: src/theforge/cli/substrate.py
+    description: This file carried the main provenance logic for stale-runtime config
+      rejection handling.
+  - type: file
+    path: tests/test_cli_substrate.py
+    description: This test file added coverage around substrate behavior for these
+      config/provenance cases.
+- claim: Guard-evaluation failures in check-story-config need to be normalized into
+    the command's established failure path instead of escaping as raw exceptions.
+  evidence:
+  - type: review_finding
+    finding_id: f01e251b6b8d0be8
+    description: This finding identifies the regression where a malformed base forge.yaml
+      caused ValueError to escape and crash check-story-config.
+  - type: review_finding
+    finding_id: db6ebe7681bc0d9d
+    description: This finding captures the same area from the perspective of changed
+      exception handling, noting that wrapping caught only RuntimeError and altered
+      prior controlled behavior.
+  - type: file
+    path: src/theforge/cli/forge_yaml_guard.py
+    description: This file contains the story-mutation guard logic whose exception
+      behavior was adjusted.
+  - type: file
+    path: tests/test_forge_yaml_guard.py
+    description: This test file added regression coverage for guard failure handling.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review cycle records that the cycle-1 guard-crash issue
+      was resolved and controlled handling restored.
+- claim: Cross-command config-loading behavior in this CLI is shared enough that a
+    centralized substrate/shared-layer change can propagate the same runtime-awareness
+    behavior to many entrypoints.
+  evidence:
+  - type: file
+    path: src/theforge/cli/shared.py
+    description: Shared CLI support was updated as part of the cross-command handling
+      changes.
+  - type: file
+    path: src/theforge/cli/substrate.py
+    description: The substrate layer saw the largest change and served as the central
+      place for runtime/checkout validation behavior.
+  - type: file
+    path: src/theforge/cli/diagnose.py
+    description: Diagnose was one of the command entrypoints updated to use the shared
+      behavior.
+  - type: file
+    path: src/theforge/cli/status.py
+    description: Status was another entrypoint updated in the same pattern.
+  - type: file
+    path: src/theforge/cli/daemon.py
+    description: Daemon also received corresponding wiring to the shared config/runtime
+      behavior.
+  - type: diff
+    ref: b7443e1957b72920750a41623bf94da94537ccb9
+    description: This diff reference supports that the implementation was made as
+      a coordinated code change rather than in a single isolated command.
+learned_patterns:
+- stale-runtime-provenance
+- guard-error-normalization
+- shared-substrate-config-loading
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: f01e251b6b8d0be8
+    severity: P1
+    file: src/theforge/cli/forge_yaml_guard.py
+    description: When the story mutation guard encounters a malformed base forge.yaml
+      after the current config loads, forge check-story-config propagates ValueError
+      instead of printing the guard failure and returning a controlled nonzero status.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly surfaced two themes: provenance messaging must not over-attribute
+    config failures to version skew, and check-story-config must preserve controlled
+    guard-failure semantics.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 5.522778150000001
+  dominant_difficulty: Making runtime/checkout mismatch handling visible across many
+    CLI paths without changing the meaning or exception shape of unrelated config
+    errors.
