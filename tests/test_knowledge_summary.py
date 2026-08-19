@@ -45,6 +45,11 @@ def _audit() -> dict:
             "complexity_score": 5,
             "contract_change": False,
             "domains": ["backend", "testing"],
+            "degraded": False,
+            "degraded_reason": None,
+            "failure_action": None,
+            "risk_signals": [],
+            "complexity_source": "preflight",
         },
         "iterations": {"dev_iterations_productive": 2, "review_cycles_total": 3},
         "cost": {"total_usd": 4.25},
@@ -302,6 +307,15 @@ class TestArtifactComposition:
         assert artifact["changed_files"] == ["src/client.py", "tests/test_client.py"]
         assert artifact["domains"] == ["backend", "testing"]
         assert artifact["story_shape"]["work_type"] == "feature"
+        assert artifact["story_shape"]["provenance"] == {
+            "founded": True,
+            "degraded": False,
+            "degraded_reason": None,
+            "failure_action": None,
+            "risk_signals": [],
+            "complexity_source": "preflight",
+        }
+        assert artifact["domains_provenance"] == artifact["story_shape"]["provenance"]
         assert artifact["learned_patterns"] == ["retry-decorator"]
         assert artifact["complexity_signal"] == {
             "actual_iterations": 2,
@@ -340,6 +354,33 @@ class TestArtifactComposition:
             "src/client.py",
             "tests/test_client.py",
         ]
+
+    def test_degraded_preflight_provenance_is_preserved_in_story_shape_and_domains(self) -> None:
+        audit = _audit()
+        audit["preflight"].update(
+            {
+                "degraded": True,
+                "degraded_reason": "parse_error",
+                "failure_action": "proceed",
+                "risk_signals": ["prior_execution_on_branch"],
+                "complexity_source": "preflight_degraded_conservative",
+            }
+        )
+        validated = validate_proposed_summary(
+            _proposed(), run_id=RUN_ID, anchors=extract_anchors(audit)
+        )
+
+        artifact = build_summary_artifact(validated, audit)
+
+        assert artifact["story_shape"]["provenance"] == {
+            "founded": False,
+            "degraded": True,
+            "degraded_reason": "parse_error",
+            "failure_action": "proceed",
+            "risk_signals": ["prior_execution_on_branch"],
+            "complexity_source": "preflight_degraded_conservative",
+        }
+        assert artifact["domains_provenance"] == artifact["story_shape"]["provenance"]
 
 
 class TestPersistence:

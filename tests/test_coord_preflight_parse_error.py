@@ -28,6 +28,22 @@ from theforge.coordinator.state import Phase
 
 
 class TestParsePreflightVerdictUnit:
+    def test_prefers_yaml_fence_when_another_fence_comes_first(self):
+        output = """```python
+print("quoted offending snippet")
+```
+```yaml
+verdict: PROCEED
+reason: "structured classification"
+work_type: bug
+domains:
+  - testing
+```"""
+        verdict, reason, degraded = _parse_preflight_verdict(output)
+        assert verdict == "PROCEED"
+        assert degraded is False
+        assert reason == "structured classification"
+
     def test_nested_fence_inside_yaml_scalar_keeps_outer_payload(self):
         output = """```yaml
 verdict: PROCEED
@@ -386,3 +402,50 @@ class TestPreflightParseErrorRetry:
         ]
         assert result.phase == Phase.DONE
         assert result.success is True
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch("theforge.coordinator.plan_flow.run_agent")
+    @patch("theforge.coordinator.preflight_flow.run_agent")
+    @patch("theforge.coordinator.dev_phase.run_agent")
+    @patch_gate_shell()
+    def test_non_yaml_fence_before_yaml_block_keeps_real_classification(
+        self, mock_shell, mock_dev, mock_preflight, mock_plan_agent, mock_pool, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_preflight.return_value = _make_agent_result(
+            success=True,
+            output="""```python
+print("quoted offending snippet")
+```
+```yaml
+verdict: PROCEED
+reason: "classification after quoted code"
+complexity: small
+sufficiency: implementation_ready
+work_type: bug
+domains:
+  - testing
+likely_files:
+  - "src/theforge/coordinator/preflight.py"
+```""",
+            cost_usd=0.05,
+        )
+        mock_dev.return_value = _make_agent_result(success=True, output="Implemented.")
+        mock_plan_agent.side_effect = mock_dev
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+        ]
+
+        result = run_task(config, task)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.state.preflight_degraded is False
+        assert result.state.preflight_work_type == "bug"
+        assert result.state.preflight_domains == ["testing"]
+        assert result.state.preflight_likely_files == ["src/theforge/coordinator/preflight.py"]

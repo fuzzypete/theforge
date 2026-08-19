@@ -415,6 +415,21 @@ def _review_insight_blocks(audit: dict) -> tuple[list[dict], list[dict]]:
     return recurring, resolved
 
 
+def _preflight_provenance(preflight: dict) -> dict:
+    """Return the provenance block for summary fields sourced from preflight."""
+    degraded = bool(preflight.get("degraded"))
+    return {
+        "founded": not degraded,
+        "degraded": degraded,
+        "degraded_reason": _text(preflight.get("degraded_reason")) or None,
+        "failure_action": _text(preflight.get("failure_action")) or None,
+        "risk_signals": [
+            _text(signal) for signal in (preflight.get("risk_signals") or []) if _text(signal)
+        ],
+        "complexity_source": _text(preflight.get("complexity_source")),
+    }
+
+
 def build_summary_artifact(
     proposed: ProposedSummary,
     audit: dict,
@@ -441,6 +456,7 @@ def build_summary_artifact(
         if isinstance(entry, dict) and entry.get("path")
     ]
     recurring, resolved = _review_insight_blocks(audit)
+    provenance = _preflight_provenance(preflight)
 
     return {
         "schema_version": SUMMARY_SCHEMA_VERSION,
@@ -461,8 +477,10 @@ def build_summary_artifact(
             "complexity": _text(preflight.get("complexity")),
             "complexity_score": preflight.get("complexity_score"),
             "contract_change": preflight.get("contract_change"),
+            "provenance": provenance,
         },
         "domains": [_text(d) for d in (preflight.get("domains") or []) if _text(d)],
+        "domains_provenance": provenance,
         "changed_files": files,
         "what_changed": {
             "description": proposed.description,

@@ -147,7 +147,16 @@ def _audit() -> dict:
         "run_id": RUN_ID,
         "task": {"name": "Retry the client", "slug": "retry-client", "github_issue": 42},
         "timing": {"finished_at": "2026-08-15T12:00:00+00:00"},
-        "preflight": {"work_type": "feature", "complexity": "medium", "domains": ["backend"]},
+        "preflight": {
+            "work_type": "feature",
+            "complexity": "medium",
+            "domains": ["backend"],
+            "degraded": False,
+            "degraded_reason": None,
+            "failure_action": None,
+            "risk_signals": [],
+            "complexity_source": "preflight",
+        },
         "iterations": {"dev_iterations_productive": 2, "review_cycles_total": 1},
         "cost": {"total_usd": 4.25},
         "changed_files": {
@@ -216,8 +225,38 @@ class TestGeneration:
         assert artifact["what_was_learned"][0]["evidence"][0]["path"] == "src/client.py"
         assert artifact["changed_files"] == ["src/client.py"]
         assert artifact["generation"]["cost_usd"] == 0.12
+        assert artifact["story_shape"]["provenance"]["founded"] is True
         assert audit["knowledge_summary"]["status"] == "written"
         assert audit["knowledge_summary"]["written"] is True
+        assert len(calls) == 1
+
+    def test_a_degraded_preflight_run_marks_summary_provenance(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = _make_config(tmp_path)
+        audit = _audit()
+        audit["preflight"].update(
+            {
+                "degraded": True,
+                "degraded_reason": "parse_error",
+                "failure_action": "proceed",
+                "risk_signals": ["prior_execution_on_branch"],
+                "complexity_source": "preflight_degraded_conservative",
+            }
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(config, _done_result(), audit)
+
+        artifact = yaml.safe_load(outcome.path.read_text(encoding="utf-8"))
+        assert artifact["story_shape"]["provenance"] == {
+            "founded": False,
+            "degraded": True,
+            "degraded_reason": "parse_error",
+            "failure_action": "proceed",
+            "risk_signals": ["prior_execution_on_branch"],
+            "complexity_source": "preflight_degraded_conservative",
+        }
+        assert artifact["domains_provenance"] == artifact["story_shape"]["provenance"]
         assert len(calls) == 1
 
     def test_dispatch_is_tool_free_over_an_api_transport(
