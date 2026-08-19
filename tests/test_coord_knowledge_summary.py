@@ -50,7 +50,7 @@ from theforge.coordinator.audit_substrate import (
     MIGRATION_HELPERS,
 )
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
-from theforge.knowledge_summary import summary_path
+from theforge.knowledge_summary import SUMMARY_SCHEMA_VERSION, summary_path
 from theforge.sprint.status_reader import read_completed_status
 
 RUN_ID = "run-abc123"
@@ -220,6 +220,7 @@ class TestGeneration:
         path = outcome.path
         assert path == summary_path(tmp_path, RUN_ID)
         artifact = yaml.safe_load(path.read_text(encoding="utf-8"))
+        assert artifact["schema_version"] == SUMMARY_SCHEMA_VERSION
         assert artifact["run_id"] == RUN_ID
         assert artifact["authoritative_run_record"] == f".forge/audits/runs/{RUN_ID}.json"
         assert artifact["what_was_learned"][0]["evidence"][0]["path"] == "src/client.py"

@@ -31,7 +31,7 @@ from typing import Any
 
 import yaml
 
-SUMMARY_SCHEMA_VERSION = 1
+SUMMARY_SCHEMA_VERSION = 2
 
 # Where a summary lives, relative to the project root. Keyed by run_id (not
 # slug) so reruns of the same story never collide.

@@ -20,6 +20,7 @@ import pytest
 import yaml
 
 from theforge.knowledge_summary import (
+    SUMMARY_SCHEMA_VERSION,
     SummaryValidationError,
     build_summary_artifact,
     extract_anchors,
@@ -302,6 +303,7 @@ class TestArtifactComposition:
 
         artifact = build_summary_artifact(validated, audit, generation={"cost_usd": 0.12})
 
+        assert artifact["schema_version"] == SUMMARY_SCHEMA_VERSION
         assert artifact["run_id"] == RUN_ID
         assert artifact["authoritative_run_record"] == f".forge/audits/runs/{RUN_ID}.json"
         assert artifact["changed_files"] == ["src/client.py", "tests/test_client.py"]
