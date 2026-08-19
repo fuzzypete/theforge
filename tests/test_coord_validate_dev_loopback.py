@@ -20,6 +20,8 @@ from pathlib import Path
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
+    DEFAULT_STORY_DIFF,
+    _changed_files_response,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
@@ -57,6 +59,12 @@ def _gate_script(decisions: list[str], *, vary_output: bool = True):
             return (False, f"FAIL: tests failed{suffix}", 1, False)
         if "git status --porcelain" in cmd:
             return (True, "", 0, False)
+        # The review fixtures' P1s cite src/foo.py; report it as part of the
+        # story's diff so they ground (#2525) and the DEV↔VALIDATE seam under
+        # test is what drives the cycles.
+        grounded = _changed_files_response(cmd, DEFAULT_STORY_DIFF)
+        if grounded is not None:
+            return grounded
         stale = _handle_stale_check_cmd(cmd)
         if stale is not None:
             ok, out = stale
@@ -412,6 +420,12 @@ def test_stall_brake_fingerprints_the_whole_gate_output_not_the_tail(tmp_path: P
             return (False, f"error in module_{calls['n']}.py{footer}", 1, False)
         if "git status --porcelain" in cmd:
             return (True, "", 0, False)
+        # The review fixtures' P1s cite src/foo.py; report it as part of the
+        # story's diff so they ground (#2525) and the DEV↔VALIDATE seam under
+        # test is what drives the cycles.
+        grounded = _changed_files_response(cmd, DEFAULT_STORY_DIFF)
+        if grounded is not None:
+            return grounded
         stale = _handle_stale_check_cmd(cmd)
         if stale is not None:
             ok, out = stale

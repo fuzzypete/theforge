@@ -9,6 +9,7 @@ from unittest.mock import patch
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
+    DEFAULT_STORY_DIFF,
     _make_agent_result,
     _make_config,
     _make_task,
@@ -35,6 +36,11 @@ from theforge.coordinator.preflight_cache import _story_content_hash
 from theforge.coordinator.state import CoordinatorState, Phase
 from theforge.review import ReviewFinding
 from theforge.task import TaskStory
+
+# Every P1 these fixtures raise cites a file inside the story's own diff, so
+# review's diff-grounding precondition (#2525) passes and the behaviour under
+# test decides the outcome.
+_STORY_DIFF = [*DEFAULT_STORY_DIFF, "src/cli.py"]
 
 # ── Dev model escalation tests ────────────────────────────────────────
 
@@ -403,7 +409,7 @@ class TestDevModelEscalationIntegration:
         workspace.mkdir()
         cached_state = _with_cache_snapshot(_cached_proceed_state_with_complexity())
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="implemented")
@@ -460,7 +466,7 @@ class TestDevModelEscalationIntegration:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         dev_results_list = [
@@ -531,7 +537,7 @@ class TestDevModelEscalationIntegration:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result() for _ in range(3)]
@@ -581,7 +587,7 @@ class TestDevModelEscalationIntegration:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result() for _ in range(6)]
@@ -628,7 +634,7 @@ class TestDevModelEscalationIntegration:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [
@@ -679,7 +685,7 @@ class TestDevModelEscalationIntegration:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
 
@@ -739,7 +745,7 @@ class TestDevModelEscalationIntegration:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
 
         # Dev result costs more than budget (0.50 > 0.01)
         expensive_dev = _make_agent_result(success=True, output="Done.", cost_usd=0.50)
@@ -789,7 +795,7 @@ class TestDevModelEscalationIntegration:
         second_workspace = tmp_path / second_task.slug
         second_workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
 
@@ -824,7 +830,9 @@ class TestDevModelEscalationIntegration:
         assert first_result.state.dev_escalated is True
         assert "opus" in first_run_profiles
 
-        mock_shell.side_effect = _shell_with_gate(second_workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(
+            second_workspace, "PASS", changed_files=_STORY_DIFF
+        )
         second_run_profiles: list[str] = []
 
         def second_run_agent(**kwargs):
@@ -898,7 +906,7 @@ class TestAutoModelEscalationFlag:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result() for _ in range(4)]
@@ -953,7 +961,7 @@ def test_dev_startup_failure_message_mentions_launcher(tmp_path: Path) -> None:
 
     with (
         patch_gate_shell(
-            side_effect=_shell_with_gate(workspace, "PASS"),
+            side_effect=_shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF),
         ),
         patch("theforge.coordinator.dev_phase.run_agent", return_value=startup_failure),
         patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),

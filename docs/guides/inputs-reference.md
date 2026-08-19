@@ -1412,7 +1412,50 @@ silently rewritten.
 After parsing, findings pass through mechanical disposition classification
 (`coordinator/review_phase.py`): a P1 asserting a test/build failure that a
 PASS gate mechanically disproves is downgraded (`gate_contradicted`) unless
-that reviewer also reported `matches_spec: false`. Plan review is a separate
+that reviewer also reported `matches_spec: false`.
+
+Before any of that, a P1 must be **diff-grounded** to be eligible to block: the
+file it cites has to appear in the story's own merge-base-to-HEAD diff. A P1
+naming a file this story never touched — or citing no resolvable file, or raised
+when the diff could not be computed — is recorded as `diff_ungrounded`. It stays
+in `finding_registry` and appears under `non_blocking_p1s` in the audit record,
+but it blocks nothing, is not promoted by `matches_spec: false` or by
+`allow_net_new_bypass: false`, and is not handed back to the dev agent as work to
+fix. This is what keeps a sibling story's acceptance criteria from failing an
+unrelated story batched into the same sprint. The same check runs on the
+review-only path that sprint batch members go through, where a `REQUEST_CHANGES`
+whose every P1 is `diff_ungrounded` completes the story instead of escalating —
+recorded as `REQUEST_CHANGES→diff_ungrounded_pass`, not as a plain approval.
+
+`diff_ungrounded` describes **one cycle's diff, not the finding**. The verdict is
+re-decided from scratch every review cycle, in both directions: a P1 suppressed
+in cycle 1 blocks again in cycle 2 if the dev has since touched the file it
+cites, because at that point it is squarely about this change. Nothing carries
+the suppression forward — the classifier gives a recurring finding its ordinary
+disposition and grounding is the only thing that writes `diff_ungrounded`.
+
+Inside a **cost-aware batch group** the branch carries several independent
+stories, so the branch diff is the group's change and not any one member's.
+There the file set is narrowed to the commits the shared dev handoff attributes
+to that member (the `slug` key each `commits` entry must carry). Being a batch
+member is what selects this treatment, not whether the handoff arrived:
+attribution that is missing, absent entirely, or unusable yields an *unknown*
+file set, which grounds nothing — never a fallback to the group's combined diff,
+which is what would let one member's findings decide another's outcome. One
+exception keeps this from excusing unfinished work: a member whose own file set
+is known and **empty** has no change to judge, so its review still blocks.
+
+The handoff is agent output, so its `sha` values are untrusted input. Each is
+validated as a bare hex commit id (7–40 hex chars) before any git call sees it,
+and the attribution path runs git through argv rather than a shell. A `sha` that
+is a revision expression (`HEAD~2`), a ref name, or carries shell metacharacters
+is refused as data — it invalidates that member's attribution rather than being
+sanitised into a command.
+
+The audit record's `review_diff_grounding` names the file set, where it came
+from (`branch_diff` or `batch_commit_attribution`), whether it could be
+established, and which findings failed to ground, so a suppression can be
+re-derived rather than taken on trust. Plan review is a separate
 contract with its own corroboration rule — single-reviewer, first-occurrence
 plan P1s are downgraded to advisory `P1-impl` (`src/theforge/review.py`).
 

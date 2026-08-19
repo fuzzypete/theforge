@@ -45,7 +45,10 @@ from theforge.config import (
 from theforge.config.model_identity import DEFAULT_PHASE_ELIGIBILITY, PHASE_KNOWLEDGE_SUMMARY
 from theforge.config.models import AGENT_REGISTRY
 from theforge.coordinator import knowledge_summary_flow
-from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
+from theforge.coordinator.audit_substrate import (
+    CURRENT_RECORD_SCHEMA_VERSION,
+    MIGRATION_HELPERS,
+)
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.knowledge_summary import summary_path
 from theforge.sprint.status_reader import read_completed_status
@@ -751,4 +754,10 @@ class TestTerminalWriterSeams:
 
 
 def test_audit_schema_version_exposes_knowledge_summary_status() -> None:
-    assert CURRENT_RECORD_SCHEMA_VERSION == 30
+    # v30 is where knowledge_summary entered the record. Pinning equality made
+    # this test fail on every later bump for reasons that have nothing to do
+    # with knowledge summaries; what it means to assert is that the field's
+    # version has been reached and its migration is registered, both of which
+    # survive later fields being added (#2525 bumped to v31).
+    assert CURRENT_RECORD_SCHEMA_VERSION >= 30
+    assert 29 in MIGRATION_HELPERS

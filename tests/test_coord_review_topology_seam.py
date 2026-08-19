@@ -48,6 +48,29 @@ _WALK = [
 ]
 
 
+#: Every path this module's findings cite. The dev commit touches all of them so
+#: each finding grounds against the story's diff (#2525) and the topology-walk
+#: detector — not review's diff-grounding precondition — is what decides these
+#: outcomes. A walk that relocates across files the story never touched is a
+#: different scenario, covered in the diff-grounding suite.
+_CITED_FILES = [
+    "src/routing/dispatch.py",
+    "src/routing/fallback.py",
+    "src/routing/transport.py",
+    "src/routing/adaptive.py",
+    "src/b.py",
+    "src/d.py",
+    "src/e.py",
+    "src/f.py",
+    "src/p.py",
+    "src/q.py",
+    "src/r.py",
+    "src/x.py",
+    "src/y.py",
+    "src/z.py",
+]
+
+
 def _init_repo_with_dev_commit(path: Path) -> None:
     subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
     subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
@@ -57,6 +80,10 @@ def _init_repo_with_dev_commit(path: Path) -> None:
     subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
     subprocess.run(["git", "checkout", "-q", "-b", "forge/test-task"], cwd=path, check=True)
     (path / "src.py").write_text("ok\n", encoding="utf-8")
+    for cited in _CITED_FILES:
+        target = path / cited
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("ok\n", encoding="utf-8")
     subprocess.run(["git", "add", "."], cwd=path, check=True)
     subprocess.run(["git", "commit", "-q", "-m", "feat: implement"], cwd=path, check=True)
 
