@@ -1,0 +1,88 @@
+schema_version: 1
+run_id: eb45f2b9ab9f
+authoritative_run_record: .forge/audits/runs/eb45f2b9ab9f.json
+generated_at: '2026-08-19T17:25:03.147835+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0085625
+story:
+  slug: issue-2546
+  name: Run summaries are written to a tracked directory that nothing stages, so a
+    corpus meant to be shared exists only on the machine that produced it
+  github_issue: 2546
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+domains:
+- backend
+- cli
+changed_files: &id001
+- src/theforge/sprint/audit_publish.py
+- tests/test_sprint_audit_publish.py
+- tests/test_sprint_parallel.py
+what_changed:
+  description: The sprint publish path was updated to publish knowledge summaries
+    alongside story run audits, so summaries written under .forge/knowledge/summaries
+    are staged and committed by the same terminal artifact-publish step. Tests were
+    expanded to cover combined publishing and summary-only publishing cases, with
+    a small related test adjustment in sprint parallel coverage.
+  approach: The change extended the existing git-backed audit publish flow to treat
+    summaries as a second durable artifact tree, then added focused tests around directory-specific
+    dirty-state handling and publish behavior.
+  files_modified: *id001
+what_was_learned:
+- claim: When multiple durable artifact directories are published by one git-backed
+    flow, tests need to exercise each directory independently as well as together,
+    because combined fixtures can hide regressions in per-directory dirty-state handling.
+  evidence:
+  - type: review_finding
+    finding_id: 01cf5578ef52e9dc
+    description: Review identified that tests writing both artifact types missed the
+      summaries-only-dirty branch, showing the need for independent coverage per published
+      directory.
+  - type: file
+    path: tests/test_sprint_audit_publish.py
+    description: This test file was expanded during the run to cover publish behavior
+      beyond the original combined-artifact setup.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly noted focused coverage for combined and
+      summary-only runs.
+- claim: Once a publish flow handles more than one artifact tree, failure reporting
+    needs to name the specific artifact being inspected, staged, or committed so publish-state
+    diagnostics remain accurate.
+  evidence:
+  - type: review_finding
+    finding_id: f1ec93a4fee5803d
+    description: Review found that summary-directory failures were still reported
+      as audit failures, demonstrating the need for artifact-specific messaging in
+      shared publish logic.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: The publish implementation was the place where staging/commit behavior
+      and its operator-facing failure messages were adjusted.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval recorded that the prior finding about per-directory
+      failure labels had been resolved.
+learned_patterns:
+- shared-artifact-publish
+- per-directory-dirty-state-tests
+- artifact-specific-failure-labels
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review repeatedly focused on per-directory behavior inside the shared publish
+    path: missing summary-only coverage first, then incorrect artifact naming in failure
+    messages.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 4.0405595
+  dominant_difficulty: Extending a single-directory publish mechanism into a multi-directory
+    flow without losing correct branch coverage and artifact-specific diagnostics.

@@ -1,0 +1,155 @@
+schema_version: 1
+run_id: 73d7de156730
+authoritative_run_record: .forge/audits/runs/73d7de156730.json
+generated_at: '2026-08-19T18:52:49.232081+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01384375
+story:
+  slug: issue-2542
+  name: A preflight response that fails to parse is recorded as a founded classification,
+    and the substituted values are cached and summarised as measured
+  github_issue: 2542
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+domains:
+- backend
+changed_files: &id001
+- src/theforge/coordinator/preflight.py
+- src/theforge/coordinator/preflight_cache.py
+- src/theforge/knowledge_summary.py
+- tests/test_coord_knowledge_summary.py
+- tests/test_coord_preflight_cached.py
+- tests/test_coord_preflight_parse_error.py
+- tests/test_coord_preflight_sufficiency.py
+- tests/test_coord_preflight_verdict.py
+- tests/test_domain_routing.py
+- tests/test_knowledge_summary.py
+- tests/test_preflight_degraded_disclosure.py
+- tests/test_preflight_work_type.py
+what_changed:
+  description: The run changed preflight handling so parse-failed classifications
+    are recorded and propagated as degraded rather than appearing founded, and it
+    updated knowledge summary output to carry provenance for substituted values. It
+    also fixed fenced-response extraction so longer outer fences can contain inner
+    triple-backtick snippets without truncating later classification fields.
+  approach: The implementation reshaped preflight parsing and fallback flow around
+    explicit degraded provenance, preserved that state through cache reuse and summary
+    generation, and added targeted regression tests for parse errors, cached results,
+    disclosure, domain routing, work type, verdict, sufficiency, and summary artifacts.
+  files_modified: *id001
+what_was_learned:
+- claim: Structured-response extractors that recover YAML from fenced text need closing-fence
+    matching that respects outer fence length, or inner shorter snippets can truncate
+    later fields and force fallback values.
+  evidence:
+  - type: review_finding
+    finding_id: a7a74def7941b1d3
+    description: This finding documented that a four-backtick outer fence was truncated
+      by an inner triple-backtick snippet, causing later keys such as work_type and
+      domains to fall back to defaults.
+  - type: review_finding
+    finding_id: 967370d084eee0c1
+    description: This finding recorded the mismatch between the extractor's stated
+      longer-fence behavior and the implementation that discarded content after the
+      first inner snippet.
+  - type: file
+    path: tests/test_coord_preflight_parse_error.py
+    description: The added parser regression tests cover nested-fence parse behavior
+      and degraded handling after parse failure.
+- claim: If preflight substitutes fallback values after a parse failure, degraded
+    provenance has to survive caching, reuse, and summary generation so stored artifacts
+    do not later resemble founded classifier output.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/preflight.py
+    description: This file contains the coordinator-side preflight parsing and fallback
+      logic where degraded provenance was made explicit.
+  - type: file
+    path: src/theforge/coordinator/preflight_cache.py
+    description: This file was updated so cached preflight results preserve the degraded
+      provenance state when reused.
+  - type: file
+    path: src/theforge/knowledge_summary.py
+    description: This file was updated so persisted summaries include provenance information
+      for carried-forward preflight-derived fields.
+  - type: file
+    path: tests/test_coord_preflight_cached.py
+    description: The cache tests verify that degraded provenance survives cache storage
+      and reuse.
+  - type: file
+    path: tests/test_preflight_degraded_disclosure.py
+    description: The disclosure tests verify that degraded status is surfaced rather
+      than hidden in substituted classifications.
+- claim: When persisted knowledge summary fields gain new provenance structure, the
+    artifact schema version needs to distinguish pre-change and post-change shapes.
+  evidence:
+  - type: review_finding
+    finding_id: 3abeeba0088f8d06
+    description: This finding noted that provenance was added to summary artifacts
+      while schema_version remained unchanged even though the artifact shape differed.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 review explicitly called out that the schema bump was part
+      of the reviewed state alongside the other fixes.
+  - type: review_cycle
+    cycle: '4'
+    description: Cycle 4 approval confirmed the final state, including the summary
+      provenance work, after requested fixes were applied.
+- claim: Changes under the durable .forge knowledge corpus can affect unrelated prior-run
+    data and need to preserve existing artifacts when the branch is merged.
+  evidence:
+  - type: review_finding
+    finding_id: cdfa4b771112d2e0
+    description: This finding recorded that the patch had introduced a generated knowledge
+      summary artifact for an unrelated run into the durable corpus.
+  - type: review_finding
+    finding_id: 208557aeb2a03f3d
+    description: This finding recorded that the branch had deleted an unrelated upstream
+      knowledge summary and that restoring it was necessary because prior-run selection
+      reads that corpus.
+  - type: review_cycle
+    cycle: '4'
+    description: The final approval states that the unrelated knowledge summary artifact
+      was restored byte-identical in the reviewed result.
+learned_patterns:
+- degraded-provenance-persistence
+- nested-fence-safe-extraction
+- summary-schema-shape-versioning
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: a7a74def7941b1d3
+    severity: P1
+    file: src/theforge/coordinator/preflight.py
+    description: When a preflight response is wrapped in a four-backtick YAML fence
+      and contains an unindented triple-backtick snippet before later classification
+      keys, the parser stops at the inner snippet and later keys such as work_type
+      and domains fall back to defaults.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 208557aeb2a03f3d
+    severity: P1
+    file: .forge/knowledge/summaries/cf857907b6ed.yaml
+    description: The branch removes the persisted knowledge summary for run cf857907b6ed,
+      an unrelated story's artifact that exists on the upstream default branch, so
+      merging the branch deletes that run's story shape, domains, learned claims and
+      review insights from the corpus that prior-run selection reads.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review repeatedly focused on two durability boundaries: nested-fence parsing
+    had to stop truncating valid structured output, and degraded provenance had to
+    remain intact through cache and knowledge-summary persistence.'
+complexity_signal:
+  actual_iterations: 5
+  review_cycles: 4
+  plan_regenerations: null
+  cost_usd: 19.60668025
+  dominant_difficulty: Keeping parse-failure fallback semantics consistent across
+    parsing, cache reuse, persisted summaries, and durable knowledge artifacts without
+    losing provenance at any boundary.
