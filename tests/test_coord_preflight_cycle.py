@@ -8,6 +8,7 @@ from unittest.mock import patch
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
+    DEFAULT_STORY_DIFF,
     PREFLIGHT_ALREADY_DONE,
     _as_detailed,
     _handle_stale_check_cmd,
@@ -29,6 +30,11 @@ from theforge.config import (
 )
 from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import Phase
+
+# Every P1 these fixtures raise cites a file inside the story's own diff, so
+# review's diff-grounding precondition (#2525) passes and the behaviour under
+# test decides the outcome.
+_STORY_DIFF = [*DEFAULT_STORY_DIFF, "src/cli.py"]
 
 
 def _make_smart_config(
@@ -118,7 +124,7 @@ class TestApprovePathCycleHistory:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_plan_agent.side_effect = mock_agent
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result(success=True, output="Done.")
@@ -159,7 +165,7 @@ class TestEscalationNoteOnRejectPath:
         workspace = tmp_path / task.slug
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
 
         # Capture prompts passed to dev agent
         captured_prompts: list[str] = []
@@ -288,7 +294,7 @@ class TestAlreadyDoneOverride:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _make_agent_result(
             success=True, output=PREFLIGHT_ALREADY_DONE
         )

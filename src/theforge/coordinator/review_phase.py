@@ -39,8 +39,15 @@ from theforge.symptom_test_classifier import escalate_symptom_test_findings
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from . import story_budget as _story_budget
+from .batch_diff import BatchReviewContext, batch_member_story_diff, latest_dev_handoff
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
+from .diff_grounding import (
+    GroundingResult,
+    StoryDiff,
+    ground_p1_records,
+    is_diff_grounded,
+)
 from .escalate_actions import (
     ACCEPT_UNAVAILABLE_REASON,
     NAMED_ACTION_UNAVAILABLE_REASON,
@@ -924,6 +931,56 @@ def _maybe_enter_p2_cleanup(
 # ── Review-phase helpers ──────────────────────────────────────────────
 
 
+def _story_diff_for_review(
+    state: CoordinatorState,
+    task: TaskStory,
+    workspace_path: Path,
+    *,
+    batch_context: BatchReviewContext | None = None,
+) -> StoryDiff | None:
+    """Return this story's own file set, or None to use the branch diff.
+
+    Only one situation makes the branch diff the wrong answer: a cost-aware
+    batch group, where several independent stories share one branch. There the
+    set is narrowed to the commits the shared handoff attributes to this story,
+    so a sibling member's findings cannot ground against this member (#2525).
+
+    Membership is decided by the *context object*, never by whether a handoff
+    came with it. A member whose dev pass produced no structured handoff is
+    still on a shared branch, so it gets an unavailable batch file set — which
+    grounds nothing — rather than the branch diff, which would ground its
+    siblings' findings against it.
+
+    The batch leader is detected from ``task.batch_members`` and reads the
+    handoff its own DEV phase captured; a non-leader member is reviewed through
+    the review-only path with a fresh state, so its caller supplies the context.
+    """
+    if batch_context is not None:
+        return batch_member_story_diff(workspace_path, batch_context.dev_handoff, task.slug)
+    if task.batch_members:
+        return batch_member_story_diff(workspace_path, latest_dev_handoff(state), task.slug)
+    return None
+
+
+def _record_grounding(state: CoordinatorState, grounding: GroundingResult) -> None:
+    """Record what this cycle's findings were grounded against, for the audit.
+
+    Suppressing findings against a file set the record does not name would make
+    the suppression unreviewable — the operator could see *that* a P1 was set
+    aside but not *what* it was checked against (conventions #6).
+    """
+    state.review_diff_grounding = {
+        "review_cycle": state.review_cycle,
+        **grounding.story_diff.as_audit_record(),
+        "ungrounded_p1_ids": [record.finding_id for record in grounding.ungrounded],
+        # Findings that stopped being suppressed this cycle because the change
+        # grew to include the file they cite. A suppression that silently lifts
+        # is as much a decision as one that starts, and this is the only place
+        # the reversal is visible.
+        "restored_p1_ids": [record.finding_id for record in grounding.restored],
+    }
+
+
 REVIEW_INFRASTRUCTURE_PARSE_FAILURE_REASON = (
     "Review infrastructure failure: all reviewers failed to produce parseable output. "
     "This is a review-layer defect, not an implementation defect — DEV cannot resolve it. "
@@ -1710,6 +1767,53 @@ def _run_review_phase(
     _allow_net_new_bypass = config.finding_classifier.allow_net_new_bypass
     _log(f"  [finding_classifier] allow_net_new_bypass={_allow_net_new_bypass}")
 
+    # ── Diff grounding (eligibility precondition for every blocking path) ─────
+    # A P1 may only decide this story's outcome when it is about this story's
+    # change. Grounding is checked against the story's whole merge-base-to-HEAD
+    # diff — NOT state.last_dev_start_commit, which describes only the latest dev
+    # iteration and would strand findings about files touched in an earlier one.
+    # A finding that cannot be tied to the diff (file not touched, no resolvable
+    # file cited, diff uncomputable) is recorded as diff_ungrounded: visible in
+    # the registry and in the audit's non_blocking_p1s, blocking nothing, and not
+    # handed back to dev as work to fix. This runs BEFORE the gate-contradiction
+    # downgrade, the AC-violation override, the allow_net_new_bypass promotion,
+    # and the cycle blocking checks, so no promotion path can reach a blocking
+    # disposition without having passed it (#2525).
+    _grounding = ground_p1_records(
+        _classified,
+        workspace_path,
+        config.workspace.base_branch,
+        story_diff=_story_diff_for_review(state, task, workspace_path),
+        log=_log,
+    )
+    _record_grounding(state, _grounding)
+    _story_changed_files = _grounding.changed_files
+    _ungrounded_p1s = list(_grounding.ungrounded)
+    # True when this cycle produced P1 evidence and none of it survived grounding.
+    # No disposition assigned below moves a record into or out of diff_ungrounded,
+    # so this is stable for the rest of the phase. The story-changed-nothing case
+    # is excluded: with no change to judge, "no finding is about this change" is
+    # not a reason to stop blocking.
+    _only_ungrounded_p1s = _grounding.only_ungrounded and not _grounding.story_changed_nothing
+    # An ungrounded finding is not work for the dev agent. When a retry is driven
+    # by some OTHER, grounded blocker, the handoff must not also carry back a
+    # sibling story's acceptance criteria as something to fix — the dev agent has
+    # no way to satisfy it and would churn trying. The findings stay in the
+    # registry and in the audit; only the actionable handoff is narrowed. P2s are
+    # left alone: they are advisory, never decide the outcome, and the P2 policy
+    # already asks the dev to judge proximity for itself (#2525).
+    _dev_handoff_review = parsed_review
+    if _ungrounded_p1s:
+        _dev_handoff_review = _dc_replace(
+            parsed_review,
+            findings=[
+                f
+                for f in parsed_review.findings
+                if f.severity != "P1"
+                or is_diff_grounded(f.file, _story_changed_files, workspace_path)
+            ],
+        )
+
     # ── Gate-contradiction downgrade (assertion-based) ────────────────────────
     # A PASS gate mechanically contradicts exactly one class of P1: a claim that
     # tests/build/lint are currently FAILING.  It has no bearing on a claim that
@@ -1724,6 +1828,11 @@ def _run_review_phase(
     if _last_gate == "PASS":
         for _rec in _classified:
             if _rec.severity != "P1":
+                continue
+            if _rec.disposition == "diff_ungrounded":
+                # Already non-blocking for a stronger reason; keep the more
+                # specific disposition rather than restating it as a gate
+                # contradiction.
                 continue
             if asserts_gate_verifiable_failure(_rec.description):
                 _log(
@@ -1741,6 +1850,9 @@ def _run_review_phase(
     # AFTER the gate-contradiction downgrade and inspects P1s regardless of their
     # current disposition, so no suppression can run ahead of the guard written to
     # catch exactly this error, whatever order dispositions were assigned in.
+    # It does NOT re-block a diff_ungrounded P1: a reviewer's self-reported
+    # matches_spec flag is not evidence that a finding about a file this story
+    # never touched describes this story's change (#2525).
     _ac_failing_reporters = {
         name for name, rr in state.last_cycle_reviewer_results if not rr.story_matches
     }
@@ -1778,6 +1890,10 @@ def _run_review_phase(
         # override above has already re-blocked any gate_contradicted P1 from a
         # matches_spec=false reviewer, so only genuinely test-failure-asserting
         # findings remain gate_contradicted here.
+        # diff_ungrounded is excluded for the same structural reason: a finding
+        # that could not be checked against this story's change is not evidence
+        # about it, so it is neither blocking nor eligible for any promotion
+        # below (#2525).
         _BLOCKING_DISPOSITIONS = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
         _blocking_p1 = any(
             r.severity == "P1" and r.disposition in _BLOCKING_DISPOSITIONS for r in _classified
@@ -1791,6 +1907,8 @@ def _run_review_phase(
         # When allow_net_new_bypass is disabled, net-new P1s are treated as blocking.
         # Persist the disposition change so the audit trail records these as blocking,
         # not as net_new (which audit.py would serialize under non_blocking_p1s).
+        # Only grounded net-new P1s reach here: ungrounded ones were already
+        # re-dispositioned above and are absent from _nonblocking_p1s.
         if not _allow_net_new_bypass and _nonblocking_p1s:
             _blocking_p1 = True
             for _rec in _nonblocking_p1s:
@@ -1804,20 +1922,26 @@ def _run_review_phase(
         # Fallback: if the merged review has P1s but none were classified (e.g., synthetic
         # P1 injection when all reviewers failed to produce parseable output), block
         # traditionally to avoid silently passing an unknown failure.
-        # gate_contradicted P1s are accounted for and must not trigger this fallback.
+        # gate_contradicted and diff_ungrounded P1s are accounted for and must not
+        # trigger this fallback.
         if (
             not _blocking_p1
             and not _nonblocking_p1s
             and not _gate_contradicted_p1s
+            and not _ungrounded_p1s
             and _p1_count > 0
         ):
             _blocking_p1 = True
     else:
         # Cycle 1: any P1 is blocking (no prior baseline to classify against).
-        # Gate-contradicted P1s are non-blocking even on cycle 1.
+        # Gate-contradicted and diff-ungrounded P1s are non-blocking even on
+        # cycle 1 — "first cycle" is not a reason to let an uncheckable finding
+        # decide the outcome.
         if _classified:
             _blocking_p1 = any(
-                r.severity == "P1" and r.disposition != "gate_contradicted" for r in _classified
+                r.severity == "P1"
+                and r.disposition not in ("gate_contradicted", "diff_ungrounded")
+                for r in _classified
             )
         else:
             _blocking_p1 = _p1_count > 0
@@ -1834,12 +1958,26 @@ def _run_review_phase(
     # early-termination branch finalize DONE ahead of it. Merged story_matches is
     # all()-over-valid-reviewers, so parse-failed reviewers (which default
     # story_matches=False) do not spuriously block a clean fallback approval.
+    # One exception: when this cycle's ONLY P1 evidence is diff_ungrounded, the
+    # criterion the reviewer says is unsatisfied is the criterion those findings
+    # describe — and they were just established to be about something other than
+    # this change. Re-blocking here would reinstate through the merged flag
+    # exactly what was made non-blocking finding-by-finding (#2525). A
+    # matches_spec=false backed by a grounded P1, or by no P1 evidence at all
+    # (nothing to ground, so nothing was suppressed), still blocks as before.
     if not parsed_review.story_matches and not _blocking_p1:
-        _blocking_p1 = True
-        _log(
-            "  ✗ REVIEW   matches_spec=false — story does not match spec; blocking "
-            "approval on the unsatisfied criterion (independent of P1 count)"
-        )
+        if _only_ungrounded_p1s:
+            _log(
+                f"  ↷ REVIEW   matches_spec=false not blocking — all "
+                f"{len(_ungrounded_p1s)} P1(s) backing it are diff_ungrounded "
+                f"(no finding checkable against this story's diff)"
+            )
+        else:
+            _blocking_p1 = True
+            _log(
+                "  ✗ REVIEW   matches_spec=false — story does not match spec; blocking "
+                "approval on the unsatisfied criterion (independent of P1 count)"
+            )
 
     # ── Trajectory classification (in-process) ─────────────────────────────
     # Runs for EVERY successfully merged parsed_review (APPROVE, exhausted, retry).
@@ -2278,7 +2416,7 @@ def _run_review_phase(
         state.error = None
         state.escalate_kind = None
         state.review_topology_triggered = False
-        state.last_review_findings = review_to_dev_handoff(parsed_review)
+        state.last_review_findings = review_to_dev_handoff(_dev_handoff_review)
         state.budget.reset_cycle()
         state.human_feedback = None
         state.retry_reason = RetryReason.REVIEW_CHANGES
@@ -2341,7 +2479,7 @@ def _run_review_phase(
             duration_s=round(_review_elapsed, 2),
         )
     _append_cycle_history(state, parsed_review)
-    state.last_review_findings = review_to_dev_handoff(parsed_review)
+    state.last_review_findings = review_to_dev_handoff(_dev_handoff_review)
     state.budget.reset_cycle()
     state.human_feedback = None
     state.retry_reason = RetryReason.REVIEW_CHANGES
@@ -2363,10 +2501,17 @@ def _run_review_only_phase(
     notify: bool,
     logger: StructuredLogger | None,
     task_start: float,
+    batch_context: BatchReviewContext | None = None,
 ) -> CoordinatorResult:
     """Run the REVIEW phase for the review-only entry point.
 
     No DEV retry: REQUEST_CHANGES → ESCALATE immediately.
+
+    ``batch_context`` is supplied when this story is a non-leader member of a
+    batch group being reviewed on the leader's worktree. Its presence — not the
+    handoff it carries — is what tells grounding the branch holds more than this
+    story, so the member is judged against its own commits rather than its
+    siblings' changes too (#2525).
     """
     state.phase = Phase.REVIEW
     if logger:
@@ -2486,10 +2631,71 @@ def _run_review_only_phase(
 
     _log_review_findings(parsed_review, _ro_p1, _ro_p2, _ro_cost, logger, task)
 
-    if parsed_review.verdict == "APPROVE":
+    # ── Diff grounding (same eligibility precondition as the retry loop) ───────
+    # Review-only has no DEV retry, so its REQUEST_CHANGES → ESCALATE step is the
+    # whole outcome decision — and it is the path sprint batch members are
+    # reviewed through, i.e. exactly the batching scenario #2525 was reported
+    # from. It must therefore run the same grounding check, not a weaker one: a
+    # P1 naming a file this story never touched cannot fail it here either.
+    # Classifying the cycle first is what puts the dispositions in
+    # state.finding_registry, so the audit records why a finding was set aside.
+    #
+    # For a batch member the worktree's branch diff is the whole group's change,
+    # so grounding against it would let a sibling member's findings ground here.
+    # batch_context narrows the set to this member's own commits, and when its
+    # attribution is unusable leaves the set unknown rather than falling back to
+    # the branch — a fallback would reinstate exactly the cross-member grounding
+    # it exists to prevent.
+    from theforge.finding_classifier import update_finding_registry as _update_finding_registry
+
+    _classified_ro = _update_finding_registry(
+        state=state,
+        cycle_results=list(state.last_cycle_reviewer_results),
+        workspace_path=workspace_path,
+        cycle_num=state.review_cycle,
+        prev_commit=None,
+    )
+    _grounding_ro = ground_p1_records(
+        _classified_ro,
+        workspace_path,
+        config.workspace.base_branch,
+        story_diff=_story_diff_for_review(
+            state, task, workspace_path, batch_context=batch_context
+        ),
+        log=_log,
+    )
+    _record_grounding(state, _grounding_ro)
+
+    # A REQUEST_CHANGES whose every P1 is ungrounded rests entirely on evidence
+    # that was just established not to describe this change — including its
+    # matches_spec flag, which the same reviewer derived from those same
+    # findings. Treat it as an approval rather than a rejection nobody can act
+    # on. Fails closed everywhere else: a parse failure, a verdict with no P1
+    # evidence to ground, a single grounded P1, or a story whose own file set is
+    # known to be empty — nothing was implemented, so there is nothing to approve
+    # and the review must stay free to say so.
+    _ro_ungrounded_pass = (
+        parsed_review.verdict != "APPROVE"
+        and not parsed_review.parse_errors
+        and _grounding_ro.only_ungrounded
+        and not _grounding_ro.story_changed_nothing
+    )
+    if _ro_ungrounded_pass:
+        _log(
+            f"  ↷ REVIEW   REQUEST_CHANGES not blocking — all "
+            f"{len(_grounding_ro.ungrounded)} P1(s) are diff_ungrounded "
+            f"(no finding checkable against this story's diff)"
+        )
+
+    if parsed_review.verdict == "APPROVE" or _ro_ungrounded_pass:
         state.phase = Phase.DONE
         _dur = _fmt_duration(_ro_elapsed)
-        _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  {_fmt_cost(_ro_cost)}  {_dur}")
+        # Name the basis rather than flattening both to APPROVE: a reviewer that
+        # approved and one whose objections were all unverifiable against this
+        # diff are different outcomes, and the operator reading the run needs to
+        # tell them apart.
+        _ro_label = "REQUEST_CHANGES→diff_ungrounded_pass" if _ro_ungrounded_pass else "APPROVE"
+        _log(f"  ✓ REVIEW   {_ro_label}  {_ro_p1} P1  {_ro_p2} P2  {_fmt_cost(_ro_cost)}  {_dur}")
         _log(
             f"✓ DONE   total={_fmt_cost_total(state.total_cost_measured, state.total_cost)}"
             f"  {_fmt_duration(_ro_elapsed)}"
@@ -2498,7 +2704,7 @@ def _run_review_only_phase(
             logger._safe_emit(
                 "phase_end",
                 phase="REVIEW",
-                outcome="approve",
+                outcome="approve_diff_ungrounded" if _ro_ungrounded_pass else "approve",
                 cost_usd=_round_cost(_ro_cost),
                 duration_s=round(_ro_elapsed, 2),
             )
@@ -2515,14 +2721,32 @@ def _run_review_only_phase(
             success=True,
             phase=state.phase,
             state=state,
-            message=(f"Task '{task.name}' review-only: APPROVE. Branch: {branch_name}"),
+            message=(f"Task '{task.name}' review-only: {_ro_label}. Branch: {branch_name}"),
         )
 
     # REQUEST_CHANGES — no DEV retry in review-only mode
     state.phase = Phase.ESCALATE
     p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    # Report what actually blocked. Counting every P1 would name findings that
+    # were set aside as diff_ungrounded moments ago, sending the operator after
+    # work the run itself decided was not about this story.
+    _ro_ungrounded_note = (
+        f" ({len(_grounding_ro.ungrounded)} further P1(s) recorded as diff_ungrounded)"
+        if _grounding_ro.ungrounded
+        else ""
+    )
+    # Counted from the classified records, which are what grounding ran over.
+    # The merged-review P1 count can differ (cross-reviewer bucketing), so
+    # subtracting one from the other would be arithmetic across two populations;
+    # it is only the fallback for a cycle that produced no records at all.
+    _ro_blocking_p1s = (
+        len(_grounding_ro.p1_records) - len(_grounding_ro.ungrounded)
+        if _grounding_ro.p1_records
+        else p1_count
+    )
     state.error = (
-        f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
+        f"Review requested changes ({_ro_blocking_p1s} P1 finding(s))"
+        f"{_ro_ungrounded_note}. No retry in review-only mode."
     )
     _log(
         f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2"

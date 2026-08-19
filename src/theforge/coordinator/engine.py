@@ -194,6 +194,7 @@ def _run_log_context(
 
 
 # ── Phase handlers ────────────────────────────────────────────────────
+from .batch_diff import BatchReviewContext  # noqa: E402
 from .dev_phase import _run_dev_phase  # noqa: E402
 from .review_phase import (  # noqa: E402
     _perform_dev_model_escalation,
@@ -2009,6 +2010,7 @@ def run_review_only(
     run_id: str | None = None,
     sprint_name: str | None = None,
     branch_name: str | None = None,
+    batch_context: BatchReviewContext | None = None,
 ) -> CoordinatorResult:
     """Run only the REVIEW phase on an existing worktree.
 
@@ -2022,6 +2024,15 @@ def run_review_only(
     branch derived from ``task.slug`` — needed when the worktree under review
     belongs to another story's branch, as it does for a batch-group member
     reviewed against the group leader's shared branch (#727).
+
+    ``batch_context`` marks this run as a batch member's review and carries that
+    group's shared dev handoff. Review grounds a story's findings against the
+    story's own change, and for a batch member the branch carries several
+    stories, so the handoff's per-story commit attribution is what keeps the
+    member from being judged against its siblings' work. Passing the context
+    with no handoff is meaningful and not the same as passing nothing: the
+    member's file set is then *unknown*, which grounds no finding, rather than
+    the shared branch diff (#2525).
     """
     _ensure_runners()
     state = _fresh_run_state()
@@ -2080,6 +2091,7 @@ def run_review_only(
         notify=notify,
         logger=logger,
         task_start=_ro_task_start,
+        batch_context=batch_context,
     )
 
 

@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
+    DEFAULT_STORY_DIFF,
     _make_agent_result,
     _make_config,
     _make_task,
@@ -23,6 +24,11 @@ from coord_test_helpers import (
 from theforge.config import FindingClassifierConfig
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.state import Phase
+
+# Every P1 these fixtures raise cites a file inside the story's own diff, so
+# review's diff-grounding precondition (#2525) passes and the behaviour under
+# test decides the outcome.
+_STORY_DIFF = [*DEFAULT_STORY_DIFF, "src/changed.py"]
 
 _CYCLE1_REQUEST_CHANGES = """\
 ```yaml
@@ -147,7 +153,7 @@ class TestResolutionCommentaryBridge:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_RESOLUTION_COMMENTARY)
@@ -195,7 +201,7 @@ class TestResolutionCommentaryBridge:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_UNRESOLVED_WORDING)

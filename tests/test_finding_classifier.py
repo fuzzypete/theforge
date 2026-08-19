@@ -556,6 +556,47 @@ class TestUpdateFindingRegistryCycle2:
 
         assert record.disposition == "fixed"
 
+    def test_diff_ungrounded_finding_not_in_cycle2_marked_fixed(self, tmp_path):
+        """An ungrounded record still closes out cleanly when it stops being reported."""
+        state = _make_state()
+        record = self._populate_cycle1(
+            state, "Sibling story's criterion", disposition="diff_ungrounded"
+        )
+
+        review = _make_review([])
+        cycle_results = [("reviewer-a", review)]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        assert record.disposition == "fixed"
+
+    def test_recurring_diff_ungrounded_finding_returns_to_the_ordinary_disposition(self, tmp_path):
+        """The classifier must not carry a grounding verdict across cycles.
+
+        ``diff_ungrounded`` describes one cycle's diff, not the finding: a later
+        cycle can touch the file it cites, at which point it is squarely about
+        this change. Inheriting the verdict here made it sticky and left such a
+        P1 permanently unblockable (#2525). The classifier produces the ordinary
+        recurrence disposition and the review phase re-grounds afterwards, which
+        re-suppresses it if it is still out of the diff.
+        """
+        state = _make_state()
+        record = self._populate_cycle1(
+            state, "Sibling story's criterion", disposition="diff_ungrounded"
+        )
+
+        finding = _make_finding("Sibling story's criterion")
+        review = _make_review([finding])
+        cycle_results = [("reviewer-a", review)]
+
+        with patch("theforge.finding_classifier._get_changed_files", return_value=frozenset()):
+            classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
+
+        assert classified[0] is record
+        assert record.disposition == "unresolved"
+        assert record.cycle_last_seen == 2
+
     def test_new_finding_in_changed_file_without_fixed_match_is_net_new(self, tmp_path):
         state = _make_state()
 
@@ -798,6 +839,11 @@ class TestHasBlockingP1:
 
     def test_p2_unresolved_does_not_block(self):
         assert not has_blocking_p1([self._make_record("unresolved", severity="P2")])
+
+    def test_diff_ungrounded_does_not_block(self):
+        # A finding that could not be checked against the story's own diff is not
+        # evidence about it, so it cannot carry the outcome (#2525).
+        assert not has_blocking_p1([self._make_record("diff_ungrounded")])
 
     def test_empty_list_does_not_block(self):
         assert not has_blocking_p1([])

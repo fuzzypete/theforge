@@ -119,7 +119,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 30
+CURRENT_RECORD_SCHEMA_VERSION = 31
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1771,6 +1771,25 @@ def _migrate_v29_to_v30(record: dict) -> dict:
     }
 
 
+def _migrate_v30_to_v31(record: dict) -> dict:
+    """Backfill absent review diff-grounding as explicitly not established (#2525).
+
+    v31 records what a review cycle's P1s were checked against before any of
+    them was allowed to block: the story's own file set, where it came from, and
+    which findings failed to ground. A v30 record predates the check entirely —
+    every P1 it carries was eligible to block regardless of whether it named a
+    file the story touched. Recomputing the set now would need the worktree,
+    which landing deletes, so the backfill states the absence rather than
+    inventing a set: ``available: false`` with a legacy source, which readers
+    treat as "this run's findings were never diff-grounded". Reconstructing one
+    would misreport an old run as having passed a check that did not exist.
+    The stored record is never rewritten (ADR-0002 refusal-to-forget).
+    """
+    if "review_diff_grounding" in record:
+        return record
+    return {**record, "review_diff_grounding": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1809,6 +1828,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     27: _migrate_v27_to_v28,
     28: _migrate_v28_to_v29,
     29: _migrate_v29_to_v30,
+    30: _migrate_v30_to_v31,
 }
 
 
