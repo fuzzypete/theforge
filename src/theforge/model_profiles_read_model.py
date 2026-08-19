@@ -21,10 +21,12 @@ Adding a routing signal is a change to this file alone.
 from __future__ import annotations
 
 import statistics
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
 
 from theforge.model_profiles_identity import (
+    COMPLEXITY_BANDS,
     DEFAULT_RECENCY_HALF_LIFE_RUNS,
     DEFAULT_RECENCY_MODE,
     DEFAULT_RECENCY_WINDOW,
@@ -1015,6 +1017,108 @@ def get_dev_score_cost_stats(
         "measured_runs": float(measured_runs),
         "avg_cost_usd": round(cost_sum / measured_runs, 6),
     }
+
+
+def list_dev_evidence_keys(
+    profiles: dict,
+    *,
+    resolve: Callable[[str, dict], str | None] | None = None,
+) -> list[dict]:
+    """Enumerate every stored key carrying dev evidence, with attribution (#2308).
+
+    The routing signals above answer "what does the evidence say about *this*
+    model"; this answers the inverse — "whose evidence is in the store at all,
+    and can each key still be named". Both questions read the same stored dict,
+    but only the second one can tell a comparison drawn against a live model
+    from one drawn against a key that is no longer in use.
+
+    ``resolve`` maps ``(key, entry)`` to a canonical ``provider/model/transport``
+    ID, or ``None`` when the key cannot be named unambiguously. It is injected
+    rather than imported because the resolver lives in
+    :mod:`theforge.model_profiles_storage`, which this module must not import.
+    With no resolver every key reports ``resolution="unresolved"``.
+
+    Each record carries:
+
+    - ``key`` / ``entry_runs``: the stored key and its lifetime dev run count.
+    - ``canonical_id``: the resolved identity, or ``None``.
+    - ``resolution``: ``"canonical"`` (the key already *is* the canonical ID),
+      ``"legacy"`` (a shorthand or role name that resolves onto one), or
+      ``"unresolved"``.
+    - ``runs_by_band``: admissible dev runs per complexity band.
+    - ``last_updated``: always ``None`` — profiles record no per-key timestamp,
+      so recency of a key's evidence is *unknown*, which is a different claim
+      from "recent" and must not be silently filtered on.
+    """
+    models = (profiles or {}).get("models") or {}
+    if not isinstance(models, dict):
+        return []
+    records: list[dict] = []
+    for key, entry in sorted(models.items()):
+        if not isinstance(entry, dict):
+            continue
+        dev = entry.get("dev")
+        dev = dev if isinstance(dev, dict) else {}
+        by_complexity = dev.get("by_complexity")
+        by_complexity = by_complexity if isinstance(by_complexity, dict) else {}
+        runs_by_band = {}
+        for band in COMPLEXITY_BANDS:
+            bucket = by_complexity.get(band)
+            runs_by_band[band] = int(bucket.get("runs", 0)) if isinstance(bucket, dict) else 0
+        canonical_id = resolve(key, entry) if resolve is not None else None
+        if canonical_id is None:
+            resolution = "unresolved"
+        elif canonical_id == key:
+            resolution = "canonical"
+        else:
+            resolution = "legacy"
+        records.append(
+            {
+                "key": key,
+                "canonical_id": canonical_id,
+                "resolution": resolution,
+                "entry_runs": int(dev.get("runs", 0)),
+                "runs_by_band": runs_by_band,
+                "last_updated": None,
+            }
+        )
+    return records
+
+
+def dev_evidence_contributors(
+    profiles: dict,
+    model: str,
+    complexity: str | None = None,
+    *,
+    actual_model: str | None = None,
+    provider: str | None = None,
+    cli: str | None = None,
+) -> list[str]:
+    """Which stored keys contribute to :func:`get_dev_signal` for this model.
+
+    Same identity matching as the signal itself, so an operator reading a rate
+    can see whether it rests partly on shorthand history (``claude-opus``) whose
+    recency is unknown, rather than on the canonical key alone (#2308). Only
+    keys with admissible runs in the requested band are returned.
+    """
+    band = _normalize_band(complexity) if complexity is not None else None
+    contributors: list[str] = []
+    for key, entry in _matching_profile_entries(
+        profiles,
+        model,
+        actual_model=actual_model,
+        provider=provider,
+        cli=cli,
+    ):
+        dev = entry.get("dev")
+        if not isinstance(dev, dict):
+            continue
+        section = dev if band is None else (dev.get("by_complexity") or {}).get(band)
+        if not isinstance(section, dict):
+            continue
+        if int(section.get("runs", 0)) > 0:
+            contributors.append(key)
+    return contributors
 
 
 def _matching_profile_entries(

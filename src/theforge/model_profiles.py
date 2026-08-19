@@ -83,6 +83,7 @@ from .model_profiles_read_model import (  # noqa: F401
     _trailing_clean_streak,
     _weighted_rate,
     _windowed_rate,
+    dev_evidence_contributors,
     get_dev_complexity_stats,
     get_dev_domain_complexity_signal,
     get_dev_domain_signal,
@@ -92,6 +93,7 @@ from .model_profiles_read_model import (  # noqa: F401
     get_observed_cost_tiebreak_signal,
     get_review_signal,
     get_role_reliability_signal,
+    list_dev_evidence_keys,
 )
 
 # ── Storage: run-outcome accumulation, reset, migration ──────────────────
@@ -166,6 +168,7 @@ __all__ = [
     "DEFAULT_RECENCY_MODE",
     "DEFAULT_RECENCY_WINDOW",
     "DOMAIN_RECENCY_WINDOW",
+    "dev_evidence_contributors",
     "_ensure_model",
     "_entry_model_label",
     "_fold_completion_counters",
@@ -188,6 +191,7 @@ __all__ = [
     "_identity_from_unique_spec",
     "_identity_metadata",
     "_infer_identity_from_key",
+    "list_dev_evidence_keys",
     "load_profiles",
     "load_reset_history",
     "_matching_profile_entries",
