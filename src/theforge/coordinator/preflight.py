@@ -414,15 +414,21 @@ _VALID_WORK_TYPES = frozenset({"feature", "refactor", "mechanical", "bug"})
 def _extract_preflight_yaml_text(output: str) -> str:
     """Return the outer fenced YAML body when present, else the raw output.
 
-    Preflight responses sometimes include quoted fenced material inside a YAML
-    scalar. Only an unindented closing fence should terminate the outer
-    envelope; nested fences remain part of the YAML payload.
+    Preflight responses sometimes wrap the YAML block in longer fences so the
+    body can include ordinary triple-backtick snippets after the structured
+    classification. The parser contract here is conservative: the next
+    unindented fence line ends the YAML body, while indented fences remain part
+    of YAML scalar content.
     """
     match = _select_preflight_fence_opening(output)
     if match is None:
         return output
 
-    close_match = re.search(r"^```[ \t]*$", output[match.end() :], re.MULTILINE)
+    close_match = re.search(
+        r"^`{3,}[^\n`]*$",
+        output[match.end() :],
+        re.MULTILINE,
+    )
     if close_match is None:
         return output[match.end() :]
     start = match.end()
@@ -432,7 +438,7 @@ def _extract_preflight_yaml_text(output: str) -> str:
 
 def _select_preflight_fence_opening(output: str) -> re.Match[str] | None:
     """Prefer a YAML-tagged opening fence; otherwise use the first bare fence."""
-    fence_re = re.compile(r"^```(?P<label>[^\n`]*)$", re.MULTILINE)
+    fence_re = re.compile(r"^(?P<fence>`{3,})(?P<label>[^\n`]*)$", re.MULTILINE)
     bare_match: re.Match[str] | None = None
     for match in fence_re.finditer(output):
         label = (match.group("label") or "").strip().lower()
