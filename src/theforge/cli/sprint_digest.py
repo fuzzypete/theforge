@@ -22,6 +22,9 @@ Layout for a completed sprint with one or more non-DONE stories::
 
     LANDED (n of m)
       ✓ #NNNN  $cost  elapsed  <title>
+      ✓ #NNNN  $cost  elapsed  landed at <sha> (gate-green, review-approved)
+           outstanding:  n P2, dropped from this story and returned as a normal finding
+           discarded:    n later commits — <why the later work was thrown away>
 
     ALREADY LANDED (skipped as merged) (n)
       ✓ #NNNN  —  —  <title>
@@ -205,7 +208,64 @@ def _print_landed(landed: list[dict], total: int, project_root: Path | None = No
         print("  (none)")
         return
     for story in landed:
-        print(f"  ✓ {_story_row(story, project_root)}")
+        print(f"  ✓ {_story_row(story, project_root)}{_gate_green_suffix(story)}")
+        for line in _gate_green_detail_lines(story):
+            print(line)
+
+
+def _gate_green_rollback(story: dict) -> dict | None:
+    """The gate-green rollback block for a landed story, or None (#2028)."""
+    landing = story.get("landing")
+    if not isinstance(landing, dict):
+        return None
+    rollback = landing.get("gate_green_rollback")
+    return rollback if isinstance(rollback, dict) and rollback else None
+
+
+def _gate_green_suffix(story: dict) -> str:
+    """``  landed at 2dd9f13 (gate-green, review-approved)`` for a salvaged story.
+
+    A story that landed a rollback did NOT land what it built, so its row has to
+    name the commit that shipped. When merge-pr rebased onto an advanced base the
+    checkpoint SHA no longer exists on the base branch; the row then says the
+    commit was *validated* at that SHA rather than claiming it landed there.
+    """
+    rollback = _gate_green_rollback(story)
+    if rollback is None:
+        return ""
+    checkpoint = str(rollback.get("checkpoint_commit") or "")
+    if not checkpoint:
+        return ""
+    if rollback.get("rebased"):
+        return f"   landed the work validated at {checkpoint[:8]} (gate-green, review-approved)"
+    return f"   landed at {checkpoint[:8]} (gate-green, review-approved)"
+
+
+def _gate_green_detail_lines(story: dict) -> list[str]:
+    """Say what was dropped from a salvaged story and why.
+
+    The operator has to be able to read, from the summary alone, that a later
+    iteration was discarded and what became of the findings it was fixing — the
+    alternative is a LANDED row that silently hides a rollback.
+    """
+    rollback = _gate_green_rollback(story)
+    if rollback is None:
+        return []
+    lines: list[str] = []
+    p2 = rollback.get("outstanding_p2_count")
+    if isinstance(p2, int) and p2 > 0:
+        lines.append(
+            f"       outstanding:  {p2} P2, dropped from this story and "
+            "returned as a normal finding"
+        )
+    count = rollback.get("dropped_commit_count")
+    count = count if isinstance(count, int) else 0
+    reason = str(rollback.get("dropped_reason") or "").strip()
+    if not reason:
+        reason = "the final gate was red with no dev iterations remaining to recover it"
+    plural = "" if count == 1 else "s"
+    lines.append(f"       discarded:    {count} later commit{plural} — {reason}")
+    return lines
 
 
 def _print_already_landed(stories: list[dict], project_root: Path | None = None) -> None:

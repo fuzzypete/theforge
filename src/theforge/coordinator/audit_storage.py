@@ -119,7 +119,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 31
+CURRENT_RECORD_SCHEMA_VERSION = 32
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1790,6 +1790,23 @@ def _migrate_v30_to_v31(record: dict) -> dict:
     return {**record, "review_diff_grounding": None}
 
 
+def _migrate_v31_to_v32(record: dict) -> dict:
+    """Backfill absent gate-green salvage as "no checkpoint was ever held" (#2028).
+
+    v32 records whether the run held a reviewed, gate-green commit as a landing
+    floor, whether it landed that commit instead of a gate-red HEAD, and why it
+    declined to. A v31 record predates the capability entirely: nothing about it
+    retained a checkpoint, so every run it describes that failed on a terminal
+    gate failure really did discard its work. ``None`` states that absence
+    rather than inventing a checkpoint the run never had — which would misread
+    an old exhaustion failure as a salvage forge chose not to take. The stored
+    record is never rewritten (ADR-0002 refusal-to-forget).
+    """
+    if "gate_green_salvage" in record:
+        return record
+    return {**record, "gate_green_salvage": None}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1829,6 +1846,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     28: _migrate_v28_to_v29,
     29: _migrate_v29_to_v30,
     30: _migrate_v30_to_v31,
+    31: _migrate_v31_to_v32,
 }
 
 
