@@ -674,6 +674,114 @@ class TestDegradedPreflightSeam:
         assert fields["complexity_source"] == "preflight"
 
 
+class TestCachedPreflightReuseDisclosure:
+    def test_apply_cached_preflight_state_preserves_degraded_provenance(self):
+        from theforge.coordinator.preflight import complexity_source
+        from theforge.coordinator.preflight_cache import apply_cached_preflight_state
+        from theforge.coordinator.state import CoordinatorState
+
+        cached = CoordinatorState(
+            preflight_verdict="PROCEED",
+            preflight_reason="Failed to parse preflight YAML; falling back to PROCEED.",
+            preflight_degraded=True,
+            preflight_degraded_reason="parse_error",
+            preflight_failure_action="proceed",
+            preflight_risk_signals=["nested_fence_truncation"],
+            preflight_partial_evidence={
+                "files_inspected": ["src/theforge/coordinator/preflight.py"]
+            },
+            preflight_complexity="medium",
+            preflight_complexity_score=5,
+            preflight_work_type="bug",
+            preflight_domains=["parsing", "backend"],
+            preflight_contract_change=False,
+        )
+        cached.run_id = "run-source"
+        state = CoordinatorState()
+
+        apply_cached_preflight_state(state, cached)
+
+        assert state.preflight_cached is True
+        assert state.preflight_cached_original_verdict == "PROCEED"
+        assert state.preflight_cached_from_run_id == "run-source"
+        assert state.preflight_degraded is True
+        assert state.preflight_degraded_reason == "parse_error"
+        assert state.preflight_failure_action == "proceed"
+        assert state.preflight_risk_signals == ["nested_fence_truncation"]
+        assert state.preflight_partial_evidence == {
+            "files_inspected": ["src/theforge/coordinator/preflight.py"]
+        }
+        assert complexity_source(state) == "preflight_degraded_conservative"
+
+        cached.preflight_risk_signals.append("mutated-after-copy")
+        cached.preflight_partial_evidence["files_inspected"].append("later-change.py")
+        assert state.preflight_risk_signals == ["nested_fence_truncation"]
+        assert state.preflight_partial_evidence == {
+            "files_inspected": ["src/theforge/coordinator/preflight.py"]
+        }
+
+    def test_reused_degraded_preflight_reaches_the_summary_row(self, tmp_path):
+        import datetime as _dt
+
+        import yaml as _yaml
+
+        from theforge.coordinator.preflight_cache import apply_cached_preflight_state
+        from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+        from theforge.sprint.audit import _write_sprint_summary
+        from theforge.sprint.manifest import SprintManifest, SprintResult
+
+        cached = CoordinatorState(
+            preflight_verdict="PROCEED",
+            preflight_degraded=True,
+            preflight_degraded_reason="parse_error",
+            preflight_failure_action="proceed",
+            preflight_risk_signals=["nested_fence_truncation"],
+        )
+        cached.run_id = "run-source"
+
+        reused = CoordinatorState()
+        apply_cached_preflight_state(reused, cached)
+
+        manifest = SprintManifest(name="demo-sprint", budget_usd=5.0, stories=["issue:2216"])
+        result = SprintResult(
+            name="demo-sprint",
+            budget_usd=5.0,
+            results=[
+                (
+                    "issue:2216",
+                    CoordinatorResult(success=True, phase=Phase.DONE, state=reused, message="ok"),
+                )
+            ],
+            total_cost_usd=0.0,
+            specs_total=1,
+            specs_succeeded=1,
+            specs_failed=0,
+            specs_skipped=0,
+        )
+
+        ts = _dt.datetime(2024, 1, 1, tzinfo=_dt.timezone.utc)
+        sprint_log_dir = tmp_path / ".forge" / "logs" / "demo-sprint"
+        _write_sprint_summary(
+            manifest,
+            result,
+            ["issue:2216"],
+            ts,
+            ts,
+            0.0,
+            sprint_log_dir,
+            slug_map={"issue:2216": "issue-2216"},
+        )
+
+        summary = _yaml.safe_load((sprint_log_dir / "sprint-summary.yaml").read_text())
+        story = summary["stories"][0]
+        assert story["preflight"] == "cached"
+        assert story["preflight_source_run_id"] == "run-source"
+        assert story["preflight_degraded"] is True
+        assert story["preflight_degraded_reason"] == "parse_error"
+        assert story["preflight_failure_action"] == "proceed"
+        assert story["preflight_risk_signals"] == ["nested_fence_truncation"]
+
+
 # ── Sprint record: the degradation reaches the summary row ───────────────────
 
 

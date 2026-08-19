@@ -15,6 +15,7 @@ import pytest
 from coord_test_helpers import _make_agent_result, _make_config, _make_task
 
 from theforge.coordinator.engine import run_from_dev, run_task
+from theforge.coordinator.preflight import complexity_source
 from theforge.coordinator.preflight_cache import _story_content_hash
 from theforge.coordinator.state import CoordinatorState, Phase
 
@@ -192,6 +193,63 @@ class TestCachedPreflightVerdictDispatch:
         assert result.state.preflight_result is preflight_agent_result
         assert result.state.total_preflight_cost == pytest.approx(0.349)
         assert result.state.total_cost == pytest.approx(0.349)
+
+    def test_cached_preflight_preserves_degraded_provenance(self, tmp_path):
+        """Cached degraded preflight must stay degraded on the reused run state."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        cached_state = _with_cache_snapshot(
+            replace(
+                CoordinatorState(),
+                preflight_verdict="PROCEED",
+                preflight_reason="Failed to parse preflight YAML; falling back conservatively.",
+                preflight_degraded=True,
+                preflight_degraded_reason="parse_error",
+                preflight_failure_action="fallback_to_proceed",
+                preflight_risk_signals=["quoted fence in reason", "domains lost"],
+                preflight_partial_evidence={
+                    "files_inspected": ["src/theforge/coordinator/preflight.py"],
+                    "partial_conclusion": (
+                        "Classifier found backend/parsing scope before parse loss."
+                    ),
+                },
+                preflight_complexity="medium",
+                preflight_complexity_score=5,
+                preflight_sufficiency="implementation_ready",
+                preflight_work_type="bug",
+            )
+        )
+
+        with (
+            patch("theforge.coordinator.util._run_shell", side_effect=_shell_with_matching_cache),
+            patch("theforge.coordinator.preflight_flow.run_agent"),
+            patch("theforge.coordinator.dev_phase.run_agent"),
+            patch("theforge.coordinator.plan_flow.run_agent"),
+            patch("theforge.coordinator.review_pool.run_agent_pool"),
+        ):
+            result = run_task(
+                config,
+                task,
+                cached_preflight_state=cached_state,
+                stop_phase=Phase.PREFLIGHT,
+            )
+
+        assert result.state.preflight_cached is True
+        assert result.state.preflight_degraded is True
+        assert result.state.preflight_degraded_reason == "parse_error"
+        assert result.state.preflight_failure_action == "fallback_to_proceed"
+        assert result.state.preflight_risk_signals == [
+            "quoted fence in reason",
+            "domains lost",
+        ]
+        assert result.state.preflight_partial_evidence == {
+            "files_inspected": ["src/theforge/coordinator/preflight.py"],
+            "partial_conclusion": "Classifier found backend/parsing scope before parse loss.",
+        }
+        assert complexity_source(result.state) == "preflight_degraded_conservative"
 
     def test_stale_cached_preflight_is_invalidated_and_rerun(self, tmp_path):
         """Changed git state must invalidate cached preflight and trigger a fresh run."""
