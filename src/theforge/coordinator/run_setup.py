@@ -178,6 +178,23 @@ def save_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
         "hygiene_escalation_prior_review": _serialize_review_result(
             state.hygiene_escalation_prior_review
         ),
+        # Gate-green salvage (#2028). The checkpoint is what a resumed run would
+        # otherwise have to re-derive from a review cycle it no longer holds, and
+        # the pending salvage event is what a landing after a resume reads to
+        # know it must reset the branch before merging. Losing either turns a
+        # recoverable story back into a discarded one.
+        "gate_green_checkpoint": (
+            {
+                **state.gate_green_checkpoint.to_audit_dict(),
+                "review_result": _serialize_review_result(
+                    state.gate_green_checkpoint.review_result
+                ),
+            }
+            if state.gate_green_checkpoint is not None
+            else None
+        ),
+        "gate_green_salvage": state.gate_green_salvage,
+        "gate_green_salvage_declined": state.gate_green_salvage_declined,
     }
     sidecar.write_text(yaml.dump(data, allow_unicode=True), encoding="utf-8")
 
@@ -249,6 +266,33 @@ def load_trajectory_state(workspace_path: Path, state: CoordinatorState) -> None
     _prior_rr = _deserialize_review_result(data.get("hygiene_escalation_prior_review"))
     if _prior_rr is not None:
         state.hygiene_escalation_prior_review = _prior_rr  # type: ignore[assignment]
+    _restore_gate_green_salvage(data, state)
+
+
+def _restore_gate_green_salvage(data: dict, state: CoordinatorState) -> None:
+    """Restore the gate-green checkpoint and salvage event from the sidecar (#2028).
+
+    Absent in sidecars written before the feature existed; absence restores the
+    defaults, which is a story with nothing to salvage — the pre-existing
+    behaviour.
+    """
+    from .state import GateGreenCheckpoint  # noqa: PLC0415
+
+    raw = data.get("gate_green_checkpoint")
+    if isinstance(raw, dict) and isinstance(raw.get("commit"), str) and raw["commit"]:
+        state.gate_green_checkpoint = GateGreenCheckpoint(
+            commit=raw["commit"],
+            review_cycle=int(raw.get("review_cycle") or 0),
+            dev_iterations_spent=int(raw.get("dev_iterations_spent") or 0),
+            review_verdict=str(raw.get("review_verdict") or ""),
+            carried_p2_count=int(raw.get("carried_p2_count") or 0),
+            branch_name=raw.get("branch_name"),
+            review_result=_deserialize_review_result(raw.get("review_result")),
+        )
+    if isinstance(data.get("gate_green_salvage"), dict):
+        state.gate_green_salvage = data["gate_green_salvage"]
+    if isinstance(data.get("gate_green_salvage_declined"), dict):
+        state.gate_green_salvage_declined = data["gate_green_salvage_declined"]
 
 
 def load_plan_state(workspace_path: Path, state: CoordinatorState) -> None:

@@ -660,3 +660,84 @@ def test_is_completed_sprint_detection(tmp_path: Path) -> None:
     runs_dir.mkdir(parents=True, exist_ok=True)
     (runs_dir / f"{run_id}.pid").write_text("1\ndone-sprint\n")
     assert _is_completed_sprint(run_id, tmp_path) is False
+
+
+# ── Gate-green salvage rendering (#2028) ──────────────────────────────────────
+
+
+def _gate_green_landed_story(num: int, cost: float, **rollback_overrides) -> dict:
+    rollback = {
+        "checkpoint_commit": "2dd9f135" + "0" * 32,
+        "landed_commit": "2dd9f135" + "0" * 32,
+        "rebased": False,
+        "gate_green": True,
+        "review_approved": True,
+        "review_cycle": 2,
+        "dropped_head": "f" * 40,
+        "dropped_commits": [{"sha": "f" * 40, "subject": "fix: P2"}],
+        "dropped_commit_count": 1,
+        "dropped_reason": (
+            "the final dev iteration left the gate red and no dev iterations "
+            "remained to recover it (p2_cleanup)"
+        ),
+        "outstanding_p2_count": 1,
+    }
+    rollback.update(rollback_overrides)
+    story = _landed_story(num, cost)
+    story["landing"] = {
+        "outcome": "merged-gate-green-rollback",
+        "landing_path": "gate-green-rollback",
+        "underlying_landing_path": "fresh-merge",
+        "fresh_pr_created": True,
+        "merged": True,
+        "gate_green_rollback": rollback,
+    }
+    return story
+
+
+def test_digest_names_the_landed_commit_for_a_gate_green_rollback(tmp_path: Path) -> None:
+    """AC2: the landed outcome names the commit that shipped."""
+    name, run_id = "issues-246", "abc123abc123"
+    _write_summary(tmp_path, name, run_id, [_gate_green_landed_story(246, 3.30)])
+
+    output = _render(tmp_path, run_id)
+
+    assert "LANDED (1 of 1)" in output
+    assert "landed at 2dd9f135 (gate-green, review-approved)" in output
+
+
+def test_digest_says_what_was_discarded_and_why(tmp_path: Path) -> None:
+    """AC3: the operator can tell from the summary alone that work was dropped."""
+    name, run_id = "issues-246", "abc123abc123"
+    _write_summary(tmp_path, name, run_id, [_gate_green_landed_story(246, 3.30)])
+
+    output = _render(tmp_path, run_id)
+
+    assert "outstanding:  1 P2, dropped from this story and returned as a normal finding" in output
+    assert "discarded:    1 later commit — " in output
+    assert "no dev iterations remained to recover it" in output
+
+
+def test_digest_does_not_claim_a_rebased_checkpoint_landed_at_that_sha(tmp_path: Path) -> None:
+    name, run_id = "issues-246", "abc123abc123"
+    _write_summary(
+        tmp_path,
+        name,
+        run_id,
+        [_gate_green_landed_story(246, 3.30, rebased=True, landed_commit=None)],
+    )
+
+    output = _render(tmp_path, run_id)
+
+    assert "landed the work validated at 2dd9f135 (gate-green, review-approved)" in output
+    assert "landed at 2dd9f135" not in output
+
+
+def test_digest_leaves_ordinary_landed_rows_untouched(tmp_path: Path) -> None:
+    name, run_id = "issues-246", "abc123abc123"
+    _write_summary(tmp_path, name, run_id, [_landed_story(246, 3.30)])
+
+    output = _render(tmp_path, run_id)
+
+    assert "gate-green" not in output
+    assert "discarded:" not in output

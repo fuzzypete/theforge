@@ -1046,6 +1046,29 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
             if result.landing_status is not None
             else None
         ),
+        # Gate-green salvage (#2028): the reviewed, gate-green commit this story
+        # retained as a landing floor, the decision to land it instead of the
+        # gate-red HEAD, and — when no salvage was taken — why not. The declined
+        # record is what separates "nothing gate-green ever existed" from
+        # "salvageable but forge would not land it", which the failure alone
+        # cannot say. Absent when nothing about this story involved a checkpoint.
+        "gate_green_salvage": (
+            {
+                "checkpoint": (
+                    state.gate_green_checkpoint.to_audit_dict()
+                    if state.gate_green_checkpoint is not None
+                    else None
+                ),
+                "salvage": state.gate_green_salvage,
+                "declined": state.gate_green_salvage_declined,
+            }
+            if (
+                state.gate_green_checkpoint is not None
+                or state.gate_green_salvage is not None
+                or state.gate_green_salvage_declined is not None
+            )
+            else None
+        ),
         "timeout_escalation": state.timeout_escalation_audit,
         "escalation": (
             {

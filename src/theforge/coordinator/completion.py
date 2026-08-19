@@ -16,6 +16,11 @@ from theforge.task import TaskStory
 
 from .changed_files import capture_changed_files
 from .gate import _parse_dirty_files
+from .gate_green_salvage import (
+    SALVAGE_PENDING,
+    annotate_gate_green_landing,
+    apply_gate_green_rollback,
+)
 from .github_integration import assign_pr_reviewers, post_findings_comment
 from .logging import StructuredLogger
 from .notify import _ntfy_done_notify
@@ -1441,7 +1446,45 @@ def land_story(
 
     ``effective_on_approve`` must be ``"merge"`` or ``"merge-pr"``; callers
     should not invoke this function for ``"pr"`` or ``"none"`` modes.
+
+    When the run decided to salvage a gate-green checkpoint (#2028), the branch
+    is reset back to that commit *before* the normal merge path runs, so the
+    landing that follows is the ordinary one and every guard, failure mode, and
+    audit hook it already has applies unchanged.
     """
+    _rollback: dict | None = None
+    if (state.gate_green_salvage or {}).get("status") == SALVAGE_PENDING:
+        _rollback = apply_gate_green_rollback(
+            state,
+            workspace_path,
+            effective_on_approve=effective_on_approve,
+            base_branch=config.workspace.base_branch,
+        )
+        if not _rollback.get("ok"):
+            # Fail closed: landing the gate-red HEAD is exactly what this path
+            # exists to prevent, so an unusable rollback is a landing failure.
+            _log(f"LANDING gate-green rollback failed: {_rollback.get('error')}")
+            return (
+                {
+                    "action": effective_on_approve,
+                    "merged": False,
+                    "error": _rollback.get("error"),
+                    "landing_path": "gate-green-rollback-failed",
+                    "guard_evidence": {
+                        "branch": branch_name,
+                        "checkpoint_commit": (state.gate_green_salvage or {}).get(
+                            "checkpoint_commit"
+                        ),
+                    },
+                },
+                "failed",
+            )
+        state.gate_green_salvage = {
+            **(state.gate_green_salvage or {}),
+            "status": "applied",
+            "rollback": {k: v for k, v in _rollback.items() if k != "ok"},
+        }
+
     if effective_on_approve == "merge":
         # Pre-merge cleanup: commit any tracked dirty files in the worktree
         status_ok, status_out = _run_shell("git status --porcelain", workspace_path)
@@ -1518,6 +1561,8 @@ def land_story(
             )
 
         landing_status = "landed" if merge_info["merged"] else "failed"
+        if _rollback is not None:
+            merge_info = annotate_gate_green_landing(merge_info, _rollback)
         return merge_info, landing_status
 
     elif effective_on_approve == "merge-pr":
@@ -1570,6 +1615,8 @@ def land_story(
             landing_status = "pending_integration"
         else:
             landing_status = "landed"
+        if _rollback is not None:
+            merge_info = annotate_gate_green_landing(merge_info, _rollback)
         return merge_info, landing_status
 
     else:
