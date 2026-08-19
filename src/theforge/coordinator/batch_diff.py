@@ -22,10 +22,11 @@ misreports it.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from .changed_files import collect_commit_files
+from .changed_files import collect_commit_files, is_commit_id
 from .diff_grounding import StoryDiff
 
 if TYPE_CHECKING:
@@ -33,6 +34,21 @@ if TYPE_CHECKING:
 
 #: The story's file set came from commits the shared handoff attributed to it.
 SOURCE_BATCH_COMMITS = "batch_commit_attribution"
+
+
+@dataclass(frozen=True)
+class BatchReviewContext:
+    """Marks a review as a batch group member's, and carries the shared handoff.
+
+    Being a member is what matters, not whether the handoff arrived: a member
+    reviewed after a dev pass that produced no structured handoff is still on a
+    branch carrying its siblings' work, so falling back to the branch diff would
+    ground their findings against it — the bug this module exists to prevent.
+    The context is therefore a separate signal from its payload; ``dev_handoff``
+    being None means "attribution unavailable", never "not a batch member".
+    """
+
+    dev_handoff: dict | None = None
 
 
 def latest_dev_handoff(state: CoordinatorState) -> dict | None:
@@ -52,9 +68,13 @@ def member_commit_revs(handoff: dict | None, slug: str) -> list[str] | None:
     """Return the commit revs the handoff attributes to ``slug``, or None.
 
     None means the handoff carries no usable attribution at all — it is missing,
-    is not a mapping, has no ``commits`` list, or has one where no entry names a
-    slug. An empty list is different and is returned as such: attribution exists
-    and assigns this member nothing.
+    is not a mapping, has no ``commits`` list, has one where no entry names a
+    slug, or names a "sha" that is not a commit id. An empty list is different
+    and is returned as such: attribution exists and assigns this member nothing.
+
+    The handoff is agent output, so this is a trust boundary as much as a lookup:
+    every value that leaves here has been checked to be a bare hex commit id
+    before any git call sees it.
     """
     if not isinstance(handoff, dict):
         return None
@@ -75,10 +95,13 @@ def member_commit_revs(handoff: dict | None, slug: str) -> list[str] | None:
         if str(entry_slug).strip().lower() != wanted:
             continue
         sha = str(entry.get("sha") or "").strip()
-        if not sha:
-            # An attributed commit whose sha is unusable makes this member's set
-            # incomplete, and an incomplete set grounds findings that belong to
-            # commits it failed to name. Refuse the whole attribution.
+        if not is_commit_id(sha):
+            # Absent, malformed, or not a commit id at all — including a
+            # revision expression or anything carrying shell metacharacters,
+            # which is refused as data rather than sanitised into a command.
+            # Either way this member's set would be incomplete, and an
+            # incomplete set grounds findings that belong to commits it failed
+            # to name. Refuse the whole attribution.
             return None
         revs.append(sha)
     if not saw_any_slug:

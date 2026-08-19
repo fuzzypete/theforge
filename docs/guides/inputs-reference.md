@@ -1430,12 +1430,20 @@ recorded as `REQUEST_CHANGES→diff_ungrounded_pass`, not as a plain approval.
 Inside a **cost-aware batch group** the branch carries several independent
 stories, so the branch diff is the group's change and not any one member's.
 There the file set is narrowed to the commits the shared dev handoff attributes
-to that member (the `slug` key each `commits` entry must carry). Attribution
-that is missing or unusable yields an *unknown* file set, which grounds nothing
-— never a fallback to the group's combined diff, which is what would let one
-member's findings decide another's outcome. One exception keeps this from
-excusing unfinished work: a member whose own file set is known and **empty** has
-no change to judge, so its review still blocks.
+to that member (the `slug` key each `commits` entry must carry). Being a batch
+member is what selects this treatment, not whether the handoff arrived:
+attribution that is missing, absent entirely, or unusable yields an *unknown*
+file set, which grounds nothing — never a fallback to the group's combined diff,
+which is what would let one member's findings decide another's outcome. One
+exception keeps this from excusing unfinished work: a member whose own file set
+is known and **empty** has no change to judge, so its review still blocks.
+
+The handoff is agent output, so its `sha` values are untrusted input. Each is
+validated as a bare hex commit id (7–40 hex chars) before any git call sees it,
+and the attribution path runs git through argv rather than a shell. A `sha` that
+is a revision expression (`HEAD~2`), a ref name, or carries shell metacharacters
+is refused as data — it invalidates that member's attribution rather than being
+sanitised into a command.
 
 The audit record's `review_diff_grounding` names the file set, where it came
 from (`branch_diff` or `batch_commit_attribution`), whether it could be

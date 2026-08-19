@@ -18,7 +18,15 @@ from theforge.coordinator.batch_diff import (
     latest_dev_handoff,
     member_commit_revs,
 )
+from theforge.coordinator.changed_files import collect_commit_files, is_commit_id
 from theforge.coordinator.state import CoordinatorState
+
+#: Realistic commit ids. The attribution path validates every "sha" it is given
+#: as a bare hex commit id before any git call sees it, so a placeholder like
+#: "aaa" is refused as data — which is the point (#2525).
+_SHA_A = "a" * 40
+_SHA_B = "b" * 40
+_SHA_C = "c" * 40
 
 
 def _init_repo(path: Path) -> None:
@@ -45,33 +53,33 @@ class TestMemberCommitRevs:
     def test_selects_only_this_member_s_commits(self):
         handoff = {
             "commits": [
-                {"sha": "aaa", "slug": "issue-324", "message": "feat: a"},
-                {"sha": "bbb", "slug": "issue-326", "message": "feat: b"},
-                {"sha": "ccc", "slug": "issue-324", "message": "test: a"},
+                {"sha": _SHA_A, "slug": "issue-324", "message": "feat: a"},
+                {"sha": _SHA_B, "slug": "issue-326", "message": "feat: b"},
+                {"sha": _SHA_C, "slug": "issue-324", "message": "test: a"},
             ]
         }
-        assert member_commit_revs(handoff, "issue-324") == ["aaa", "ccc"]
-        assert member_commit_revs(handoff, "issue-326") == ["bbb"]
+        assert member_commit_revs(handoff, "issue-324") == [_SHA_A, _SHA_C]
+        assert member_commit_revs(handoff, "issue-326") == [_SHA_B]
 
     def test_slug_match_is_case_and_whitespace_insensitive(self):
-        handoff = {"commits": [{"sha": "aaa", "slug": " Issue-324 "}]}
-        assert member_commit_revs(handoff, "issue-324") == ["aaa"]
+        handoff = {"commits": [{"sha": _SHA_A, "slug": " Issue-324 "}]}
+        assert member_commit_revs(handoff, "issue-324") == [_SHA_A]
 
     def test_member_with_no_attributed_commits_gets_an_empty_list(self):
         """Distinct from unusable attribution: this member demonstrably has none."""
-        handoff = {"commits": [{"sha": "bbb", "slug": "issue-326"}]}
+        handoff = {"commits": [{"sha": _SHA_B, "slug": "issue-326"}]}
         assert member_commit_revs(handoff, "issue-324") == []
 
     def test_unattributed_commits_refuse_the_whole_split(self):
         """Without slugs every member would see the group's whole change."""
-        handoff = {"commits": [{"sha": "aaa", "message": "feat: a"}]}
+        handoff = {"commits": [{"sha": _SHA_A, "message": "feat: a"}]}
         assert member_commit_revs(handoff, "issue-324") is None
 
     def test_attributed_commit_without_a_sha_refuses_the_split(self):
         """An incomplete set would ground findings from the commit it failed to name."""
         handoff = {
             "commits": [
-                {"sha": "aaa", "slug": "issue-324"},
+                {"sha": _SHA_A, "slug": "issue-324"},
                 {"sha": "", "slug": "issue-324"},
             ]
         }
@@ -123,7 +131,7 @@ class TestBatchMemberStoryDiff:
         _init_repo(tmp_path)
         _commit(tmp_path, "src/a.py", "feat: a")
 
-        story_diff = batch_member_story_diff(tmp_path, {"commits": [{"sha": "x"}]}, "issue-324")
+        story_diff = batch_member_story_diff(tmp_path, {"commits": [{"sha": _SHA_A}]}, "issue-324")
 
         # None, not the branch diff: falling back would reintroduce exactly the
         # cross-member grounding this module exists to prevent.
@@ -167,18 +175,98 @@ class TestLatestDevHandoff:
     def test_returns_the_most_recent_structured_handoff(self):
         state = CoordinatorState()
         state.dev_handoff_snapshots = [
-            {"source": "structured_output", "path": None, "handoff": {"commits": [{"sha": "a"}]}},
-            {"source": "structured_output", "path": None, "handoff": {"commits": [{"sha": "b"}]}},
+            {
+                "source": "structured_output",
+                "path": None,
+                "handoff": {"commits": [{"sha": _SHA_A}]},
+            },
+            {
+                "source": "structured_output",
+                "path": None,
+                "handoff": {"commits": [{"sha": _SHA_B}]},
+            },
         ]
-        assert latest_dev_handoff(state) == {"commits": [{"sha": "b"}]}
+        assert latest_dev_handoff(state) == {"commits": [{"sha": _SHA_B}]}
 
     def test_skips_attempts_that_produced_no_structured_output(self):
         state = CoordinatorState()
         state.dev_handoff_snapshots = [
-            {"source": "structured_output", "path": None, "handoff": {"commits": [{"sha": "a"}]}},
+            {
+                "source": "structured_output",
+                "path": None,
+                "handoff": {"commits": [{"sha": _SHA_A}]},
+            },
             {"source": "missing", "path": None, "handoff": None},
         ]
-        assert latest_dev_handoff(state) == {"commits": [{"sha": "a"}]}
+        assert latest_dev_handoff(state) == {"commits": [{"sha": _SHA_A}]}
 
     def test_no_snapshots_is_none(self):
         assert latest_dev_handoff(CoordinatorState()) is None
+
+
+class TestCommitIdValidation:
+    """The handoff is agent output, so its "sha" values are untrusted input.
+
+    ``_run_shell`` runs commands under ``shell=True``. A rev interpolated into
+    one is not a value but a command, so attribution refuses anything that is
+    not a bare hex commit id rather than sanitising it.
+    """
+
+    def test_accepts_abbreviated_and_full_hex_ids(self):
+        assert is_commit_id("abc1234")
+        assert is_commit_id(_SHA_A)
+        assert is_commit_id("ABC1234DEF")
+        assert is_commit_id("  abc1234  ")
+
+    def test_rejects_shell_metacharacters(self):
+        for hostile in (
+            "abc1234; touch /tmp/pwned",
+            "abc1234 && id",
+            "$(id)",
+            "`id`",
+            "abc1234|id",
+            "abc1234\nid",
+            "a b",
+        ):
+            assert not is_commit_id(hostile), hostile
+
+    def test_rejects_revision_expressions_and_ref_names(self):
+        # Valid revisions to git, none of them a thing an agent should name.
+        for rev in ("HEAD", "HEAD~2", "main", "abc1234^", "abc1234..def5678", "--all"):
+            assert not is_commit_id(rev), rev
+
+    def test_rejects_non_strings_and_wrong_lengths(self):
+        assert not is_commit_id(None)
+        assert not is_commit_id(1234567)
+        assert not is_commit_id("")
+        assert not is_commit_id("abc12")  # too short to be a git abbreviation
+        assert not is_commit_id("a" * 41)
+        assert not is_commit_id("g" * 40)  # not hex
+
+    def test_hostile_sha_refuses_the_attribution_before_any_git_call(self, tmp_path):
+        handoff = {"commits": [{"sha": "abc1234; touch pwned", "slug": "issue-324"}]}
+
+        assert member_commit_revs(handoff, "issue-324") is None
+
+        story_diff = batch_member_story_diff(tmp_path, handoff, "issue-324")
+        assert story_diff.files is None
+        assert not (tmp_path / "pwned").exists()
+
+    def test_collect_commit_files_refuses_an_unvalidated_hostile_rev(self, tmp_path):
+        """Defence in depth: the git-level helper validates too, not just its caller."""
+        _init_repo(tmp_path)
+        marker = tmp_path / "pwned"
+
+        assert collect_commit_files(tmp_path, [f"HEAD; touch {marker}"]) is None
+        assert collect_commit_files(tmp_path, ["HEAD"]) is None  # not a commit id
+        assert not marker.exists()
+
+    def test_collect_commit_files_still_reads_a_real_commit(self, tmp_path):
+        _init_repo(tmp_path)
+        sha = _commit(tmp_path, "src/a.py", "feat: a")
+
+        snapshot = collect_commit_files(tmp_path, [sha])
+
+        assert snapshot is not None
+        assert [entry["path"] for entry in snapshot["files"]] == ["src/a.py"]
+        assert snapshot["commits"] == [sha]

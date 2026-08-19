@@ -14,6 +14,7 @@ Covers:
 - Ungrounded findings stay visible in non_blocking_p1s and the registry
 - Mixed cycle: only the grounded finding reaches the dev fix prompt
 - Batch group: a member is judged against its own commits, not the group's
+- Batch group: an absent or hostile handoff grounds nothing, never the branch
 - Path normalization unit cases
 """
 
@@ -33,6 +34,7 @@ from coord_test_helpers import (
 )
 
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.batch_diff import BatchReviewContext
 from theforge.coordinator.diff_grounding import (
     is_diff_grounded,
     normalize_finding_path,
@@ -368,16 +370,31 @@ test_coverage:
 _OWN_FILE_REVIEW = _SIBLING_FILE_REVIEW.replace("src/sibling.py", "src/mine.py")
 
 
-def _run_batch_member(tmp_path, review_yaml: str, handoff: dict | None):
+def _run_batch_member(
+    tmp_path,
+    review_yaml: str,
+    attribution: list[dict] | None,
+    *,
+    raw_handoff: dict | None = None,
+):
+    """Review one batch member on the shared worktree.
+
+    ``attribution`` names which slugs the shared handoff attributes commits to;
+    the real SHAs are substituted from the repo. ``attribution=None`` with no
+    ``raw_handoff`` is the case where the dev pass produced no structured
+    handoff at all — still a batch member, just one with nothing to attribute.
+    """
     config = _make_config(tmp_path)
     task = _make_task(tmp_path)  # slug "test-task"
     workspace = tmp_path / "shared-worktree"
     workspace.mkdir()
     shas = _init_batch_repo(workspace)
-    if handoff is not None:
+
+    handoff = raw_handoff
+    if attribution is not None:
         handoff = {
             "commits": [
-                {"sha": shas[entry["slug"]], "slug": entry["slug"]} for entry in handoff["commits"]
+                {"sha": shas[entry["slug"]], "slug": entry["slug"]} for entry in attribution
             ]
         }
 
@@ -390,7 +407,7 @@ def _run_batch_member(tmp_path, review_yaml: str, handoff: dict | None):
             task,
             workspace,
             branch_name="forge/leader",
-            batch_dev_handoff=handoff,
+            batch_context=BatchReviewContext(dev_handoff=handoff),
         )
     return config, task, result
 
@@ -406,7 +423,7 @@ class TestBatchMemberGrounding:
         config, task, result = _run_batch_member(
             tmp_path,
             _SIBLING_FILE_REVIEW,
-            {"commits": [{"slug": "test-task"}, {"slug": "sibling-story"}]},
+            [{"slug": "test-task"}, {"slug": "sibling-story"}],
         )
 
         assert result.success is True
@@ -426,24 +443,67 @@ class TestBatchMemberGrounding:
         _config, _task, result = _run_batch_member(
             tmp_path,
             _OWN_FILE_REVIEW,
-            {"commits": [{"slug": "test-task"}, {"slug": "sibling-story"}]},
+            [{"slug": "test-task"}, {"slug": "sibling-story"}],
         )
 
         assert result.success is False
         assert result.phase == Phase.ESCALATE
         assert [r.disposition for r in result.state.finding_registry] != ["diff_ungrounded"]
 
-    def test_missing_attribution_grounds_nothing_rather_than_the_group_diff(self, tmp_path):
-        """No usable attribution must not silently fall back to the branch diff."""
-        config, task, result = _run_batch_member(tmp_path, _OWN_FILE_REVIEW, None)
+    def test_absent_handoff_does_not_fall_back_to_the_shared_branch_diff(self, tmp_path):
+        """The shared dev pass produced no structured handoff at all.
 
-        # handoff=None reaches grounding as "no batch attribution supplied", which
-        # for a review-only run means the branch diff — the member owns the
-        # worktree as far as this path can tell. src/mine.py is in it, so the
-        # finding grounds and blocks.
+        Membership is what decides how a story is grounded, not whether the
+        handoff arrived. The member is still on a branch carrying its siblings'
+        work, so its file set is unknown — never the branch diff, which contains
+        src/sibling.py and would ground a sibling's finding against it.
+        """
+        config, task, result = _run_batch_member(tmp_path, _SIBLING_FILE_REVIEW, None)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert [r.disposition for r in result.state.finding_registry] == ["diff_ungrounded"]
+
+        audit = generate_audit_log(config, task, result)
+        grounding = audit["review_diff_grounding"]
+        assert grounding["source"] == "batch_commit_attribution"
+        assert grounding["available"] is False
+        assert grounding["files"] is None
+
+    def test_a_non_batch_review_still_uses_the_branch_diff(self, tmp_path):
+        """No batch context: the story owns its worktree, so the branch diff is its own."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "shared-worktree"
+        workspace.mkdir()
+        _init_batch_repo(workspace)
+
+        with patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=_OWN_FILE_REVIEW, profile_name="review")
+            ]
+            result = run_review_only(config, task, workspace, branch_name="forge/leader")
+
         assert result.success is False
         audit = generate_audit_log(config, task, result)
         assert audit["review_diff_grounding"]["source"] == "branch_diff"
+
+    def test_a_hostile_commit_id_in_the_handoff_is_never_executed(self, tmp_path):
+        """The handoff is agent output; a "sha" that is a command must stay data."""
+        marker = tmp_path / "pwned"
+        config, task, result = _run_batch_member(
+            tmp_path,
+            _OWN_FILE_REVIEW,
+            None,
+            raw_handoff={"commits": [{"sha": f"abc1234; touch {marker}", "slug": "test-task"}]},
+        )
+
+        assert not marker.exists()
+        # Refused as attribution, so the member is grounded against nothing
+        # rather than against the shared branch.
+        audit = generate_audit_log(config, task, result)
+        assert audit["review_diff_grounding"]["available"] is False
+        assert [r.disposition for r in result.state.finding_registry] == ["diff_ungrounded"]
 
     def test_unattributed_commits_make_every_finding_ungrounded(self, tmp_path):
         """A handoff that names no slugs cannot split the branch by story."""
@@ -462,7 +522,9 @@ class TestBatchMemberGrounding:
                 task,
                 workspace,
                 branch_name="forge/leader",
-                batch_dev_handoff={"commits": [{"sha": "abc1234", "message": "feat: work"}]},
+                batch_context=BatchReviewContext(
+                    dev_handoff={"commits": [{"sha": "abc1234", "message": "feat: work"}]}
+                ),
             )
 
         assert result.success is True
@@ -480,7 +542,7 @@ class TestBatchMemberGrounding:
         config, task, result = _run_batch_member(
             tmp_path,
             _SIBLING_FILE_REVIEW,
-            {"commits": [{"slug": "sibling-story"}]},
+            [{"slug": "sibling-story"}],
         )
 
         assert result.success is False

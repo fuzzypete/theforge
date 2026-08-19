@@ -39,7 +39,7 @@ from theforge.symptom_test_classifier import escalate_symptom_test_findings
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from . import story_budget as _story_budget
-from .batch_diff import batch_member_story_diff, latest_dev_handoff
+from .batch_diff import BatchReviewContext, batch_member_story_diff, latest_dev_handoff
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
 from .diff_grounding import (
@@ -936,7 +936,7 @@ def _story_diff_for_review(
     task: TaskStory,
     workspace_path: Path,
     *,
-    batch_handoff: dict | None = None,
+    batch_context: BatchReviewContext | None = None,
 ) -> StoryDiff | None:
     """Return this story's own file set, or None to use the branch diff.
 
@@ -945,17 +945,21 @@ def _story_diff_for_review(
     set is narrowed to the commits the shared handoff attributes to this story,
     so a sibling member's findings cannot ground against this member (#2525).
 
+    Membership is decided by the *context object*, never by whether a handoff
+    came with it. A member whose dev pass produced no structured handoff is
+    still on a shared branch, so it gets an unavailable batch file set — which
+    grounds nothing — rather than the branch diff, which would ground its
+    siblings' findings against it.
+
     The batch leader is detected from ``task.batch_members`` and reads the
     handoff its own DEV phase captured; a non-leader member is reviewed through
-    the review-only path with a fresh state, so its caller passes the leader's
-    handoff in as ``batch_handoff``.
+    the review-only path with a fresh state, so its caller supplies the context.
     """
-    handoff = batch_handoff
-    if handoff is None:
-        if not task.batch_members:
-            return None
-        handoff = latest_dev_handoff(state)
-    return batch_member_story_diff(workspace_path, handoff, task.slug)
+    if batch_context is not None:
+        return batch_member_story_diff(workspace_path, batch_context.dev_handoff, task.slug)
+    if task.batch_members:
+        return batch_member_story_diff(workspace_path, latest_dev_handoff(state), task.slug)
+    return None
 
 
 def _record_grounding(state: CoordinatorState, grounding: GroundingResult) -> None:
@@ -2492,17 +2496,17 @@ def _run_review_only_phase(
     notify: bool,
     logger: StructuredLogger | None,
     task_start: float,
-    batch_dev_handoff: dict | None = None,
+    batch_context: BatchReviewContext | None = None,
 ) -> CoordinatorResult:
     """Run the REVIEW phase for the review-only entry point.
 
     No DEV retry: REQUEST_CHANGES → ESCALATE immediately.
 
-    ``batch_dev_handoff`` is the shared handoff from a batch group's dev pass,
-    supplied when this story is a non-leader member being reviewed on the
-    leader's worktree. It is what lets grounding narrow the branch's combined
-    diff to this member's own commits; without it the member would be judged
-    against its siblings' changes too (#2525).
+    ``batch_context`` is supplied when this story is a non-leader member of a
+    batch group being reviewed on the leader's worktree. Its presence — not the
+    handoff it carries — is what tells grounding the branch holds more than this
+    story, so the member is judged against its own commits rather than its
+    siblings' changes too (#2525).
     """
     state.phase = Phase.REVIEW
     if logger:
@@ -2633,7 +2637,10 @@ def _run_review_only_phase(
     #
     # For a batch member the worktree's branch diff is the whole group's change,
     # so grounding against it would let a sibling member's findings ground here.
-    # batch_dev_handoff narrows the set to this member's own commits.
+    # batch_context narrows the set to this member's own commits, and when its
+    # attribution is unusable leaves the set unknown rather than falling back to
+    # the branch — a fallback would reinstate exactly the cross-member grounding
+    # it exists to prevent.
     from theforge.finding_classifier import update_finding_registry as _update_finding_registry
 
     _classified_ro = _update_finding_registry(
@@ -2648,7 +2655,7 @@ def _run_review_only_phase(
         workspace_path,
         config.workspace.base_branch,
         story_diff=_story_diff_for_review(
-            state, task, workspace_path, batch_handoff=batch_dev_handoff
+            state, task, workspace_path, batch_context=batch_context
         ),
         log=_log,
     )
