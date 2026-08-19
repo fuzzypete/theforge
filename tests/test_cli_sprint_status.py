@@ -733,6 +733,108 @@ def test_display_sprint_status_header_includes_cost_and_duration(tmp_path: Path)
     assert "duration: 62m" in output
 
 
+def test_display_sprint_status_marks_a_completed_run_that_passed_its_budget(
+    tmp_path: Path,
+) -> None:
+    """The reported bug's display half: cost and budget printed as strangers.
+
+    A $70.44 run against a $50 cap rendered as two independent header fields
+    with nothing saying one had passed the other. The relationship is now
+    stated (#2547).
+    """
+    stories = [{"slug": "issue-1", "path": "Issue #1", "outcome": "DONE", "cost_usd": 70.44}]
+    _make_summary_file(tmp_path, "over-sprint", "run-over-1", stories)
+    log_dir = tmp_path / ".forge" / "logs" / "over-sprint"
+    summary_path = log_dir / "sprint-summary.yaml"
+    with open(summary_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    data["sprint"]["budget_usd"] = 50.0
+    data["sprint"]["total_cost_usd"] = 70.44
+    data["sprint"]["budget_status"] = "over"
+    data["sprint"]["budget_overrun_usd"] = 20.44
+    with open(summary_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+
+    code, output = _run_sprint_status(tmp_path, "run-over-1")
+
+    assert code == 0
+    assert "cost: $70.44" in output
+    assert "budget: $50.00" in output
+    assert "OVER BUDGET by $20.44" in output
+
+
+def test_display_sprint_status_marks_an_overrun_a_summary_never_recorded(
+    tmp_path: Path,
+) -> None:
+    """A run that predates the recorded verdict is still compared to its cap."""
+    stories = [{"slug": "issue-1", "path": "Issue #1", "outcome": "DONE", "cost_usd": 12.0}]
+    _make_summary_file(tmp_path, "old-sprint", "run-old-1", stories)
+    log_dir = tmp_path / ".forge" / "logs" / "old-sprint"
+    summary_path = log_dir / "sprint-summary.yaml"
+    with open(summary_path, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    data["sprint"]["budget_usd"] = 10.0
+    data["sprint"]["total_cost_usd"] = 12.0
+    with open(summary_path, "w", encoding="utf-8") as f:
+        yaml.dump(data, f)
+
+    code, output = _run_sprint_status(tmp_path, "run-old-1")
+
+    assert code == 0
+    assert "OVER BUDGET by $2.00" in output
+
+
+def test_display_sprint_status_leaves_a_run_inside_its_budget_unmarked(
+    tmp_path: Path,
+) -> None:
+    """The marker has to mean something: no overrun, no warning."""
+    stories = [{"slug": "issue-1", "path": "Issue #1", "outcome": "DONE", "cost_usd": 1.5}]
+    _make_summary_file(tmp_path, "ok-sprint", "run-ok-1", stories)
+
+    code, output = _run_sprint_status(tmp_path, "run-ok-1")
+
+    assert code == 0
+    assert "budget: $10.00" in output
+    assert "OVER BUDGET" not in output
+
+
+def test_display_sprint_status_marks_a_live_run_over_its_budget(tmp_path: Path) -> None:
+    """A live run reports its standing while it is still running."""
+    runs_dir = tmp_path / ".forge" / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    (runs_dir / "live-over.pid").write_text("99999\nover-sprint\n")
+    state_path = runs_dir / "live-over.state"
+    with open(state_path, "w", encoding="utf-8") as f:
+        yaml.dump(
+            {
+                "sprint_name": "over-sprint",
+                "budget_usd": 10.0,
+                "budget_status": "over",
+                "budget_overrun_usd": 4.25,
+                "budget_spend_usd": 14.25,
+                "stories": [
+                    {
+                        "slug": "issue-9",
+                        "path": "Issue #9",
+                        "status": "running",
+                        "phase": "REVIEW",
+                        "cost_usd": 14.25,
+                        "blocked_by": [],
+                        "detail": {},
+                    }
+                ],
+            },
+            f,
+        )
+
+    code, output = _run_sprint_status(tmp_path, "live-over")
+
+    assert code == 0
+    assert "[live]" in output
+    assert "OVER BUDGET by $4.25" in output
+    assert "budget: $10.00  ⚠ exceeded" in output
+
+
 def test_display_sprint_status_row_shows_status_and_detail(tmp_path: Path) -> None:
     """Sprint rows include status and detail fields."""
     stories = [

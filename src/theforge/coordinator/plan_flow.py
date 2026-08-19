@@ -843,6 +843,7 @@ def _run_plan_phase(
                 "phase": "PLAN",
                 "iteration": 0,
                 "cost_usd": state.total_cost_measured,
+                "coordinator_state": state,
                 **_cu.live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
@@ -905,6 +906,7 @@ def _run_plan_phase(
                 "phase": "PLAN",
                 "iteration": 0,
                 "cost_usd": state.total_cost_measured,
+                "coordinator_state": state,
                 **_cu.live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),

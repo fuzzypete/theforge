@@ -533,6 +533,32 @@ def test_budget_exhausted_skip_classifies_as_budget_exhausted(tmp_path: Path) ->
     assert not any("land blocking dependencies" in a for a in entry["recommended_next_actions"])
 
 
+def test_mid_flight_budget_halt_is_not_a_credential_rejection(tmp_path: Path) -> None:
+    """A story the sprint stopped for money is not one it stopped for a token.
+
+    Both cancellations record a reason beginning "cancelled mid-flight:", so the
+    budget halt needs its own class or every capped run diagnoses as an auth
+    outage (#2547).
+    """
+    d = _sprint_dir(tmp_path)
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                _skipped_with_reason(
+                    "cancelled mid-flight: Budget exhausted (sprint $12.00 + carried "
+                    "$0.00 = $12.00 >= $10.00)",
+                    depends_on=["issue-2226"],
+                )
+            ]
+        ),
+    )
+    entry = _build(d)["stories"]["issue-2206"]
+    assert entry["primary_failure_class"] == "sprint_budget_halted_in_flight"
+    assert not any("re-authenticate" in a for a in entry["recommended_next_actions"])
+    assert any("budget" in a for a in entry["recommended_next_actions"])
+
+
 def test_auth_circuit_skip_classifies_as_credential_rejection(tmp_path: Path) -> None:
     d = _sprint_dir(tmp_path)
     _write(
