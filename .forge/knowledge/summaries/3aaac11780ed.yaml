@@ -1,0 +1,221 @@
+schema_version: 1
+run_id: 3aaac11780ed
+authoritative_run_record: .forge/audits/runs/3aaac11780ed.json
+generated_at: '2026-08-19T20:47:19.689774+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.021038750000000002
+story:
+  slug: issue-2547
+  name: A run continues spending past its configured budget without halting or warning
+  github_issue: 2547
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+domains:
+- backend
+- cli
+- concurrency
+changed_files: &id001
+- docs/guides/inputs-reference.md
+- src/theforge/cli/sprint_status.py
+- src/theforge/coordinator/adaptive_iterations.py
+- src/theforge/coordinator/cancellation.py
+- src/theforge/coordinator/engine.py
+- src/theforge/coordinator/plan_flow.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/review_phase.py
+- src/theforge/coordinator/validate_phase.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/budget.py
+- src/theforge/sprint/manifest.py
+- src/theforge/sprint/rca.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/state_writer.py
+- tests/test_cli_sprint_status.py
+- tests/test_sprint_budget_enforcement.py
+- tests/test_sprint_rca.py
+what_changed:
+  description: Sprint budget handling was extended from a pre-dispatch check into
+    runtime enforcement and reporting, so over-budget runs can be detected, surfaced,
+    and attributed while work is in flight. Status, audit, manifest, and RCA paths
+    were also updated to carry budget-overrun state into run records and operator-visible
+    output.
+  approach: The change centered on restructuring sprint-runner budget accounting around
+    live and terminal spend tracking, wiring cancellation and phase-update paths into
+    that accounting, and then propagating the resulting budget state through CLI/status
+    and run-summary artifacts with regression coverage for normal, batch, timeout,
+    exception, and unmeasured-cost cases.
+  files_modified: *id001
+what_was_learned:
+- claim: Sprint-level budget enforcement had been structurally limited to startup
+    and story-dispatch checkpoints, so an already-running story could continue spending
+    past the configured cap unless runtime paths also participated in budget checks.
+  evidence:
+  - type: file
+    path: src/theforge/sprint/budget.py
+    description: This file is the budget-evaluation module that the run centered on
+      extending beyond the original dispatch-time use.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: The runner was the main integration point for moving budget checks
+      into in-flight execution and cancellation paths.
+  - type: diff
+    ref: b71bc928d6deb69036193bca50fd87e0e6bebe80
+    description: The final diff reflects the runner and budget changes that shifted
+      enforcement into runtime handling.
+- claim: Accurate budget enforcement in this scheduler depends on a ledger that treats
+    in-flight, recovered, timed-out, cancelled, and terminal spend consistently; review
+    repeatedly surfaced edge cases where one path counted spend differently from another.
+  evidence:
+  - type: review_finding
+    finding_id: 6e43d9c62f1bbf2e
+    description: Shows worker-exit exceptions dropping provisional in-flight spend
+      from the ledger.
+  - type: review_finding
+    finding_id: c249530ee9a47542
+    description: Shows a batch-group exception path double-charging shared spend.
+  - type: review_finding
+    finding_id: 7195bf7b210dde05
+    description: Shows timeout spend remaining in the live ledger while being excluded
+      from the terminal total.
+  - type: review_finding
+    finding_id: 5061cd536c954c12
+    description: Shows deadline-killed workers still reporting cost that the checkpoint
+      accepts after spend was already folded in.
+  - type: review_finding
+    finding_id: bdc2cdb1f4fd5e0b
+    description: Shows cancelled-sibling spend being omitted from the sprint total
+      despite measured work.
+- claim: 'Unmeasured or lower-bound cost paths are part of budget behavior, not just
+    reporting detail: if they bypass the live ledger or lose their uncertainty marker,
+    mid-story cap enforcement and run accounting diverge.'
+  evidence:
+  - type: review_finding
+    finding_id: f5eea2f68a55cc19
+    description: Shows an unmeasured-cost story skipping the in-flight checkpoint
+      and avoiding over-budget marking.
+  - type: review_finding
+    finding_id: f5a89e6519699431
+    description: Shows a lower-bound figure entering accumulated total without being
+      preserved as unmeasured.
+  - type: review_finding
+    finding_id: a39e9f07d21ba350
+    description: Shows documentation and implementation disagreeing on how unmeasured
+      spend affects cancellation.
+  - type: file
+    path: src/theforge/sprint/budget.py
+    description: Budget logic was part of the changes that had to account for measured
+      and lower-bound spend.
+- claim: 'Batch and concurrent story execution create budget races: a cap crossed
+    by one member is not sufficient unless sibling review and recovery paths are synchronized
+    with the same enforcement state.'
+  evidence:
+  - type: review_finding
+    finding_id: 11cb186501431f7a
+    description: Shows later member reviews in a batch still running after an earlier
+      member pushed spend past budget.
+  - type: review_finding
+    finding_id: c249530ee9a47542
+    description: Shows batch-group shared futures complicating correct one-time spend
+      recovery.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: The runner contained the concurrency and batch-handling logic adjusted
+      during the run.
+- claim: Budget exhaustion needs explicit downstream attribution and presentation;
+    otherwise a run can stop or continue in budget-related states without status and
+    summaries distinguishing budget halt, timeout, and generic failure outcomes.
+  evidence:
+  - type: review_finding
+    finding_id: 0e2c12d05d20293f
+    description: Shows a budget-cancelled story later being recorded as a timeout
+      instead of a budget halt.
+  - type: file
+    path: src/theforge/cli/sprint_status.py
+    description: Status output was updated so budget overrun state is surfaced where
+      cost is shown.
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: Audit handling was extended to record budget-related run state.
+  - type: file
+    path: src/theforge/sprint/rca.py
+    description: RCA output was updated to carry budget-overrun information into summaries.
+  - type: file
+    path: tests/test_cli_sprint_status.py
+    description: Status regressions were covered with dedicated tests.
+- claim: 'Stale-update suppression after cancellation is delicate because budget enforcement
+    depends on still accepting the right late signals: over-filtering can hide spend
+    or phase progress needed by the scheduler.'
+  evidence:
+  - type: review_finding
+    finding_id: c9083c9301faf47a
+    description: Shows stop-signal filtering discarding all live-state updates, including
+      scheduler-relevant phase transitions.
+  - type: review_finding
+    finding_id: bdc2cdb1f4fd5e0b
+    description: Shows measured spend from a cancelled sibling being lost from the
+      sprint total.
+  - type: file
+    path: src/theforge/coordinator/cancellation.py
+    description: Cancellation handling was one of the codepaths changed to support
+      budget enforcement.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: Runner update filtering and late-report handling were central to
+      the review findings.
+learned_patterns:
+- runtime-budget-checkpoints
+- live-vs-terminal-cost-ledger
+- unmeasured-cost-propagation
+- batch-budget-race-handling
+- budget-state-visible-in-status
+- late-update-attribution
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: c249530ee9a47542
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: "When a worker running a batch group raises, the scheduler processes\
+      \ the same shared future once per member slug and charges the group's whole\
+      \ spend to the sprint total on each pass \u2014 once from the leader's in-flight\
+      \ entry and once more per non-leader member from that member's mirrored live-state\
+      \ cost \u2014 so a three-story group inflates recorded spend to three times\
+      \ what the group actually cost."
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 0e2c12d05d20293f
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: When a story has already been cancelled for budget exhaustion but
+      then reaches its worker deadline before returning, the scheduler records it
+      as a failed timeout instead of a skipped budget halt.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 11cb186501431f7a
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: In a cost-aware batch group, once one member's review pushes spend
+      past the sprint budget, later member reviews in the same group can still run
+      before the scheduler can see or stop them.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced mismatches between live budget state and terminal
+    accounting on exception, timeout, batch, and cancellation paths.
+  - Concurrency and shared-future recovery paths were the main source of regressions
+    after the initial runtime budget-enforcement wiring landed.
+  - Status and RCA visibility mattered alongside enforcement because attribution bugs
+    could make a budget halt appear as an unrelated timeout or a complete-cost run.
+complexity_signal:
+  actual_iterations: 5
+  review_cycles: 5
+  plan_regenerations: false
+  cost_usd: 34.8434537
+  dominant_difficulty: Keeping budget accounting and attribution consistent across
+    concurrent runner paths, especially when stories were cancelled, timed out, unmeasured,
+    or grouped in shared batch execution.
