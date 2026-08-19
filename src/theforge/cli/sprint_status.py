@@ -132,6 +132,12 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     # reports the measured lower bound as such instead of as the sprint cost.
     cost_complete: bool = True
     cost_measured_usd: float | None = None
+    # What the run recorded about its own standing against the cap, when it
+    # recorded one. Absent for runs that predate the field, which fall back to
+    # comparing the cost this command is about to display (#2547).
+    budget_status_recorded: str | None = None
+    budget_overrun_recorded: float | None = None
+    budget_spend_recorded: float | None = None
     duration_seconds: float | None = None
     sprint_phase: str | None = None
     sprint_phase_detail: str | None = None
@@ -152,6 +158,9 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             base_branch = meta.get("base_branch")
             budget_usd = meta.get("budget_usd")
             max_parallel = meta.get("max_parallel")
+            budget_status_recorded = meta.get("budget_status")
+            budget_overrun_recorded = meta.get("budget_overrun_usd")
+            budget_spend_recorded = meta.get("budget_spend_usd")
         # Approximate elapsed from the process start time via detach
         try:
             from theforge import detach as _detach
@@ -214,6 +223,22 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
             _measured = sp.get("total_cost_measured_usd")
             cost_measured_usd = _measured if isinstance(_measured, (int, float)) else None
             duration_seconds = sp.get("duration_seconds")
+            # A completed sprint reports its own cap and how it finished against
+            # it. Read both: without the budget there is nothing to compare the
+            # cost to, which is how a 41%-over run once read as unremarkable
+            # (#2547).
+            _summary_budget = sp.get("budget_usd")
+            if isinstance(_summary_budget, (int, float)):
+                budget_usd = float(_summary_budget)
+            _summary_status = sp.get("budget_status")
+            if isinstance(_summary_status, str):
+                budget_status_recorded = _summary_status
+            _summary_overrun = sp.get("budget_overrun_usd")
+            if isinstance(_summary_overrun, (int, float)):
+                budget_overrun_recorded = float(_summary_overrun)
+            _summary_verification = sp.get("budget_verification_spend_usd")
+            if isinstance(_summary_verification, (int, float)):
+                budget_spend_recorded = float(_summary_verification)
         except Exception:
             pass
 
@@ -248,15 +273,27 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     else:
         state_label = "completed"
 
+    # Cost and budget stop being two independent numbers here: whichever spend
+    # figure the header is about to show is compared against the cap, and an
+    # overrun is stated next to it rather than left for the operator to notice
+    # (#2547).
+    overrun_marker = _budget_overrun_marker(
+        budget_usd=budget_usd,
+        displayed_cost_usd=total_cost_usd if total_cost_usd is not None else cost_measured_usd,
+        recorded_status=budget_status_recorded,
+        recorded_overrun_usd=budget_overrun_recorded,
+        recorded_spend_usd=budget_spend_recorded,
+    )
+
     header_parts: list[str] = [f"Sprint: {sprint_name}  run: {run_id}  [{state_label}]"]
     if sprint_phase:
         header_parts.append(
             _format_sprint_phase(sprint_phase, sprint_phase_detail, sprint_phase_started_at)
         )
     if total_cost_usd is not None:
-        header_parts.append(f"cost: ${total_cost_usd:.2f}")
+        header_parts.append(f"cost: ${total_cost_usd:.2f}{overrun_marker}")
     elif not cost_complete:
-        header_parts.append(f"cost: {_fmt_cost_total(None, cost_measured_usd)}")
+        header_parts.append(f"cost: {_fmt_cost_total(None, cost_measured_usd)}{overrun_marker}")
     if duration_seconds is not None:
         if is_live:
             header_parts.append(f"elapsed: {int(duration_seconds // 60)}m")
@@ -271,7 +308,9 @@ def display_sprint_status(run_id: str, project_root: Path, title_cache: dict | N
     if base_branch:
         config_parts.append(f"base: {base_branch}")
     if budget_usd is not None:
-        config_parts.append(f"budget: ${float(budget_usd):.2f}")
+        config_parts.append(
+            f"budget: ${float(budget_usd):.2f}" + ("  ⚠ exceeded" if overrun_marker else "")
+        )
     if max_parallel is not None:
         config_parts.append(f"parallel: {max_parallel}")
     if config_parts:
@@ -413,7 +452,57 @@ def _read_sprint_meta_from_state(state_path: object) -> dict:
         out["budget_usd"] = float(data["budget_usd"])
     if isinstance(data.get("max_parallel"), int):
         out["max_parallel"] = data["max_parallel"]
+    # The runner's own verdict on the cap. Preferred over a comparison derived
+    # here because it accounts for spend the story rows never carry — carried
+    # cost from an earlier generation, and passes that belong to no story
+    # (#2547).
+    if isinstance(data.get("budget_status"), str):
+        out["budget_status"] = data["budget_status"]
+    if isinstance(data.get("budget_overrun_usd"), (int, float)):
+        out["budget_overrun_usd"] = float(data["budget_overrun_usd"])
+    if isinstance(data.get("budget_spend_usd"), (int, float)):
+        out["budget_spend_usd"] = float(data["budget_spend_usd"])
     return out
+
+
+def _budget_overrun_marker(
+    *,
+    budget_usd: float | None,
+    displayed_cost_usd: float | None,
+    recorded_status: str | None = None,
+    recorded_overrun_usd: float | None = None,
+    recorded_spend_usd: float | None = None,
+) -> str:
+    """Return the over-budget marker to append to the cost and budget fields.
+
+    Empty when there is no cap, or the run is inside it. The run's own recorded
+    verdict wins where it exists — it saw spend this view cannot (cost carried
+    from an earlier generation, passes that belong to no story) — and the
+    displayed cost is the fallback, so a run that recorded nothing is still
+    compared against its cap rather than printed beside it (#2547).
+    """
+    from theforge.sprint.budget import (  # noqa: PLC0415
+        BUDGET_STATUS_OVER,
+        budget_overrun_usd,
+    )
+
+    if budget_usd is None or float(budget_usd) <= 0.0:
+        return ""
+    spend_candidates = [
+        c for c in (displayed_cost_usd, recorded_spend_usd) if isinstance(c, (int, float))
+    ]
+    derived = (
+        budget_overrun_usd(budget_usd=float(budget_usd), spend_usd=max(spend_candidates))
+        if spend_candidates
+        else 0.0
+    )
+    if recorded_status == BUDGET_STATUS_OVER:
+        overrun = float(recorded_overrun_usd or 0.0) or derived
+    elif derived > 0.0:
+        overrun = derived
+    else:
+        return ""
+    return f"  ⚠ OVER BUDGET by ${overrun:.2f}"
 
 
 def _read_sprint_name_from_state(state_path: object) -> str:

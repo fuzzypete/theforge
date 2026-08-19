@@ -53,7 +53,7 @@ from theforge.task import (
 from . import live_state as _live_state
 from . import story_budget as _story_budget
 from .agent_failure import is_infrastructure_abort
-from .cancellation import StoryCancelled
+from .cancellation import StoryCancelled, cancel_cause
 from .log_tee import (  # noqa: E402
     _begin_run_log_tee,
     _end_run_log_tee,
@@ -231,22 +231,31 @@ def _run_end_outcome(result: CoordinatorResult) -> str:
     return "escalate"
 
 
-def _cancelled_result(task: TaskStory, state: CoordinatorState) -> CoordinatorResult:
+def _cancelled_result(
+    task: TaskStory,
+    state: CoordinatorState,
+    stop_event: "threading.Event | None" = None,
+) -> CoordinatorResult:
     """Build a failed CoordinatorResult for a story aborted via stop_event.
 
     Bypasses _record_run_memory() — the sprint scheduler has already written
-    the authoritative timeout audit record; writing a separate ESCALATE
+    the authoritative audit record for the stop; writing a separate ESCALATE
     record here would produce two contradictory failure narratives.
+
+    The cause comes off the signal itself (``cancel_cause``), so a story the
+    sprint killed for its budget is not reported as an unresponsive worker
+    (#2547). A bare ``threading.Event`` still yields the timeout wording.
     """
-    _log(f"INFO {task.slug}: cancelled by sprint stop_event")
+    reason, error_type = cancel_cause(stop_event)
+    _log(f"INFO {task.slug}: cancelled by sprint stop_event ({reason})")
     state.phase = Phase.ESCALATE
-    state.error = "Story cancelled by sprint timeout"
-    state.error_type = "StoryCancelled"
+    state.error = reason
+    state.error_type = error_type
     return CoordinatorResult(
         success=False,
         phase=Phase.ESCALATE,
         state=state,
-        message="Story cancelled by sprint timeout",
+        message=reason,
     )
 
 
@@ -1274,7 +1283,7 @@ def run_task(
                     stop_event=stop_event,
                 )
             except StoryCancelled:
-                return _cancelled_result(task, state)
+                return _cancelled_result(task, state, stop_event)
             _total_elapsed = time.monotonic() - _task_start
             _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
             logger._safe_emit(
@@ -1385,7 +1394,7 @@ def run_task(
                     stop_event=stop_event,
                 )
             except StoryCancelled:
-                return _cancelled_result(task, state)
+                return _cancelled_result(task, state, stop_event)
             logger._safe_emit(
                 "run_end",
                 outcome=_run_end_outcome(result),
@@ -1462,7 +1471,7 @@ def run_task(
                 stop_event=stop_event,
             )
         except StoryCancelled:
-            return _cancelled_result(task, state)
+            return _cancelled_result(task, state, stop_event)
 
         # ── Landing (single-story path) ───────────────────────────────
         # _finalize_approve defers all git operations and sets landing_status
@@ -1819,7 +1828,7 @@ def _run_resume_coordinator(
                 stop_event=stop_event,
             )
         except StoryCancelled:
-            return _cancelled_result(task, state)
+            return _cancelled_result(task, state, stop_event)
 
         # ── Landing (single-story resume path) ───────────────────────
         # Skip when defer_landing=True (sprint worker): scheduler handles it.

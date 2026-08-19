@@ -16,6 +16,7 @@ from ..coordinator.iteration_usage import dev_usage as _dev_usage
 from ..coordinator.landing_record import build_landing_record
 from ..log_util import _log_line
 from .abnormal import accumulate_failure_history, carry_failure_cause
+from .budget import budget_overrun_usd, budget_status
 from .launch_guard import REASON_RECONCILE_PRIOR_DONE, REASON_STRANDED_WORKTREE
 from .manifest import ResolvedSprint, SprintManifest, SprintResult
 
@@ -107,6 +108,46 @@ def _state_reported_cost(state: object) -> float | None:
     if hasattr(state, "total_cost_measured"):
         return _optional_cost(state.total_cost_measured)
     return _optional_cost(getattr(state, "total_cost", None))
+
+
+def _budget_cap_of(result: "SprintResult") -> float:
+    """The cap *result* ran under, ``0.0`` when it carries none.
+
+    Read defensively, like every other field these writers project: a record
+    built without a cap has nothing to be within or over, which is exactly what
+    a zero cap means to ``sprint.budget``.
+    """
+    raw = getattr(result, "budget_usd", 0.0)
+    return float(raw) if isinstance(raw, (int, float)) else 0.0
+
+
+def _budget_spend_against_cap(result: "SprintResult", spend_usd: float | None) -> float:
+    """The spend figure a cap comparison is made against for *result*."""
+    reported = getattr(result, "budget_spend_against_cap", None)
+    if not isinstance(reported, (int, float)):
+        raw_total = getattr(result, "total_cost_usd", 0.0)
+        reported = float(raw_total) if isinstance(raw_total, (int, float)) else 0.0
+    if spend_usd is None:
+        return float(reported)
+    return max(float(reported), float(spend_usd))
+
+
+def _budget_status_of(result: "SprintResult", spend_usd: float | None = None) -> str:
+    """Where the run stands against its cap: within, over, or unset (#2547)."""
+    return budget_status(
+        budget_usd=_budget_cap_of(result), spend_usd=_budget_spend_against_cap(result, spend_usd)
+    )
+
+
+def _budget_overrun_of(result: "SprintResult", spend_usd: float | None = None) -> float:
+    """How far the run passed its cap, or ``0.0`` when it did not (#2547)."""
+    return round(
+        budget_overrun_usd(
+            budget_usd=_budget_cap_of(result),
+            spend_usd=_budget_spend_against_cap(result, spend_usd),
+        ),
+        4,
+    )
 
 
 def _story_allocation_summary(
@@ -936,6 +977,14 @@ def _write_sprint_audit(
             "budget_verification_spend_usd": round(
                 float(getattr(result, "budget_verification_spend_usd", 0.0) or 0.0), 4
             ),
+            # Where the run finished relative to its cap, stated rather than left
+            # to be inferred from two numbers in the same block. A run can land
+            # over the cap legitimately — enforcement stops it at the first
+            # checkpoint past the limit, and the phase already running when that
+            # happened still finishes — so "over" is reported, not suppressed
+            # (#2547).
+            "budget_status": _budget_status_of(result),
+            "budget_overrun_usd": _budget_overrun_of(result),
             "budget_note": "Costs reflect Claude invocations only; Codex/Gemini report $0.00",
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
@@ -1419,6 +1468,12 @@ def _write_sprint_summary(
             "budget_verification_spend_usd": round(
                 float(getattr(result, "budget_verification_spend_usd", 0.0) or 0.0), 4
             ),
+            # See the audit writer: the run's standing against its cap, reported
+            # beside the cost it is a statement about (#2547). Measured against
+            # the summary's own effective cost, which can exceed the result's
+            # when per-story attribution recovered spend the ledger did not hold.
+            "budget_status": _budget_status_of(result, spend_usd=effective_cost_usd),
+            "budget_overrun_usd": _budget_overrun_of(result, spend_usd=effective_cost_usd),
             "started_at": started_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "finished_at": finished_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "duration_seconds": round(duration, 1),

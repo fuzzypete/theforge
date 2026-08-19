@@ -9,6 +9,10 @@ The per-story dollar value is an *estimate* derived from historical cost data �
 it informs routing, timeout scaling, and audit telemetry. It is NOT an enforced
 budget: real post-hoc dollar governance lives at the sprint level
 (``forge.yaml: budget_usd``). Nothing here caps or blocks spend after the fact.
+The sprint cap does bind mid-story — it is charged the spend of stories still
+running and cancels them at the next phase boundary once it is met (#2547) —
+but that decision is the sprint's, made against measured spend, never against
+an estimate derived here.
 
 Design:
 
