@@ -218,6 +218,24 @@ def test_two_running_stories_cross_the_cap_together(tmp_path: Path) -> None:
     assert round(result.total_cost_usd, 2) == 12.0
 
 
+def test_worker_exception_recovery_promotes_the_last_measured_spend() -> None:
+    """A raised worker's last live figure becomes terminal sprint spend.
+
+    The scheduler has no terminal ``CoordinatorResult`` to fold in on this
+    path, so it must promote the provisional in-flight amount itself or the
+    sprint silently forgets money it already spent.
+    """
+    ledger = SprintCostLedger()
+    ledger.record_in_flight_cost("story-a", 4.0)
+
+    recovered = ledger.recover_in_flight_cost("story-a")
+    assert recovered.accumulated == 4.0
+    assert recovered.in_flight == 0.0
+
+    ledger.record_story_cost("story-b", 1.5, measured=1.5)
+    assert round(ledger.snapshot().spent_including_in_flight, 2) == 5.5
+
+
 def test_a_budget_halt_is_not_labelled_as_a_worker_timeout(tmp_path: Path) -> None:
     """A cancelled story must say which lever the sprint pulled.
 
@@ -246,6 +264,48 @@ def test_a_budget_halt_is_not_labelled_as_a_worker_timeout(tmp_path: Path) -> No
     _spec, cancelled = result.results[0]
     assert cancelled.state.error_type == BUDGET_CANCEL_ERROR_TYPE
     assert "budget" in (cancelled.state.error or "").lower()
+
+
+def test_unmeasured_phase_uses_the_coordinator_lower_bound_for_budget_checks(
+    tmp_path: Path,
+) -> None:
+    """An unknown total is still charged at its measured lower bound.
+
+    Once a phase reports ``cost_usd: null``, ``total_cost_measured`` is poisoned
+    to ``None`` for the rest of the run. Mid-story enforcement must then fall
+    back to the coordinator state's measured lower bound instead of letting the
+    story bypass every later sprint-budget checkpoint.
+    """
+    config = _make_config(tmp_path)
+    resolved = _make_resolved(tmp_path, ("story-a",), budget_usd=5.0)
+    lower_bound_state = CoordinatorState()
+    lower_bound_state.preflight_result = MagicMock(cost_usd=6.0)
+    lower_bound_state.dev_results.append(MagicMock(cost_usd=None))
+    assert lower_bound_state.total_cost_measured is None
+    assert lower_bound_state.total_cost == 6.0
+    seen: dict[str, tuple[str, str]] = {}
+
+    def _fake_run_task(_config, task, **kwargs):
+        state_update_fn = kwargs["state_update_fn"]
+        stop_event = kwargs["stop_event"]
+        state_update_fn(
+            {
+                "phase": "REVIEW",
+                "cost_usd": None,
+                "coordinator_state": lower_bound_state,
+            }
+        )
+        assert stop_event.is_set(), "lower-bound checkpoint did not stop the over-budget story"
+        seen[task.slug] = cancel_cause(stop_event)
+        return _cancelled_result(stop_event, lower_bound_state.total_cost)
+
+    result = _run(config, resolved, _fake_run_task)
+
+    reason, error_type = seen["story-a"]
+    assert error_type == BUDGET_CANCEL_ERROR_TYPE
+    assert "budget" in reason.lower()
+    assert result.stopped_reason.startswith("Budget exhausted")
+    assert round(result.total_cost_usd, 2) == 6.0
 
 
 def test_a_run_inside_its_cap_is_left_alone(tmp_path: Path) -> None:

@@ -1434,6 +1434,7 @@ def _run_review_phase(
                 "phase": "REVIEW",
                 "iteration": state.review_cycle + 1,
                 "cost_usd": state.total_cost_measured,
+                "coordinator_state": state,
                 **live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
@@ -1723,6 +1724,7 @@ def _run_review_phase(
                 "phase": "REVIEW",
                 "iteration": state.review_cycle,
                 "cost_usd": state.total_cost_measured,
+                "coordinator_state": state,
                 **live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),

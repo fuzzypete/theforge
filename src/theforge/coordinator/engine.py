@@ -666,6 +666,7 @@ def _coordinator_loop(
                         "phase": "DEV",
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost_measured,
+                        "coordinator_state": state,
                         **live_complexity_fields(
                             state.preflight_complexity, state.preflight_complexity_score
                         ),
@@ -725,6 +726,7 @@ def _coordinator_loop(
                         "phase": "DEV",
                         "iteration": state.dev_iteration,
                         "cost_usd": state.total_cost_measured,
+                        "coordinator_state": state,
                         **live_complexity_fields(
                             state.preflight_complexity, state.preflight_complexity_score
                         ),

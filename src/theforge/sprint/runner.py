@@ -479,6 +479,35 @@ def _optional_cost(raw: object) -> float | None:
     return None
 
 
+def _budget_checkpoint_cost(updates: Mapping[str, object]) -> float | None:
+    """Best measured lower bound available in a live state update.
+
+    ``cost_usd`` is the preferred signal: it is the fully measured running
+    total when the transport reported one. When a phase went unmeasured, the
+    coordinator can still carry a lower bound on ``coordinator_state.total_cost``
+    (or, for older callers, ``detail.cost_measured_lower_bound_usd``). Returning
+    ``None`` means "no new lower bound arrived"; callers may still re-check the
+    budget against the last provisional spend they already hold.
+    """
+    _reported = _optional_cost(updates.get("cost_usd"))
+    if _reported is not None:
+        return _reported
+
+    _detail = updates.get("detail")
+    if isinstance(_detail, Mapping):
+        _lower_bound = _optional_cost(_detail.get("cost_measured_lower_bound_usd"))
+        if _lower_bound is not None:
+            return _lower_bound
+
+    _coordinator_state = updates.get("coordinator_state")
+    if _coordinator_state is None:
+        return None
+    _measured = _optional_cost(getattr(_coordinator_state, "total_cost_measured", None))
+    if _measured is not None:
+        return _measured
+    return _optional_cost(getattr(_coordinator_state, "total_cost", None))
+
+
 def _story_reported_cost(state: object, adjustment: float = 0.0) -> float | None:
     """Per-story reported cost: measured total plus adjustment, or ``None``.
 
@@ -2613,7 +2642,8 @@ def _make_worker_phase_fn(
     plan_done: "dict[str, str] | None" = None,
     state_writer: "SprintStateWriter | None" = None,
     audit_flush: "Callable[[str], None] | None" = None,
-    budget_checkpoint: "Callable[[str, float], None] | None" = None,
+    budget_checkpoint: "Callable[[str, float | None], None] | None" = None,
+    live_cost_updates: "dict[str, float] | None" = None,
 ) -> "Callable[[dict], None]":
     """Return a thread-safe state_update_fn wrapper for worker live state.
 
@@ -2633,50 +2663,42 @@ def _make_worker_phase_fn(
     it cannot see this one's memory (#2013). Flushing on phase changes only
     keeps the cost proportional to real progress rather than to update chatter.
 
-    When *budget_checkpoint* is provided it is called with the story's measured
-    spend every time the coordinator reports one. That report arrives at the
-    coordinator's phase boundaries, which is precisely where a sprint cap can be
-    enforced against a story that is already running: the sprint learns what the
-    story has spent at the same moment the story is between phases and can still
-    be stopped without wasting a phase's work (#2547).
+    When *budget_checkpoint* is provided it is called at coordinator phase
+    boundaries with the best measured lower bound that update carried, or
+    ``None`` when the update brought no new lower-bound data. Those boundaries
+    are precisely where a sprint cap can be enforced against a story that is
+    already running: the sprint learns what the story has spent at the same
+    moment the story is between phases and can still be stopped without wasting
+    a phase's work (#2547).
     """
 
     def _update(updates: dict) -> None:
         phase = updates.get("phase", "")
+        _checkpoint_cost: float | None = None
         # A mirrored cost belongs to another slug's run (a batch group's shared
         # dev pass). It is displayed on this row and charged on that one.
         _cost_mirrored = bool(updates.pop("cost_mirrored", False))
         # Before the lock: the checkpoint may stop the sprint and set every
         # in-flight story's cancellation signal, and no other worker's live
         # update should queue behind that decision.
-        if budget_checkpoint is not None and not _cost_mirrored:
-            _reported = updates.get("cost_usd")
-            # ``None`` means the transport could not measure this story's spend.
-            # That still advances the live sprint standing by the measured lower
-            # bound already in the coordinator state: the dispatch gate remains
-            # where unmeasured spend fails closed, but a running story should not
-            # get to bypass every later phase-boundary checkpoint once one phase
-            # went unmeasured (#1992, #2547).
-            if isinstance(_reported, (int, float)) and not isinstance(_reported, bool):
-                budget_checkpoint(slug, float(_reported))
-            elif _reported is None:
-                _detail = updates.get("detail")
-                _lower_bound = None
-                if isinstance(_detail, dict):
-                    _candidate = _detail.get("cost_measured_lower_bound_usd")
-                    if isinstance(_candidate, (int, float)) and not isinstance(_candidate, bool):
-                        _lower_bound = float(_candidate)
-                if _lower_bound is None:
-                    _coordinator_state = updates.get("coordinator_state")
-                    _candidate = getattr(_coordinator_state, "total_cost_measured", None)
-                    if isinstance(_candidate, (int, float)) and not isinstance(_candidate, bool):
-                        _lower_bound = float(_candidate)
-                if _lower_bound is not None:
-                    budget_checkpoint(slug, _lower_bound)
+        if not _cost_mirrored:
+            # ``None`` means "no new lower bound arrived", not "stop checking":
+            # once a story has gone unmeasured the sprint must keep re-checking
+            # the cap against the best lower bound it already holds (#1992, #2547).
+            _detail = updates.get("detail")
+            _has_lower_bound_detail = isinstance(_detail, Mapping) and (
+                "cost_measured_lower_bound_usd" in _detail
+            )
+            if "cost_usd" in updates or "coordinator_state" in updates or _has_lower_bound_detail:
+                _checkpoint_cost = _budget_checkpoint_cost(updates)
+                if budget_checkpoint is not None:
+                    budget_checkpoint(slug, _checkpoint_cost)
         with phase_lock:
             phase_changed = bool(phase) and worker_phases.get(slug) != phase
             if phase:
                 worker_phases[slug] = phase
+            if live_cost_updates is not None and _checkpoint_cost is not None:
+                live_cost_updates[slug] = _checkpoint_cost
             if state_writer is not None:
                 incoming_detail = updates.get("detail")
                 detail_updates: dict[str, object] = (
@@ -3419,27 +3441,54 @@ class SprintCostLedger:
             self._unmeasured.append(source)
 
     def record_in_flight_cost(self, slug: str, cost: float) -> SprintCostSnapshot:
-        """Record what a *running* story has measurably spent so far.
+        """Record what a *running* story has measurably spent so far."""
+        return self.checkpoint_in_flight_cost(slug, cost)
 
-        Last-write-wins per slug, because the coordinator reports a running
-        total rather than an increment. Returns the whole ledger read taken
-        under the same lock as the write, so an in-flight budget check evaluates
-        one consistent moment instead of a total and an in-flight figure that
-        drifted apart between two reads.
+    def checkpoint_in_flight_cost(self, slug: str, cost: float | None) -> SprintCostSnapshot:
+        """Return the ledger state at a phase boundary for one running story.
+
+        When *cost* is numeric, last-write-wins per slug because the coordinator
+        reports a running total rather than an increment. When *cost* is
+        ``None``, no new lower bound was available, so the story keeps the last
+        measured figure already on the ledger. In both cases the returned
+        snapshot is taken under the same lock as any update, so the cap check
+        evaluates one consistent moment instead of a total and an in-flight
+        figure that drifted apart between two reads.
         """
         with self._lock:
-            self._in_flight[slug] = max(0.0, float(cost))
+            if cost is not None:
+                self._in_flight[slug] = max(0.0, float(cost))
             return self._snapshot_locked()
 
     def drop_in_flight_cost(self, slug: str) -> None:
         """Forget a story's provisional spend without recording a total.
 
-        For the exits that never produce a terminal cost (a worker that raised
-        on its way out): the provisional figure must not linger in the in-flight
-        sum for the rest of the sprint.
+        For exits that intentionally abandon the story's spend rather than
+        promoting it into the sprint total: the provisional figure must not
+        linger in the in-flight sum for the rest of the sprint.
         """
         with self._lock:
             self._in_flight.pop(slug, None)
+
+    def recover_in_flight_cost(
+        self, slug: str, *, fallback_cost: float | None = None
+    ) -> SprintCostSnapshot:
+        """Fold a raised worker's last measured spend into the sprint total.
+
+        A worker exception never produces a terminal ``CoordinatorResult`` to
+        replace its provisional in-flight figure. Promoting that last measured
+        figure into ``accumulated`` preserves money the sprint definitely spent
+        instead of silently making it disappear from later cap checks and the
+        terminal total. When the in-flight ledger entry is already gone, the
+        caller's last live-state cost snapshot is the next-best lower bound.
+        """
+        with self._lock:
+            _recovered = self._in_flight.pop(slug, None)
+            if _recovered is None and fallback_cost is not None:
+                _recovered = max(0.0, float(fallback_cost))
+            if _recovered is not None:
+                self._accumulated += _recovered
+            return self._snapshot_locked()
 
     def record_story_cost(self, slug: str, cost: float, *, measured: float | None) -> float:
         """Fold a finished story's spend into the total in one step.
@@ -3760,6 +3809,10 @@ class SprintExecutionState:
     # what tells the scheduler the cancellation was a spending decision rather
     # than a judgment about the work (#2547).
     budget_cancelled_slugs: set[str] = field(default_factory=set)
+    # The latest measured lower bound each active story reported through live
+    # state updates. Used to recover spend when a worker dies before it can
+    # return a terminal CoordinatorResult (#2547 follow-up).
+    latest_live_cost_usd: dict[str, float] = field(default_factory=dict)
     # Stories this generation actually put through a coordinator run — and
     # therefore the ones whose seeded prior cost was overwritten.
     ran_this_generation: set[str] = field(default_factory=set)
@@ -5684,7 +5737,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 f"{decision.detail} — running stories cancelled, remaining stories skipped",
             )
 
-    def _budget_checkpoint(slug: str, measured_cost: float) -> None:
+    def _budget_checkpoint(slug: str, measured_cost: float | None) -> None:
         """Charge a running story's spend to the cap, and halt if it is met.
 
         Called from the worker thread at every coordinator phase boundary that
@@ -5695,7 +5748,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         """
         if _ctx.resolved.budget_usd <= 0.0:
             return
-        _snapshot = _sprint_state.cost.record_in_flight_cost(slug, measured_cost)
+        _snapshot = _sprint_state.cost.checkpoint_in_flight_cost(slug, measured_cost)
         _publish_live_budget_status(_snapshot.spent_including_in_flight)
         if _sprint_state.stop.stopped:
             return
@@ -7028,6 +7081,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         _ctx.config, task, _ctx.resolved.name, sprint_id=_ctx.sprint_id
                     ),
                     budget_checkpoint=_budget_checkpoint,
+                    live_cost_updates=_sprint_state.latest_live_cost_usd,
                 )
                 stop_evt = StopSignal()
                 _sprint_state.stop_events[task.slug] = stop_evt
@@ -7271,6 +7325,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                         source="sprint.runner:worker-deadline",
                     )
                     _timeout_result.state.abnormal_termination = _timeout_cause
+                    _sprint_state.latest_live_cost_usd.pop(slug, None)
                     _sprint_state.story_times[slug] = (story_started_at, timed_out_at)
                     _sprint_state.live_telemetry_snapshots[slug] = snapshot
                     # A worker the auth breaker cancelled can also cross its
@@ -7337,15 +7392,20 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     worker_budget.unregister_worker_budget(slug)
                     story_wait_started.discard(slug)
                     _sprint_state.stop_events.pop(slug, None)
-                    # No terminal cost will ever be recorded for this story, so
-                    # its provisional in-flight figure has no successor to
-                    # replace it — drop it rather than leave it charged to every
-                    # later cap check (#2547).
-                    _sprint_state.cost.drop_in_flight_cost(slug)
+                    snapshot = _snapshot_last_known(slug, _sprint_state.state_writer)
+                    _last_live_cost = _sprint_state.latest_live_cost_usd.pop(slug, None)
+                    _recovered_cost = _sprint_state.cost.recover_in_flight_cost(
+                        slug,
+                        fallback_cost=(
+                            _last_live_cost
+                            if _last_live_cost is not None
+                            else snapshot["last_cost"]
+                        ),
+                    )
+                    _publish_live_budget_status(_recovered_cost.spent_including_in_flight)
                     _end_collision_claim(_sprint_state, slug, "worker raised")
                     spec_str = slug_to_spec[slug]
                     failed_at = datetime.datetime.now(datetime.timezone.utc)
-                    snapshot = _snapshot_last_known(slug, _sprint_state.state_writer)
                     last_phase = snapshot["last_phase"]
                     if slug in _sprint_state.story_times:
                         story_started_at = _sprint_state.story_times[slug][0]
@@ -7425,6 +7485,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 story_wait_started.discard(slug)
                 _sprint_state.stop_events.pop(slug, None)
                 _sprint_state.story_times[slug] = (t0, t1)
+                _sprint_state.latest_live_cost_usd.pop(slug, None)
 
                 _sprint_state.cost.record_story_cost(
                     slug,
