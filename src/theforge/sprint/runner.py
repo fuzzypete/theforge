@@ -34,6 +34,7 @@ from ..coordinator.agent_failure import (
     mark_infrastructure_abort,
 )
 from ..coordinator.batch_diff import BatchReviewContext, latest_dev_handoff
+from ..coordinator.cancellation import BUDGET_CANCEL_ERROR_TYPE, StopSignal, cancel_cause
 from ..coordinator.config_snapshot import SprintConfigSnapshot, capture_or_load
 from ..coordinator.engine import run_from_dev, run_from_review, run_review_only, run_task
 from ..coordinator.gate import run_gate_full
@@ -86,7 +87,12 @@ from .audit import (
 )
 from .audit_publish import publish_story_run_audits, write_terminal_sprint_audits
 from .auth_gate import enforce_sprint_auth_readiness
-from .budget import budget_verification_spend, evaluate_budget
+from .budget import (
+    budget_overrun_usd,
+    budget_status,
+    budget_verification_spend,
+    evaluate_budget,
+)
 from .carry import (
     load_sprint_carry_budget_snapshot,
 )
@@ -471,6 +477,53 @@ def _optional_cost(raw: object) -> float | None:
     if isinstance(raw, (int, float)) and not isinstance(raw, bool):
         return float(raw)
     return None
+
+
+@dataclass(frozen=True)
+class SprintCostObservation:
+    """A story's latest known spend and whether it was fully measured.
+
+    ``amount`` is always a lower bound on what the story spent so far. When
+    ``measured`` is False, that lower bound came from a coordinator aggregate
+    whose true total is unknown because some contributing phase reported no
+    cost. The runner still charges the lower bound to the sprint cap, but it
+    must never certify the sprint total as complete afterwards (#1992, #2547).
+    """
+
+    amount: float
+    measured: bool = True
+
+
+def _budget_checkpoint_cost(updates: Mapping[str, object]) -> SprintCostObservation | None:
+    """Best measured lower bound available in a live state update.
+
+    ``cost_usd`` is the preferred signal: it is the fully measured running
+    total when the transport reported one. When a phase went unmeasured, the
+    coordinator can still carry a lower bound on ``coordinator_state.total_cost``
+    (or, for older callers, ``detail.cost_measured_lower_bound_usd``). Returning
+    ``None`` means "no new lower bound arrived"; callers may still re-check the
+    budget against the last provisional spend they already hold.
+    """
+    _reported = _optional_cost(updates.get("cost_usd"))
+    if _reported is not None:
+        return SprintCostObservation(amount=_reported, measured=True)
+
+    _detail = updates.get("detail")
+    if isinstance(_detail, Mapping):
+        _lower_bound = _optional_cost(_detail.get("cost_measured_lower_bound_usd"))
+        if _lower_bound is not None:
+            return SprintCostObservation(amount=_lower_bound, measured=False)
+
+    _coordinator_state = updates.get("coordinator_state")
+    if _coordinator_state is None:
+        return None
+    _measured = _optional_cost(getattr(_coordinator_state, "total_cost_measured", None))
+    if _measured is not None:
+        return SprintCostObservation(amount=_measured, measured=True)
+    _lower_bound = _optional_cost(getattr(_coordinator_state, "total_cost", None))
+    if _lower_bound is None:
+        return None
+    return SprintCostObservation(amount=_lower_bound, measured=False)
 
 
 def _story_reported_cost(state: object, adjustment: float = 0.0) -> float | None:
@@ -2368,11 +2421,19 @@ def _run_batch_group(
 
         All members really are in DEV at that moment; showing only the leader as
         running would make the others read as idle for the length of the pass.
+
+        The cost in a mirrored update is the *group's* one spend, shown on each
+        member's row. Every mirror but the leader's is marked as such, so a
+        sprint charging in-flight spend to its cap counts that one pass once
+        rather than once per member (#2547).
         """
         for slug, fn in state_update_fns.items():
             if fn is None:
                 continue
-            fn({**update, "spec": slug})
+            mirrored = {**update, "spec": slug}
+            if slug != leader_task.slug:
+                mirrored["cost_mirrored"] = True
+            fn(mirrored)
 
     leader_task_dispatch, leader_result, leader_elapsed, leader_t0, leader_t1 = _run_single_story(
         config,
@@ -2437,22 +2498,42 @@ def _run_batch_group(
             f"reviews cannot attribute commits and will treat every finding as "
             f"unverifiable against the member's own change"
         )
+
+    def _cancelled_batch_member_result(
+        member: TaskStory, started_at: datetime.datetime
+    ) -> CoordinatorResult:
+        reason, error_type = cancel_cause(stop_event)
+        return _abnormal_story_result(
+            member.slug,
+            config=config,
+            sprint_name=sprint_name,
+            started_at=started_at,
+            error=reason,
+            error_type=error_type,
+            message=reason,
+        )
+
     for member in member_tasks:
         member_t0 = datetime.datetime.now(datetime.timezone.utc)
         set_worker_slug(member.slug)
         member_fn = state_update_fns.get(member.slug)
         if member_fn is not None:
             member_fn({"spec": member.slug, "phase": "REVIEW"})
+        review_started = False
         try:
-            member_result = run_review_only(
-                config,
-                member,
-                workspace_path,
-                notify=notify,
-                sprint_name=sprint_name,
-                branch_name=branch_name,
-                batch_context=batch_context,
-            )
+            if stop_event is not None and stop_event.is_set():
+                member_result = _cancelled_batch_member_result(member, member_t0)
+            else:
+                review_started = True
+                member_result = run_review_only(
+                    config,
+                    member,
+                    workspace_path,
+                    notify=notify,
+                    sprint_name=sprint_name,
+                    branch_name=branch_name,
+                    batch_context=batch_context,
+                )
         except Exception as exc:
             _log(f"ERROR {member.slug}: batch review raised {type(exc).__name__}: {exc}")
             member_result = _batch_member_failure(
@@ -2464,6 +2545,17 @@ def _run_batch_group(
             )
         finally:
             set_worker_slug("")
+        if review_started and member_fn is not None:
+            member_update: dict[str, object] = {
+                "spec": member.slug,
+                "coordinator_state": member_result.state,
+            }
+            measured_cost = _optional_cost(
+                getattr(member_result.state, "total_cost_measured", None)
+            )
+            if measured_cost is not None:
+                member_update["cost_usd"] = measured_cost
+            member_fn(member_update)
         member_result.state.preflight_batch_group = group_id
         # The gate ran once, on the shared worktree. Carry its result onto every
         # member so a batched story's audit shows the validation it actually
@@ -2599,6 +2691,9 @@ def _make_worker_phase_fn(
     plan_done: "dict[str, str] | None" = None,
     state_writer: "SprintStateWriter | None" = None,
     audit_flush: "Callable[[str], None] | None" = None,
+    budget_checkpoint: "Callable[[str, SprintCostObservation | None], None] | None" = None,
+    live_cost_updates: "dict[str, SprintCostObservation] | None" = None,
+    stop_event: threading.Event | None = None,
 ) -> "Callable[[dict], None]":
     """Return a thread-safe state_update_fn wrapper for worker live state.
 
@@ -2617,14 +2712,50 @@ def _make_worker_phase_fn(
     file is the only record an outside process (``forge stop``) can finalize —
     it cannot see this one's memory (#2013). Flushing on phase changes only
     keeps the cost proportional to real progress rather than to update chatter.
+
+    When *budget_checkpoint* is provided it is called at coordinator phase
+    boundaries with the best measured lower bound that update carried, or
+    ``None`` when the update brought no new lower-bound data. Those boundaries
+    are precisely where a sprint cap can be enforced against a story that is
+    already running: the sprint learns what the story has spent at the same
+    moment the story is between phases and can still be stopped without wasting
+    a phase's work (#2547).
+
+    When *stop_event* is already set the worker has been cancelled by the
+    scheduler, so any later phase update is stale: accepting it would recreate
+    provisional in-flight spend for a story the scheduler has already retired
+    and accounted for.
     """
 
     def _update(updates: dict) -> None:
+        if stop_event is not None and stop_event.is_set():
+            return
         phase = updates.get("phase", "")
+        _checkpoint_cost: SprintCostObservation | None = None
+        # A mirrored cost belongs to another slug's run (a batch group's shared
+        # dev pass). It is displayed on this row and charged on that one.
+        _cost_mirrored = bool(updates.pop("cost_mirrored", False))
+        # Before the lock: the checkpoint may stop the sprint and set every
+        # in-flight story's cancellation signal, and no other worker's live
+        # update should queue behind that decision.
+        if not _cost_mirrored:
+            # ``None`` means "no new lower bound arrived", not "stop checking":
+            # once a story has gone unmeasured the sprint must keep re-checking
+            # the cap against the best lower bound it already holds (#1992, #2547).
+            _detail = updates.get("detail")
+            _has_lower_bound_detail = isinstance(_detail, Mapping) and (
+                "cost_measured_lower_bound_usd" in _detail
+            )
+            if "cost_usd" in updates or "coordinator_state" in updates or _has_lower_bound_detail:
+                _checkpoint_cost = _budget_checkpoint_cost(updates)
+                if budget_checkpoint is not None:
+                    budget_checkpoint(slug, _checkpoint_cost)
         with phase_lock:
             phase_changed = bool(phase) and worker_phases.get(slug) != phase
             if phase:
                 worker_phases[slug] = phase
+            if live_cost_updates is not None and _checkpoint_cost is not None:
+                live_cost_updates[slug] = _checkpoint_cost
             if state_writer is not None:
                 incoming_detail = updates.get("detail")
                 detail_updates: dict[str, object] = (
@@ -3070,6 +3201,52 @@ def _mark_story_auth_cancelled(
         _log(f"WARN: could not re-attribute auth-cancelled story: {exc}")
 
 
+def _copy_worker_signals(
+    signals: "dict[str, threading.Event]",
+) -> list[tuple[str, threading.Event]]:
+    """Copy a slug -> Event map safely from a thread that does not own it.
+
+    The scheduler owns ``stop_events`` and ``plan_gates``, adding and removing
+    entries as stories dispatch and land. Until the budget checkpoint (#2547) it
+    was their only reader, so neither needed a lock; a worker thread copying one
+    can now race a scheduler mutation, which CPython reports rather than
+    corrupts. Retrying the copy is the whole fix — the loser of the race reads a
+    moment later, and a story that landed in between no longer needs signalling.
+    """
+    for _ in range(3):
+        try:
+            return list(signals.items())
+        except RuntimeError:  # dict changed size during iteration
+            continue
+    return []
+
+
+def _budget_cancel_reason(state: SprintExecutionState) -> str:
+    """The operator-facing reason a story was cancelled for the sprint's cap."""
+    recorded = state.stop.reason or "sprint budget exhausted"
+    return f"cancelled mid-flight: {recorded}"
+
+
+def _mark_story_budget_cancelled(result: CoordinatorResult, *, reason: str) -> None:
+    """Re-attribute a mid-flight cancellation to the sprint's spending cap.
+
+    The same problem ``_mark_story_auth_cancelled`` solves, for the other reason
+    a sprint kills work it started: left alone, the generic cancellation reads
+    downstream as a story that failed. It did not fail — it was stopped, by a
+    decision about money that says nothing about the work, and the record has to
+    say which (#2547).
+
+    Deliberately NOT an infrastructure abort: nothing was broken. The story is
+    simply unfinished, and re-running it under a larger cap is the whole remedy.
+    """
+    try:
+        result.state.error = reason
+        result.state.error_type = BUDGET_CANCEL_ERROR_TYPE
+        result.message = reason
+    except Exception as exc:  # pragma: no cover - defensive
+        _log(f"WARN: could not re-attribute budget-cancelled story: {exc}")
+
+
 def _classify_and_record(
     task: TaskStory,
     result: CoordinatorResult,
@@ -3187,11 +3364,26 @@ class SprintCostSnapshot:
     prior: float
     unmeasured: tuple[str, ...]
     current_generation_unmeasured: frozenset[str]
+    # What the stories still running have measurably spent so far. Not part of
+    # ``accumulated``: it is provisional, replaced by the story's terminal figure
+    # the moment the story lands. Carried in the same read so an in-flight budget
+    # check cannot see a total from one moment and in-flight spend from another.
+    in_flight: float = 0.0
 
     @property
     def spent(self) -> float:
         """This generation's spend plus what it inherited on resume."""
         return self.accumulated + self.prior
+
+    @property
+    def spent_including_in_flight(self) -> float:
+        """Everything spent so far, counting stories that have not landed yet.
+
+        The figure a mid-story cap check has to use: a sprint that has paid for
+        work still in progress has spent that money whether or not the story it
+        belongs to has returned (#2547).
+        """
+        return self.spent + self.in_flight
 
     @property
     def measured(self) -> bool:
@@ -3220,6 +3412,11 @@ class SprintCostLedger:
         self._prior = float(prior)
         self._unmeasured: list[str] = []
         self._current_generation: set[str] = set()
+        # slug -> what that still-running story has measurably spent so far.
+        # Provisional spend the ledger owns for the same reason it owns the
+        # total: a sprint that tracked in-flight cost anywhere else would have
+        # two writers for one question again (#2547).
+        self._in_flight: dict[str, SprintCostObservation] = {}
 
     # -- reads ----------------------------------------------------------
     @property
@@ -3260,12 +3457,17 @@ class SprintCostLedger:
     def snapshot(self) -> SprintCostSnapshot:
         """Read the whole ledger at one moment."""
         with self._lock:
-            return SprintCostSnapshot(
-                accumulated=self._accumulated,
-                prior=self._prior,
-                unmeasured=tuple(self._unmeasured),
-                current_generation_unmeasured=frozenset(self._current_generation),
-            )
+            return self._snapshot_locked()
+
+    def _snapshot_locked(self) -> SprintCostSnapshot:
+        """Build the read. Caller must hold ``self._lock``."""
+        return SprintCostSnapshot(
+            accumulated=self._accumulated,
+            prior=self._prior,
+            unmeasured=tuple(self._unmeasured),
+            current_generation_unmeasured=frozenset(self._current_generation),
+            in_flight=sum(observation.amount for observation in self._in_flight.values()),
+        )
 
     # -- writes ---------------------------------------------------------
     def add(self, amount: float) -> float:
@@ -3287,13 +3489,92 @@ class SprintCostLedger:
         occurrence of the same story (#2310).
         """
         with self._lock:
-            self._unmeasured.append(source)
-            self._current_generation.add(source)
+            self._note_unmeasured_locked(source, current_generation=True)
 
     def note_carried_unmeasured(self, source: str) -> None:
         """Record unmeasured spend inherited from an earlier generation."""
         with self._lock:
+            self._note_unmeasured_locked(source, current_generation=False)
+
+    def _note_unmeasured_locked(self, source: str, *, current_generation: bool) -> None:
+        """Record one unmeasured-spend source. Caller must hold ``self._lock``."""
+        if source not in self._unmeasured:
             self._unmeasured.append(source)
+        if current_generation:
+            self._current_generation.add(source)
+
+    def record_in_flight_cost(
+        self, slug: str, cost: float, *, measured: bool = True
+    ) -> SprintCostSnapshot:
+        """Record what a *running* story has measurably spent so far."""
+        return self.checkpoint_in_flight_cost(slug, cost, measured=measured)
+
+    def checkpoint_in_flight_cost(
+        self, slug: str, cost: float | None, *, measured: bool = True
+    ) -> SprintCostSnapshot:
+        """Return the ledger state at a phase boundary for one running story.
+
+        When *cost* is numeric, last-write-wins per slug because the coordinator
+        reports a running total rather than an increment. When *cost* is
+        ``None``, no new lower bound was available, so the story keeps the last
+        measured figure already on the ledger. In both cases the returned
+        snapshot is taken under the same lock as any update, so the cap check
+        evaluates one consistent moment instead of a total and an in-flight
+        figure that drifted apart between two reads.
+        """
+        with self._lock:
+            if cost is not None:
+                self._in_flight[slug] = SprintCostObservation(
+                    amount=max(0.0, float(cost)),
+                    measured=bool(measured),
+                )
+            return self._snapshot_locked()
+
+    def has_in_flight_cost(self, slug: str) -> bool:
+        """Whether ``slug`` currently owns a provisional in-flight ledger entry."""
+        with self._lock:
+            return slug in self._in_flight
+
+    def drop_in_flight_cost(self, slug: str) -> None:
+        """Forget a story's provisional spend without recording a total.
+
+        For exits that intentionally abandon the story's spend rather than
+        promoting it into the sprint total: the provisional figure must not
+        linger in the in-flight sum for the rest of the sprint.
+        """
+        with self._lock:
+            self._in_flight.pop(slug, None)
+
+    def recover_in_flight_cost(
+        self,
+        slug: str,
+        *,
+        fallback_cost: float | None = None,
+        fallback_measured: bool = True,
+    ) -> SprintCostSnapshot:
+        """Fold a raised worker's last measured spend into the sprint total.
+
+        A worker exception never produces a terminal ``CoordinatorResult`` to
+        replace its provisional in-flight figure. Promoting that last measured
+        figure into ``accumulated`` preserves money the sprint definitely spent
+        instead of silently making it disappear from later cap checks and the
+        terminal total. When the recovered figure is only a lower bound, the
+        sprint total must stay marked unmeasured. When the in-flight ledger
+        entry is already gone, the caller's last live-state cost snapshot is the
+        next-best lower bound.
+        """
+        with self._lock:
+            _recovered = self._in_flight.pop(slug, None)
+            if _recovered is None and fallback_cost is not None:
+                _recovered = SprintCostObservation(
+                    amount=max(0.0, float(fallback_cost)),
+                    measured=bool(fallback_measured),
+                )
+            if _recovered is not None:
+                self._accumulated += _recovered.amount
+                if not _recovered.measured:
+                    self._note_unmeasured_locked(slug, current_generation=True)
+            return self._snapshot_locked()
 
     def record_story_cost(self, slug: str, cost: float, *, measured: float | None) -> float:
         """Fold a finished story's spend into the total in one step.
@@ -3302,11 +3583,15 @@ class SprintCostLedger:
         shortfall is recorded alongside the figure rather than after it — the
         dispatch check must never see the advanced total without also seeing
         that it is a lower bound (#1992).
+
+        The story's provisional in-flight figure is dropped inside the same lock
+        that adds its terminal one, so no reader can observe the story's spend
+        counted twice — nor, in the other order, missing entirely (#2547).
         """
         with self._lock:
+            self._in_flight.pop(slug, None)
             if measured is None:
-                self._unmeasured.append(slug)
-                self._current_generation.add(slug)
+                self._note_unmeasured_locked(slug, current_generation=True)
             self._accumulated += cost
             return self._accumulated
 
@@ -3604,6 +3889,15 @@ class SprintExecutionState:
     # sprint row so both surfaces report the same accounting (#2214).
     prior_generation_work: dict[str, dict] = field(default_factory=dict)
     story_cost_adjustments: dict[str, float] = field(default_factory=dict)
+    # Stories this sprint cancelled mid-flight because its cap was reached.
+    # Their results come back through the generic cancellation path, and this is
+    # what tells the scheduler the cancellation was a spending decision rather
+    # than a judgment about the work (#2547).
+    budget_cancelled_slugs: set[str] = field(default_factory=set)
+    # The latest measured lower bound each active story reported through live
+    # state updates. Used to recover spend when a worker dies before it can
+    # return a terminal CoordinatorResult (#2547 follow-up).
+    latest_live_costs: dict[str, SprintCostObservation] = field(default_factory=dict)
     # Stories this generation actually put through a coordinator run — and
     # therefore the ones whose seeded prior cost was overwritten.
     ran_this_generation: set[str] = field(default_factory=set)
@@ -5441,6 +5735,117 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         if _sprint_state.state_writer is not None:
             _sprint_state.state_writer.update(slug, status="skipped")
 
+    def _publish_live_budget_status(spend_usd: float) -> None:
+        """Record how the live run stands against its cap.
+
+        ``forge status`` reads this rather than comparing two numbers it happens
+        to print next to each other — and the runner is the only party that can
+        supply it, because the live story rows do not carry spend inherited from
+        an earlier generation or spent outside any story (#2547).
+        """
+        if _sprint_state.state_writer is None:
+            return
+        _status = budget_status(budget_usd=_ctx.resolved.budget_usd, spend_usd=spend_usd)
+        _sprint_state.state_writer.set_budget_status(
+            _status,
+            overrun_usd=budget_overrun_usd(
+                budget_usd=_ctx.resolved.budget_usd, spend_usd=spend_usd
+            ),
+            spend_usd=spend_usd,
+        )
+
+    def _budget_decision_for(snapshot: SprintCostSnapshot):
+        """Evaluate the cap against one ledger read, in-flight spend included.
+
+        The sprint's single cap decision, asked from both enforcement moments:
+        before a story is dispatched and while one is running. Both charge the
+        spend of stories that have not landed yet, because the sprint has
+        already paid for it (#2547).
+        """
+        _unresolved, _applied = unmeasured_spend_policy.partition(
+            list(snapshot.unmeasured),
+            accepted_unmeasured,
+            current_generation=set(snapshot.current_generation_unmeasured),
+            occurrence_ids=carried_occurrence_ids,
+        )
+        # Origin/ceiling lookup reads per-story audits, so it runs off the
+        # snapshot — it is reporting, not accounting.
+        _details = (
+            {raw: _describe_unmeasured_source(raw).describe() for raw in _unresolved}
+            if _unresolved
+            else None
+        )
+        return evaluate_budget(
+            accumulated_cost=snapshot.accumulated + snapshot.in_flight,
+            prior_cost=snapshot.prior,
+            budget_usd=_ctx.resolved.budget_usd,
+            unmeasured_spend=_unresolved,
+            accepted_unmeasured_ceiling_usd=unmeasured_spend_policy.accepted_ceiling_total(
+                _applied
+            ),
+            source_details=_details,
+        )
+
+    def _halt_sprint_for_budget(slug: str, decision) -> None:
+        """Stop every running story because the sprint's cap has been reached.
+
+        The auth circuit breaker's shape (#1952), for the other reason a sprint
+        has to stop work it already started: cancel in-flight workers at their
+        next phase boundary and release any plan gate they are parked on, so the
+        sprint stops in seconds rather than after another full review cycle.
+
+        Which slugs WE cancelled is remembered, because their results return
+        through the generic cancellation path and would otherwise be recorded as
+        story failures — the sprint ran out of money, which is not a verdict on
+        anyone's work.
+        """
+        if not _sprint_state.stop.stop_if_unset(decision.stopped_reason, halt_slug=slug):
+            return
+        _log(f"HALT sprint: {decision.stopped_reason}")
+        _cancel_reason = f"sprint budget exhausted while running ({decision.detail})"
+        for _pending_slug, _pending_evt in _copy_worker_signals(_sprint_state.stop_events):
+            _sprint_state.budget_cancelled_slugs.add(_pending_slug)
+            _stop_fn = getattr(_pending_evt, "stop", None)
+            if callable(_stop_fn):
+                _stop_fn(_cancel_reason, error_type=BUDGET_CANCEL_ERROR_TYPE)
+            else:  # pragma: no cover - defensive: a bare Event still stops work
+                _pending_evt.set()
+        for _gate_slug, _pending_gate in _copy_worker_signals(_sprint_state.plan_gates):
+            _log(f"Releasing plan gate for {_gate_slug} (budget halt)")
+            _pending_gate.set()
+        if _ctx.notify and _ctx.config.notifications.backend not in ("ntfy", "none"):
+            from ..notify_backends import send_notifications
+
+            send_notifications(
+                _ctx.config,
+                decision.notification_title(_ctx.resolved.name),
+                f"{decision.detail} — running stories cancelled, remaining stories skipped",
+            )
+
+    def _budget_checkpoint(slug: str, measured_cost: SprintCostObservation | None) -> None:
+        """Charge a running story's spend to the cap, and halt if it is met.
+
+        Called from the worker thread at every coordinator phase boundary that
+        reports a cost. Only ``exhausted`` acts here: an unverifiable answer
+        means some *other* spend was unmeasured, and killing paid-for work over
+        that would destroy a story to protect a comparison the dispatch gate
+        re-runs — and fails closed on — a moment later.
+        """
+        if _ctx.resolved.budget_usd <= 0.0:
+            return
+        _snapshot = _sprint_state.cost.checkpoint_in_flight_cost(
+            slug,
+            None if measured_cost is None else measured_cost.amount,
+            measured=True if measured_cost is None else measured_cost.measured,
+        )
+        _publish_live_budget_status(_snapshot.spent_including_in_flight)
+        if _sprint_state.stop.stopped:
+            return
+        _decision = _budget_decision_for(_snapshot)
+        if _decision is None or _decision.kind != "exhausted":
+            return
+        _halt_sprint_for_budget(slug, _decision)
+
     # Intake remediation gate: between dependency normalization and the
     # batch preflight spend, run the shared shape + grooming check on the
     # full normalized task list. When ``intake.auto_fix`` is enabled, semantic
@@ -6564,33 +6969,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 if len(_sprint_state.active) >= max_parallel:
                     break
 
-                _budget_snapshot = _sprint_state.cost.snapshot()
-                _budget_unresolved, _budget_applied = unmeasured_spend_policy.partition(
-                    list(_budget_snapshot.unmeasured),
-                    accepted_unmeasured,
-                    current_generation=set(_budget_snapshot.current_generation_unmeasured),
-                    occurrence_ids=carried_occurrence_ids,
-                )
-                # Origin/ceiling lookup reads per-story audits, so it runs off
-                # the snapshot — it is reporting, not accounting.
-                _budget_details = (
-                    {
-                        raw: _describe_unmeasured_source(raw).describe()
-                        for raw in _budget_unresolved
-                    }
-                    if _budget_unresolved
-                    else None
-                )
-                _budget_decision = evaluate_budget(
-                    accumulated_cost=_budget_snapshot.accumulated,
-                    prior_cost=_budget_snapshot.prior,
-                    budget_usd=_ctx.resolved.budget_usd,
-                    unmeasured_spend=_budget_unresolved,
-                    accepted_unmeasured_ceiling_usd=unmeasured_spend_policy.accepted_ceiling_total(
-                        _budget_applied
-                    ),
-                    source_details=_budget_details,
-                )
+                _budget_decision = _budget_decision_for(_sprint_state.cost.snapshot())
                 if _budget_decision is not None:
                     _skip_story_for_budget(task.slug, _budget_decision)
                     continue
@@ -6668,7 +7047,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     else:
                         _batch_tasks = [_ready_by_slug[m] for m in _dispatchable]
                         _leader_task = _make_batch_leader(_batch_tasks, _batch_gid)
-                        _batch_stop_evt = threading.Event()
+                        _batch_stop_evt = StopSignal()
                         _batch_state_fns: dict[str, Callable[[dict], None] | None] = {}
                         for _member_slug, _member_task in zip(
                             _dispatchable, _batch_tasks, strict=True
@@ -6710,6 +7089,9 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                                     _ctx.resolved.name,
                                     sprint_id=_ctx.sprint_id,
                                 ),
+                                budget_checkpoint=_budget_checkpoint,
+                                live_cost_updates=_sprint_state.latest_live_costs,
+                                stop_event=_batch_stop_evt,
                             )
                             _sprint_state.stop_events[_member_slug] = _batch_stop_evt
                         # One worker runs the group, so the whole group shares one
@@ -6779,6 +7161,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
 
                 worker_config = _ctx.config
 
+                stop_evt = StopSignal()
                 state_fn = _make_worker_phase_fn(
                     task.slug,
                     worker_phases,
@@ -6789,8 +7172,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     audit_flush=_make_audit_flush_fn(
                         _ctx.config, task, _ctx.resolved.name, sprint_id=_ctx.sprint_id
                     ),
+                    budget_checkpoint=_budget_checkpoint,
+                    live_cost_updates=_sprint_state.latest_live_costs,
+                    stop_event=stop_evt,
                 )
-                stop_evt = threading.Event()
                 _sprint_state.stop_events[task.slug] = stop_evt
                 _dispatch_kwargs: dict = {
                     "base_lands_locally": _sprint_lands_locally,
@@ -6950,135 +7335,178 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
 
             if expired_slugs:
                 for slug in expired_slugs:
+                    if slug not in _sprint_state.active:
+                        continue
                     if slug in _sprint_state.plan_gates:
                         _log(f"TIMEOUT releasing plan gate for {slug}")
                         _sprint_state.plan_gates[slug].set()
                         del _sprint_state.plan_gates[slug]
-                    fut = _sprint_state.active.pop(slug)
-                    story_deadlines.pop(slug, None)
-                    story_wait_started.discard(slug)
-                    # A worker killed at its deadline is not preserved work
-                    # awaiting a decision — nothing can land it, so its files
-                    # are free.
-                    _end_collision_claim(_sprint_state, slug, "worker timed out")
-                    # Set the cancellation event BEFORE cancel() so any in-flight
-                    # work stops at the next phase boundary or subprocess read.
-                    # Future.cancel() is a no-op for an already-running thread.
-                    _stop_evt = _sprint_state.stop_events.pop(slug, None)
-                    if _stop_evt is not None:
-                        _stop_evt.set()
-                    fut.cancel()
-                    # An elapsed deadline is exhausted time, not a verdict on the
-                    # work and not evidence the worker stopped responding — a
-                    # story killed here may have been converging, mid-edit, or in
-                    # a wait this system itself opened. Say which (#2333).
-                    _wait_credit = worker_budget.operator_wait_credit(slug)
-                    _was_waiting, _wait_phase, _wait_len = worker_budget.waiting_on_operator(slug)
-                    _wait_note = ""
-                    if _wait_credit > 0:
-                        _wait_note = (
-                            f"; {_fmt_duration(_wait_credit)} of operator-decision wait"
-                            " was excluded from the deadline"
+                    fut = _sprint_state.active[slug]
+                    affected_slugs = [
+                        active_slug
+                        for active_slug, active_fut in _sprint_state.active.items()
+                        if active_fut is fut
+                    ]
+                    recovered_snapshot = _sprint_state.cost.snapshot()
+                    for affected_slug in affected_slugs:
+                        del _sprint_state.active[affected_slug]
+                        story_deadlines.pop(affected_slug, None)
+                        story_wait_started.discard(affected_slug)
+                        # A worker killed at its deadline is not preserved work
+                        # awaiting a decision — nothing can land it, so its files
+                        # are free.
+                        _end_collision_claim(_sprint_state, affected_slug, "worker timed out")
+                        # Set the cancellation event BEFORE cancel() so any in-flight
+                        # work stops at the next phase boundary or subprocess read.
+                        # Future.cancel() is a no-op for an already-running thread.
+                        _stop_evt = _sprint_state.stop_events.pop(affected_slug, None)
+                        if _stop_evt is not None:
+                            _stop_evt.set()
+                        fut.cancel()
+                    for affected_slug in affected_slugs:
+                        # An elapsed deadline is exhausted time, not a verdict on the
+                        # work and not evidence the worker stopped responding — a
+                        # story killed here may have been converging, mid-edit, or in
+                        # a wait this system itself opened. Say which (#2333).
+                        _wait_credit = worker_budget.operator_wait_credit(affected_slug)
+                        _was_waiting, _wait_phase, _wait_len = worker_budget.waiting_on_operator(
+                            affected_slug
                         )
-                    if _was_waiting:
-                        _wait_note += (
-                            f"; still waiting on an operator decision"
-                            f"{f' at {_wait_phase}' if _wait_phase else ''}"
-                            f" after {_fmt_duration(_wait_len)}"
+                        _wait_note = ""
+                        if _wait_credit > 0:
+                            _wait_note = (
+                                f"; {_fmt_duration(_wait_credit)} of operator-decision wait"
+                                " was excluded from the deadline"
+                            )
+                        if _was_waiting:
+                            _wait_note += (
+                                f"; still waiting on an operator decision"
+                                f"{f' at {_wait_phase}' if _wait_phase else ''}"
+                                f" after {_fmt_duration(_wait_len)}"
+                            )
+                        _log(
+                            f"TIMEOUT {affected_slug} (story deadline exhausted after "
+                            f"{story_worker_timeouts[affected_slug]}s of working time{_wait_note}"
+                            " — marking as failed on wall clock, not on quality)"
                         )
-                    _log(
-                        f"TIMEOUT {slug} (story deadline exhausted after "
-                        f"{story_worker_timeouts[slug]}s of working time{_wait_note}"
-                        " — marking as failed on wall clock, not on quality)"
-                    )
-                    worker_budget.unregister_worker_budget(slug)
-                    spec_str = slug_to_spec[slug]
-                    timed_out_at = datetime.datetime.now(datetime.timezone.utc)
-                    snapshot = _snapshot_last_known(slug, _sprint_state.state_writer)
-                    last_phase = snapshot["last_phase"]
-                    if slug in _sprint_state.story_times:
-                        story_started_at = _sprint_state.story_times[slug][0]
-                    elif snapshot["last_started_at"] is not None:
-                        story_started_at = snapshot["last_started_at"]
-                    else:
-                        story_started_at = timed_out_at
-                    _phase_label = f" during phase {last_phase}" if last_phase else ""
-                    # Deadline exhaustion, stated as such. The operator action for
-                    # a story that ran out of wall clock is not the action for one
-                    # that produced an unacceptable result, and only the second is
-                    # evidence about the work (#2333).
-                    _timeout_error = (
-                        f"Story deadline exhausted (>{story_worker_timeouts[slug]}s of "
-                        f"working time){_phase_label}{_wait_note}"
-                    )
-                    _timeout_result = _abnormal_story_result(
-                        slug,
-                        config=_ctx.config,
-                        sprint_name=_ctx.resolved.name,
-                        started_at=story_started_at,
-                        error=_timeout_error,
-                        error_type="TimeoutError",
-                        message=(
-                            f"Story deadline exhausted after {story_worker_timeouts[slug]}s "
-                            "of working time — not a review or quality failure"
-                        ),
-                    )
-                    _timeout_cause = build_abnormal_cause(
-                        kind=ABNORMAL_WORKER_TIMEOUT,
-                        cause=_timeout_error,
-                        error_type="TimeoutError",
-                        phase=last_phase,
-                        run_id=_timeout_result.state.run_id,
-                        source="sprint.runner:worker-deadline",
-                    )
-                    _timeout_result.state.abnormal_termination = _timeout_cause
-                    _sprint_state.story_times[slug] = (story_started_at, timed_out_at)
-                    _sprint_state.live_telemetry_snapshots[slug] = snapshot
-                    # A worker the auth breaker cancelled can also cross its
-                    # deadline before returning. It is still a story the sprint
-                    # killed over a dead credential, not one that failed — same
-                    # attribution as the ordinary cancellation path below.
-                    _timeout_outcome: StoryOutcome = StoryOutcome.FAILED
-                    if slug in auth_cancelled_slugs:
-                        auth_cancelled_slugs.discard(slug)
-                        _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
-                        _mark_story_auth_cancelled(
-                            _timeout_result, auth_circuit, reason=_cancel_reason
+                        worker_budget.unregister_worker_budget(affected_slug)
+                        spec_str = slug_to_spec[affected_slug]
+                        timed_out_at = datetime.datetime.now(datetime.timezone.utc)
+                        snapshot = _snapshot_last_known(affected_slug, _sprint_state.state_writer)
+                        last_live_cost = _sprint_state.latest_live_costs.pop(affected_slug, None)
+                        if _sprint_state.cost.has_in_flight_cost(affected_slug) or (
+                            len(affected_slugs) == 1
+                            and (last_live_cost is not None or snapshot["last_cost"] is not None)
+                        ):
+                            recovered_snapshot = _sprint_state.cost.recover_in_flight_cost(
+                                affected_slug,
+                                fallback_cost=(
+                                    last_live_cost.amount
+                                    if last_live_cost is not None
+                                    else snapshot["last_cost"]
+                                ),
+                                fallback_measured=(
+                                    True if last_live_cost is None else last_live_cost.measured
+                                ),
+                            )
+                        last_phase = snapshot["last_phase"]
+                        if affected_slug in _sprint_state.story_times:
+                            story_started_at = _sprint_state.story_times[affected_slug][0]
+                        elif snapshot["last_started_at"] is not None:
+                            story_started_at = snapshot["last_started_at"]
+                        else:
+                            story_started_at = timed_out_at
+                        _phase_label = f" during phase {last_phase}" if last_phase else ""
+                        # Deadline exhaustion, stated as such. The operator action for
+                        # a story that ran out of wall clock is not the action for one
+                        # that produced an unacceptable result, and only the second is
+                        # evidence about the work (#2333).
+                        _timeout_error = (
+                            "Story deadline exhausted (>"
+                            f"{story_worker_timeouts[affected_slug]}s of "
+                            f"working time){_phase_label}{_wait_note}"
                         )
-                        _timeout_outcome = StoryOutcome.SKIPPED
-                        _log(f"SKIPPED {slug} ({_cancel_reason})")
-                    _sprint_state.results.append((spec_str, _timeout_result))
-                    _write_story_audit(
-                        _ctx.config,
-                        _ctx.slug_to_context[slug][0],
-                        _timeout_result,
-                        sprint_id=_ctx.sprint_id,
-                        telemetry_snapshot=snapshot,
-                    )
-                    _set_outcome(
-                        _sprint_state,
-                        slug,
-                        _timeout_outcome,
-                        phase="ESCALATE",
-                        last_phase=last_phase,
-                        failure_cause=_timeout_cause,
-                        # The gate this story may have been sitting in never
-                        # reported a decision and never will; leaving the live
-                        # detail at gate_status=running is what made the state
-                        # file claim a running gate on a failed story (#2013).
-                        detail_updates={"gate_status": GATE_STATUS_TIMEOUT},
-                    )
-                    _persist_current_story_result(
-                        _sprint_state,
-                        slug,
-                        _timeout_result,
-                        started_at=story_started_at,
-                        finished_at=timed_out_at,
-                    )
-                    _sprint_state.dag.mark_skipped(slug)
+                        _timeout_result = _abnormal_story_result(
+                            affected_slug,
+                            config=_ctx.config,
+                            sprint_name=_ctx.resolved.name,
+                            started_at=story_started_at,
+                            error=_timeout_error,
+                            error_type="TimeoutError",
+                            message=(
+                                "Story deadline exhausted after "
+                                f"{story_worker_timeouts[affected_slug]}s of working time — "
+                                "not a review or quality failure"
+                            ),
+                        )
+                        _timeout_cause = build_abnormal_cause(
+                            kind=ABNORMAL_WORKER_TIMEOUT,
+                            cause=_timeout_error,
+                            error_type="TimeoutError",
+                            phase=last_phase,
+                            run_id=_timeout_result.state.run_id,
+                            source="sprint.runner:worker-deadline",
+                        )
+                        _timeout_result.state.abnormal_termination = _timeout_cause
+                        _sprint_state.story_times[affected_slug] = (
+                            story_started_at,
+                            timed_out_at,
+                        )
+                        _sprint_state.live_telemetry_snapshots[affected_slug] = snapshot
+                        # A worker the auth breaker cancelled can also cross its
+                        # deadline before returning. It is still a story the sprint
+                        # killed over a dead credential, not one that failed — same
+                        # attribution as the ordinary cancellation path below.
+                        _timeout_outcome: StoryOutcome = StoryOutcome.FAILED
+                        if affected_slug in auth_cancelled_slugs:
+                            auth_cancelled_slugs.discard(affected_slug)
+                            _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
+                            _mark_story_auth_cancelled(
+                                _timeout_result, auth_circuit, reason=_cancel_reason
+                            )
+                            _timeout_outcome = StoryOutcome.SKIPPED
+                            _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        elif affected_slug in _sprint_state.budget_cancelled_slugs:
+                            _sprint_state.budget_cancelled_slugs.discard(affected_slug)
+                            _cancel_reason = _budget_cancel_reason(_sprint_state)
+                            _mark_story_budget_cancelled(_timeout_result, reason=_cancel_reason)
+                            _timeout_outcome = StoryOutcome.SKIPPED
+                            _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        _sprint_state.results.append((spec_str, _timeout_result))
+                        _write_story_audit(
+                            _ctx.config,
+                            _ctx.slug_to_context[affected_slug][0],
+                            _timeout_result,
+                            sprint_id=_ctx.sprint_id,
+                            telemetry_snapshot=snapshot,
+                        )
+                        _set_outcome(
+                            _sprint_state,
+                            affected_slug,
+                            _timeout_outcome,
+                            phase="ESCALATE",
+                            last_phase=last_phase,
+                            failure_cause=_timeout_cause,
+                            # The gate this story may have been sitting in never
+                            # reported a decision and never will; leaving the live
+                            # detail at gate_status=running is what made the state
+                            # file claim a running gate on a failed story (#2013).
+                            detail_updates={"gate_status": GATE_STATUS_TIMEOUT},
+                        )
+                        _persist_current_story_result(
+                            _sprint_state,
+                            affected_slug,
+                            _timeout_result,
+                            started_at=story_started_at,
+                            finished_at=timed_out_at,
+                        )
+                        _sprint_state.dag.mark_skipped(affected_slug)
+                    _publish_live_budget_status(recovered_snapshot.spent_including_in_flight)
                 continue
 
             for slug, fut in list(_sprint_state.active.items()):
+                if slug not in _sprint_state.active:
+                    continue
                 if fut not in done_futs:
                     continue
                 try:
@@ -7092,82 +7520,120 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     else:
                         task, result, elapsed, t0, t1 = _fut_value  # type: ignore[misc]
                 except Exception as exc:
-                    _log(f"ERROR {slug}: worker thread raised {type(exc).__name__}: {exc}")
-                    del _sprint_state.active[slug]
-                    story_deadlines.pop(slug, None)
-                    worker_budget.unregister_worker_budget(slug)
-                    story_wait_started.discard(slug)
-                    _sprint_state.stop_events.pop(slug, None)
-                    _end_collision_claim(_sprint_state, slug, "worker raised")
-                    spec_str = slug_to_spec[slug]
-                    failed_at = datetime.datetime.now(datetime.timezone.utc)
-                    snapshot = _snapshot_last_known(slug, _sprint_state.state_writer)
-                    last_phase = snapshot["last_phase"]
-                    if slug in _sprint_state.story_times:
-                        story_started_at = _sprint_state.story_times[slug][0]
-                    elif snapshot["last_started_at"] is not None:
-                        story_started_at = snapshot["last_started_at"]
-                    else:
-                        story_started_at = failed_at
-                    _phase_label = f" during phase {last_phase}" if last_phase else ""
-                    _exc_error = f"Worker exception{_phase_label}: {exc}"
-                    _exc_result = _abnormal_story_result(
-                        slug,
-                        config=_ctx.config,
-                        sprint_name=_ctx.resolved.name,
-                        started_at=story_started_at,
-                        error=_exc_error,
-                        error_type=type(exc).__name__,
-                        message=f"Worker thread raised {type(exc).__name__}: {exc}",
+                    _affected_slugs = [
+                        active_slug
+                        for active_slug, active_fut in _sprint_state.active.items()
+                        if active_fut is fut
+                    ]
+                    _recovery_slug = next(
+                        (
+                            active_slug
+                            for active_slug in _affected_slugs
+                            if _sprint_state.cost.has_in_flight_cost(active_slug)
+                        ),
+                        _affected_slugs[0] if len(_affected_slugs) == 1 else None,
                     )
-                    _exc_cause = build_abnormal_cause(
-                        kind=ABNORMAL_WORKER_EXCEPTION,
-                        cause=_exc_error,
-                        error_type=type(exc).__name__,
-                        phase=last_phase,
-                        run_id=_exc_result.state.run_id,
-                        source="sprint.runner:worker-exception",
-                    )
-                    _exc_result.state.abnormal_termination = _exc_cause
-                    _sprint_state.story_times[slug] = (story_started_at, failed_at)
-                    _sprint_state.live_telemetry_snapshots[slug] = snapshot
-                    # Same attribution as the other two cancellation exits: a
-                    # worker that raised on its way out of an auth-breaker
-                    # cancellation was killed by the sprint, not by the story.
-                    _exc_outcome: StoryOutcome = StoryOutcome.FAILED
-                    if slug in auth_cancelled_slugs:
-                        auth_cancelled_slugs.discard(slug)
-                        _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
-                        _mark_story_auth_cancelled(
-                            _exc_result, auth_circuit, reason=_cancel_reason
+                    _recovered_cost = _sprint_state.cost.snapshot()
+                    for affected_slug in _affected_slugs:
+                        _log(
+                            f"ERROR {affected_slug}: worker thread raised "
+                            f"{type(exc).__name__}: {exc}"
                         )
-                        _exc_outcome = StoryOutcome.SKIPPED
-                        _log(f"SKIPPED {slug} ({_cancel_reason})")
-                    _sprint_state.results.append((spec_str, _exc_result))
-                    _write_story_audit(
-                        _ctx.config,
-                        _ctx.slug_to_context[slug][0],
-                        _exc_result,
-                        sprint_id=_ctx.sprint_id,
-                        telemetry_snapshot=snapshot,
-                    )
-                    _set_outcome(
-                        _sprint_state,
-                        slug,
-                        _exc_outcome,
-                        phase="ESCALATE",
-                        last_phase=last_phase,
-                        failure_cause=_exc_cause,
-                        detail_updates={"gate_status": GATE_STATUS_INCOMPLETE},
-                    )
-                    _persist_current_story_result(
-                        _sprint_state,
-                        slug,
-                        _exc_result,
-                        started_at=story_started_at,
-                        finished_at=failed_at,
-                    )
-                    _sprint_state.dag.mark_skipped(slug)
+                        del _sprint_state.active[affected_slug]
+                        story_deadlines.pop(affected_slug, None)
+                        worker_budget.unregister_worker_budget(affected_slug)
+                        story_wait_started.discard(affected_slug)
+                        _sprint_state.stop_events.pop(affected_slug, None)
+                        snapshot = _snapshot_last_known(affected_slug, _sprint_state.state_writer)
+                        _last_live_cost = _sprint_state.latest_live_costs.pop(affected_slug, None)
+                        if affected_slug == _recovery_slug:
+                            _recovered_cost = _sprint_state.cost.recover_in_flight_cost(
+                                affected_slug,
+                                fallback_cost=(
+                                    _last_live_cost.amount
+                                    if _last_live_cost is not None
+                                    else snapshot["last_cost"]
+                                ),
+                                fallback_measured=(
+                                    True if _last_live_cost is None else _last_live_cost.measured
+                                ),
+                            )
+                        _end_collision_claim(_sprint_state, affected_slug, "worker raised")
+                        spec_str = slug_to_spec[affected_slug]
+                        failed_at = datetime.datetime.now(datetime.timezone.utc)
+                        last_phase = snapshot["last_phase"]
+                        if affected_slug in _sprint_state.story_times:
+                            story_started_at = _sprint_state.story_times[affected_slug][0]
+                        elif snapshot["last_started_at"] is not None:
+                            story_started_at = snapshot["last_started_at"]
+                        else:
+                            story_started_at = failed_at
+                        _phase_label = f" during phase {last_phase}" if last_phase else ""
+                        _exc_error = f"Worker exception{_phase_label}: {exc}"
+                        _exc_result = _abnormal_story_result(
+                            affected_slug,
+                            config=_ctx.config,
+                            sprint_name=_ctx.resolved.name,
+                            started_at=story_started_at,
+                            error=_exc_error,
+                            error_type=type(exc).__name__,
+                            message=f"Worker thread raised {type(exc).__name__}: {exc}",
+                        )
+                        _exc_cause = build_abnormal_cause(
+                            kind=ABNORMAL_WORKER_EXCEPTION,
+                            cause=_exc_error,
+                            error_type=type(exc).__name__,
+                            phase=last_phase,
+                            run_id=_exc_result.state.run_id,
+                            source="sprint.runner:worker-exception",
+                        )
+                        _exc_result.state.abnormal_termination = _exc_cause
+                        _sprint_state.story_times[affected_slug] = (story_started_at, failed_at)
+                        _sprint_state.live_telemetry_snapshots[affected_slug] = snapshot
+                        # Same attribution as the other two cancellation exits: a
+                        # worker that raised on its way out of an auth-breaker
+                        # cancellation was killed by the sprint, not by the story.
+                        _exc_outcome: StoryOutcome = StoryOutcome.FAILED
+                        if affected_slug in auth_cancelled_slugs:
+                            auth_cancelled_slugs.discard(affected_slug)
+                            _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
+                            _mark_story_auth_cancelled(
+                                _exc_result, auth_circuit, reason=_cancel_reason
+                            )
+                            _exc_outcome = StoryOutcome.SKIPPED
+                            _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        elif affected_slug in _sprint_state.budget_cancelled_slugs:
+                            _sprint_state.budget_cancelled_slugs.discard(affected_slug)
+                            _cancel_reason = _budget_cancel_reason(_sprint_state)
+                            _mark_story_budget_cancelled(_exc_result, reason=_cancel_reason)
+                            _exc_outcome = StoryOutcome.SKIPPED
+                            _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        _sprint_state.results.append((spec_str, _exc_result))
+                        _write_story_audit(
+                            _ctx.config,
+                            _ctx.slug_to_context[affected_slug][0],
+                            _exc_result,
+                            sprint_id=_ctx.sprint_id,
+                            telemetry_snapshot=snapshot,
+                        )
+                        _set_outcome(
+                            _sprint_state,
+                            affected_slug,
+                            _exc_outcome,
+                            phase="ESCALATE",
+                            last_phase=last_phase,
+                            failure_cause=_exc_cause,
+                            detail_updates={"gate_status": GATE_STATUS_INCOMPLETE},
+                        )
+                        _persist_current_story_result(
+                            _sprint_state,
+                            affected_slug,
+                            _exc_result,
+                            started_at=story_started_at,
+                            finished_at=failed_at,
+                        )
+                        _sprint_state.dag.mark_skipped(affected_slug)
+                    _publish_live_budget_status(_recovered_cost.spent_including_in_flight)
                     continue
                 del _sprint_state.active[slug]
                 story_deadlines.pop(slug, None)
@@ -7175,11 +7641,18 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 story_wait_started.discard(slug)
                 _sprint_state.stop_events.pop(slug, None)
                 _sprint_state.story_times[slug] = (t0, t1)
+                _sprint_state.latest_live_costs.pop(slug, None)
 
                 _sprint_state.cost.record_story_cost(
                     slug,
                     result.state.total_cost,
                     measured=result.state.total_cost_measured,
+                )
+                # The landed figure replaces this story's provisional one, so the
+                # live standing against the cap is republished from the ledger's
+                # new state rather than left at what the story last reported.
+                _publish_live_budget_status(
+                    _sprint_state.cost.snapshot().spent_including_in_flight
                 )
 
                 spec_str = slug_to_spec[slug]
@@ -7242,6 +7715,29 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     _end_collision_claim(
                         _sprint_state, slug, "cancelled by the auth circuit breaker"
                     )
+                    _log(f"SKIPPED {slug} ({_cancel_reason})")
+                    _record_current_story_entry(slug, "SKIPPED", error=_cancel_reason)
+                    _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_cancel_reason)
+                    if _sprint_state.state_writer is not None:
+                        _sprint_state.state_writer.update(slug, status="skipped")
+                    _sprint_state.dag.mark_skipped(slug)
+                    _write_story_audit(_ctx.config, task, result, sprint_id=_ctx.sprint_id)
+                    _print_worker_status(
+                        _sprint_state.active, worker_phases, _sprint_state.dag, total
+                    )
+                    continue
+
+                # A story the sprint cancelled because its cap was reached
+                # (#2547). Same reasoning as the auth cancellation above: the
+                # sprint stopped it, nothing judged it, so it is skipped rather
+                # than failed — and the reason names the budget so an operator
+                # reading the run afterwards sees a spending decision instead of
+                # a story that could not be made to work.
+                if slug in _sprint_state.budget_cancelled_slugs and not result.success:
+                    _sprint_state.budget_cancelled_slugs.discard(slug)
+                    _cancel_reason = _budget_cancel_reason(_sprint_state)
+                    _mark_story_budget_cancelled(result, reason=_cancel_reason)
+                    _end_collision_claim(_sprint_state, slug, "cancelled by the sprint budget")
                     _log(f"SKIPPED {slug} ({_cancel_reason})")
                     _record_current_story_entry(slug, "SKIPPED", error=_cancel_reason)
                     _set_outcome(_sprint_state, slug, StoryOutcome.SKIPPED, reason=_cancel_reason)

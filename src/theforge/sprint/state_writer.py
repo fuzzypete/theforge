@@ -78,6 +78,13 @@ class SprintStateWriter:
         self._base_branch = base_branch
         self._budget_usd = budget_usd
         self._max_parallel = max_parallel
+        # How this run stands against its cap, and by how much it passed it.
+        # Written by the runner's budget checkpoint so a live sprint's status
+        # states the relationship between cost and budget rather than leaving an
+        # operator to compare two independent numbers (#2547).
+        self._budget_status: str | None = None
+        self._budget_overrun_usd: float = 0.0
+        self._budget_spend_usd: float | None = None
         # Preserve any pre-existing top-level metadata (e.g. bootstrap state
         # written before the writer was constructed) so init() does not erase
         # base_branch / budget / parallel set by cli/sprint.py at daemonize.
@@ -151,6 +158,25 @@ class SprintStateWriter:
         except FileNotFoundError:
             pass
 
+    def set_budget_status(
+        self,
+        status: str,
+        *,
+        overrun_usd: float = 0.0,
+        spend_usd: float | None = None,
+    ) -> None:
+        """Record the run's standing against its cap and rewrite the state file."""
+        with self._lock:
+            unchanged = self._budget_status == status and round(
+                self._budget_overrun_usd, 4
+            ) == round(float(overrun_usd), 4)
+            if unchanged:
+                return
+            self._budget_status = status
+            self._budget_overrun_usd = float(overrun_usd)
+            self._budget_spend_usd = None if spend_usd is None else float(spend_usd)
+            self._write_locked()
+
     def set_phase(self, phase: str) -> None:
         """Update sprint-level phase and rewrite the state file atomically."""
         with self._lock:
@@ -215,6 +241,12 @@ class SprintStateWriter:
             self._budget_usd = float(data["budget_usd"])
         if self._max_parallel is None and isinstance(data.get("max_parallel"), int):
             self._max_parallel = data["max_parallel"]
+        if self._budget_status is None and isinstance(data.get("budget_status"), str):
+            self._budget_status = data["budget_status"]
+            if isinstance(data.get("budget_overrun_usd"), (int, float)):
+                self._budget_overrun_usd = float(data["budget_overrun_usd"])
+            if isinstance(data.get("budget_spend_usd"), (int, float)):
+                self._budget_spend_usd = float(data["budget_spend_usd"])
 
     def _write_locked(self) -> None:
         """Write the state file atomically. Caller must hold self._lock."""
@@ -224,6 +256,11 @@ class SprintStateWriter:
             "sprint_phase": self._sprint_phase,
             "base_branch": self._base_branch,
             "budget_usd": self._budget_usd,
+            "budget_status": self._budget_status,
+            "budget_overrun_usd": round(self._budget_overrun_usd, 4),
+            "budget_spend_usd": (
+                None if self._budget_spend_usd is None else round(self._budget_spend_usd, 4)
+            ),
             "max_parallel": self._max_parallel,
             "stories": self.story_state.as_dict(),
         }

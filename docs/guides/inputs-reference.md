@@ -108,7 +108,23 @@ story never gets blocked for going "over budget."
 
 - **Sprint-level governance (enforced).** The sprint `budget_usd` is the *only*
   post-hoc dollar enforcement. When cumulative sprint spend reaches it, no new
-  stories launch. This is the surviving cost-governance surface.
+  stories launch **and any story already running is cancelled at its next
+  coordinator phase boundary** — the sprint stops rather than finishing a story
+  it can no longer afford. This is the surviving cost-governance surface.
+
+  A cancelled story is recorded as *skipped*, with a reason naming the budget:
+  the sprint stopped it, nothing judged its work, and re-running it under a
+  larger cap is the whole remedy.
+
+  Enforcement is a floor, not a guarantee of the exact figure: the phase that
+  was already running when the cap was met still finishes, so a run can land
+  slightly past its budget. Where it does, `forge sprint-status` marks the
+  overrun beside the cost and budget, and `budget_status` /
+  `budget_overrun_usd` record it in `sprint-summary.yaml` and the sprint audit.
+  Spend that could not be measured is a separate case: the sprint will still
+  cancel a running story if the measured lower bound already exhausts the cap,
+  but it will not cancel that story merely because the remaining spend is
+  unknown. In that unverifiable-only case, it refuses further dispatch instead.
 
 - **Per-story dollar values (estimates, not enforced).** The per-story dollar
   value is a *cost estimate* derived from historical cost data for the model and

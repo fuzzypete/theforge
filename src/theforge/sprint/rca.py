@@ -235,6 +235,11 @@ class _SkipReasonRule:
 # records at each skip site. Order is match order.
 _SKIP_REASON_RULES: tuple[_SkipReasonRule, ...] = (
     _SkipReasonRule("sprint_budget_unverifiable", ("budget unverifiable",)),
+    # Before the credential rule below, which shares the "cancelled mid-flight:"
+    # prefix: a story the sprint killed for its cap and one it killed for a
+    # rejected credential are different causes, and the more specific prefix has
+    # to be tried first or every budget halt reads as an auth outage (#2547).
+    _SkipReasonRule("sprint_budget_halted_in_flight", ("cancelled mid-flight: budget",)),
     _SkipReasonRule("sprint_budget_exhausted", ("budget exhausted",)),
     # "blocked" covers both "blocked: <ref>" (unresolved external dependency) and
     # the bare "blocked" the DAG sweep records.
@@ -429,6 +434,16 @@ RULES: tuple[RcaRule, ...] = (
         ),
     ),
     RcaRule(
+        rule_id="sprint_budget_halted_in_flight",
+        failure_class="sprint_budget_halted_in_flight",
+        role="primary",
+        description=(
+            "The sprint's spend met or passed the run's budget cap while this story "
+            "was running, so the sprint cancelled it at its next phase boundary. "
+            "Nothing judged the work — it is unfinished, not rejected."
+        ),
+    ),
+    RcaRule(
         rule_id="agent_credential_rejected",
         failure_class="agent_auth_rejected",
         role="primary",
@@ -579,6 +594,9 @@ _PRIMARY_PRIORITY: tuple[str, ...] = (
     # its depends_on list still says.
     "agent_auth_rejected",
     "sprint_budget_unverifiable",
+    # A story the sprint stopped mid-flight for its cap outranks the two
+    # never-dispatched budget classes: it ran, and what ended it was the money.
+    "sprint_budget_halted_in_flight",
     "sprint_budget_exhausted",
     "collision_stand_down",
     "dependency_skip",
@@ -2451,6 +2469,11 @@ def _recommend_actions(
             f"the sprint's budget cap was reached before {ref} was dispatched — raise the "
             f"budget or re-sprint {ref} in a new run; nothing about {ref}'s own work was "
             "judged"
+        ),
+        "sprint_budget_halted_in_flight": (
+            f"the sprint's budget cap was reached while {ref} was running, so the sprint "
+            f"cancelled it at its next phase boundary — raise the budget or re-sprint {ref} "
+            "in a new run; its work is unfinished, not rejected, and no model judged it"
         ),
         "agent_auth_rejected": (
             f"re-authenticate the agent credential the run recorded as rejected, then "
