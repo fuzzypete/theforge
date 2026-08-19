@@ -1140,6 +1140,11 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # it — the detector is deterministic, so a reader must be able to re-derive
         # the decision from the record rather than trust the log line.
         "review_topology_signal": state.review_topology_signal,
+        # What the latest cycle's P1s were checked against before any of them was
+        # allowed to block (#2525). Names the file set and its provenance, so a
+        # reader can re-derive why a finding was recorded diff_ungrounded instead
+        # of taking the run's word for it. Null on runs that never reached REVIEW.
+        "review_diff_grounding": state.review_diff_grounding,
         # Non-blocking / suppressed P1s: findings that were set aside without
         # blocking approval. Both net_new (latent, single-reviewer) and
         # gate_contradicted (mechanically disproven by a PASS gate) belong here so

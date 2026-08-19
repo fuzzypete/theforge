@@ -39,9 +39,15 @@ from theforge.symptom_test_classifier import escalate_symptom_test_findings
 from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 
 from . import story_budget as _story_budget
+from .batch_diff import batch_member_story_diff, latest_dev_handoff
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
-from .diff_grounding import ground_p1_records, is_diff_grounded
+from .diff_grounding import (
+    GroundingResult,
+    StoryDiff,
+    ground_p1_records,
+    is_diff_grounded,
+)
 from .escalate_actions import (
     ACCEPT_UNAVAILABLE_REASON,
     NAMED_ACTION_UNAVAILABLE_REASON,
@@ -925,6 +931,47 @@ def _maybe_enter_p2_cleanup(
 # ── Review-phase helpers ──────────────────────────────────────────────
 
 
+def _story_diff_for_review(
+    state: CoordinatorState,
+    task: TaskStory,
+    workspace_path: Path,
+    *,
+    batch_handoff: dict | None = None,
+) -> StoryDiff | None:
+    """Return this story's own file set, or None to use the branch diff.
+
+    Only one situation makes the branch diff the wrong answer: a cost-aware
+    batch group, where several independent stories share one branch. There the
+    set is narrowed to the commits the shared handoff attributes to this story,
+    so a sibling member's findings cannot ground against this member (#2525).
+
+    The batch leader is detected from ``task.batch_members`` and reads the
+    handoff its own DEV phase captured; a non-leader member is reviewed through
+    the review-only path with a fresh state, so its caller passes the leader's
+    handoff in as ``batch_handoff``.
+    """
+    handoff = batch_handoff
+    if handoff is None:
+        if not task.batch_members:
+            return None
+        handoff = latest_dev_handoff(state)
+    return batch_member_story_diff(workspace_path, handoff, task.slug)
+
+
+def _record_grounding(state: CoordinatorState, grounding: GroundingResult) -> None:
+    """Record what this cycle's findings were grounded against, for the audit.
+
+    Suppressing findings against a file set the record does not name would make
+    the suppression unreviewable — the operator could see *that* a P1 was set
+    aside but not *what* it was checked against (conventions #6).
+    """
+    state.review_diff_grounding = {
+        "review_cycle": state.review_cycle,
+        **grounding.story_diff.as_audit_record(),
+        "ungrounded_p1_ids": [record.finding_id for record in grounding.ungrounded],
+    }
+
+
 REVIEW_INFRASTRUCTURE_PARSE_FAILURE_REASON = (
     "Review infrastructure failure: all reviewers failed to produce parseable output. "
     "This is a review-layer defect, not an implementation defect — DEV cannot resolve it. "
@@ -1724,14 +1771,21 @@ def _run_review_phase(
     # and the cycle blocking checks, so no promotion path can reach a blocking
     # disposition without having passed it (#2525).
     _grounding = ground_p1_records(
-        _classified, workspace_path, config.workspace.base_branch, log=_log
+        _classified,
+        workspace_path,
+        config.workspace.base_branch,
+        story_diff=_story_diff_for_review(state, task, workspace_path),
+        log=_log,
     )
+    _record_grounding(state, _grounding)
     _story_changed_files = _grounding.changed_files
     _ungrounded_p1s = list(_grounding.ungrounded)
     # True when this cycle produced P1 evidence and none of it survived grounding.
     # No disposition assigned below moves a record into or out of diff_ungrounded,
-    # so this is stable for the rest of the phase.
-    _only_ungrounded_p1s = _grounding.only_ungrounded
+    # so this is stable for the rest of the phase. The story-changed-nothing case
+    # is excluded: with no change to judge, "no finding is about this change" is
+    # not a reason to stop blocking.
+    _only_ungrounded_p1s = _grounding.only_ungrounded and not _grounding.story_changed_nothing
     # An ungrounded finding is not work for the dev agent. When a retry is driven
     # by some OTHER, grounded blocker, the handoff must not also carry back a
     # sibling story's acceptance criteria as something to fix — the dev agent has
@@ -2438,10 +2492,17 @@ def _run_review_only_phase(
     notify: bool,
     logger: StructuredLogger | None,
     task_start: float,
+    batch_dev_handoff: dict | None = None,
 ) -> CoordinatorResult:
     """Run the REVIEW phase for the review-only entry point.
 
     No DEV retry: REQUEST_CHANGES → ESCALATE immediately.
+
+    ``batch_dev_handoff`` is the shared handoff from a batch group's dev pass,
+    supplied when this story is a non-leader member being reviewed on the
+    leader's worktree. It is what lets grounding narrow the branch's combined
+    diff to this member's own commits; without it the member would be judged
+    against its siblings' changes too (#2525).
     """
     state.phase = Phase.REVIEW
     if logger:
@@ -2570,11 +2631,9 @@ def _run_review_only_phase(
     # Classifying the cycle first is what puts the dispositions in
     # state.finding_registry, so the audit records why a finding was set aside.
     #
-    # Batch members share the leader's worktree, so the diff grounded against is
-    # the batch group's combined change — the finest granularity this path has.
-    # That still excludes every story outside the group, which is the reported
-    # failure mode; separating members within a group would need per-story diff
-    # attribution the batching model does not carry.
+    # For a batch member the worktree's branch diff is the whole group's change,
+    # so grounding against it would let a sibling member's findings ground here.
+    # batch_dev_handoff narrows the set to this member's own commits.
     from theforge.finding_classifier import update_finding_registry as _update_finding_registry
 
     _classified_ro = _update_finding_registry(
@@ -2585,19 +2644,29 @@ def _run_review_only_phase(
         prev_commit=None,
     )
     _grounding_ro = ground_p1_records(
-        _classified_ro, workspace_path, config.workspace.base_branch, log=_log
+        _classified_ro,
+        workspace_path,
+        config.workspace.base_branch,
+        story_diff=_story_diff_for_review(
+            state, task, workspace_path, batch_handoff=batch_dev_handoff
+        ),
+        log=_log,
     )
+    _record_grounding(state, _grounding_ro)
 
     # A REQUEST_CHANGES whose every P1 is ungrounded rests entirely on evidence
     # that was just established not to describe this change — including its
     # matches_spec flag, which the same reviewer derived from those same
     # findings. Treat it as an approval rather than a rejection nobody can act
     # on. Fails closed everywhere else: a parse failure, a verdict with no P1
-    # evidence to ground, or a single grounded P1 all still escalate.
+    # evidence to ground, a single grounded P1, or a story whose own file set is
+    # known to be empty — nothing was implemented, so there is nothing to approve
+    # and the review must stay free to say so.
     _ro_ungrounded_pass = (
         parsed_review.verdict != "APPROVE"
         and not parsed_review.parse_errors
         and _grounding_ro.only_ungrounded
+        and not _grounding_ro.story_changed_nothing
     )
     if _ro_ungrounded_pass:
         _log(

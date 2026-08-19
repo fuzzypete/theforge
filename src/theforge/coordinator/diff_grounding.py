@@ -11,6 +11,13 @@ latest dev iteration's base: the story owns every commit on its branch, so a
 finding about a file touched in dev iteration 1 is still about this story when
 iteration 2 did not touch it.
 
+That identity — branch diff *is* story diff — holds for every story that owns
+its worktree, and breaks for exactly one case: a cost-aware batch group, where
+several independent stories share one branch. There the caller supplies the
+story's own file set as a :class:`StoryDiff`, and grounding uses it in place of
+the branch diff. Batching is a scheduling decision; it must not change what a
+story is judged against.
+
 The path predicates here are pure: they answer "is this path in that set", and
 return None for "the comparison could not be made" so callers can distinguish an
 unavailable diff from an empty one. :func:`ground_p1_records` is the one shared
@@ -30,6 +37,37 @@ from .changed_files import collect_changed_files
 
 if TYPE_CHECKING:
     from .state import FindingRecord
+
+#: The story's file set is the whole branch diff — every story that owns its
+#: worktree.
+SOURCE_BRANCH_DIFF = "branch_diff"
+
+
+@dataclass(frozen=True)
+class StoryDiff:
+    """The changed-file set a story's findings are grounded against.
+
+    ``files=None`` means the set could not be established, which is a distinct
+    claim from an empty set and is never collapsed into one: an unknown file set
+    grounds nothing, so no finding can decide the story's outcome, whereas an
+    empty one would say the story changed nothing.
+
+    ``source`` and ``detail`` name where the set came from so the audit record
+    can say what a finding was judged against — a run that suppressed findings
+    against a set nobody can reconstruct is not auditable.
+    """
+
+    files: frozenset[str] | None
+    source: str
+    detail: str | None = None
+
+    def as_audit_record(self) -> dict:
+        return {
+            "source": self.source,
+            "detail": self.detail,
+            "available": self.files is not None,
+            "files": sorted(self.files) if self.files is not None else None,
+        }
 
 
 def story_changed_files(workspace_path: Path, base_branch: str) -> frozenset[str] | None:
@@ -126,9 +164,13 @@ class GroundingResult:
     just established to be about something else.
     """
 
-    changed_files: frozenset[str] | None
+    story_diff: StoryDiff
     ungrounded: tuple[FindingRecord, ...]
     p1_records: tuple[FindingRecord, ...]
+
+    @property
+    def changed_files(self) -> frozenset[str] | None:
+        return self.story_diff.files
 
     @property
     def only_ungrounded(self) -> bool:
@@ -136,7 +178,19 @@ class GroundingResult:
 
     @property
     def diff_available(self) -> bool:
-        return self.changed_files is not None
+        return self.story_diff.files is not None
+
+    @property
+    def story_changed_nothing(self) -> bool:
+        """True when the story's file set is known and empty.
+
+        Distinct from an unknown set, and the one case where an all-ungrounded
+        cycle must NOT be waved through: "no finding is about this change" is a
+        reason to stop blocking only when there *is* a change. A story that
+        demonstrably produced nothing has no work to approve, and its review
+        must be free to say so.
+        """
+        return self.story_diff.files is not None and not self.story_diff.files
 
 
 def ground_p1_records(
@@ -144,6 +198,7 @@ def ground_p1_records(
     workspace_path: Path,
     base_branch: str,
     *,
+    story_diff: StoryDiff | None = None,
     log: Callable[[str], None] | None = None,
 ) -> GroundingResult:
     """Set ``diff_ungrounded`` on every P1 record not tied to this story's diff.
@@ -153,15 +208,24 @@ def ground_p1_records(
     list and ``state.finding_registry`` see the same dispositions and the audit
     record carries them without further work.
 
-    Grounding is computed merge-base-to-HEAD, never from the latest dev
-    iteration's base: a finding about a file touched in iteration 1 is still
-    about this story when iteration 2 did not touch it.
+    Without ``story_diff`` the file set is the branch's own merge-base-to-HEAD
+    diff, never the latest dev iteration's base: a finding about a file touched
+    in iteration 1 is still about this story when iteration 2 did not touch it.
+    Callers whose branch carries more than one story — a batch group's shared
+    worktree — pass the story's own set explicitly, because there the branch
+    diff would ground a sibling member's findings against this member.
     """
-    changed_files = story_changed_files(workspace_path, base_branch)
+    if story_diff is None:
+        story_diff = StoryDiff(
+            files=story_changed_files(workspace_path, base_branch),
+            source=SOURCE_BRANCH_DIFF,
+        )
+    changed_files = story_diff.files
     if changed_files is None and log is not None:
         log(
-            "  ⚠ diff grounding unavailable — story diff could not be computed;"
-            " P1s cannot be checked against this change"
+            f"  ⚠ diff grounding unavailable — this story's file set could not be"
+            f" established ({story_diff.detail or story_diff.source});"
+            f" P1s cannot be checked against this change"
         )
     p1_records = tuple(record for record in records if record.severity == "P1")
     ungrounded: list[FindingRecord] = []
@@ -177,7 +241,7 @@ def ground_p1_records(
                 f" {record.description[:80]}"
             )
     return GroundingResult(
-        changed_files=changed_files,
+        story_diff=story_diff,
         ungrounded=tuple(ungrounded),
         p1_records=p1_records,
     )

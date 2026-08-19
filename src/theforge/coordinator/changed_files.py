@@ -133,6 +133,46 @@ def collect_changed_files(
     return {"base_ref": base_ref, "head_ref": head_ref, "files": _parse_numstat(out)}
 
 
+def collect_commit_files(workspace_path: Path, revs: list[str]) -> dict | None:
+    """Return ``{commits, files}`` for the union of ``revs``, or None.
+
+    The per-commit counterpart of :func:`collect_changed_files`, for the case
+    where a branch carries more than one story's work and only some of its
+    commits belong to the story being asked about (a cost-aware batch group's
+    shared worktree, #2525).
+
+    ``None`` on any unresolvable rev or failed diff, and on an empty ``revs``,
+    holding the same distinction the module keeps everywhere: a comparison that
+    could not be made is not a comparison that found nothing. A caller grounding
+    findings against the result must treat ``None`` as "this story's file set is
+    unknown", never as "this story changed nothing".
+    """
+    if not revs or not workspace_path.exists():
+        return None
+    resolved: list[str] = []
+    for rev in revs:
+        sha = _resolve_ref(workspace_path, rev)
+        if sha is None:
+            return None
+        resolved.append(sha)
+    paths: dict[str, dict] = {}
+    for sha in resolved:
+        # --format= suppresses the commit header so only numstat rows remain;
+        # _parse_numstat ignores anything that is not a numstat triple anyway.
+        ok, out = _cu._run_shell(
+            f"git -c core.quotePath=false show --numstat --no-renames --format= {sha}",
+            workspace_path,
+        )
+        if not ok:
+            return None
+        for entry in _parse_numstat(out):
+            paths.setdefault(entry["path"], entry)
+    return {
+        "commits": resolved,
+        "files": sorted(paths.values(), key=lambda entry: entry["path"]),
+    }
+
+
 def capture_changed_files(
     state: CoordinatorState,
     config: ForgeConfig,

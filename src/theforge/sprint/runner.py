@@ -33,6 +33,7 @@ from ..coordinator.agent_failure import (
     is_infrastructure_abort,
     mark_infrastructure_abort,
 )
+from ..coordinator.batch_diff import latest_dev_handoff
 from ..coordinator.config_snapshot import SprintConfigSnapshot, capture_or_load
 from ..coordinator.engine import run_from_dev, run_from_review, run_review_only, run_task
 from ..coordinator.gate import run_gate_full
@@ -2420,6 +2421,18 @@ def _run_batch_group(
     branch_name = leader_result.state.branch_name or config.workspace.branch_pattern.format(
         slug=leader_task.slug
     )
+    # The shared dev pass produced one handoff covering every member, with each
+    # commit carrying the slug of the story it implements (the per-story handoff
+    # contract in task/dev_prompts.py). Review needs it to judge each member
+    # against that member's own commits rather than the branch's combined diff,
+    # which is the group's change and not any one story's (#2525).
+    batch_dev_handoff = latest_dev_handoff(leader_result.state)
+    if batch_dev_handoff is None:
+        _log(
+            f"BATCH {group_id}: shared dev pass left no per-story handoff — member "
+            f"reviews cannot attribute commits and will treat every finding as "
+            f"unverifiable against the member's own change"
+        )
     for member in member_tasks:
         member_t0 = datetime.datetime.now(datetime.timezone.utc)
         set_worker_slug(member.slug)
@@ -2434,6 +2447,7 @@ def _run_batch_group(
                 notify=notify,
                 sprint_name=sprint_name,
                 branch_name=branch_name,
+                batch_dev_handoff=batch_dev_handoff,
             )
         except Exception as exc:
             _log(f"ERROR {member.slug}: batch review raised {type(exc).__name__}: {exc}")

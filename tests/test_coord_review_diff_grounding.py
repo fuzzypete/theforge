@@ -13,11 +13,13 @@ Covers:
 - Non-regression: in-diff P1 + matches_spec=false still blocks as ac_blocking
 - Ungrounded findings stay visible in non_blocking_p1s and the registry
 - Mixed cycle: only the grounded finding reaches the dev fix prompt
+- Batch group: a member is judged against its own commits, not the group's
 - Path normalization unit cases
 """
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
@@ -36,7 +38,7 @@ from theforge.coordinator.diff_grounding import (
     normalize_finding_path,
     ungrounded_reason,
 )
-from theforge.coordinator.engine import run_from_review
+from theforge.coordinator.engine import run_from_review, run_review_only
 from theforge.coordinator.state import Phase
 
 #: What the story under test actually touched.
@@ -313,3 +315,176 @@ def test_changed_file_set_reads_the_collect_changed_files_shape(tmp_path):
 
     with patch("theforge.coordinator.diff_grounding.collect_changed_files", return_value=None):
         assert story_changed_files(Path(tmp_path), "main") is None
+
+
+# ── Batch groups: a member is judged against its own commits ─────────────────
+
+
+def _init_batch_repo(path: Path) -> dict[str, str]:
+    """One branch carrying two independent stories, as a batch group produces."""
+    subprocess.run(["git", "init", "-q", "-b", "main"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=path, check=True)
+    (path / "README.md").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "."], cwd=path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "seed"], cwd=path, check=True)
+    subprocess.run(["git", "checkout", "-q", "-b", "forge/leader"], cwd=path, check=True)
+
+    shas: dict[str, str] = {}
+    for slug, relpath in (("test-task", "src/mine.py"), ("sibling-story", "src/sibling.py")):
+        target = path / relpath
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("changed\n", encoding="utf-8")
+        subprocess.run(["git", "add", "."], cwd=path, check=True)
+        subprocess.run(["git", "commit", "-q", "-m", f"feat({slug}): work"], cwd=path, check=True)
+        shas[slug] = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+        ).stdout.strip()
+    return shas
+
+
+_SIBLING_FILE_REVIEW = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Changes requested."
+findings:
+  - severity: P1
+    file: src/sibling.py
+    line: 12
+    observed: "The sibling story's acceptance criterion is unmet"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
+    suggestion: "Restore the field"
+story_compliance:
+  matches_spec: false
+  mismatches:
+    - "Acceptance criterion is unmet"
+test_coverage:
+  adequate: true
+  gaps: []
+```
+"""
+
+_OWN_FILE_REVIEW = _SIBLING_FILE_REVIEW.replace("src/sibling.py", "src/mine.py")
+
+
+def _run_batch_member(tmp_path, review_yaml: str, handoff: dict | None):
+    config = _make_config(tmp_path)
+    task = _make_task(tmp_path)  # slug "test-task"
+    workspace = tmp_path / "shared-worktree"
+    workspace.mkdir()
+    shas = _init_batch_repo(workspace)
+    if handoff is not None:
+        handoff = {
+            "commits": [
+                {"sha": shas[entry["slug"]], "slug": entry["slug"]} for entry in handoff["commits"]
+            ]
+        }
+
+    with patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool:
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=review_yaml, profile_name="review")
+        ]
+        result = run_review_only(
+            config,
+            task,
+            workspace,
+            branch_name="forge/leader",
+            batch_dev_handoff=handoff,
+        )
+    return config, task, result
+
+
+class TestBatchMemberGrounding:
+    def test_sibling_member_s_file_does_not_escalate_this_member(self, tmp_path):
+        """The reviewer cites a file changed by another member of the same batch.
+
+        It is in the shared branch's diff, so grounding against the branch would
+        treat it as this member's own change and fail the wrong story. Per-story
+        commit attribution is what keeps them apart.
+        """
+        config, task, result = _run_batch_member(
+            tmp_path,
+            _SIBLING_FILE_REVIEW,
+            {"commits": [{"slug": "test-task"}, {"slug": "sibling-story"}]},
+        )
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert [r.disposition for r in result.state.finding_registry] == ["diff_ungrounded"]
+
+        audit = generate_audit_log(config, task, result)
+        grounding = audit["review_diff_grounding"]
+        # The record names what the finding was checked against, so the
+        # suppression can be re-derived rather than taken on trust.
+        assert grounding["source"] == "batch_commit_attribution"
+        assert grounding["files"] == ["src/mine.py"]
+        assert grounding["available"] is True
+
+    def test_this_member_s_own_file_still_blocks(self, tmp_path):
+        """Non-regression: narrowing the set must not disarm review inside it."""
+        _config, _task, result = _run_batch_member(
+            tmp_path,
+            _OWN_FILE_REVIEW,
+            {"commits": [{"slug": "test-task"}, {"slug": "sibling-story"}]},
+        )
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert [r.disposition for r in result.state.finding_registry] != ["diff_ungrounded"]
+
+    def test_missing_attribution_grounds_nothing_rather_than_the_group_diff(self, tmp_path):
+        """No usable attribution must not silently fall back to the branch diff."""
+        config, task, result = _run_batch_member(tmp_path, _OWN_FILE_REVIEW, None)
+
+        # handoff=None reaches grounding as "no batch attribution supplied", which
+        # for a review-only run means the branch diff — the member owns the
+        # worktree as far as this path can tell. src/mine.py is in it, so the
+        # finding grounds and blocks.
+        assert result.success is False
+        audit = generate_audit_log(config, task, result)
+        assert audit["review_diff_grounding"]["source"] == "branch_diff"
+
+    def test_unattributed_commits_make_every_finding_ungrounded(self, tmp_path):
+        """A handoff that names no slugs cannot split the branch by story."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "shared-worktree"
+        workspace.mkdir()
+        _init_batch_repo(workspace)
+
+        with patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool:
+            mock_pool.return_value = [
+                _make_agent_result(success=True, output=_OWN_FILE_REVIEW, profile_name="review")
+            ]
+            result = run_review_only(
+                config,
+                task,
+                workspace,
+                branch_name="forge/leader",
+                batch_dev_handoff={"commits": [{"sha": "abc1234", "message": "feat: work"}]},
+            )
+
+        assert result.success is True
+        assert [r.disposition for r in result.state.finding_registry] == ["diff_ungrounded"]
+        audit = generate_audit_log(config, task, result)
+        assert audit["review_diff_grounding"]["available"] is False
+
+    def test_member_with_no_commits_still_escalates(self, tmp_path):
+        """A story that demonstrably produced nothing has no work to approve.
+
+        Its file set is known and empty, so every finding is ungrounded — but
+        "no finding is about this change" is only a reason to stop blocking when
+        there IS a change. Review must stay free to fail an unimplemented member.
+        """
+        config, task, result = _run_batch_member(
+            tmp_path,
+            _SIBLING_FILE_REVIEW,
+            {"commits": [{"slug": "sibling-story"}]},
+        )
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        audit = generate_audit_log(config, task, result)
+        assert audit["review_diff_grounding"]["files"] == []
+        assert audit["review_diff_grounding"]["available"] is True

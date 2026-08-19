@@ -982,6 +982,12 @@ class CoordinatorState:
     # serialises straight into the trajectory sidecar, the audit record, and the
     # escalation advisor's evidence packet.  Recomputed every merged cycle.
     review_topology_signal: dict | None = None
+    # What the latest review cycle's P1s were diff-grounded against (#2525): the
+    # file set, where it came from (the branch diff, or per-story commit
+    # attribution inside a batch group's shared worktree), whether it could be
+    # established at all, and which findings failed to ground. A suppression
+    # whose basis the record does not name is not reviewable after the fact.
+    review_diff_grounding: dict | None = None
     # True once a detected topology walk has been routed to the escalate gate.
     # The gate's "continue" is an operator decision to keep going; re-escalating
     # the same pattern on the very next cycle would spend the decision it just
