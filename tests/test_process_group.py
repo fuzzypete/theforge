@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import signal
 import stat
 import subprocess
@@ -24,6 +25,7 @@ from theforge import process_group
 from theforge.config import ModelProfile
 from theforge.runners.runner_claude import _run_claude
 from theforge.runners.runner_codex import _run_codex
+from theforge.runners.sandbox import workspace_effect_sandbox_command
 
 _FAKE_BIN = Path(__file__).parent / "fake_bin"
 
@@ -866,8 +868,15 @@ class _RunnerGroupKillBase:
         mode_var: str,
         mode: str,
         pidfile: Path,
+        fake_bin: Path | None = None,
     ) -> None:
-        fake_bin = self._FAKE_BIN
+        """Put the fake CLI on PATH and select its mode.
+
+        ``fake_bin`` overrides the repo's ``tests/fake_bin`` for the sandbox-wrapped
+        tests, which need a copy the applied profile can actually read (see
+        ``TestClaudeGroupKillThroughSandbox``).
+        """
+        fake_bin = self._FAKE_BIN if fake_bin is None else fake_bin
         from theforge.workspace_env import build_workspace_env as _orig
 
         def _build(workspace_path, base_env=None, *, extra=None):  # type: ignore[no-untyped-def]
@@ -955,6 +964,156 @@ class TestClaudeGroupKill(_RunnerGroupKillBase):
         gc_pid = int(pidfile.read_text().strip())
         assert _wait_until(lambda: not _pid_alive(gc_pid)), (
             "grandchild survived a SystemExit unwind — the except-BaseException kill regressed"
+        )
+
+
+def _sandbox_reachability_skip_reason(fake_bin: Path, root: Path) -> str | None:
+    """Why this host cannot exercise the wrapped path, or None when it can.
+
+    Runs the fake CLI itself through the *same* wrapper call the runner makes,
+    in an unknown mode so it exits immediately with a known marker. Nothing
+    weaker would do: the question is not "does a profile compile" but "can the
+    wrapped process actually start here", and that covers every way the wrapped
+    path can be untestable — no ``sandbox-exec``/``bwrap`` at all (the wrapper
+    hands the command back unchanged), a host that refuses to apply a profile
+    from inside an existing sandbox, a backend whose mounts do not reach *root*
+    (bwrap tmpfs-es ``/tmp``, which is where pytest's tmp_path lives on Linux),
+    and an interpreter the profile's toolchain roots do not reach. Each is a
+    property of the harness rather than of the code under test, so each skips.
+    """
+    probe = ["claude"]
+    try:
+        wrapped = workspace_effect_sandbox_command(probe, root, allow_credential_services=True)
+    except Exception as exc:  # noqa: BLE001 - any wrapper refusal means "cannot test here"
+        return f"sandbox wrapper unavailable ({exc})"
+    if wrapped[0] == probe[0]:
+        return "platform sandbox (sandbox-exec/bwrap) unavailable on this host"
+    env = dict(os.environ)
+    env["PATH"] = str(fake_bin) + os.pathsep + env.get("PATH", "")
+    env["FAKE_CLAUDE_MODE"] = "__sandbox_probe__"
+    try:
+        result = subprocess.run(
+            wrapped, capture_output=True, text=True, timeout=60, check=False, env=env
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return f"platform sandbox could not run a probe ({exc})"
+    if "unknown FAKE_CLAUDE_MODE" not in result.stderr:
+        return (
+            "platform sandbox cannot start the fake CLI on this host "
+            f"(exit {result.returncode}: {result.stderr.strip()[:200]})"
+        )
+    return None
+
+
+class TestClaudeGroupKillThroughSandbox(_RunnerGroupKillBase):
+    """The same two kills, through the wrapper a real dev invocation goes through.
+
+    Since #1907 every Claude invocation whose profile does not say
+    ``sandbox_mode: none`` runs as ``sandbox-exec``/``bwrap`` → ``claude`` →
+    grandchild, so the wrapper owns the intermediate process and the group. The
+    unwrapped tests above opt out of it deliberately (the wrapper is noise for
+    what they assert); these leave the profile at its default so the shape under
+    test is the shape production uses.
+    """
+
+    @pytest.fixture
+    def wrapped_bin(self, tmp_path: Path) -> Path:
+        """A copy of the fake claude CLI inside the sandboxed root, or skip.
+
+        The applied profile grants reads on the worktree and the toolchain —
+        ``tests/fake_bin`` is neither, so the repo copy is unreadable the moment
+        the wrapper takes effect. Copying it under ``tmp_path`` (which *is* the
+        allowed root) keeps the fake CLI reachable without widening the profile.
+        """
+        self._ensure_exec("claude")
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+        dest = bin_dir / "claude"
+        shutil.copy2(self._FAKE_BIN / "claude", dest)
+        dest.chmod(dest.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        reason = _sandbox_reachability_skip_reason(bin_dir, tmp_path)
+        if reason is not None:
+            pytest.skip(reason)
+        return bin_dir
+
+    def _profile(self, timeout_seconds: int) -> ModelProfile:
+        # No sandbox_mode argument: the default ("workspace-write") is what makes
+        # _run_claude wrap the CLI. Setting it to "none" here would silently turn
+        # this back into a copy of the unwrapped test.
+        return ModelProfile(
+            name="dev",
+            cli="claude",
+            model="claude-sonnet-4-5",
+            budget_usd=2.0,
+            timeout_seconds=timeout_seconds,
+            allowed_tools=("Bash",),
+        )
+
+    def test_timeout_kills_grandchild_through_sandbox_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, wrapped_bin: Path
+    ) -> None:
+        pidfile = tmp_path / "gc.pid"
+        self._patch_env(
+            monkeypatch,
+            "runner_claude",
+            "FAKE_CLAUDE_MODE",
+            "grandchild_hang",
+            pidfile,
+            fake_bin=wrapped_bin,
+        )
+        result = _run_claude(
+            prompt="do the thing",
+            profile=self._profile(timeout_seconds=5),
+            working_dir=tmp_path,
+            fallback_to_file=False,
+        )
+        assert result.success is False
+        assert "SANDBOX_UNAVAILABLE" not in (result.output or ""), (
+            "the runner refused to wrap — this test would prove nothing about the "
+            f"wrapped path: {(result.output or '')[:300]}"
+        )
+        assert _wait_until(pidfile.exists, timeout=6.0), "fake claude never spawned the grandchild"
+        gc_pid = int(pidfile.read_text().strip())
+        assert _wait_until(lambda: not _pid_alive(gc_pid)), (
+            "grandchild survived the timeout — group kill did not cross the sandbox wrapper"
+        )
+
+    def test_exception_after_spawn_kills_group_through_sandbox_wrapper(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, wrapped_bin: Path
+    ) -> None:
+        """The SystemExit unwind (forge stop's graceful path), wrapper included.
+
+        With the wrapper in place the process the runner holds is the sandbox, not
+        the CLI, so an unwind that only killed its direct child would leave both
+        the agent and its grandchild running.
+        """
+        pidfile = tmp_path / "gc.pid"
+        self._patch_env(
+            monkeypatch,
+            "runner_claude",
+            "FAKE_CLAUDE_MODE",
+            "grandchild_stream",
+            pidfile,
+            fake_bin=wrapped_bin,
+        )
+
+        def _boom(*_args: object, **_kwargs: object) -> None:
+            raise SystemExit(0)
+
+        monkeypatch.setattr("theforge.runners.runner_claude._process_stream_event", _boom)
+
+        with pytest.raises(SystemExit):
+            _run_claude(
+                prompt="do the thing",
+                profile=self._profile(timeout_seconds=30),
+                working_dir=tmp_path,
+                fallback_to_file=False,
+            )
+        assert _wait_until(pidfile.exists, timeout=6.0), "fake claude never spawned the grandchild"
+        gc_pid = int(pidfile.read_text().strip())
+        assert _wait_until(lambda: not _pid_alive(gc_pid)), (
+            "grandchild survived a SystemExit unwind — the group kill did not cross "
+            "the sandbox wrapper"
         )
 
 
