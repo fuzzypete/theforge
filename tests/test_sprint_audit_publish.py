@@ -67,6 +67,15 @@ def _write_audit(repo: Path, name: str) -> None:
     (audit_dir / name).write_text(json.dumps({"run": name}) + "\n", encoding="utf-8")
 
 
+def _write_summary(repo: Path, run_id: str) -> None:
+    summaries_dir = repo / ".forge" / "knowledge" / "summaries"
+    summaries_dir.mkdir(parents=True, exist_ok=True)
+    (summaries_dir / f"{run_id}.yaml").write_text(
+        yaml.safe_dump({"run_id": run_id}, sort_keys=False),
+        encoding="utf-8",
+    )
+
+
 @pytest.fixture()
 def origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
     """A bare origin with ``BASE`` checked out in a clone, audits unignored."""
@@ -96,6 +105,10 @@ def _read_state(project_root: Path) -> dict:
     )
 
 
+def _tree_names(repo: Path) -> str:
+    return _git(repo, "ls-tree", "-r", "--name-only", BASE)
+
+
 def _advance_origin(tmp_path: Path, origin: Path, message: str) -> None:
     """Land an unrelated commit on origin's base branch, as a merged PR would."""
     other = tmp_path / f"other-{message}"
@@ -112,11 +125,15 @@ def test_publish_pushes_audits_when_remote_is_unchanged(
 ) -> None:
     origin, clone = origin_and_clone
     _write_audit(clone, "run-a.json")
+    _write_summary(clone, "run-a")
 
     _commit_story_run_audits(clone, BASE, publish=True)
 
-    assert "run-a.json" in _git(origin, "ls-tree", "-r", "--name-only", BASE)
+    tree = _tree_names(origin)
+    assert "run-a.json" in tree
+    assert ".forge/knowledge/summaries/run-a.yaml" in tree
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_PUBLISHED
+    assert _git(clone, "status", "--short", "--", ".forge/knowledge/summaries") == ""
 
 
 def test_publish_reconciles_when_the_base_branch_advanced(
@@ -127,6 +144,7 @@ def test_publish_reconciles_when_the_base_branch_advanced(
     """The sprint's own merge landing mid-run must not strand the audit commit."""
     origin, clone = origin_and_clone
     _write_audit(clone, "run-b.json")
+    _write_summary(clone, "run-b")
     # The base branch moves after the clone's last fetch — the merge of the PR
     # for the story this sprint just landed.
     _advance_origin(tmp_path, origin, "story-merge")
@@ -147,6 +165,7 @@ def test_publish_reconciles_when_the_base_branch_advanced(
 
     tree = _git(origin, "ls-tree", "-r", "--name-only", BASE)
     assert "run-b.json" in tree
+    assert ".forge/knowledge/summaries/run-b.yaml" in tree
     # The reconcile rebased onto the mover rather than discarding it.
     assert "story-merge.txt" in tree
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_PUBLISHED
@@ -265,10 +284,13 @@ def test_publish_disabled_records_local_only_state(
 ) -> None:
     origin, clone = origin_and_clone
     _write_audit(clone, "run-f.json")
+    _write_summary(clone, "run-f")
 
     _commit_story_run_audits(clone, BASE, publish=False)
 
-    assert "run-f.json" not in _git(origin, "ls-tree", "-r", "--name-only", BASE)
+    tree = _tree_names(origin)
+    assert "run-f.json" not in tree
+    assert ".forge/knowledge/summaries/run-f.yaml" not in tree
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_LOCAL_ONLY
 
 
@@ -431,11 +453,14 @@ def test_publish_entry_point_publishes_for_the_state_it_is_given(
 ) -> None:
     origin, clone = origin_and_clone
     _write_audit(clone, "run-h.json")
+    _write_summary(clone, "run-h")
     state = _make_state(clone, base_branch=BASE)
 
     publish_story_run_audits(state, lands_locally=False)
 
-    assert "run-h.json" in _git(origin, "ls-tree", "-r", "--name-only", BASE)
+    tree = _tree_names(origin)
+    assert "run-h.json" in tree
+    assert ".forge/knowledge/summaries/run-h.yaml" in tree
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_PUBLISHED
 
 
@@ -445,11 +470,14 @@ def test_publish_entry_point_keeps_the_commit_local_when_pushing_would_publish_m
     """auto_push off on a run that lands locally: commit, do not push, say so."""
     origin, clone = origin_and_clone
     _write_audit(clone, "run-i.json")
+    _write_summary(clone, "run-i")
     state = _make_state(clone, base_branch=BASE, auto_push=False)
 
     publish_story_run_audits(state, lands_locally=True)
 
-    assert "run-i.json" not in _git(origin, "ls-tree", "-r", "--name-only", BASE)
+    tree = _tree_names(origin)
+    assert "run-i.json" not in tree
+    assert ".forge/knowledge/summaries/run-i.yaml" not in tree
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_LOCAL_ONLY
 
 
