@@ -34,10 +34,11 @@ from ..log_util import _log_line
 from .audit import _write_sprint_audit, _write_sprint_summary
 from .manifest import SprintResult
 
-_STORY_RUN_AUDIT_DIR = ".forge/audits/runs"
-_STORY_RUN_AUDIT_COMMIT_CMD = (
-    f'git commit -m "chore(audit): record sprint run audits" -- {_STORY_RUN_AUDIT_DIR}'
+_STORY_RUN_ARTIFACT_DIRS = (
+    ".forge/audits/runs",
+    ".forge/knowledge/summaries",
 )
+_STORY_RUN_AUDIT_COMMIT_MESSAGE = "chore(audit): record sprint run audits"
 
 # Where the outcome of the publish step is recorded. Lives under .forge/ (which
 # .gitignore denies wholesale), so writing it never dirties the base-branch
@@ -73,6 +74,15 @@ def _log(msg: str) -> None:
     # operator reading a run log should not have to learn a new tag because a
     # function changed files.
     _log_line("[sprint]", msg)
+
+
+def _story_run_artifact_label(artifact_dir: str) -> str:
+    """Return an operator-facing label for a tracked story-run artifact tree."""
+    if artifact_dir == ".forge/audits/runs":
+        return "story run audits"
+    if artifact_dir == ".forge/knowledge/summaries":
+        return "knowledge summaries"
+    return f"story run artifacts under {artifact_dir}"
 
 
 class StoryRunAuditPublishError(RuntimeError):
@@ -201,34 +211,49 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
         _record_audit_publish_state(project_root, base_branch, exc.state, detail=str(exc))
         raise
 
-    audit_dir = Path(_STORY_RUN_AUDIT_DIR)
-    quoted_audit_dir = shlex.quote(audit_dir.as_posix())
-    ok_status, status_out = _cu._run_shell(
-        f"git status --porcelain -- {quoted_audit_dir}",
-        project_root,
-    )
-    if not ok_status:
-        raise StoryRunAuditPublishError(
-            f"Failed to inspect story run audits: {status_out}",
-            state=AUDIT_PUBLISH_COMMIT_FAILED,
+    dirty_dirs: list[str] = []
+    for artifact_dir in _STORY_RUN_ARTIFACT_DIRS:
+        artifact_path = project_root / artifact_dir
+        if not artifact_path.exists() and not artifact_path.parent.exists():
+            continue
+        quoted_artifact_dir = shlex.quote(artifact_dir)
+        ok_status, status_out = _cu._run_shell(
+            f"git status --porcelain -- {quoted_artifact_dir}",
+            project_root,
         )
-    if not status_out.strip():
+        if not ok_status:
+            raise StoryRunAuditPublishError(
+                f"Failed to inspect {_story_run_artifact_label(artifact_dir)} "
+                f"at {artifact_dir}: {status_out}",
+                state=AUDIT_PUBLISH_COMMIT_FAILED,
+            )
+        if status_out.strip():
+            dirty_dirs.append(artifact_dir)
+    if not dirty_dirs:
         # Nothing pending. Record it so a marker from an earlier run cannot be
         # mistaken for this one's outcome.
         _record_audit_publish_state(project_root, base_branch, AUDIT_PUBLISH_CLEAN)
         return
 
-    ok_add, add_out = _cu._run_shell(f"git add -- {quoted_audit_dir}", project_root)
+    quoted_dirty_dirs = " ".join(shlex.quote(path) for path in dirty_dirs)
+    ok_add, add_out = _cu._run_shell(f"git add -- {quoted_dirty_dirs}", project_root)
     if not ok_add:
+        artifact_list = ", ".join(
+            f"{_story_run_artifact_label(path)} at {path}" for path in dirty_dirs
+        )
         raise StoryRunAuditPublishError(
-            f"Failed to stage story run audits: {add_out}",
+            f"Failed to stage {artifact_list}: {add_out}",
             state=AUDIT_PUBLISH_COMMIT_FAILED,
         )
 
-    ok_commit, commit_out = _cu._run_shell(_STORY_RUN_AUDIT_COMMIT_CMD, project_root)
+    commit_cmd = f'git commit -m "{_STORY_RUN_AUDIT_COMMIT_MESSAGE}" -- {quoted_dirty_dirs}'
+    ok_commit, commit_out = _cu._run_shell(commit_cmd, project_root)
     if not ok_commit:
+        artifact_list = ", ".join(
+            f"{_story_run_artifact_label(path)} at {path}" for path in dirty_dirs
+        )
         raise StoryRunAuditPublishError(
-            f"Failed to commit story run audits: {commit_out}",
+            f"Failed to commit {artifact_list}: {commit_out}",
             state=AUDIT_PUBLISH_COMMIT_FAILED,
         )
     _log("Committed canonical story run audit records to the base branch checkout.")
