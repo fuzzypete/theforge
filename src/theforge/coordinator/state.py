@@ -151,6 +151,12 @@ Disposition = Literal[
     "downgraded",
     "ac_blocking",
     "gate_contradicted",
+    # A P1 whose cited file is not part of this story's merge-base-to-HEAD diff,
+    # or which cites no resolvable file, or which arrived when the diff could not
+    # be computed at all. Distinguishable from both a grounded blocking finding
+    # and a dismissed one: it never decides the story's outcome, and it is never
+    # dropped from the registry or the audit's non_blocking_p1s (#2525).
+    "diff_ungrounded",
 ]
 
 

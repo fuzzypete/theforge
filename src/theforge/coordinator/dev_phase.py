@@ -752,13 +752,21 @@ def _prior_open_p1s_for_dev_prompt(state: CoordinatorState) -> list:
 
 
 def _current_cycle_p1s_for_dev_prompt(state: CoordinatorState) -> list:
-    """Return classified P1s from the most recent review cycle."""
+    """Return classified P1s from the most recent review cycle.
+
+    diff_ungrounded records are excluded: they name code this story's diff does
+    not touch, so presenting them as work would send the dev agent after a change
+    it cannot make (#2525). They remain in the registry and in the audit's
+    non_blocking_p1s, which is where a suppressed finding is looked for.
+    """
     if state.review_cycle <= 0:
         return []
     return [
         record
         for record in state.finding_registry
-        if record.severity == "P1" and record.cycle_last_seen == state.review_cycle
+        if record.severity == "P1"
+        and record.cycle_last_seen == state.review_cycle
+        and record.disposition != "diff_ungrounded"
     ]
 
 

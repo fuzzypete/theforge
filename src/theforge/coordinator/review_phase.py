@@ -41,6 +41,7 @@ from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 from . import story_budget as _story_budget
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
+from .diff_grounding import is_diff_grounded, story_changed_files, ungrounded_reason
 from .escalate_actions import (
     ACCEPT_UNAVAILABLE_REASON,
     NAMED_ACTION_UNAVAILABLE_REASON,
@@ -1710,6 +1711,67 @@ def _run_review_phase(
     _allow_net_new_bypass = config.finding_classifier.allow_net_new_bypass
     _log(f"  [finding_classifier] allow_net_new_bypass={_allow_net_new_bypass}")
 
+    # ── Diff grounding (eligibility precondition for every blocking path) ─────
+    # A P1 may only decide this story's outcome when it is about this story's
+    # change. Grounding is checked against the story's whole merge-base-to-HEAD
+    # diff — NOT state.last_dev_start_commit, which describes only the latest dev
+    # iteration and would strand findings about files touched in an earlier one.
+    # A finding that cannot be tied to the diff (file not touched, no resolvable
+    # file cited, diff uncomputable) is recorded as diff_ungrounded: visible in
+    # the registry and in the audit's non_blocking_p1s, blocking nothing, and not
+    # handed back to dev as work to fix. This runs BEFORE the gate-contradiction
+    # downgrade, the AC-violation override, the allow_net_new_bypass promotion,
+    # and the cycle blocking checks, so no promotion path can reach a blocking
+    # disposition without having passed it (#2525).
+    _story_changed_files = story_changed_files(workspace_path, config.workspace.base_branch)
+    if _story_changed_files is None:
+        _log(
+            "  ⚠ diff grounding unavailable — story diff could not be computed;"
+            " P1s cannot be checked against this change"
+        )
+    _diff_ungrounded_ids: set[str] = set()
+    _ungrounded_files: set[str] = set()
+    for _rec in _classified:
+        if _rec.severity != "P1":
+            continue
+        if is_diff_grounded(_rec.file, _story_changed_files, workspace_path):
+            continue
+        _rec.disposition = "diff_ungrounded"  # type: ignore[assignment]
+        _diff_ungrounded_ids.add(_rec.finding_id)
+        if _rec.file:
+            _ungrounded_files.add(str(_rec.file))
+        _log(
+            f"  ↷ diff_ungrounded: P1 cannot be checked against this story's diff"
+            f" ({ungrounded_reason(_rec.file, _story_changed_files, workspace_path)}):"
+            f" {_rec.description[:80]}"
+        )
+    _cycle_p1_records = [r for r in _classified if r.severity == "P1"]
+    _ungrounded_p1s = [r for r in _cycle_p1_records if r.disposition == "diff_ungrounded"]
+    # True when this cycle produced P1 evidence and none of it survived grounding.
+    # No disposition assigned below moves a record into or out of diff_ungrounded,
+    # so this is stable for the rest of the phase.
+    _only_ungrounded_p1s = bool(_cycle_p1_records) and len(_ungrounded_p1s) == len(
+        _cycle_p1_records
+    )
+    # An ungrounded finding is not work for the dev agent. When a retry is driven
+    # by some OTHER, grounded blocker, the handoff must not also carry back a
+    # sibling story's acceptance criteria as something to fix — the dev agent has
+    # no way to satisfy it and would churn trying. The findings stay in the
+    # registry and in the audit; only the actionable handoff is narrowed. P2s are
+    # left alone: they are advisory, never decide the outcome, and the P2 policy
+    # already asks the dev to judge proximity for itself (#2525).
+    _dev_handoff_review = parsed_review
+    if _ungrounded_p1s:
+        _dev_handoff_review = _dc_replace(
+            parsed_review,
+            findings=[
+                f
+                for f in parsed_review.findings
+                if f.severity != "P1"
+                or is_diff_grounded(f.file, _story_changed_files, workspace_path)
+            ],
+        )
+
     # ── Gate-contradiction downgrade (assertion-based) ────────────────────────
     # A PASS gate mechanically contradicts exactly one class of P1: a claim that
     # tests/build/lint are currently FAILING.  It has no bearing on a claim that
@@ -1724,6 +1786,11 @@ def _run_review_phase(
     if _last_gate == "PASS":
         for _rec in _classified:
             if _rec.severity != "P1":
+                continue
+            if _rec.disposition == "diff_ungrounded":
+                # Already non-blocking for a stronger reason; keep the more
+                # specific disposition rather than restating it as a gate
+                # contradiction.
                 continue
             if asserts_gate_verifiable_failure(_rec.description):
                 _log(
@@ -1741,6 +1808,9 @@ def _run_review_phase(
     # AFTER the gate-contradiction downgrade and inspects P1s regardless of their
     # current disposition, so no suppression can run ahead of the guard written to
     # catch exactly this error, whatever order dispositions were assigned in.
+    # It does NOT re-block a diff_ungrounded P1: a reviewer's self-reported
+    # matches_spec flag is not evidence that a finding about a file this story
+    # never touched describes this story's change (#2525).
     _ac_failing_reporters = {
         name for name, rr in state.last_cycle_reviewer_results if not rr.story_matches
     }
@@ -1778,6 +1848,10 @@ def _run_review_phase(
         # override above has already re-blocked any gate_contradicted P1 from a
         # matches_spec=false reviewer, so only genuinely test-failure-asserting
         # findings remain gate_contradicted here.
+        # diff_ungrounded is excluded for the same structural reason: a finding
+        # that could not be checked against this story's change is not evidence
+        # about it, so it is neither blocking nor eligible for any promotion
+        # below (#2525).
         _BLOCKING_DISPOSITIONS = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
         _blocking_p1 = any(
             r.severity == "P1" and r.disposition in _BLOCKING_DISPOSITIONS for r in _classified
@@ -1791,6 +1865,8 @@ def _run_review_phase(
         # When allow_net_new_bypass is disabled, net-new P1s are treated as blocking.
         # Persist the disposition change so the audit trail records these as blocking,
         # not as net_new (which audit.py would serialize under non_blocking_p1s).
+        # Only grounded net-new P1s reach here: ungrounded ones were already
+        # re-dispositioned above and are absent from _nonblocking_p1s.
         if not _allow_net_new_bypass and _nonblocking_p1s:
             _blocking_p1 = True
             for _rec in _nonblocking_p1s:
@@ -1804,20 +1880,26 @@ def _run_review_phase(
         # Fallback: if the merged review has P1s but none were classified (e.g., synthetic
         # P1 injection when all reviewers failed to produce parseable output), block
         # traditionally to avoid silently passing an unknown failure.
-        # gate_contradicted P1s are accounted for and must not trigger this fallback.
+        # gate_contradicted and diff_ungrounded P1s are accounted for and must not
+        # trigger this fallback.
         if (
             not _blocking_p1
             and not _nonblocking_p1s
             and not _gate_contradicted_p1s
+            and not _ungrounded_p1s
             and _p1_count > 0
         ):
             _blocking_p1 = True
     else:
         # Cycle 1: any P1 is blocking (no prior baseline to classify against).
-        # Gate-contradicted P1s are non-blocking even on cycle 1.
+        # Gate-contradicted and diff-ungrounded P1s are non-blocking even on
+        # cycle 1 — "first cycle" is not a reason to let an uncheckable finding
+        # decide the outcome.
         if _classified:
             _blocking_p1 = any(
-                r.severity == "P1" and r.disposition != "gate_contradicted" for r in _classified
+                r.severity == "P1"
+                and r.disposition not in ("gate_contradicted", "diff_ungrounded")
+                for r in _classified
             )
         else:
             _blocking_p1 = _p1_count > 0
@@ -1834,12 +1916,26 @@ def _run_review_phase(
     # early-termination branch finalize DONE ahead of it. Merged story_matches is
     # all()-over-valid-reviewers, so parse-failed reviewers (which default
     # story_matches=False) do not spuriously block a clean fallback approval.
+    # One exception: when this cycle's ONLY P1 evidence is diff_ungrounded, the
+    # criterion the reviewer says is unsatisfied is the criterion those findings
+    # describe — and they were just established to be about something other than
+    # this change. Re-blocking here would reinstate through the merged flag
+    # exactly what was made non-blocking finding-by-finding (#2525). A
+    # matches_spec=false backed by a grounded P1, or by no P1 evidence at all
+    # (nothing to ground, so nothing was suppressed), still blocks as before.
     if not parsed_review.story_matches and not _blocking_p1:
-        _blocking_p1 = True
-        _log(
-            "  ✗ REVIEW   matches_spec=false — story does not match spec; blocking "
-            "approval on the unsatisfied criterion (independent of P1 count)"
-        )
+        if _only_ungrounded_p1s:
+            _log(
+                f"  ↷ REVIEW   matches_spec=false not blocking — all "
+                f"{len(_ungrounded_p1s)} P1(s) backing it are diff_ungrounded "
+                f"(no finding checkable against this story's diff)"
+            )
+        else:
+            _blocking_p1 = True
+            _log(
+                "  ✗ REVIEW   matches_spec=false — story does not match spec; blocking "
+                "approval on the unsatisfied criterion (independent of P1 count)"
+            )
 
     # ── Trajectory classification (in-process) ─────────────────────────────
     # Runs for EVERY successfully merged parsed_review (APPROVE, exhausted, retry).
@@ -2278,7 +2374,7 @@ def _run_review_phase(
         state.error = None
         state.escalate_kind = None
         state.review_topology_triggered = False
-        state.last_review_findings = review_to_dev_handoff(parsed_review)
+        state.last_review_findings = review_to_dev_handoff(_dev_handoff_review)
         state.budget.reset_cycle()
         state.human_feedback = None
         state.retry_reason = RetryReason.REVIEW_CHANGES
@@ -2341,7 +2437,7 @@ def _run_review_phase(
             duration_s=round(_review_elapsed, 2),
         )
     _append_cycle_history(state, parsed_review)
-    state.last_review_findings = review_to_dev_handoff(parsed_review)
+    state.last_review_findings = review_to_dev_handoff(_dev_handoff_review)
     state.budget.reset_cycle()
     state.human_feedback = None
     state.retry_reason = RetryReason.REVIEW_CHANGES

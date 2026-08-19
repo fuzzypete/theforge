@@ -1412,7 +1412,17 @@ silently rewritten.
 After parsing, findings pass through mechanical disposition classification
 (`coordinator/review_phase.py`): a P1 asserting a test/build failure that a
 PASS gate mechanically disproves is downgraded (`gate_contradicted`) unless
-that reviewer also reported `matches_spec: false`. Plan review is a separate
+that reviewer also reported `matches_spec: false`.
+
+Before any of that, a P1 must be **diff-grounded** to be eligible to block: the
+file it cites has to appear in the story's own merge-base-to-HEAD diff. A P1
+naming a file this story never touched — or citing no resolvable file, or raised
+when the diff could not be computed — is recorded as `diff_ungrounded`. It stays
+in `finding_registry` and appears under `non_blocking_p1s` in the audit record,
+but it blocks nothing, is not promoted by `matches_spec: false` or by
+`allow_net_new_bypass: false`, and is not handed back to the dev agent as work to
+fix. This is what keeps a sibling story's acceptance criteria from failing an
+unrelated story batched into the same sprint. Plan review is a separate
 contract with its own corroboration rule — single-reviewer, first-occurrence
 plan P1s are downgraded to advisory `P1-impl` (`src/theforge/review.py`).
 

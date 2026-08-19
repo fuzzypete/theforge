@@ -13,6 +13,7 @@ from unittest.mock import patch
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
+    DEFAULT_STORY_DIFF,
     REQUEST_CHANGES_REVIEW,
     SYNTHESIS_PROFILE,
     _as_detailed,
@@ -47,6 +48,11 @@ from theforge.coordinator.engine import run_task
 from theforge.coordinator.state import CoordinatorState, FindingRecord
 from theforge.runners import AgentResult
 
+# Every P1 these fixtures raise cites a file inside the story's own diff, so
+# review's diff-grounding precondition (#2525) passes and the behaviour under
+# test decides the outcome.
+_STORY_DIFF = [*DEFAULT_STORY_DIFF, "src/bar.py", "src/current.py", "src/older.py"]
+
 
 class TestCoordinatorPromptRouting:
     """Test that the correct prompt builder is called based on retry_reason."""
@@ -73,7 +79,7 @@ class TestCoordinatorPromptRouting:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result(), _make_agent_result()]
         mock_dev_prompt.return_value = "full dev prompt"
@@ -123,7 +129,7 @@ class TestCoordinatorPromptRouting:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_pool.return_value = [
@@ -197,7 +203,7 @@ class TestCoordinatorPromptRouting:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
         mock_fix_prompt.return_value = "fix prompt"
@@ -271,7 +277,7 @@ test_coverage:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
         mock_fix_prompt.return_value = "fix prompt"
@@ -313,7 +319,9 @@ test_coverage:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["FAIL", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result(), _make_agent_result()]
         mock_dev_prompt.return_value = "full dev prompt"
@@ -367,7 +375,9 @@ test_coverage:
             },
         )()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["PASS", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_check_conventions.side_effect = [
             ([violation], [violation]),
             ([], []),
@@ -432,7 +442,9 @@ test_coverage:
             },
         )()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "FAIL", "FAIL", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["FAIL", "FAIL", "FAIL", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_check_conventions.side_effect = [
             ([violation], [violation]),
             ([violation], [violation]),
@@ -488,7 +500,7 @@ test_coverage:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result(), _make_agent_result()]
         mock_dev_prompt.return_value = "full dev prompt"
@@ -612,7 +624,7 @@ test_coverage:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [_make_agent_result(), _make_agent_result()]
         mock_dev_prompt.return_value = "full dev prompt"
@@ -715,7 +727,7 @@ ac_verification:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.return_value = _make_agent_result()
         mock_dev_prompt.return_value = "full dev prompt"
@@ -805,7 +817,9 @@ class TestCoordinatorSessionResume:
                 return timeout_result
             return resumed_result
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["FAIL", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = fake_run_agent
         mock_pool.return_value = [
@@ -855,7 +869,9 @@ class TestCoordinatorSessionResume:
                 return failed_result
             return resumed_result
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["FAIL", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = fake_run_agent
         mock_pool.return_value = [
@@ -919,7 +935,9 @@ class TestCoordinatorSessionResume:
                 )
             ]
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["PASS", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = fake_run_agent
         mock_pool.side_effect = pool_side_effect
@@ -960,7 +978,9 @@ class TestCoordinatorSessionResume:
                 )
             return _make_agent_result(success=True, output="Done.", profile_name="dev")
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["FAIL", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["FAIL", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = fake_run_agent
         mock_pool.return_value = [
@@ -1052,7 +1072,9 @@ class TestCoordinatorSessionResume:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["PASS", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
@@ -1102,7 +1124,9 @@ class TestCoordinatorSessionResume:
 
         captured_session_ids: list[list[str | None]] = []
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["PASS", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),
@@ -1152,7 +1176,9 @@ class TestCoordinatorSessionResume:
 
         captured_session_ids: list[list[str | None]] = []
 
-        mock_shell.side_effect = _shell_with_gate(workspace, ["PASS", "PASS"])
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, ["PASS", "PASS"], changed_files=_STORY_DIFF
+        )
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_agent.side_effect = [
             _make_agent_result(success=True, output="Implemented.", profile_name="dev"),

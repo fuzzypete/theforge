@@ -333,6 +333,14 @@ def update_finding_registry(
             if is_severity_downgrade:
                 # P1 finding was reported as P2 this cycle — record the downgrade
                 disposition = "downgraded"
+            elif prior_match.disposition == "diff_ungrounded":
+                # A finding already found to be about something other than this
+                # story's diff does not become blocking merely by being repeated.
+                # The caller re-grounds every current-cycle record after this
+                # function returns, so a genuine change in the diff still
+                # promotes it — but the default on recurrence is to stay
+                # non-blocking rather than reset to unresolved.
+                disposition = "diff_ungrounded"
             elif prior_match.disposition in (
                 "unresolved",
                 "net_new",
@@ -383,6 +391,7 @@ def update_finding_registry(
                 "corroborated_new",
                 "regression",
                 "ac_blocking",
+                "diff_ungrounded",
             ):
                 record.disposition = "fixed"  # type: ignore[assignment]
 
@@ -393,7 +402,9 @@ def has_blocking_p1(classified: list[FindingRecord]) -> bool:
     """Return True if any P1 finding has a blocking disposition.
 
     Blocking dispositions: unresolved, regression, corroborated_new, ac_blocking.
-    Non-blocking: net_new (single reviewer, latent, not in changed files).
+    Non-blocking: net_new (single reviewer, latent, not in changed files),
+    gate_contradicted (mechanically disproven by a PASS gate), and
+    diff_ungrounded (not checkable against this story's own diff, #2525).
     """
     blocking = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
     return any(r.severity == "P1" and r.disposition in blocking for r in classified)

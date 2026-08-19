@@ -1146,6 +1146,10 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # a reader can see which P1s were waived and on what basis — a suppression
         # that leaves no trace here is invisible where waived findings are looked
         # for. The real disposition is preserved rather than flattened to net_new.
+        # diff_ungrounded belongs here for the same reason and carries the extra
+        # weight of making a would-be false rejection recoverable after the fact:
+        # an operator reading this list sees exactly which findings were set aside
+        # for naming code this story never touched (#2525).
         "non_blocking_p1s": [
             {
                 "finding_id": r.finding_id,
@@ -1157,7 +1161,8 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
                 "disposition": r.disposition,
             }
             for r in state.finding_registry
-            if r.severity == "P1" and r.disposition in ("net_new", "gate_contradicted")
+            if r.severity == "P1"
+            and r.disposition in ("net_new", "gate_contradicted", "diff_ungrounded")
         ],
         "conventions": {"soft": config.conventions_soft} if config.conventions_soft else None,
         # Symptom-verification test escalations (#1560): P2→P1 upgrades applied
