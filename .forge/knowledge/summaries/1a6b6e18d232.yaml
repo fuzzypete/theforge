@@ -1,0 +1,133 @@
+schema_version: 1
+run_id: 1a6b6e18d232
+authoritative_run_record: .forge/audits/runs/1a6b6e18d232.json
+generated_at: '2026-08-18T19:10:32.958346+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011409999999999998
+story:
+  slug: issue-2216
+  name: Diagnose discards every response field after a nested code fence, then reports
+    the loss as a timeout
+  github_issue: 2216
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+domains: []
+changed_files: &id001
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- src/theforge/task/diagnose_prompts.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+- tests/test_diagnose_types.py
+what_changed:
+  description: The run changed diagnose response handling so nested fenced content
+    inside the YAML envelope is preserved without misidentifying later top-level fences
+    as envelope terminators, and it separated partial-result classification from budget/timeout-specific
+    operator messaging. It also added tests around parsing, retry behavior, and partial-artifact
+    rendering.
+  approach: The work adjusted the envelope extraction and diagnose artifact typing/rendering
+    paths, then validated the behavior with focused tests and review-driven fixes
+    for trailing fenced blocks and partial-reason wording.
+  files_modified: *id001
+what_was_learned:
+- claim: Envelope extraction for fenced diagnose output needs to distinguish the matching
+    envelope close from unrelated later fenced blocks, because treating every same-kind
+    fence as ambiguous rejects otherwise valid diagnoses.
+  evidence:
+  - type: review_finding
+    finding_id: dc9010fb7f4d09d6
+    description: This finding reports that a response with a valid fenced YAML envelope
+      followed by another top-level fenced block was being rejected as having multiple
+      matching closing fences.
+  - type: file
+    path: src/theforge/task/diagnose_prompts.py
+    description: This file was the locus of the envelope parsing changes called out
+      by review for nested and trailing fence handling.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that the extractor was corrected to take the first
+      envelope-level close so trailing fenced blocks parse again.
+- claim: Partial diagnose artifacts need an explicit reason channel separate from
+    budget/timeout fallback wording, or operator-visible output continues to attribute
+    incompleteness to limits that were not the cause.
+  evidence:
+  - type: review_finding
+    finding_id: 4caddf8045d22eef
+    description: This finding states that artifacts marked partial for reasons other
+      than budget or timeout still rendered the budget/timeout banner.
+  - type: file
+    path: src/theforge/diagnose_types.py
+    description: This file was changed to alter diagnose artifact representation and
+      rendering for partial results.
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: This file was changed where the coordinator classifies and lands
+      diagnose outcomes.
+- claim: Preserving the full fenced envelope is not sufficient by itself; invalid
+    YAML within the recovered response can still leave diagnose parsing with no artifact.
+  evidence:
+  - type: review_finding
+    finding_id: 746cfed9ef8cd148
+    description: 'This finding records that the persisted #2191 response was fully
+      extracted but still failed to parse because of an invalid escape sequence in
+      a quoted scalar.'
+  - type: file
+    path: tests/test_diagnose_parse_retry.py
+    description: This added test file reflects parser/retry coverage added around
+      diagnose parsing failures.
+- claim: The audit artifact can diverge from operator-visible classification unless
+    the selected partial reason is recorded alongside the landed artifact data.
+  evidence:
+  - type: review_finding
+    finding_id: b453fba9d33382c5
+    description: 'This finding notes that audits recorded only partial: true and omitted
+      the coordinator-selected reason such as budget exceeded, timeout, or unclassified.'
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: This file contains the coordinator logic responsible for selecting
+      and recording diagnose outcome state.
+learned_patterns:
+- fenced-envelope-parsing
+- partial-reason-separation
+- parser-recovery-vs-yaml-validity
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: dc9010fb7f4d09d6
+    severity: P1
+    file: src/theforge/task/diagnose_prompts.py
+    description: A diagnose response whose fenced YAML envelope is followed by any
+      other top-level fenced block (for example a short trailing code snippet after
+      the envelope closes) is now rejected outright with 'multiple closing fences
+      match the envelope', so a fully-populated diagnosis that used to parse and land
+      is discarded in its entirety; this was confirmed by feeding such a response
+      to parse_diagnose_output_result, which returned a null artifact.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 4caddf8045d22eef
+    severity: P1
+    file: src/theforge/diagnose_types.py
+    description: "An artifact landed on the issue with partial set for a reason other\
+      \ than budget or timeout still renders the banner 'Partial diagnosis \u2014\
+      \ the investigation hit its budget or timeout before reaching a confirmed cause',\
+      \ so the operator-visible artifact continues to attribute the incompleteness\
+      \ to limits that were never reached even though the internal phase is now UNCLASSIFIED_PARTIAL."
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced boundary cases where fixes for nested-fence truncation
+    changed behavior for trailing fenced blocks and for how partial reasons were communicated
+    and recorded.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 5.5074261
+  dominant_difficulty: Making diagnose output parsing robust at fence boundaries without
+    regressing valid multi-block responses while also keeping partial-result classification
+    and reporting aligned.

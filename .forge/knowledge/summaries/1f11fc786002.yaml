@@ -1,0 +1,170 @@
+schema_version: 1
+run_id: 1f11fc786002
+authoritative_run_record: .forge/audits/runs/1f11fc786002.json
+generated_at: '2026-08-18T20:07:17.857378+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01547375
+story:
+  slug: issue-2500
+  name: Each dispatchable phase added to forge needs a separate source edit before
+    an operator can constrain it, so the newest phase is always the one that cannot
+    be restricted
+  github_issue: 2500
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+domains:
+- backend
+- config
+changed_files: &id001
+- src/theforge/assignment.py
+- src/theforge/cli/eval_cmd.py
+- src/theforge/cli/provider_readiness.py
+- src/theforge/config/bridge.py
+- src/theforge/config/defaults.py
+- src/theforge/config/load.py
+- src/theforge/config/model_catalog.py
+- src/theforge/config/model_identity.py
+- src/theforge/config/profiles.py
+- src/theforge/config/role_derivation.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/coordinator/escalation_advisor_flow.py
+- src/theforge/coordinator/knowledge_summary_flow.py
+- src/theforge/coordinator/plan_flow.py
+- src/theforge/coordinator/preflight.py
+- src/theforge/sprint/runner.py
+- tests/test_coord_knowledge_summary.py
+- tests/test_dispatch_phase_registry.py
+- tests/test_model_catalog.py
+what_changed:
+  description: The run replaced the hand-maintained phase eligibility vocabulary with
+    dispatch-phase-derived handling so newly dispatched phases such as knowledge_summary
+    can be named in routing constraints without a separate source edit. It also updated
+    knowledge-summary model selection and added targeted tests around dispatch-phase
+    registration, model-catalog validation, and knowledge-summary routing behavior.
+  approach: The change centered phase recognition logic in configuration/model identity
+    code, wired related config and role-derivation paths to that registry, adjusted
+    knowledge-summary dispatch/profile selection behavior, and then locked the behavior
+    in with focused regression and guard tests.
+  files_modified: *id001
+what_was_learned:
+- claim: When phase names are validated from a hand-maintained list instead of deriving
+    from actual dispatch sites, the newest dispatched phase becomes unnameable in
+    routing.phase_eligibility until a separate source edit adds it.
+  evidence:
+  - type: file
+    path: src/theforge/config/model_identity.py
+    description: This file was the focal point of the phase identity change, replacing
+      the previous hard-coded eligibility vocabulary behavior.
+  - type: file
+    path: src/theforge/coordinator/knowledge_summary_flow.py
+    description: This dispatch flow was one of the concrete sites exercising a phase
+      that needed to become nameable through the new registry behavior.
+  - type: file
+    path: tests/test_dispatch_phase_registry.py
+    description: This new test file captured the expectation that dispatch phases
+      and operator-visible phase vocabulary stay aligned.
+  - type: diff
+    ref: 4c3ceca64dbc273db2e7b003655dea69c9ec9861
+    description: The final diff represents the integrated registry-based change and
+      its tests.
+- claim: 'Fixing phase-vocabulary drift exposed a second coupling in knowledge-summary
+    selection: preserving the plan-derived profile matters because fallback transport,
+    budget, timeout, and role identity can be lost if agent-pool selection overrides
+    it.'
+  evidence:
+  - type: review_finding
+    finding_id: c2a50563a8c0a21a
+    description: This finding recorded that knowledge-summary dispatch skipped when
+      provider-level transport_fallback was dropped despite a valid fallback on the
+      plan reference.
+  - type: review_finding
+    finding_id: 83817ca79aa1392e
+    description: This finding recorded that selecting the agent-pool-derived profile
+      over the plan-derived one changed budget, timeout, and role identity.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly verified that the transport-fallback
+      and plan-role profile regressions had been resolved.
+  - type: file
+    path: tests/test_coord_knowledge_summary.py
+    description: This test file was added to cover the knowledge-summary selection
+      and dispatch behavior involved in the regressions.
+- claim: Guard tests against future phase drift are themselves prone to drift when
+    they enumerate a fixed set of source files or apply incomplete literal-detection
+    rules.
+  evidence:
+  - type: review_finding
+    finding_id: 3320c071655b2cee
+    description: This finding noted that the dispatch-phase source guard covered only
+      a hardcoded tuple of files, leaving new dispatch sites unguarded.
+  - type: review_finding
+    finding_id: 7c10e2aa7ca20733
+    description: This finding noted that the guard silently skipped already-uppercase
+      literals, leaving another gap in enforcement.
+  - type: file
+    path: tests/test_dispatch_phase_registry.py
+    description: The guard behavior and its limitations were surfaced in this dedicated
+      registry test file.
+- claim: Validation messaging for operator-named phases must distinguish unrecognized
+    phases from deliberately closed ones, or the loader can suggest a remediation
+    it will not actually accept.
+  evidence:
+  - type: review_finding
+    finding_id: 1e84624c2e0a7fc7
+    description: This finding showed that the loader's 'only supports' message listed
+      a phase that was then rejected as deliberately closed.
+  - type: file
+    path: src/theforge/config/model_catalog.py
+    description: This file participated in routing.phase_eligibility validation and
+      error reporting.
+  - type: file
+    path: tests/test_model_catalog.py
+    description: This test file was expanded to exercise model-catalog validation
+      behavior around phase handling.
+- claim: Helper APIs added during a registry refactor can remain disconnected unless
+    call sites or tests are updated to exercise them directly.
+  evidence:
+  - type: review_finding
+    finding_id: 44b8279fc3b23619
+    description: This finding recorded that newly added helpers in model_identity
+      were defined but unused anywhere in code or tests.
+  - type: file
+    path: src/theforge/config/model_identity.py
+    description: This file contained the helpers called out by review as not being
+      used.
+learned_patterns:
+- dispatch-phase-registry
+- plan-profile-preservation
+- guard-the-guardrails
+- closed-vs-unrecognized-phase
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: c2a50563a8c0a21a
+    severity: P1
+    file: src/theforge/coordinator/knowledge_summary_flow.py
+    description: With a CLI model pool and a provider-level transport_fallback configured,
+      run-summary generation now skips with 'no phase-eligible configured model can
+      dispatch knowledge_summary over a tool-free API transport', even though the
+      plan reference carries a resolved API fallback that produced a valid tool-free
+      profile before this change, because the candidate profiles built from the agent
+      pool never have the provider-level transport fallback applied to them.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced hidden couplings around knowledge-summary profile selection
+    and around the completeness of the new anti-drift guard tests.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 13.31766555
+  dominant_difficulty: Aligning operator-visible phase vocabulary with real dispatch
+    behavior without introducing regressions in the knowledge-summary model/profile
+    selection path.
