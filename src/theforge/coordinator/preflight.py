@@ -416,22 +416,22 @@ def _extract_preflight_yaml_text(output: str) -> str:
 
     Preflight responses sometimes wrap the YAML block in longer fences so the
     body can include ordinary triple-backtick snippets after the structured
-    classification. The parser contract here is conservative: the next
-    unindented fence line ends the YAML body, while indented fences remain part
-    of YAML scalar content.
+    classification. The parser contract here is conservative: only an
+    unindented closing fence with at least the opening fence length ends the
+    YAML body, while indented fences or shorter inner fences remain part of the
+    YAML content.
     """
     match = _select_preflight_fence_opening(output)
     if match is None:
         return output
 
-    close_match = re.search(
-        r"^`{3,}[^\n`]*$",
-        output[match.end() :],
-        re.MULTILINE,
-    )
-    if close_match is None:
-        return output[match.end() :]
     start = match.end()
+    opening_len = len(match.group("fence"))
+    close_re = re.compile(rf"^(?P<fence>`{{{opening_len},}})[ \t]*$", re.MULTILINE)
+    close_match = close_re.search(output[start:])
+    if close_match is None:
+        return output[start:]
+
     end = start + close_match.start()
     return output[start:end]
 

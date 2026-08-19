@@ -102,6 +102,19 @@ work_type: refactor
 """
         assert _parse_preflight_work_type(output) == "refactor"
 
+    def test_shorter_inner_fence_in_longer_wrapper_does_not_truncate_to_later_work_type(self):
+        output = """\
+````yaml
+verdict: PROCEED
+reason: "outer fence must survive inner snippet"
+```python
+rename("old", "new")
+```
+work_type: refactor
+````
+"""
+        assert _parse_preflight_work_type(output) == "feature"
+
     def test_feature(self):
         output = """\
 ```yaml
