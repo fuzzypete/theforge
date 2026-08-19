@@ -1,0 +1,179 @@
+schema_version: 1
+run_id: 27bb13e86070
+authoritative_run_record: .forge/audits/runs/27bb13e86070.json
+generated_at: '2026-08-18T02:55:56.737784+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0170425
+story:
+  slug: issue-2499
+  name: A run summary that fails to be produced leaves no trace outside a run log,
+    so a knowledge corpus can stay empty while every sprint reports success
+  github_issue: 2499
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+domains:
+- backend
+- cli
+changed_files: &id001
+- src/theforge/cli/audit.py
+- src/theforge/cli/shared.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/knowledge_summary_flow.py
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/status_reader.py
+- tests/fixtures/audit_record_schema_v30.json
+- tests/test_audit_schema_guard.py
+- tests/test_coord_knowledge_summary.py
+what_changed:
+  description: The run made knowledge-summary generation outcomes durable and operator-visible
+    by recording attempted, succeeded, refused, and skipped states in sprint and per-run
+    audit records, extending the audit schema, and surfacing the status through CLI/status
+    reporting. It also changed the sprint path to reuse persisted knowledge-summary
+    outcomes instead of recomputing them on later writes, with tests updated to cover
+    the new audit payload and reporting behavior.
+  approach: The change was implemented by threading a structured knowledge-summary
+    outcome through the coordinator and sprint audit flow, persisting it into canonical
+    audit storage, and teaching status/audit readers and CLI output to render that
+    state. The review loop then tightened the design around repeated sprint writes
+    so durable prior outcomes were reused rather than regenerated or overwritten.
+  files_modified: *id001
+what_was_learned:
+- claim: Optional post-completion side effects need their own persisted outcome state;
+    otherwise attempted-and-succeeded, attempted-and-refused, and not-attempted remain
+    indistinguishable in operator-facing reporting.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/knowledge_summary_flow.py
+    description: This file was changed to carry knowledge-summary generation outcomes
+      through the flow rather than leaving failures only in logs.
+  - type: file
+    path: src/theforge/sprint/status_reader.py
+    description: This file was added to the change set to expose the stored knowledge-summary
+      state through status reading.
+  - type: file
+    path: src/theforge/cli/audit.py
+    description: CLI audit output was updated, showing that the run began reporting
+      the side-effect outcome where operators inspect results.
+- claim: In sprint execution, repeated writes for the same finished story must reuse
+    a durable prior outcome instead of re-evaluating generation, or later writes can
+    erase richer state and trigger duplicate billable work.
+  evidence:
+  - type: review_finding
+    finding_id: daba4e9db56f80a2
+    description: This finding documented that later sprint audit writes re-evaluated
+      knowledge-summary generation and overwrote a real outcome with not_attempted/already_exists.
+  - type: review_finding
+    finding_id: da60fabeb67ad5c1
+    description: This finding documented that refusal cases were dispatched and billed
+      multiple times because re-entry was guarded only by artifact absence.
+  - type: review_finding
+    finding_id: c9755016763615d6
+    description: This finding documented that unconditional replacement of the canonical
+      per-run JSON record let thinner later payloads silently replace richer earlier
+      records.
+  - type: review_cycle
+    cycle: '3'
+    description: The final review cycle confirmed that repeated sprint writes now
+      reuse durable attempted outcomes and that the earlier P1 behavior stayed fixed.
+- claim: When a feature adds structured audit data, the canonical run record, sprint
+    audit writer, schema fixture, and schema guard must evolve together or one reporting
+    surface will lag behind the others.
+  evidence:
+  - type: review_finding
+    finding_id: d73c8ce09d2e84b8
+    description: This finding showed a mismatch where per-story audit.yaml carried
+      rejected-summary data but the canonical .forge/audits/runs record omitted the
+      knowledge_summary block.
+  - type: file
+    path: tests/fixtures/audit_record_schema_v30.json
+    description: The schema fixture was updated as part of the change, indicating
+      the audit record shape changed.
+  - type: file
+    path: tests/test_audit_schema_guard.py
+    description: The schema guard test changed alongside the implementation to keep
+      the persisted record contract aligned.
+  - type: file
+    path: src/theforge/coordinator/audit_storage.py
+    description: Canonical audit storage changed, showing the persisted per-run record
+      was updated together with the schema.
+- claim: Duplicating gate logic after an eligibility decision creates drift risk;
+    the outcome reason should come from the original gate evaluation rather than being
+    reconstructed in a second condition chain.
+  evidence:
+  - type: review_finding
+    finding_id: 4ef52a19280581d2
+    description: This finding identified a second copy of the condition chain being
+      used to reconstruct not_attempted reasons after the gate had already evaluated
+      them.
+  - type: file
+    path: src/theforge/coordinator/knowledge_summary_flow.py
+    description: The implementation file where the gate and outcome logic lived was
+      revised during this run.
+- claim: 'Deferring canonical audit persistence until after a post-DONE agent call
+    changes failure windows: interruption during that call can leave no canonical
+    record for work that had previously been recorded earlier.'
+  evidence:
+  - type: review_finding
+    finding_id: ea58044df8edf7f0
+    description: This finding documented the new interruption window created by writing
+      the canonical per-run record only after the knowledge-summary call returned.
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: The sprint audit writer was the component whose write ordering changed
+      and was reviewed for this risk.
+- claim: Short-circuiting on any durable attempted outcome before consulting current
+    eligibility can make re-entered runs under the same run id permanently inherit
+    an earlier skip/refusal state.
+  evidence:
+  - type: review_finding
+    finding_id: c17dcb38e2bf5868
+    description: This finding documented that a prior terminal write with attempted
+      true prevented later attempts even after the blocking condition had changed.
+  - type: review_cycle
+    cycle: '3'
+    description: The third review cycle notes that cycle-2 P2s were addressed, covering
+      this re-entry behavior.
+learned_patterns:
+- persist-side-effect-outcomes
+- reuse-durable-sprint-state
+- keep-audit-schema-and-readers-aligned
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: d73c8ce09d2e84b8
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: When a sprint story's knowledge summary is rejected, the per-story
+      audit.yaml records the rejected summary but the canonical .forge/audits/runs/<run_id>.json
+      record is written as schema v30 without any knowledge_summary block.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: daba4e9db56f80a2
+    severity: P1
+    file: src/theforge/sprint/audit.py
+    description: In a sprint, the same finished story's audit is written several times,
+      and every write after the first re-evaluates knowledge-summary generation and
+      stamps the persisted audit with status not_attempted, attempted false, written
+      false, reason already_exists, so the durable audit for a story whose summary
+      was in fact generated and written reports that generation was never attempted
+      and produced nothing.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly surfaced that sprint re-entry and repeated audit writes
+    were the stress cases: they exposed overwritten outcomes, duplicate dispatches,
+    and canonical-record drift even after the initial reporting change worked.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 11.1776627
+  dominant_difficulty: Making a post-DONE side effect observable without breaking
+    sprint audit durability under repeated writes and re-entry was the main source
+    of complexity.

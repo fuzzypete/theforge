@@ -1,0 +1,202 @@
+schema_version: 1
+run_id: 986e0edf14c6
+authoritative_run_record: .forge/audits/runs/986e0edf14c6.json
+generated_at: '2026-08-18T20:13:41.901362+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.017839999999999998
+story:
+  slug: issue-2475
+  name: A story held in a preserved state reports the state without naming what resolves
+    it
+  github_issue: 2475
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+domains:
+- cli
+- backend
+changed_files: &id001
+- docs/guides/controller-runbook.md
+- src/theforge/cli/sprint.py
+- src/theforge/sprint/launch_guard.py
+- src/theforge/sprint/preserved_resume.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/status_reader.py
+- tests/test_cli_sprint_status.py
+- tests/test_sprint_abnormal_evidence.py
+- tests/test_sprint_preserved_resume.py
+- tests/test_sprint_reexec_collision.py
+- tests/test_story_sources.py
+what_changed:
+  description: Preserved-story reporting was changed so operator-facing surfaces name
+    the command that exits the state, and the controller runbook was updated to document
+    the preserved outcome alongside other sprint results. The implementation also
+    made the guidance source-aware so issue-backed and file-backed stories render
+    different concrete recovery commands.
+  approach: The run introduced shared preserved-state command rendering, threaded
+    that guidance through launch-time output, runner logs, and status rendering, and
+    added coverage for live, completed, grouped, issue-backed, and file-backed preserved
+    cases while aligning runbook text with runtime output.
+  files_modified: *id001
+what_was_learned:
+- claim: Preserved-state guidance has to be generated from story source context; a
+    single generic command form is not executable across both issue-backed and file-backed
+    stories.
+  evidence:
+  - type: review_finding
+    finding_id: d74a367d4bc1862d
+    description: This finding records that guidance using a story-file argument was
+      unrunnable for GitHub issue-backed stories.
+  - type: review_finding
+    finding_id: 28c14704d57fa6e0
+    description: This finding shows that even for file-backed stories, placeholder
+      guidance was incomplete when the concrete path was already known.
+  - type: file
+    path: src/theforge/sprint/preserved_resume.py
+    description: This module was added to centralize preserved-state resume/review
+      command rendering from story context.
+- claim: Preserved-state messaging must be updated on every reporting surface, because
+    launch output, live status, completed status, and runner logs each have distinct
+    rendering paths that can drift.
+  evidence:
+  - type: review_finding
+    finding_id: 077aa3e9f9853fd6
+    description: This finding identifies a completed-status path that still rendered
+      bare PRESERVED after other paths had changed.
+  - type: review_finding
+    finding_id: 3385705b0fddcc8f
+    description: This finding identifies runner-log output as a separate path that
+      still emitted placeholder guidance.
+  - type: review_finding
+    finding_id: fbf8c92757467fe5
+    description: This finding shows launch-triage stderr had its own reporting path
+      and could diverge from runner behavior.
+  - type: file
+    path: src/theforge/sprint/status_reader.py
+    description: Status rendering was one of the updated surfaces.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: Runner logging was separately updated for preserved-story guidance.
+  - type: file
+    path: src/theforge/sprint/launch_guard.py
+    description: Launch-time preservation reporting was separately updated.
+- claim: Grouped preserved output is not just formatting; when multiple preserved
+    stories are collapsed into one line, the recovery command can lose required per-story
+    arguments and become unusable.
+  evidence:
+  - type: review_finding
+    finding_id: 60894dcb69ccee0b
+    description: This finding records that grouped launch-time PRESERVED output emitted
+      forge review without a specific story source and failed at execution.
+  - type: file
+    path: src/theforge/sprint/launch_guard.py
+    description: Launch guard was the component responsible for grouped preservation
+      reporting.
+  - type: file
+    path: tests/test_sprint_reexec_collision.py
+    description: Test coverage was added in the area that exercised launch-time preserved-story
+      output behavior.
+- claim: Runtime preserved-state wording and runbook documentation can diverge during
+    iteration, so documentation needs tests or explicit synchronization with the command
+    text emitted by the product.
+  evidence:
+  - type: review_finding
+    finding_id: 9c07a6e23123bdab
+    description: This finding records that the runbook still documented the old resume
+      command after runtime guidance changed.
+  - type: review_finding
+    finding_id: 77a5519a018795c5
+    description: This finding records that the runbook's file-backed example still
+      differed in shape from runtime output.
+  - type: review_finding
+    finding_id: e90e507f11b470b9
+    description: This finding notes that the test pinning runbook wording lived in
+      an unexpected module, highlighting the synchronization problem.
+  - type: file
+    path: docs/guides/controller-runbook.md
+    description: The runbook was updated to describe the preserved state and its resolving
+      commands.
+- claim: Manifest slug overrides affect preserved-story recovery guidance, because
+    commands that reconstruct a default issue workspace can point at the wrong preserved
+    worktree when the preserved slug differs from the canonical issue slug.
+  evidence:
+  - type: review_finding
+    finding_id: 388a726ef9bd09be
+    description: This finding records that issue-backed preserved guidance selected
+      the default issue workspace instead of the preserved custom-slug workspace.
+  - type: file
+    path: src/theforge/cli/sprint.py
+    description: CLI launch handling was involved in manifest-mode slug and canonical-reference
+      processing.
+  - type: file
+    path: tests/test_story_sources.py
+    description: Story-source coverage was extended in the area relevant to source-specific
+      preserved guidance.
+learned_patterns:
+- source-aware-command-rendering
+- multi-surface-state-reporting
+- doc-runtime-guidance-sync
+- per-story-guidance-not-grouped
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 077aa3e9f9853fd6
+    severity: P1
+    file: src/theforge/sprint/status_reader.py
+    description: After a sprint preserves an escalated story and completes, the completed
+      forge status row still renders the preserved story detail as PRESERVED instead
+      of naming the resolving command.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: d74a367d4bc1862d
+    severity: P1
+    file: src/theforge/sprint/preserved_resume.py
+    description: "Every surface now instructs the operator to resolve the preserved\
+      \ state with a command that takes a story file path, but a story sourced from\
+      \ a GitHub issue \u2014 the case the report was filed from \u2014 has no story\
+      \ file on disk, so the named command cannot be executed for it."
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 9c07a6e23123bdab
+    severity: P1
+    file: docs/guides/controller-runbook.md
+    description: The PRESERVED runbook section told operators that the report says
+      to resolve with forge run --resume <story-file>, while issue-backed preserved
+      stories now report forge review --issue N.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 60894dcb69ccee0b
+    severity: P1
+    file: src/theforge/sprint/preserved_resume.py
+    description: When launch triage preserves more than one escalated worktree, stderr
+      prints one grouped PRESERVED line whose resolution is forge review, and that
+      command exits with the review CLI's needs-exactly-one-story-source error because
+      no story file or issue was provided.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 3385705b0fddcc8f
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: When a file-backed story is preserved by sprint execution, the run
+      log reports the exit as forge review <story-file> instead of the concrete story
+      path.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced preserved-state guidance gaps in separate
+    output paths even after the core behavior had been implemented.
+  - Issue-backed, file-backed, grouped, and manifest-customized preserved stories
+    each exposed different command-rendering edge cases.
+  - Documentation mismatches persisted as code evolved, and review treated those mismatches
+    as part of the same operator-guidance defect.
+complexity_signal:
+  actual_iterations: 6
+  review_cycles: 6
+  plan_regenerations: null
+  cost_usd: 22.3486449
+  dominant_difficulty: The main difficulty was making one preserved state render actionable,
+    executable guidance consistently across multiple code paths and story-source variants.

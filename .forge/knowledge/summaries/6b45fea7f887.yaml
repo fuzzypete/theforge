@@ -1,0 +1,114 @@
+schema_version: 1
+run_id: 6b45fea7f887
+authoritative_run_record: .forge/audits/runs/6b45fea7f887.json
+generated_at: '2026-08-18T15:46:42.275789+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.010176250000000001
+story:
+  slug: issue-2138
+  name: Preflight cache invalidation reports one cause when several fingerprint components
+    changed at once
+  github_issue: 2138
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+domains:
+- backend
+- testing
+changed_files: &id001
+- src/theforge/coordinator/preflight_cache.py
+- tests/test_coord_preflight_cached.py
+what_changed:
+  description: Preflight cache invalidation reporting was changed so cache-validation
+    records account for all diverged fingerprint components instead of attributing
+    an invalidation to only the first mismatched field. Targeted tests were added
+    to cover the simultaneous worktree-head and base-branch-head movement case and
+    the emitted audit shape.
+  approach: The cache-validation logic in the preflight cache path was updated to
+    accumulate mismatched fingerprint components during comparison and emit that combined
+    attribution in the audit record, while preserving existing non-mismatch outcomes.
+    Regression tests were added around cached preflight validation to reproduce the
+    sibling-merge movement scenario and assert the reported reasons.
+  files_modified: *id001
+what_was_learned:
+- claim: When audit data attributes cache invalidation causes, fingerprint comparisons
+    need to accumulate every diverged component rather than storing a single scalar
+    cause based on comparison order.
+  evidence:
+  - type: review_finding
+    finding_id: f95931dd0e0c4734
+    description: The review finding identifies the defect as a scalar reason being
+      set to whichever component is compared first when both worktree and base-branch
+      heads diverge together.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval states that simultaneous fingerprint mismatches
+      are now reported with all diverged components.
+  - type: file
+    path: src/theforge/coordinator/preflight_cache.py
+    description: This is the implementation file where cache-validation reporting
+      logic was changed.
+- claim: For invalidated cache records, keeping one consistent audit shape avoids
+    forcing consumers to branch between singular and plural cause fields.
+  evidence:
+  - type: review_finding
+    finding_id: a4fb02207afab4db
+    description: The review finding notes that emitting a reasons list only for multi-component
+      divergence created two record shapes for invalidated caches.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 review surfaced that the scalar reason still reflected only
+      the first component, prompting the shape to be made self-describing.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval notes that the prior issue was resolved by making
+      the scalar reason self-describing for simultaneous mismatches.
+- claim: A seam test that reproduces a sibling merge moving both the worktree head
+    and the base branch head is effective coverage for this cache-validation reporting
+    path.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 review calls out the new seam test as a genuine reproduction
+      of the bug scenario.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval states that the regression test covers the original
+      worktree/base-head movement case.
+  - type: file
+    path: tests/test_coord_preflight_cached.py
+    description: This test file received the added regression coverage for cached
+      preflight validation reporting.
+learned_patterns:
+- multi-fingerprint-attribution
+- stable-audit-shape
+- regression-test-from-audit-scenario
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: f95931dd0e0c4734
+    severity: P1
+    file: src/theforge/coordinator/preflight_cache.py
+    description: When a story worktree sitting at the base branch head is moved by
+      a sibling merge, the cache-validation record still carries reason worktree_head_changed
+      even though the base branch head diverged in the same event, because the scalar
+      reason is set to whichever component happens to be compared first; aggregating
+      the reason field across audit records therefore still reports worktree drift
+      as the dominant cause of preflight cache misses.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly focused on audit semantics and record shape, not runtime
+    behavior: first on eliminating first-match attribution, then on making invalidation
+    records self-describing in one consistent form.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 2.6134613
+  dominant_difficulty: Representing simultaneous fingerprint divergence accurately
+    in audit output without leaving invalidated cache records in inconsistent shapes.
