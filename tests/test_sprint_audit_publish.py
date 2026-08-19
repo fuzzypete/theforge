@@ -28,6 +28,7 @@ from theforge.sprint.audit_publish import (
     _STORY_RUN_AUDIT_PUBLISH_STATE_PATH,
     AUDIT_PUBLISH_BRANCH_MISMATCH,
     AUDIT_PUBLISH_CLEAN,
+    AUDIT_PUBLISH_COMMIT_FAILED,
     AUDIT_PUBLISH_LOCAL_ONLY,
     AUDIT_PUBLISH_PUBLISHED,
     AUDIT_PUBLISH_PUSH_REFUSED,
@@ -133,6 +134,22 @@ def test_publish_pushes_audits_when_remote_is_unchanged(
     assert "run-a.json" in tree
     assert ".forge/knowledge/summaries/run-a.yaml" in tree
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_PUBLISHED
+    assert _git(clone, "status", "--short", "--", ".forge/knowledge/summaries") == ""
+
+
+def test_publish_pushes_summary_when_audit_dir_is_clean(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    origin, clone = origin_and_clone
+    _write_summary(clone, "run-summary-only")
+
+    _commit_story_run_audits(clone, BASE, publish=True)
+
+    tree = _tree_names(origin)
+    assert ".forge/audits/runs/run-summary-only.json" not in tree
+    assert ".forge/knowledge/summaries/run-summary-only.yaml" in tree
+    assert _read_state(clone)["state"] == AUDIT_PUBLISH_PUBLISHED
+    assert _git(clone, "status", "--short", "--", ".forge/audits/runs") == ""
     assert _git(clone, "status", "--short", "--", ".forge/knowledge/summaries") == ""
 
 
@@ -251,6 +268,31 @@ def test_publish_reports_reconcile_failure_distinctly(
 
     assert excinfo.value.state == AUDIT_PUBLISH_RECONCILE_FAILED
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_RECONCILE_FAILED
+
+
+def test_publish_reports_which_artifact_dir_failed_inspection(
+    monkeypatch: pytest.MonkeyPatch, origin_and_clone: tuple[Path, Path]
+) -> None:
+    _origin, clone = origin_and_clone
+    _write_summary(clone, "run-k")
+
+    from theforge.coordinator import util as _cu
+
+    real_run_shell = _cu._run_shell
+
+    def fake_run_shell(cmd: str, cwd: Path, *args: object, **kwargs: object):
+        if cmd == "git status --porcelain -- .forge/knowledge/summaries":
+            return False, "fatal: status failed"
+        return real_run_shell(cmd, cwd, *args, **kwargs)
+
+    monkeypatch.setattr(_cu, "_run_shell", fake_run_shell)
+
+    with pytest.raises(StoryRunAuditPublishError) as excinfo:
+        _commit_story_run_audits(clone, BASE, publish=True)
+
+    assert excinfo.value.state == AUDIT_PUBLISH_COMMIT_FAILED
+    assert "knowledge summaries" in str(excinfo.value)
+    assert ".forge/knowledge/summaries" in str(excinfo.value)
 
 
 def test_publish_aborts_a_conflicted_rebase_before_raising(

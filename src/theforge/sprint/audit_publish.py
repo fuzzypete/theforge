@@ -76,6 +76,15 @@ def _log(msg: str) -> None:
     _log_line("[sprint]", msg)
 
 
+def _story_run_artifact_label(artifact_dir: str) -> str:
+    """Return an operator-facing label for a tracked story-run artifact tree."""
+    if artifact_dir == ".forge/audits/runs":
+        return "story run audits"
+    if artifact_dir == ".forge/knowledge/summaries":
+        return "knowledge summaries"
+    return f"story run artifacts under {artifact_dir}"
+
+
 class StoryRunAuditPublishError(RuntimeError):
     """Canonical story run audits could not be published to the base branch.
 
@@ -214,7 +223,8 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
         )
         if not ok_status:
             raise StoryRunAuditPublishError(
-                f"Failed to inspect story run audits: {status_out}",
+                f"Failed to inspect {_story_run_artifact_label(artifact_dir)} "
+                f"at {artifact_dir}: {status_out}",
                 state=AUDIT_PUBLISH_COMMIT_FAILED,
             )
         if status_out.strip():
@@ -228,16 +238,22 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
     quoted_dirty_dirs = " ".join(shlex.quote(path) for path in dirty_dirs)
     ok_add, add_out = _cu._run_shell(f"git add -- {quoted_dirty_dirs}", project_root)
     if not ok_add:
+        artifact_list = ", ".join(
+            f"{_story_run_artifact_label(path)} at {path}" for path in dirty_dirs
+        )
         raise StoryRunAuditPublishError(
-            f"Failed to stage story run audits: {add_out}",
+            f"Failed to stage {artifact_list}: {add_out}",
             state=AUDIT_PUBLISH_COMMIT_FAILED,
         )
 
     commit_cmd = f'git commit -m "{_STORY_RUN_AUDIT_COMMIT_MESSAGE}" -- {quoted_dirty_dirs}'
     ok_commit, commit_out = _cu._run_shell(commit_cmd, project_root)
     if not ok_commit:
+        artifact_list = ", ".join(
+            f"{_story_run_artifact_label(path)} at {path}" for path in dirty_dirs
+        )
         raise StoryRunAuditPublishError(
-            f"Failed to commit story run audits: {commit_out}",
+            f"Failed to commit {artifact_list}: {commit_out}",
             state=AUDIT_PUBLISH_COMMIT_FAILED,
         )
     _log("Committed canonical story run audit records to the base branch checkout.")
