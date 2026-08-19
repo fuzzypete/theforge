@@ -229,7 +229,7 @@ def _summary_dispatch_profile(
     summary_envelope: "ModelProfile",
     selected: "ModelProfile",
 ) -> "ModelProfile":
-    """Keep the plan role envelope while swapping in the selected model identity."""
+    """Keep the summary role envelope while swapping in the selected model identity."""
     return replace(
         summary_envelope,
         cli=selected.cli,
@@ -246,16 +246,18 @@ def _summary_dispatch_profile(
 
 
 def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str | None]:
-    """Derive a tool-free API profile for the summary agent, or None.
-
-    Built from ``config.plan.ref`` — the plan model is the cheap bounded-writing
-    role and the summary is the same kind of work. A CLI-transport ref is
-    projected onto its configured same-provider API fallback; without one there
-    is no dispatch path that is mechanically tool-free, and the caller skips.
-    """
+    """Resolve a tool-free API profile for the summary agent, or None."""
     from theforge.config.bridge import model_ref_to_profile  # noqa: PLC0415
 
-    ref = getattr(getattr(config, "plan", None), "ref", None)
+    knowledge_cfg = getattr(config, "knowledge", None)
+    ref = getattr(knowledge_cfg, "ref", None)
+    if ref is None:
+        ref = getattr(getattr(config, "plan", None), "ref", None)
+        if ref is not None and ref.mode != "api":
+            return (
+                None,
+                "knowledge summaries need knowledge.ref when plan.ref uses CLI transport",
+            )
     if ref is None:
         return (None, None)
 
@@ -266,7 +268,6 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
         phase=PHASE_KNOWLEDGE_SUMMARY,
         sandbox_mode="read-only",
     )
-    summary_envelope = _apply_summary_transport_fallback(config, summary_envelope)
     base_profile = _project_summary_api_profile(summary_envelope)
 
     agents = getattr(config, "agents", None) or []
@@ -378,8 +379,8 @@ def maybe_generate_run_summary(
         profile, profile_reason = _summary_profile(config)
         if profile is None:
             reason = profile_reason or (
-                "no tool-free API transport available for the plan model "
-                "(configure transport_fallback to enable summaries)"
+                "no tool-free API transport available for knowledge_summary "
+                "(configure knowledge.ref to enable summaries)"
             )
             _log(f"  ⚠ knowledge summary skipped: {reason}")
             return _record_summary_outcome(

@@ -81,6 +81,7 @@ from .types import (
     KnowledgeConfig,
     LogConfig,
     ModelProfile,
+    ModelRef,
     PlanAgentReviewConfig,
     PlanConfig,
     PlanReviewConfig,
@@ -1648,8 +1649,96 @@ def load_config(config_path: Path) -> ForgeConfig:
                 "forge.yaml 'knowledge.invariant_sources' items must be non-empty strings,"
                 f" got {_glob!r}"
             )
+    _knowledge_ref_raw = knowledge_data.get("ref")
+    _knowledge_ref: ModelRef | None = None
+    if _knowledge_ref_raw is not None:
+        if not isinstance(_knowledge_ref_raw, dict):
+            raise ValueError(
+                "forge.yaml 'knowledge.ref' must be a mapping when present, "
+                f"got {_knowledge_ref_raw!r}"
+            )
+        if "cli" in _knowledge_ref_raw:
+            raise ValueError(
+                "forge.yaml 'knowledge.ref' must dispatch over API transport; "
+                "remove 'cli' and set 'provider' instead"
+            )
+        _provider = _knowledge_ref_raw.get("provider")
+        if not isinstance(_provider, str) or not _provider.strip():
+            raise ValueError(
+                "forge.yaml 'knowledge.ref.provider' must be a non-empty string when "
+                "knowledge.ref is configured"
+            )
+        if _provider.strip() not in SUPPORTED_PROVIDERS:
+            raise ValueError(
+                f"Unsupported provider {_provider!r} in knowledge.ref. "
+                f"Supported: {sorted(SUPPORTED_PROVIDERS)}"
+            )
+        _model = _knowledge_ref_raw.get("model")
+        if not isinstance(_model, str) or not _model.strip():
+            raise ValueError(
+                "forge.yaml 'knowledge.ref.model' must be a non-empty string when "
+                "knowledge.ref is configured"
+            )
+        _fallback_models_raw = _knowledge_ref_raw.get("fallback_models", ())
+        if not isinstance(_fallback_models_raw, (list, tuple)):
+            raise ValueError(
+                "forge.yaml 'knowledge.ref.fallback_models' must be a list of strings, "
+                f"got {_fallback_models_raw!r}"
+            )
+        for _fallback_model in _fallback_models_raw:
+            if not isinstance(_fallback_model, str) or not _fallback_model.strip():
+                raise ValueError(
+                    "forge.yaml 'knowledge.ref.fallback_models' items must be non-empty "
+                    f"strings, got {_fallback_model!r}"
+                )
+        if "transport" in _knowledge_ref_raw:
+            _transport_raw = _knowledge_ref_raw["transport"]
+            if not isinstance(_transport_raw, dict):
+                raise ValueError(
+                    "forge.yaml 'knowledge.ref.transport' must be a mapping, "
+                    f"got {_transport_raw!r}"
+                )
+            _transport_kind = str(_transport_raw.get("kind", "")).strip().lower()
+            if _transport_kind and _transport_kind != "api":
+                raise ValueError(
+                    "forge.yaml 'knowledge.ref.transport.kind' must be 'api' for "
+                    "knowledge summaries"
+                )
+        _knowledge_ref = ModelRef(
+            provider=_provider.strip(),
+            model=_model.strip(),
+            budget_usd=float(_knowledge_ref_raw.get("budget_usd", 0.50)),
+            timeout_seconds=int(_knowledge_ref_raw.get("timeout_seconds", 300)),
+            fallback_models=tuple(
+                _fallback_model.strip() for _fallback_model in _fallback_models_raw
+            ),
+            reasoning_effort=(
+                str(_knowledge_ref_raw["reasoning_effort"]).strip()
+                if _knowledge_ref_raw.get("reasoning_effort") is not None
+                else None
+            ),
+            thinking_budget=(
+                int(_knowledge_ref_raw["thinking_budget"])
+                if _knowledge_ref_raw.get("thinking_budget") is not None
+                else None
+            ),
+            base_url=(
+                str(_knowledge_ref_raw["base_url"]).strip()
+                if _knowledge_ref_raw.get("base_url") is not None
+                else None
+            ),
+            max_iterations=(
+                int(_knowledge_ref_raw["max_iterations"])
+                if _knowledge_ref_raw.get("max_iterations") is not None
+                else None
+            ),
+            max_tool_output_bytes=int(
+                _knowledge_ref_raw.get("max_tool_output_bytes", ModelRef.max_tool_output_bytes)
+            ),
+        )
     knowledge_cfg = KnowledgeConfig(
         **_knowledge_values,
+        ref=_knowledge_ref,
         invariant_sources=tuple(_glob.strip() for _glob in _invariant_sources_raw),
     )
 

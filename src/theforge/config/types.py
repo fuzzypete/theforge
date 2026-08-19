@@ -1271,10 +1271,18 @@ class KnowledgeConfig:
     The extractor skips derived and vendored trees and only parses files that
     actually contain a marker, so the broad default costs a substring scan.
     Projects with a settled documentation layout can narrow it here.
+
+    ``ref`` directly names the tool-free API model that authors durable
+    knowledge summaries. When omitted, summaries inherit ``plan.ref`` only if
+    the planner already dispatches over API transport. CLI planner refs do not
+    consult ``transport_fallback`` for summary authoring: configure
+    ``knowledge.ref`` explicitly instead so the role's model is visible at the
+    key whose job is to declare it.
     """
 
     run_summaries: bool = False
     prior_run_context: bool = False
+    ref: ModelRef | None = None
     invariant_context: bool = False
     invariant_sources: tuple[str, ...] = ("**/*.md",)
 
