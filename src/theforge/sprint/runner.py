@@ -2652,13 +2652,27 @@ def _make_worker_phase_fn(
         if budget_checkpoint is not None and not _cost_mirrored:
             _reported = updates.get("cost_usd")
             # ``None`` means the transport could not measure this story's spend.
-            # It is deliberately not a checkpoint: enforcing a cap on an
-            # unmeasured figure would either kill work over a number nobody has
-            # (#1992's lower bound) or, coerced to zero, report it as free. The
-            # unmeasured case stays where it already fails closed — the dispatch
-            # gate, which refuses to launch further work.
+            # That still advances the live sprint standing by the measured lower
+            # bound already in the coordinator state: the dispatch gate remains
+            # where unmeasured spend fails closed, but a running story should not
+            # get to bypass every later phase-boundary checkpoint once one phase
+            # went unmeasured (#1992, #2547).
             if isinstance(_reported, (int, float)) and not isinstance(_reported, bool):
                 budget_checkpoint(slug, float(_reported))
+            elif _reported is None:
+                _detail = updates.get("detail")
+                _lower_bound = None
+                if isinstance(_detail, dict):
+                    _candidate = _detail.get("cost_measured_lower_bound_usd")
+                    if isinstance(_candidate, (int, float)) and not isinstance(_candidate, bool):
+                        _lower_bound = float(_candidate)
+                if _lower_bound is None:
+                    _coordinator_state = updates.get("coordinator_state")
+                    _candidate = getattr(_coordinator_state, "total_cost_measured", None)
+                    if isinstance(_candidate, (int, float)) and not isinstance(_candidate, bool):
+                        _lower_bound = float(_candidate)
+                if _lower_bound is not None:
+                    budget_checkpoint(slug, _lower_bound)
         with phase_lock:
             phase_changed = bool(phase) and worker_phases.get(slug) != phase
             if phase:
