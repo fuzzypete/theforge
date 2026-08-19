@@ -1,8 +1,24 @@
 """Sprint budget enforcement decisions.
 
 Pure, stdlib-only: given what the sprint has measurably spent and which spend it
-could not measure, decide whether the next story may be dispatched. Extracted
-from ``runner.py`` so the policy is testable without a live sprint.
+could not measure, decide whether the sprint may keep spending. Extracted from
+``runner.py`` so the policy is testable without a live sprint.
+
+One decision point serves two enforcement moments (#2547). Dispatch asks it
+before a story starts; the in-flight checkpoint asks it again while a story is
+running, charging that story's measured spend so far on top of the ledger. The
+second moment exists because the first one alone bounds nothing: a sprint whose
+work is one long story never returns to a dispatch boundary, so a cap checked
+only there is a number the run passes rather than a number that binds it.
+
+The two moments differ in what they do with an *unverifiable* answer, and only
+in that. Dispatch refuses to launch new work against a total it knows is a lower
+bound. The in-flight checkpoint acts on ``exhausted`` alone: a running story is
+still cancelled when its measured lower bound has definitely met the cap, but it
+is not cancelled merely because some spend was unmeasured and the comparison is
+therefore unverifiable. Killing a story that has already been paid for to
+protect only that second case would destroy work for a comparison the sprint
+will re-run at its next dispatch boundary anyway.
 
 The load-bearing rule is that a cap can only be enforced against a number that
 means what it says. ``accumulated_cost`` is a sum over measured spend; when a
@@ -30,6 +46,20 @@ from dataclasses import dataclass
 #: How many unmeasured sources to name in an operator-facing message before
 #: eliding the rest. The full list lives in the sprint's structured records.
 _MAX_NAMED_SOURCES = 5
+
+#: A cap was configured and the run stayed inside it.
+BUDGET_STATUS_WITHIN = "within"
+#: A cap was configured and the run finished past it. Enforcement halts a run at
+#: the first checkpoint after the cap is met, but a phase already in flight can
+#: land beyond it, so "over" is a state an honest run can legitimately reach —
+#: which is exactly why it has to be reported rather than inferred (#2547).
+BUDGET_STATUS_OVER = "over"
+#: No positive cap was configured, so there is nothing to be within or over.
+BUDGET_STATUS_UNSET = "unset"
+
+#: Spend has to pass the cap by more than rounding noise before a run is called
+#: over budget: a story landing at exactly the cap met it, it did not breach it.
+_OVERRUN_EPSILON_USD = 0.005
 
 
 @dataclass(frozen=True)
@@ -147,6 +177,32 @@ def evaluate_budget(
             detail = f"{detail}; {rendered}"
         return BudgetBlock(kind="unverifiable", detail=detail)
     return None
+
+
+def budget_overrun_usd(*, budget_usd: float, spend_usd: float | None) -> float:
+    """How far *spend_usd* passed the cap, or ``0.0`` when it did not.
+
+    The reporting half of the same policy ``evaluate_budget`` enforces. It is
+    deliberately a separate function: enforcement decides whether more work may
+    start, reporting states what a finished or in-progress run actually did, and
+    a run can be over budget without anything having been refused (the phase
+    that crossed the cap was already running when it did).
+    """
+    if budget_usd <= 0.0 or spend_usd is None:
+        return 0.0
+    overrun = float(spend_usd) - float(budget_usd)
+    if overrun <= _OVERRUN_EPSILON_USD:
+        return 0.0
+    return round(overrun, 6)
+
+
+def budget_status(*, budget_usd: float, spend_usd: float | None) -> str:
+    """Classify a run against its cap: within, over, or no cap configured."""
+    if budget_usd <= 0.0:
+        return BUDGET_STATUS_UNSET
+    if budget_overrun_usd(budget_usd=budget_usd, spend_usd=spend_usd) > 0.0:
+        return BUDGET_STATUS_OVER
+    return BUDGET_STATUS_WITHIN
 
 
 def describe_source_origins(

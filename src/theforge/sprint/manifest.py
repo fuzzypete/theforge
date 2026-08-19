@@ -15,6 +15,7 @@ from ..task import (
     frontmatter_allows_forge_yaml_mutation,
     inspect_story_frontmatter,
 )
+from .budget import budget_overrun_usd, budget_status
 
 if TYPE_CHECKING:
     from .sources import StorySource
@@ -80,6 +81,28 @@ class SprintResult:
     budget_verification_spend_usd: float = 0.0
     results: list[tuple[str, CoordinatorResult]] = field(default_factory=list)
     stopped_reason: str | None = None  # why sprint stopped early, if it did
+
+    @property
+    def budget_spend_against_cap(self) -> float:
+        """The figure the cap is reported against.
+
+        The verification figure where one was computed (it charges accepted
+        ceilings for unmeasured spend, so it is never below the measured total),
+        falling back to the measured total for results built without it.
+        """
+        return max(float(self.budget_verification_spend_usd or 0.0), float(self.total_cost_usd))
+
+    @property
+    def budget_overrun_usd(self) -> float:
+        """How far this run passed its cap, or ``0.0`` when it did not (#2547)."""
+        return budget_overrun_usd(
+            budget_usd=self.budget_usd, spend_usd=self.budget_spend_against_cap
+        )
+
+    @property
+    def budget_status(self) -> str:
+        """``within``, ``over``, or ``unset`` — see ``sprint.budget``."""
+        return budget_status(budget_usd=self.budget_usd, spend_usd=self.budget_spend_against_cap)
 
 
 def load_sprint_manifest(manifest_path: Path) -> SprintManifest:

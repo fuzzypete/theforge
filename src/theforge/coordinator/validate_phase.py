@@ -761,6 +761,7 @@ def _run_validate_phase(
                 "phase": "VALIDATE",
                 "iteration": state.dev_iteration,
                 "cost_usd": state.total_cost_measured,
+                "coordinator_state": state,
                 # Carry the story-descriptive complexity fields on VALIDATE entry
                 # so this early payload agrees with the sibling VALIDATE payload
                 # (post-gate) and every other phase. Omitting them here left the
@@ -1061,6 +1062,7 @@ def _run_validate_phase(
                 "phase": "VALIDATE",
                 "iteration": state.dev_iteration,
                 "cost_usd": state.total_cost_measured,
+                "coordinator_state": state,
                 **_cu.live_complexity_fields(
                     state.preflight_complexity, state.preflight_complexity_score
                 ),
