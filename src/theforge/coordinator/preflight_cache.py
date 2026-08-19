@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -138,7 +139,7 @@ def apply_cached_preflight_state(
     state.preflight_partial_evidence = (
         None
         if cached_state.preflight_partial_evidence is None
-        else dict(cached_state.preflight_partial_evidence)
+        else copy.deepcopy(cached_state.preflight_partial_evidence)
     )
     state.preflight_complexity = cached_state.preflight_complexity
     state.preflight_complexity_score = cached_state.preflight_complexity_score
