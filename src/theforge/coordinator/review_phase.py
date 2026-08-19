@@ -56,6 +56,7 @@ from .escalate_actions import (
 )
 from .escalation_advisor_flow import run_escalation_advisor
 from .gate_contradiction import asserts_gate_verifiable_failure
+from .gate_green_salvage import record_gate_green_checkpoint as _record_gate_green_checkpoint
 from .logging import StructuredLogger
 from .notify import (
     _escalate_gate_interactive,
@@ -2192,6 +2193,20 @@ def _run_review_phase(
             # spent on review (#2340).
             _release_review_reservation(state, retained_cycles=1, reason="approve_p2_cleanup")
             _entry = state.p2_cleanup_audit[-1]
+            # Remember the commit this approval was taken on, if the gate had
+            # passed on that exact commit. Cleanup spends the dev pool and never
+            # buys a review cycle, so an iteration that breaks the gate is
+            # terminal — this is the floor under that risk (#2028).
+            _checkpoint = _record_gate_green_checkpoint(
+                state,
+                parsed_review,
+                carried_p2_count=_entry["remaining_carried_p2_count"],
+            )
+            if _checkpoint is not None:
+                _log(
+                    f"  ⎈ CHECKPOINT  {_checkpoint.commit[:8]} is gate-green and "
+                    "review-approved; it is the floor if cleanup breaks the gate"
+                )
             _log(
                 f"  ↻ P2 CLEANUP  entering dev iteration "
                 f"({_entry['remaining_carried_p2_count']} carried P2(s), "

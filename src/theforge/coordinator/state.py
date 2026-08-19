@@ -499,6 +499,46 @@ class ReviewedCommitVerification:
 
 
 @dataclass
+class GateGreenCheckpoint:
+    """A commit the gate passed *and* a review approved, retained as a landing floor (#2028).
+
+    Captured when an approving review cycle hands the story back to DEV for P2
+    cleanup. If that cleanup iteration turns the gate red with no dev iterations
+    left to recover, this is the commit the story lands instead of failing
+    outright — the later, unvalidated work is dropped and its findings return as
+    normal review findings on a later story.
+
+    ``commit`` is only ever the SHA the reviewers actually judged *and* the gate
+    actually passed: recorded from ``ReviewCycleMetadata.verification`` in the
+    ``gate_passed`` state, never inferred from ``last_gate_commit`` alone. The
+    gate records HEAD before VALIDATE's post-PASS dirty-worktree auto-commit, so
+    "the gate passed at some point" does not establish that the reviewed tree is
+    the gated tree — only the derived verification state does.
+    """
+
+    commit: str
+    review_cycle: int
+    dev_iterations_spent: int
+    review_verdict: str
+    carried_p2_count: int
+    branch_name: str | None = None
+    # The ReviewResult the approval was made on. Landed through
+    # ``state.landing_review_result`` so merge-pr has a review to post.
+    review_result: ReviewResult | None = None
+
+    def to_audit_dict(self) -> dict[str, Any]:
+        """JSON-safe view for the resume sidecar and the audit trail."""
+        return {
+            "commit": self.commit,
+            "review_cycle": self.review_cycle,
+            "dev_iterations_spent": self.dev_iterations_spent,
+            "review_verdict": self.review_verdict,
+            "carried_p2_count": self.carried_p2_count,
+            "branch_name": self.branch_name,
+        }
+
+
+@dataclass
 class ReviewCycleMetadata:
     """Per-cycle metadata for audit logging."""
 
@@ -887,8 +927,26 @@ class CoordinatorState:
     # quorum-unmet survivor, which has no merged result (#2300). Read through
     # completion.resolve_landing_review, never directly.
     landing_review_result: ReviewResult | None = None
-    # Provenance of the above: "merged_cycle_review" or "escalate_gate_selection".
+    # Provenance of the above: "merged_cycle_review", "escalate_gate_selection",
+    # or "gate_green_checkpoint" (a salvaged gate-green landing, #2028).
     landing_review_source: str | None = None
+    # ── Gate-green salvage (#2028) ────────────────────────────────────────────
+    # The latest commit that a gate passed AND a review approved, captured when
+    # that approval routed back into DEV for P2 cleanup. Refreshed on each
+    # approve-equivalent cleanup cycle so the newest approved gate-green commit
+    # wins. None when no such commit exists — the ordinary case, and the one
+    # that must keep failing exactly as before.
+    gate_green_checkpoint: GateGreenCheckpoint | None = None
+    # The decision to land the checkpoint instead of the gate-red HEAD, and the
+    # record of what is being dropped. JSON-safe; written by
+    # gate_green_salvage.salvage_gate_green_landing and read by land_story.
+    gate_green_salvage: dict | None = None
+    # Why a salvage was NOT taken on a run that reached a terminal gate failure.
+    # A gate-green commit that was never approved, a batch leader, or a dirty
+    # worktree are all "nothing forge could safely land" — but they are
+    # materially different from "nothing gate-green ever existed", and the
+    # operator cannot tell them apart from the failure alone (#2028).
+    gate_green_salvage_declined: dict | None = None
     advisory_generated: bool = False  # True when a valid advisory report was produced
     advisory_packet: dict | None = None  # serialized EvidencePacket fed to the advisor
     advisory_report: dict | None = None  # serialized AdvisoryReport the advisor produced

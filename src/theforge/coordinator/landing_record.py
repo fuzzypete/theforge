@@ -10,6 +10,13 @@ branch of the landing logic actually ran:
   (see issue #1420).
 * ``zero-delta`` — the branch had no commits ahead of base; nothing merged.
 * ``missing-review`` — land was requested without a review result; skipped.
+* ``gate-green-rollback`` — the branch was reset back to a commit the gate
+  passed and a review approved, and *that* commit shipped; later commits, which
+  turned the gate red with no dev iterations left to fix them, were dropped
+  (see issue #2028). ``underlying_landing_path`` names the path that actually
+  ran underneath.
+* ``gate-green-rollback-failed`` — that reset could not be performed safely, so
+  nothing landed.
 
 Historically the sprint summary collapsed this to a single ``merged`` boolean,
 which reads ``True`` both when a fresh PR shipped code and when the
@@ -34,6 +41,15 @@ LANDING_OUTCOME_BY_PATH = {
     "already-merged": "already-merged-short-circuit",
     "zero-delta": "zero-delta-short-circuit",
     "missing-review": "missing-review",
+    # A gate-green checkpoint shipped after the branch was reset back to it,
+    # discarding later commits that turned the gate red (#2028). Distinct from
+    # ``merged`` because the story did not land what it built: it landed an
+    # earlier, validated subset, and the operator has to be able to see that
+    # from the outcome alone.
+    "gate-green-rollback": "merged-gate-green-rollback",
+    # The rollback could not be performed, so nothing landed. Kept separate from
+    # a generic merge failure: the branch still holds gate-red work.
+    "gate-green-rollback-failed": "gate-green-rollback-failed",
 }
 
 
@@ -65,17 +81,55 @@ def build_landing_record(merge: object) -> dict | None:
         guard = {}
 
     outcome = LANDING_OUTCOME_BY_PATH.get(landing_path, landing_path)
+    # A gate-green rollback that shipped is still a fresh merge underneath; the
+    # underlying path is what says whether a PR was created, and it is the only
+    # path the rollback label is ever applied to.
+    underlying = merge.get("underlying_landing_path")
+    effective_path = underlying if isinstance(underlying, str) and underlying else landing_path
     # A fresh PR that GitHub queued for auto-merge has not landed yet; keep the
     # distinction so a queued PR is not conflated with already-shipped code.
-    if landing_path == "fresh-merge" and merge_queued:
-        outcome = "merge-queued"
+    if effective_path == "fresh-merge" and merge_queued:
+        outcome = "merge-queued" if landing_path == "fresh-merge" else f"{outcome}-queued"
 
-    return {
+    record = {
         "outcome": outcome,
         "landing_path": landing_path,
-        "fresh_pr_created": landing_path == "fresh-merge",
+        "fresh_pr_created": effective_path == "fresh-merge",
         "merged": merged,
         "merge_queued": merge_queued,
         "pr_url": merge.get("pr_url") or guard.get("pr_url"),
         "pr_merged_at": guard.get("merged_at"),
+    }
+    if isinstance(underlying, str) and underlying:
+        record["underlying_landing_path"] = underlying
+    rollback = merge.get("gate_green_rollback")
+    if isinstance(rollback, dict) and rollback:
+        record["gate_green_rollback"] = _rollback_record(rollback)
+    return record
+
+
+def _rollback_record(rollback: dict) -> dict:
+    """Operator-facing view of a gate-green rollback (#2028).
+
+    ``checkpoint_commit`` is the commit the gate passed and the review approved —
+    the one fact this outcome is named for. ``landed_commit`` is what actually
+    reached the base branch, and is ``None`` when the merge-pr path had to rebase
+    onto an advanced base and therefore rewrote the SHA. Reporting the checkpoint
+    as landed in that case would name a commit GitHub never merged.
+    """
+    dropped = rollback.get("dropped_commits")
+    dropped_list = [d for d in dropped if isinstance(d, dict)] if isinstance(dropped, list) else []
+    count = rollback.get("dropped_commit_count")
+    return {
+        "checkpoint_commit": rollback.get("checkpoint_commit"),
+        "landed_commit": rollback.get("landed_commit"),
+        "rebased": bool(rollback.get("rebase_expected")),
+        "gate_green": True,
+        "review_approved": True,
+        "review_cycle": rollback.get("review_cycle"),
+        "dropped_head": rollback.get("dropped_head"),
+        "dropped_commits": dropped_list,
+        "dropped_commit_count": count if isinstance(count, int) else len(dropped_list),
+        "dropped_reason": rollback.get("dropped_reason") or "",
+        "outstanding_p2_count": rollback.get("outstanding_p2_count") or 0,
     }
