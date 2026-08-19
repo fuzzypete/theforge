@@ -3410,7 +3410,9 @@ class TestSprintRunAuditCommit:
         audit_shell_calls = [
             call
             for call in shell_calls
-            if ".forge/audits/runs" in call[0] or "chore(audit)" in call[0]
+            if ".forge/audits/runs" in call[0]
+            or ".forge/knowledge/summaries" in call[0]
+            or "chore(audit)" in call[0]
         ]
         assert audit_shell_calls == [("git status --porcelain -- .forge/audits/runs", tmp_path)]
 
