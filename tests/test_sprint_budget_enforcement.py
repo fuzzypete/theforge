@@ -511,6 +511,44 @@ def test_a_budget_cancelled_worker_timeout_stays_skipped_and_keeps_its_spend(
     assert "timeout" not in (cancelled.state.error or "").lower()
 
 
+def test_a_timed_out_storys_late_cost_report_cannot_block_the_next_dispatch(
+    tmp_path: Path,
+) -> None:
+    """A retired worker cannot recreate in-flight spend after its timeout."""
+    config = _make_config(tmp_path)
+    resolved = replace(
+        _make_resolved(tmp_path, ("story-a", "story-b"), budget_usd=7.0),
+        worker_timeout_seconds=1,
+    )
+    late_update_sent = threading.Event()
+    dispatched: list[str] = []
+
+    def _fake_run_task(_config, task, **kwargs):
+        dispatched.append(task.slug)
+        state_update_fn = kwargs["state_update_fn"]
+        stop_event = kwargs["stop_event"]
+        if task.slug == "story-a":
+            state_update_fn({"phase": "REVIEW", "cost_usd": 4.0})
+            assert stop_event.wait(timeout=5), "worker timeout never stopped story-a"
+            state_update_fn({"phase": "REVIEW", "cost_usd": 9.0})
+            late_update_sent.set()
+            time.sleep(0.2)
+            return _cancelled_result(stop_event, 4.0)
+        assert late_update_sent.wait(timeout=5), "story-a never sent its stale post-timeout update"
+        state_update_fn({"phase": "REVIEW", "cost_usd": 2.0})
+        return _done_result(2.0)
+
+    result = _run(config, resolved, _fake_run_task)
+
+    assert dispatched == ["story-a", "story-b"]
+    assert result.stopped_reason is None
+    assert result.specs_succeeded == 1
+    assert result.specs_failed == 1
+    assert result.specs_skipped == 0
+    assert round(result.total_cost_usd, 2) == 6.0
+    assert result.budget_status == "within"
+
+
 def test_batched_member_reviews_stop_before_starting_the_next_member_when_over_budget(
     tmp_path: Path,
 ) -> None:

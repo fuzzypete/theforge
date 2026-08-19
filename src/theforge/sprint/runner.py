@@ -2693,6 +2693,7 @@ def _make_worker_phase_fn(
     audit_flush: "Callable[[str], None] | None" = None,
     budget_checkpoint: "Callable[[str, SprintCostObservation | None], None] | None" = None,
     live_cost_updates: "dict[str, SprintCostObservation] | None" = None,
+    stop_event: threading.Event | None = None,
 ) -> "Callable[[dict], None]":
     """Return a thread-safe state_update_fn wrapper for worker live state.
 
@@ -2719,9 +2720,16 @@ def _make_worker_phase_fn(
     already running: the sprint learns what the story has spent at the same
     moment the story is between phases and can still be stopped without wasting
     a phase's work (#2547).
+
+    When *stop_event* is already set the worker has been cancelled by the
+    scheduler, so any later phase update is stale: accepting it would recreate
+    provisional in-flight spend for a story the scheduler has already retired
+    and accounted for.
     """
 
     def _update(updates: dict) -> None:
+        if stop_event is not None and stop_event.is_set():
+            return
         phase = updates.get("phase", "")
         _checkpoint_cost: SprintCostObservation | None = None
         # A mirrored cost belongs to another slug's run (a batch group's shared
@@ -7083,6 +7091,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                                 ),
                                 budget_checkpoint=_budget_checkpoint,
                                 live_cost_updates=_sprint_state.latest_live_costs,
+                                stop_event=_batch_stop_evt,
                             )
                             _sprint_state.stop_events[_member_slug] = _batch_stop_evt
                         # One worker runs the group, so the whole group shares one
@@ -7152,6 +7161,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
 
                 worker_config = _ctx.config
 
+                stop_evt = StopSignal()
                 state_fn = _make_worker_phase_fn(
                     task.slug,
                     worker_phases,
@@ -7164,8 +7174,8 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     ),
                     budget_checkpoint=_budget_checkpoint,
                     live_cost_updates=_sprint_state.latest_live_costs,
+                    stop_event=stop_evt,
                 )
-                stop_evt = StopSignal()
                 _sprint_state.stop_events[task.slug] = stop_evt
                 _dispatch_kwargs: dict = {
                     "base_lands_locally": _sprint_lands_locally,
