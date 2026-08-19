@@ -192,19 +192,6 @@ def _agent_phase_eligibility(config: "ForgeConfig", agent: object) -> frozenset[
     return DEFAULT_PHASE_ELIGIBILITY
 
 
-def _apply_summary_transport_fallback(
-    config: "ForgeConfig",
-    profile: "ModelProfile",
-) -> "ModelProfile":
-    fallbacks = getattr(config, "transport_fallbacks", None) or {}
-    if not fallbacks or profile.api_fallback is not None:
-        return profile
-
-    from theforge.config.profiles import _apply_transport_fallback  # noqa: PLC0415
-
-    return _apply_transport_fallback(profile, fallbacks)
-
-
 def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | None":
     if profile.mode == "api":
         return profile
@@ -250,7 +237,8 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
     from theforge.config.bridge import model_ref_to_profile  # noqa: PLC0415
 
     knowledge_cfg = getattr(config, "knowledge", None)
-    ref = getattr(knowledge_cfg, "ref", None)
+    knowledge_ref = getattr(knowledge_cfg, "ref", None)
+    ref = knowledge_ref
     if ref is None:
         ref = getattr(getattr(config, "plan", None), "ref", None)
         if ref is not None and ref.mode != "api":
@@ -269,6 +257,8 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
         sandbox_mode="read-only",
     )
     base_profile = _project_summary_api_profile(summary_envelope)
+    if knowledge_ref is not None:
+        return (base_profile, None)
 
     agents = getattr(config, "agents", None) or []
     if not agents:
@@ -285,7 +275,6 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
             "routing.phase_eligibility excludes knowledge_summary for every configured candidate",
         )
 
-    summary_identity = identity_for_profile(summary_envelope)
     base_identity = identity_for_profile(base_profile) if base_profile is not None else None
     projected: list[ModelProfile] = []
     for agent in phase_eligible:
@@ -294,14 +283,12 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
             phase=PHASE_KNOWLEDGE_SUMMARY,
             sandbox_mode="read-only",
         )
-        candidate = _apply_summary_transport_fallback(config, candidate)
         candidate = _project_summary_api_profile(candidate)
         if candidate is not None:
             projected.append(candidate)
     if not projected:
-        if base_profile is not None and summary_identity is not None:
-            if any(identity_for_agent(agent) == summary_identity for agent in phase_eligible):
-                return (base_profile, None)
+        if base_profile is not None:
+            return (base_profile, None)
         return (
             None,
             "no phase-eligible configured model can dispatch knowledge_summary over a tool-free "
