@@ -973,6 +973,11 @@ def _record_grounding(state: CoordinatorState, grounding: GroundingResult) -> No
         "review_cycle": state.review_cycle,
         **grounding.story_diff.as_audit_record(),
         "ungrounded_p1_ids": [record.finding_id for record in grounding.ungrounded],
+        # Findings that stopped being suppressed this cycle because the change
+        # grew to include the file they cite. A suppression that silently lifts
+        # is as much a decision as one that starts, and this is the only place
+        # the reversal is visible.
+        "restored_p1_ids": [record.finding_id for record in grounding.restored],
     }
 
 

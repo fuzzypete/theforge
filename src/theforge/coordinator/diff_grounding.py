@@ -42,6 +42,11 @@ if TYPE_CHECKING:
 #: worktree.
 SOURCE_BRANCH_DIFF = "branch_diff"
 
+#: What a P1 is set back to when grounding clears a stale ``diff_ungrounded``.
+#: The blocking default, matching what the classifier produces for a finding
+#: seen in a prior cycle and reported again.
+RESTORED_DISPOSITION = "unresolved"
+
 
 @dataclass(frozen=True)
 class StoryDiff:
@@ -167,6 +172,10 @@ class GroundingResult:
     story_diff: StoryDiff
     ungrounded: tuple[FindingRecord, ...]
     p1_records: tuple[FindingRecord, ...]
+    #: Records that arrived carrying a stale ``diff_ungrounded`` and now ground,
+    #: so grounding cleared it. Surfaced for the audit trail: a finding that
+    #: stops being suppressed is as much a decision as one that starts.
+    restored: tuple[FindingRecord, ...] = ()
 
     @property
     def changed_files(self) -> frozenset[str] | None:
@@ -201,12 +210,21 @@ def ground_p1_records(
     story_diff: StoryDiff | None = None,
     log: Callable[[str], None] | None = None,
 ) -> GroundingResult:
-    """Set ``diff_ungrounded`` on every P1 record not tied to this story's diff.
+    """Decide, for this cycle, which P1 records are about this story's change.
 
     The single eligibility check every review path runs before anything is
-    allowed to block. Records are mutated in place, so the caller's classified
-    list and ``state.finding_registry`` see the same dispositions and the audit
+    allowed to block, and the **sole** authority on the ``diff_ungrounded``
+    disposition. Records are mutated in place, so the caller's classified list
+    and ``state.finding_registry`` see the same dispositions and the audit
     record carries them without further work.
+
+    Grounding is a property of *a cycle*, not of a finding. The same P1 can be
+    ungrounded in cycle 1 and grounded in cycle 2 because the dev touched the
+    file it cites in between, and it must block the moment that happens. So this
+    decides **both** directions every cycle: it marks records that do not ground,
+    and it clears a ``diff_ungrounded`` left on a record that now does. Writing
+    only the suppressing direction is what made a per-cycle verdict stick and
+    left a genuinely recurring P1 permanently unblockable (#2525).
 
     Without ``story_diff`` the file set is the branch's own merge-base-to-HEAD
     diff, never the latest dev iteration's base: a finding about a file touched
@@ -229,19 +247,36 @@ def ground_p1_records(
         )
     p1_records = tuple(record for record in records if record.severity == "P1")
     ungrounded: list[FindingRecord] = []
+    restored: list[FindingRecord] = []
     for record in p1_records:
-        if is_diff_grounded(record.file, changed_files, workspace_path):
+        if not is_diff_grounded(record.file, changed_files, workspace_path):
+            record.disposition = "diff_ungrounded"  # type: ignore[assignment]
+            ungrounded.append(record)
+            if log is not None:
+                log(
+                    f"  ↷ diff_ungrounded: P1 cannot be checked against this story's diff"
+                    f" ({ungrounded_reason(record.file, changed_files, workspace_path)}):"
+                    f" {record.description[:80]}"
+                )
             continue
-        record.disposition = "diff_ungrounded"  # type: ignore[assignment]
-        ungrounded.append(record)
-        if log is not None:
-            log(
-                f"  ↷ diff_ungrounded: P1 cannot be checked against this story's diff"
-                f" ({ungrounded_reason(record.file, changed_files, workspace_path)}):"
-                f" {record.description[:80]}"
-            )
+        if record.disposition == "diff_ungrounded":
+            # This record grounds now and carries a verdict from a cycle where it
+            # did not. Only this function writes that value, and it has not
+            # written it for this record this cycle, so it is stale by
+            # construction. Restore the blocking default rather than leaving a
+            # finding about this story's own change unable to decide anything —
+            # the conservative direction, and the one the classifier produces for
+            # a recurrence.
+            record.disposition = RESTORED_DISPOSITION  # type: ignore[assignment]
+            restored.append(record)
+            if log is not None:
+                log(
+                    f"  ↥ diff_ungrounded cleared: P1 now cites a file in this"
+                    f" story's diff and blocks again: {record.description[:80]}"
+                )
     return GroundingResult(
         story_diff=story_diff,
         ungrounded=tuple(ungrounded),
+        restored=tuple(restored),
         p1_records=p1_records,
     )

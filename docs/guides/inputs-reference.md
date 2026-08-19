@@ -1427,6 +1427,13 @@ review-only path that sprint batch members go through, where a `REQUEST_CHANGES`
 whose every P1 is `diff_ungrounded` completes the story instead of escalating —
 recorded as `REQUEST_CHANGES→diff_ungrounded_pass`, not as a plain approval.
 
+`diff_ungrounded` describes **one cycle's diff, not the finding**. The verdict is
+re-decided from scratch every review cycle, in both directions: a P1 suppressed
+in cycle 1 blocks again in cycle 2 if the dev has since touched the file it
+cites, because at that point it is squarely about this change. Nothing carries
+the suppression forward — the classifier gives a recurring finding its ordinary
+disposition and grounding is the only thing that writes `diff_ungrounded`.
+
 Inside a **cost-aware batch group** the branch carries several independent
 stories, so the branch diff is the group's change and not any one member's.
 There the file set is narrowed to the commits the shared dev handoff attributes

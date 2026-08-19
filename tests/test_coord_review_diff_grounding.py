@@ -15,6 +15,7 @@ Covers:
 - Mixed cycle: only the grounded finding reaches the dev fix prompt
 - Batch group: a member is judged against its own commits, not the group's
 - Batch group: an absent or hostile handoff grounds nothing, never the branch
+- Grounding is per-cycle: a P1 blocks once the change grows to include its file
 - Path normalization unit cases
 """
 
@@ -36,12 +37,15 @@ from coord_test_helpers import (
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.batch_diff import BatchReviewContext
 from theforge.coordinator.diff_grounding import (
+    RESTORED_DISPOSITION,
+    StoryDiff,
+    ground_p1_records,
     is_diff_grounded,
     normalize_finding_path,
     ungrounded_reason,
 )
 from theforge.coordinator.engine import run_from_review, run_review_only
-from theforge.coordinator.state import Phase
+from theforge.coordinator.state import FindingRecord, Phase
 
 #: What the story under test actually touched.
 _STORY_DIFF = ["src/changed.py"]
@@ -212,6 +216,162 @@ class TestGroundedFindingsStillBlock:
         assert result.phase == Phase.ESCALATE
         assert result.state.review_cycle == 2
         assert _dispositions(config, task, result)[_OWN_DESC] in ("ac_blocking", "unresolved")
+
+
+class TestGroundingIsPerCycleNotSticky:
+    """Grounding describes a cycle's diff, not the finding.
+
+    The same P1 can be out of the diff in cycle 1 and inside it in cycle 2
+    because the dev touched the file it cites in between. The verdict must be
+    re-decided every cycle in both directions, or a finding that becomes
+    genuinely about this change stays permanently unblockable (#2525).
+    """
+
+    def test_a_p1_blocks_once_the_change_grows_to_include_its_file(self, tmp_path):
+        """Cycle 1 suppresses it; cycle 2 must re-decide rather than inherit.
+
+        Cycle 1 raises two P1s: one in the diff (which blocks and buys the dev
+        retry) and one citing ``src/late.py``, which the story has not touched
+        yet and is therefore suppressed. The dev iteration touches that file.
+        Cycle 2 re-reports only the ``src/late.py`` finding — now squarely about
+        this change, so it must block. Inheriting cycle 1's verdict would let the
+        run complete on a suppression that is no longer true.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        cycle1 = f"""\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Changes requested."
+findings:
+  - severity: P1
+    file: src/changed.py
+    line: 30
+    observed: "{_SIBLING_DESC}"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
+    suggestion: "Fix it"
+  - severity: P1
+    file: src/late.py
+    line: 12
+    observed: "{_OWN_DESC}"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
+    suggestion: "Fix it"
+story_compliance:
+  matches_spec: true
+  mismatches: []
+test_coverage:
+  adequate: true
+  gaps: []
+```
+"""
+        cycle2 = _review_yaml(file="src/late.py", observed=_OWN_DESC, matches_spec=True)
+
+        # The story has not touched src/late.py when cycle 1 runs; the dev
+        # iteration between the cycles adds it.
+        cycle_diff = {"files": ["src/changed.py"]}
+        pool_calls = {"n": 0}
+
+        with (
+            patch_gate_shell() as mock_shell,
+            patch("theforge.coordinator.review_pool.run_agent_pool") as mock_pool,
+            patch("theforge.coordinator.preflight_flow.run_agent") as mock_preflight,
+            patch("theforge.coordinator.dev_phase.run_agent") as mock_dev,
+        ):
+
+            def shell_side_effect(cmd, cwd, **kwargs):
+                return _shell_with_gate(workspace, "PASS", changed_files=cycle_diff["files"])(
+                    cmd, cwd, **kwargs
+                )
+
+            def dev_side_effect(*_args, **_kwargs):
+                cycle_diff["files"] = ["src/changed.py", "src/late.py"]
+                return _make_agent_result(success=True, output="Fixed.")
+
+            def pool_side_effect(**_kwargs):
+                pool_calls["n"] += 1
+                output = cycle1 if pool_calls["n"] == 1 else cycle2
+                return [_make_agent_result(success=True, output=output, profile_name="review")]
+
+            mock_shell.side_effect = shell_side_effect
+            mock_preflight.return_value = _PREFLIGHT_RESULT
+            mock_dev.side_effect = dev_side_effect
+            mock_pool.side_effect = pool_side_effect
+            result = run_from_review(config, task, workspace)
+
+        assert pool_calls["n"] == 2, "cycle 1's grounded P1 should have bought a dev retry"
+        # Cycle 2's finding grounds now, so it blocks; the run exhausts its
+        # cycles and escalates instead of completing on a stale suppression.
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert _dispositions(config, task, result)[_OWN_DESC] != "diff_ungrounded"
+
+        # Cycle 2's grounding record shows nothing suppressed — the verdict was
+        # re-decided against the grown diff, not inherited from cycle 1.
+        grounding = generate_audit_log(config, task, result)["review_diff_grounding"]
+        assert grounding["review_cycle"] == 2
+        assert grounding["ungrounded_p1_ids"] == []
+        assert "src/late.py" in grounding["files"]
+
+    def test_grounding_clears_a_stale_verdict_and_records_the_reversal(self, tmp_path):
+        """Unit-level: the backstop that makes the suppression reversible.
+
+        Whatever disposition a record arrives with, grounding owns the answer for
+        this cycle. A record that grounds must never keep a ``diff_ungrounded``
+        written in an earlier one.
+        """
+        record = FindingRecord(
+            finding_id="abc123",
+            cycle_first_seen=1,
+            cycle_last_seen=2,
+            file="src/late.py",
+            line=10,
+            severity="P1",
+            description="now about this change",
+            reporter="reviewer-a",
+            disposition="diff_ungrounded",
+        )
+
+        grounding = ground_p1_records(
+            [record],
+            tmp_path,
+            "main",
+            story_diff=StoryDiff(files=frozenset(["src/late.py"]), source="branch_diff"),
+        )
+
+        assert record.disposition == RESTORED_DISPOSITION == "unresolved"
+        assert grounding.restored == (record,)
+        assert grounding.ungrounded == ()
+        assert grounding.only_ungrounded is False
+
+    def test_a_record_still_out_of_the_diff_stays_suppressed(self, tmp_path):
+        """The other direction: re-grounding does not indiscriminately unsuppress."""
+        record = FindingRecord(
+            finding_id="abc123",
+            cycle_first_seen=1,
+            cycle_last_seen=2,
+            file="src/sibling.py",
+            line=10,
+            severity="P1",
+            description="still someone else's change",
+            reporter="reviewer-a",
+            disposition="unresolved",
+        )
+
+        grounding = ground_p1_records(
+            [record],
+            tmp_path,
+            "main",
+            story_diff=StoryDiff(files=frozenset(["src/changed.py"]), source="branch_diff"),
+        )
+
+        assert record.disposition == "diff_ungrounded"
+        assert grounding.ungrounded == (record,)
+        assert grounding.restored == ()
 
 
 class TestMixedCycleDevHandoff:

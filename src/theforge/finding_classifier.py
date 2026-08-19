@@ -333,20 +333,24 @@ def update_finding_registry(
             if is_severity_downgrade:
                 # P1 finding was reported as P2 this cycle — record the downgrade
                 disposition = "downgraded"
-            elif prior_match.disposition == "diff_ungrounded":
-                # A finding already found to be about something other than this
-                # story's diff does not become blocking merely by being repeated.
-                # The caller re-grounds every current-cycle record after this
-                # function returns, so a genuine change in the diff still
-                # promotes it — but the default on recurrence is to stay
-                # non-blocking rather than reset to unresolved.
-                disposition = "diff_ungrounded"
             elif prior_match.disposition in (
                 "unresolved",
                 "net_new",
                 "corroborated_new",
                 "regression",
                 "ac_blocking",
+                # diff_ungrounded is deliberately in this list rather than
+                # carried forward. It is not a fact about the finding, it is a
+                # fact about one cycle's diff — whether the file it cites was
+                # part of the story's change *at that moment*. A later cycle can
+                # touch that file, at which point the same finding is squarely
+                # about this change and must block. Carrying the verdict forward
+                # would make a per-cycle property sticky and permanently
+                # unblockable (#2525). The classifier therefore produces the
+                # ordinary recurrence disposition and the review phase re-grounds
+                # every current-cycle P1 afterwards, which is the only place that
+                # verdict is decided.
+                "diff_ungrounded",
             ):
                 disposition = "unresolved"
             elif prior_match.disposition == "fixed":

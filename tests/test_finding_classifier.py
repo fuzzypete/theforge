@@ -571,13 +571,15 @@ class TestUpdateFindingRegistryCycle2:
 
         assert record.disposition == "fixed"
 
-    def test_recurring_diff_ungrounded_finding_stays_ungrounded(self, tmp_path):
-        """Repetition is not grounding: the recurrence branch must not reset it to unresolved.
+    def test_recurring_diff_ungrounded_finding_returns_to_the_ordinary_disposition(self, tmp_path):
+        """The classifier must not carry a grounding verdict across cycles.
 
-        The review phase re-grounds every current-cycle record after this call, so
-        a finding that genuinely entered the diff still gets promoted there. The
-        default here is what matters — falling through to ``unresolved`` would make
-        a sibling story's criterion blocking on cycle 2 (#2525).
+        ``diff_ungrounded`` describes one cycle's diff, not the finding: a later
+        cycle can touch the file it cites, at which point it is squarely about
+        this change. Inheriting the verdict here made it sticky and left such a
+        P1 permanently unblockable (#2525). The classifier produces the ordinary
+        recurrence disposition and the review phase re-grounds afterwards, which
+        re-suppresses it if it is still out of the diff.
         """
         state = _make_state()
         record = self._populate_cycle1(
@@ -592,7 +594,7 @@ class TestUpdateFindingRegistryCycle2:
             classified = update_finding_registry(state, cycle_results, tmp_path, cycle_num=2)
 
         assert classified[0] is record
-        assert record.disposition == "diff_ungrounded"
+        assert record.disposition == "unresolved"
         assert record.cycle_last_seen == 2
 
     def test_new_finding_in_changed_file_without_fixed_match_is_net_new(self, tmp_path):
