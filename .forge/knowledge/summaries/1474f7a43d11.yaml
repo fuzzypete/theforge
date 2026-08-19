@@ -1,0 +1,108 @@
+schema_version: 1
+run_id: 1474f7a43d11
+authoritative_run_record: .forge/audits/runs/1474f7a43d11.json
+generated_at: '2026-08-19T18:38:27.434966+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01024625
+story:
+  slug: issue-2508
+  name: The model that authors durable knowledge is derived from the key declaring
+    rate-limit failure behaviour, and can be configured no other way
+  github_issue: 2508
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+domains:
+- config
+- backend
+changed_files: &id001
+- docs/guides/inputs-reference.md
+- src/theforge/config/defaults.py
+- src/theforge/config/load.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/knowledge_summary_flow.py
+- tests/test_config_load.py
+- tests/test_coord_knowledge_summary.py
+what_changed:
+  description: The run changed knowledge-summary model resolution so the summary author
+    is selected from role-specific knowledge configuration instead of being derived
+    from transport fallback settings. It also documented the new input and added tests
+    covering configuration loading and summary-role dispatch behavior.
+  approach: The change introduced explicit configuration surface for the knowledge-summary
+    role, moved resolution logic into configuration loading and the coordinator flow,
+    updated defaults and types to carry the role-specific setting, and verified the
+    behavior with targeted config and coordinator tests.
+  files_modified: *id001
+what_was_learned:
+- claim: Role model selection is more stable when each role has an explicit configuration
+    source rather than inheriting from fallback or failure-handling settings.
+  evidence:
+  - type: file
+    path: src/theforge/config/load.py
+    description: Configuration loading was extended to resolve knowledge-summary settings
+      directly, indicating the role now has its own configuration path.
+  - type: file
+    path: src/theforge/coordinator/knowledge_summary_flow.py
+    description: The summary flow was rewritten around the new role-specific resolution
+      path instead of the previous fallback-derived mechanism.
+  - type: review_cycle
+    cycle: '2'
+    description: Review verified that knowledge.ref alone decides the summary author
+      and that transport_fallback no longer changes it.
+- claim: When adding a new role-specific selector, dead selection branches can remain
+    after the base-resolution path becomes mandatory.
+  evidence:
+  - type: review_finding
+    finding_id: b1f0e23d2e2b0ac6
+    description: Review identified that the pool-candidate selection branch had become
+      unreachable because all paths returned a non-null base profile first.
+  - type: file
+    path: src/theforge/coordinator/knowledge_summary_flow.py
+    description: The review finding was anchored in the summary-profile resolver implementation.
+- claim: Dispatch behavior can diverge between explicit model configuration and pool-based
+    routing unless eligibility checks are applied consistently across both paths.
+  evidence:
+  - type: review_finding
+    finding_id: d36daf8b28d8d91f
+    description: Review found that explicit summary-model configuration bypassed routing
+      eligibility checks while the implicit path enforced them.
+  - type: file
+    path: src/theforge/coordinator/knowledge_summary_flow.py
+    description: The inconsistency was located in the knowledge-summary resolver logic.
+- claim: Documentation and tests need to change together when a previously implicit
+    role configuration becomes operator-visible.
+  evidence:
+  - type: file
+    path: docs/guides/inputs-reference.md
+    description: Inputs documentation was updated to describe the new configuration
+      surface.
+  - type: file
+    path: tests/test_config_load.py
+    description: Configuration-loading tests were added to lock in how the new setting
+      is parsed and resolved.
+  - type: file
+    path: tests/test_coord_knowledge_summary.py
+    description: Coordinator tests were expanded to cover summary-role dispatch under
+      the new configuration behavior.
+learned_patterns:
+- explicit-role-model-config
+- eligibility-check-parity
+- doc-and-test-lockstep
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review repeatedly surfaced resolver-path mismatches: one branch became unreachable
+    after refactoring, and another skipped eligibility checks when explicit configuration
+    was present.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 5.7633475
+  dominant_difficulty: Untangling a role's dispatch logic from an unrelated fallback-derived
+    resolution path while keeping routing behavior internally consistent.

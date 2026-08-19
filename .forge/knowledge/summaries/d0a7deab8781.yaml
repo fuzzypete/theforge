@@ -1,0 +1,78 @@
+schema_version: 1
+run_id: d0a7deab8781
+authoritative_run_record: .forge/audits/runs/d0a7deab8781.json
+generated_at: '2026-08-19T18:58:16.130890+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00752125
+story:
+  slug: issue-2548
+  name: The review prompt tells reviewers to use injected repository context without
+    restating that only the spec decides story compliance
+  github_issue: 2548
+story_shape:
+  work_type: bug
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+domains: []
+changed_files: &id001
+- src/theforge/task/review_prompts.py
+- tests/test_task_review.py
+what_changed:
+  description: 'The review prompt was updated to restate, at the point of compliance
+    judgment, that only the ## Spec section is authoritative for story compliance
+    and acceptance-criteria verification. Regression tests were added to verify this
+    prompt wording in the review schema and rules.'
+  approach: The change adjusted prompt text in the review prompt builder so the authority
+    boundary is repeated where reviewers fill out compliance fields, and added focused
+    test coverage that asserts those spec-authority reminders are present.
+  files_modified: *id001
+what_was_learned:
+- claim: In this codebase, review-prompt guardrails may need to be repeated at the
+    exact decision point, not only where contextual material is introduced.
+  evidence:
+  - type: file
+    path: src/theforge/task/review_prompts.py
+    description: This file was the sole prompt-construction target of the code change,
+      indicating the fix was implemented by adding guidance directly where review
+      judgments are defined.
+  - type: diff
+    ref: 4c5eba300a97d079d366ca772f98709001cecbad
+    description: This diff records the prompt update that restates Spec authority
+      beside the compliance judgment instructions.
+  - type: review_cycle
+    cycle: '1'
+    description: The approval notes that the prompt now restates Spec authority beside
+      the compliance schema and Rules.
+- claim: Prompt-behavior changes in review generation are covered here with regression
+    tests that assert required prompt text rather than broader behavioral machinery.
+  evidence:
+  - type: file
+    path: tests/test_task_review.py
+    description: This test file was added to in the run, showing that prompt-generation
+      behavior is validated in task review tests.
+  - type: diff
+    ref: ee1bc24be194771aeed03be38535007ef4ed6e63
+    description: This diff adds focused regression coverage for the new prompt wording.
+  - type: review_cycle
+    cycle: '1'
+    description: The review approval explicitly mentions focused regression coverage
+      for the Spec-authority restatement.
+learned_patterns:
+- decision-point-spec-authority
+- prompt-text-regression-test
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved once Spec authority was restated beside both the compliance schema
+    and the Rules, with matching regression coverage.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 0.9798747999999999
+  dominant_difficulty: Placing prompt instructions so the authoritative source is
+    explicit at the exact moment reviewers make compliance judgments.
