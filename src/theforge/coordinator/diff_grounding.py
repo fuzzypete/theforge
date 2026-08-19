@@ -11,17 +11,25 @@ latest dev iteration's base: the story owns every commit on its branch, so a
 finding about a file touched in dev iteration 1 is still about this story when
 iteration 2 did not touch it.
 
-This module is pure: it answers "is this path in that set", and returns None
-for "the comparison could not be made" so callers can distinguish an
-unavailable diff from an empty one. Deciding what a non-grounded finding means
-belongs to the caller.
+The path predicates here are pure: they answer "is this path in that set", and
+return None for "the comparison could not be made" so callers can distinguish an
+unavailable diff from an empty one. :func:`ground_p1_records` is the one shared
+entry point that applies them to a review cycle's records — every review path
+that can decide a story's outcome calls it, so the eligibility rule cannot drift
+between the retry loop and the review-only path batched sprint members use.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .changed_files import collect_changed_files
+
+if TYPE_CHECKING:
+    from .state import FindingRecord
 
 
 def story_changed_files(workspace_path: Path, base_branch: str) -> frozenset[str] | None:
@@ -104,3 +112,72 @@ def ungrounded_reason(
     if normalized is None:
         return "no resolvable file cited"
     return f"{normalized} not in story diff ({len(changed_files)} file(s) changed)"
+
+
+@dataclass(frozen=True)
+class GroundingResult:
+    """What grounding a review cycle's P1 records established.
+
+    ``only_ungrounded`` is the load-bearing one for callers: it is True exactly
+    when the cycle produced P1 evidence and none of it could be tied to this
+    story's change. That is the condition under which a REQUEST_CHANGES verdict,
+    a ``matches_spec=false`` flag, or any other signal *derived from those same
+    findings* must not decide the story's outcome — the evidence behind it was
+    just established to be about something else.
+    """
+
+    changed_files: frozenset[str] | None
+    ungrounded: tuple[FindingRecord, ...]
+    p1_records: tuple[FindingRecord, ...]
+
+    @property
+    def only_ungrounded(self) -> bool:
+        return bool(self.p1_records) and len(self.ungrounded) == len(self.p1_records)
+
+    @property
+    def diff_available(self) -> bool:
+        return self.changed_files is not None
+
+
+def ground_p1_records(
+    records: list[FindingRecord],
+    workspace_path: Path,
+    base_branch: str,
+    *,
+    log: Callable[[str], None] | None = None,
+) -> GroundingResult:
+    """Set ``diff_ungrounded`` on every P1 record not tied to this story's diff.
+
+    The single eligibility check every review path runs before anything is
+    allowed to block. Records are mutated in place, so the caller's classified
+    list and ``state.finding_registry`` see the same dispositions and the audit
+    record carries them without further work.
+
+    Grounding is computed merge-base-to-HEAD, never from the latest dev
+    iteration's base: a finding about a file touched in iteration 1 is still
+    about this story when iteration 2 did not touch it.
+    """
+    changed_files = story_changed_files(workspace_path, base_branch)
+    if changed_files is None and log is not None:
+        log(
+            "  ⚠ diff grounding unavailable — story diff could not be computed;"
+            " P1s cannot be checked against this change"
+        )
+    p1_records = tuple(record for record in records if record.severity == "P1")
+    ungrounded: list[FindingRecord] = []
+    for record in p1_records:
+        if is_diff_grounded(record.file, changed_files, workspace_path):
+            continue
+        record.disposition = "diff_ungrounded"  # type: ignore[assignment]
+        ungrounded.append(record)
+        if log is not None:
+            log(
+                f"  ↷ diff_ungrounded: P1 cannot be checked against this story's diff"
+                f" ({ungrounded_reason(record.file, changed_files, workspace_path)}):"
+                f" {record.description[:80]}"
+            )
+    return GroundingResult(
+        changed_files=changed_files,
+        ungrounded=tuple(ungrounded),
+        p1_records=p1_records,
+    )

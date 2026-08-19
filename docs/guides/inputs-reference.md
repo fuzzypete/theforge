@@ -1422,7 +1422,11 @@ in `finding_registry` and appears under `non_blocking_p1s` in the audit record,
 but it blocks nothing, is not promoted by `matches_spec: false` or by
 `allow_net_new_bypass: false`, and is not handed back to the dev agent as work to
 fix. This is what keeps a sibling story's acceptance criteria from failing an
-unrelated story batched into the same sprint. Plan review is a separate
+unrelated story batched into the same sprint. The same check runs on the
+review-only path that sprint batch members go through, where a `REQUEST_CHANGES`
+whose every P1 is `diff_ungrounded` completes the story instead of escalating —
+recorded as `REQUEST_CHANGES→diff_ungrounded_pass`, not as a plain approval. Plan
+review is a separate
 contract with its own corroboration rule — single-reviewer, first-occurrence
 plan P1s are downgraded to advisory `P1-impl` (`src/theforge/review.py`).
 

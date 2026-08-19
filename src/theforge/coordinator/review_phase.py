@@ -41,7 +41,7 @@ from theforge.task import ContextAssembler, TaskStory, build_review_prompt
 from . import story_budget as _story_budget
 from .commit_guard import _has_commits_ahead_of_base
 from .completion import _append_cycle_history, _finalize_approve
-from .diff_grounding import is_diff_grounded, story_changed_files, ungrounded_reason
+from .diff_grounding import ground_p1_records, is_diff_grounded
 from .escalate_actions import (
     ACCEPT_UNAVAILABLE_REASON,
     NAMED_ACTION_UNAVAILABLE_REASON,
@@ -1723,36 +1723,15 @@ def _run_review_phase(
     # downgrade, the AC-violation override, the allow_net_new_bypass promotion,
     # and the cycle blocking checks, so no promotion path can reach a blocking
     # disposition without having passed it (#2525).
-    _story_changed_files = story_changed_files(workspace_path, config.workspace.base_branch)
-    if _story_changed_files is None:
-        _log(
-            "  ⚠ diff grounding unavailable — story diff could not be computed;"
-            " P1s cannot be checked against this change"
-        )
-    _diff_ungrounded_ids: set[str] = set()
-    _ungrounded_files: set[str] = set()
-    for _rec in _classified:
-        if _rec.severity != "P1":
-            continue
-        if is_diff_grounded(_rec.file, _story_changed_files, workspace_path):
-            continue
-        _rec.disposition = "diff_ungrounded"  # type: ignore[assignment]
-        _diff_ungrounded_ids.add(_rec.finding_id)
-        if _rec.file:
-            _ungrounded_files.add(str(_rec.file))
-        _log(
-            f"  ↷ diff_ungrounded: P1 cannot be checked against this story's diff"
-            f" ({ungrounded_reason(_rec.file, _story_changed_files, workspace_path)}):"
-            f" {_rec.description[:80]}"
-        )
-    _cycle_p1_records = [r for r in _classified if r.severity == "P1"]
-    _ungrounded_p1s = [r for r in _cycle_p1_records if r.disposition == "diff_ungrounded"]
+    _grounding = ground_p1_records(
+        _classified, workspace_path, config.workspace.base_branch, log=_log
+    )
+    _story_changed_files = _grounding.changed_files
+    _ungrounded_p1s = list(_grounding.ungrounded)
     # True when this cycle produced P1 evidence and none of it survived grounding.
     # No disposition assigned below moves a record into or out of diff_ungrounded,
     # so this is stable for the rest of the phase.
-    _only_ungrounded_p1s = bool(_cycle_p1_records) and len(_ungrounded_p1s) == len(
-        _cycle_p1_records
-    )
+    _only_ungrounded_p1s = _grounding.only_ungrounded
     # An ungrounded finding is not work for the dev agent. When a retry is driven
     # by some OTHER, grounded blocker, the handoff must not also carry back a
     # sibling story's acceptance criteria as something to fix — the dev agent has
@@ -2582,10 +2561,60 @@ def _run_review_only_phase(
 
     _log_review_findings(parsed_review, _ro_p1, _ro_p2, _ro_cost, logger, task)
 
-    if parsed_review.verdict == "APPROVE":
+    # ── Diff grounding (same eligibility precondition as the retry loop) ───────
+    # Review-only has no DEV retry, so its REQUEST_CHANGES → ESCALATE step is the
+    # whole outcome decision — and it is the path sprint batch members are
+    # reviewed through, i.e. exactly the batching scenario #2525 was reported
+    # from. It must therefore run the same grounding check, not a weaker one: a
+    # P1 naming a file this story never touched cannot fail it here either.
+    # Classifying the cycle first is what puts the dispositions in
+    # state.finding_registry, so the audit records why a finding was set aside.
+    #
+    # Batch members share the leader's worktree, so the diff grounded against is
+    # the batch group's combined change — the finest granularity this path has.
+    # That still excludes every story outside the group, which is the reported
+    # failure mode; separating members within a group would need per-story diff
+    # attribution the batching model does not carry.
+    from theforge.finding_classifier import update_finding_registry as _update_finding_registry
+
+    _classified_ro = _update_finding_registry(
+        state=state,
+        cycle_results=list(state.last_cycle_reviewer_results),
+        workspace_path=workspace_path,
+        cycle_num=state.review_cycle,
+        prev_commit=None,
+    )
+    _grounding_ro = ground_p1_records(
+        _classified_ro, workspace_path, config.workspace.base_branch, log=_log
+    )
+
+    # A REQUEST_CHANGES whose every P1 is ungrounded rests entirely on evidence
+    # that was just established not to describe this change — including its
+    # matches_spec flag, which the same reviewer derived from those same
+    # findings. Treat it as an approval rather than a rejection nobody can act
+    # on. Fails closed everywhere else: a parse failure, a verdict with no P1
+    # evidence to ground, or a single grounded P1 all still escalate.
+    _ro_ungrounded_pass = (
+        parsed_review.verdict != "APPROVE"
+        and not parsed_review.parse_errors
+        and _grounding_ro.only_ungrounded
+    )
+    if _ro_ungrounded_pass:
+        _log(
+            f"  ↷ REVIEW   REQUEST_CHANGES not blocking — all "
+            f"{len(_grounding_ro.ungrounded)} P1(s) are diff_ungrounded "
+            f"(no finding checkable against this story's diff)"
+        )
+
+    if parsed_review.verdict == "APPROVE" or _ro_ungrounded_pass:
         state.phase = Phase.DONE
         _dur = _fmt_duration(_ro_elapsed)
-        _log(f"  ✓ REVIEW   APPROVE  {_ro_p1} P1  {_ro_p2} P2  {_fmt_cost(_ro_cost)}  {_dur}")
+        # Name the basis rather than flattening both to APPROVE: a reviewer that
+        # approved and one whose objections were all unverifiable against this
+        # diff are different outcomes, and the operator reading the run needs to
+        # tell them apart.
+        _ro_label = "REQUEST_CHANGES→diff_ungrounded_pass" if _ro_ungrounded_pass else "APPROVE"
+        _log(f"  ✓ REVIEW   {_ro_label}  {_ro_p1} P1  {_ro_p2} P2  {_fmt_cost(_ro_cost)}  {_dur}")
         _log(
             f"✓ DONE   total={_fmt_cost_total(state.total_cost_measured, state.total_cost)}"
             f"  {_fmt_duration(_ro_elapsed)}"
@@ -2594,7 +2623,7 @@ def _run_review_only_phase(
             logger._safe_emit(
                 "phase_end",
                 phase="REVIEW",
-                outcome="approve",
+                outcome="approve_diff_ungrounded" if _ro_ungrounded_pass else "approve",
                 cost_usd=_round_cost(_ro_cost),
                 duration_s=round(_ro_elapsed, 2),
             )
@@ -2611,14 +2640,32 @@ def _run_review_only_phase(
             success=True,
             phase=state.phase,
             state=state,
-            message=(f"Task '{task.name}' review-only: APPROVE. Branch: {branch_name}"),
+            message=(f"Task '{task.name}' review-only: {_ro_label}. Branch: {branch_name}"),
         )
 
     # REQUEST_CHANGES — no DEV retry in review-only mode
     state.phase = Phase.ESCALATE
     p1_count = sum(1 for f in parsed_review.findings if f.severity == "P1")
+    # Report what actually blocked. Counting every P1 would name findings that
+    # were set aside as diff_ungrounded moments ago, sending the operator after
+    # work the run itself decided was not about this story.
+    _ro_ungrounded_note = (
+        f" ({len(_grounding_ro.ungrounded)} further P1(s) recorded as diff_ungrounded)"
+        if _grounding_ro.ungrounded
+        else ""
+    )
+    # Counted from the classified records, which are what grounding ran over.
+    # The merged-review P1 count can differ (cross-reviewer bucketing), so
+    # subtracting one from the other would be arithmetic across two populations;
+    # it is only the fallback for a cycle that produced no records at all.
+    _ro_blocking_p1s = (
+        len(_grounding_ro.p1_records) - len(_grounding_ro.ungrounded)
+        if _grounding_ro.p1_records
+        else p1_count
+    )
     state.error = (
-        f"Review requested changes ({p1_count} P1 finding(s)). No retry in review-only mode."
+        f"Review requested changes ({_ro_blocking_p1s} P1 finding(s))"
+        f"{_ro_ungrounded_note}. No retry in review-only mode."
     )
     _log(
         f"  ✗ REVIEW   REQUEST_CHANGES  {_ro_p1} P1  {_ro_p2} P2"
