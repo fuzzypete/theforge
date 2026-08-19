@@ -101,6 +101,7 @@ def _make_config(
     run_summaries: bool = True,
     provider: str = "anthropic",
     model: str | None = None,
+    knowledge_ref: ModelRef | None = None,
     transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
 ) -> ForgeConfig:
     """A config whose plan model dispatches over an API transport.
@@ -136,7 +137,7 @@ def _make_config(
                 provider=provider,
             ),
         ),
-        knowledge=KnowledgeConfig(run_summaries=run_summaries),
+        knowledge=KnowledgeConfig(run_summaries=run_summaries, ref=knowledge_ref),
         transport_fallbacks=transport_fallbacks or {},
     )
 
@@ -233,7 +234,7 @@ class TestGeneration:
         assert calls[0]["plain_text"] is True
         assert outcome.status == "written"
 
-    def test_phase_eligibility_can_move_summary_to_another_api_candidate(
+    def test_phase_eligibility_only_gates_the_plan_derived_summary_model(
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
         excluded = replace(
@@ -277,35 +278,63 @@ class TestGeneration:
         )
 
         assert outcome.status == "written"
-        assert calls[0]["profile"].model == "gemini-2.5-pro"
+        assert calls[0]["profile"].model == "gpt-5.4"
         assert calls[0]["profile"].name == "knowledge_summary"
         assert calls[0]["profile"].budget_usd == 0.5
         assert calls[0]["profile"].timeout_seconds == 300
         assert calls[0]["profile"].phase == PHASE_KNOWLEDGE_SUMMARY
 
-    def test_provider_level_transport_fallback_keeps_cli_pool_summary_dispatchable(
+    def test_phase_eligibility_can_block_summary_generation(
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
-        fallback = TransportFallbackConfig(provider="openai", model="gpt-5.4-mini")
-        config = replace(
-            _make_config(
-                tmp_path,
-                provider="openai",
-                model="gpt-5.4",
-                transport_fallbacks={"openai": fallback},
+        excluded = replace(
+            AGENT_REGISTRY["openai/gpt-5.4/api"],
+            routing=replace(
+                AGENT_REGISTRY["openai/gpt-5.4/api"].routing,
+                phase_eligibility=frozenset(DEFAULT_PHASE_ELIGIBILITY - {PHASE_KNOWLEDGE_SUMMARY}),
             ),
+        )
+        config = replace(
+            _make_config(tmp_path, provider="openai", model="gpt-5.4"),
             agents=[
                 AgentDef(
                     name="openai-gpt-5-4",
-                    provider=None,
-                    cli="codex",
+                    provider="openai",
                     model="gpt-5.4",
-                    budget_usd=3.0,
-                    timeout_seconds=900,
+                    budget_usd=1.0,
+                    timeout_seconds=120,
                     tier="mid",
-                    transport=transport_for("openai", "cli"),
+                    transport=transport_for("openai", "api"),
                 ),
             ],
+            model_registry={"openai/gpt-5.4/api": excluded},
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "skipped"
+        assert outcome.attempted is True
+        expected = (
+            "routing.phase_eligibility excludes knowledge_summary for every configured candidate"
+        )
+        assert outcome.reason == expected
+        assert calls == []
+
+    def test_explicit_knowledge_ref_selects_the_summary_model(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = _make_config(
+            tmp_path,
+            provider="openai",
+            model="gpt-5.4",
+            knowledge_ref=ModelRef(
+                provider="openai",
+                model="gpt-5.4-mini",
+                budget_usd=0.5,
+                timeout_seconds=300,
+            ),
         )
 
         outcome = knowledge_summary_flow.maybe_generate_run_summary(
@@ -319,6 +348,85 @@ class TestGeneration:
         assert profile.name == "knowledge_summary"
         assert profile.budget_usd == 0.5
         assert profile.timeout_seconds == 300
+
+    def test_explicit_knowledge_ref_is_authoritative_over_a_configured_pool(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        fallback = TransportFallbackConfig(provider="openai", model="gpt-5.4")
+        config = replace(
+            _make_config(
+                tmp_path,
+                provider="openai",
+                model="gpt-5.4",
+                knowledge_ref=ModelRef(
+                    provider="openai",
+                    model="o4-mini",
+                    budget_usd=0.5,
+                    timeout_seconds=300,
+                ),
+                transport_fallbacks={"anthropic": fallback},
+            ),
+            agents=[
+                AgentDef(
+                    name="anthropic-sonnet",
+                    provider=None,
+                    model="claude-sonnet-4-5",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    cli="claude",
+                    transport=transport_for("anthropic", "cli"),
+                ),
+                AgentDef(
+                    name="openai-gpt-5-4",
+                    provider="openai",
+                    model="gpt-5.4",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    transport=transport_for("openai", "api"),
+                ),
+            ],
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "written"
+        profile = calls[0]["profile"]
+        assert profile.mode == "api"
+        assert profile.model == "o4-mini"
+        assert profile.name == "knowledge_summary"
+        assert profile.budget_usd == 0.5
+        assert profile.timeout_seconds == 300
+
+    def test_transport_fallback_does_not_choose_the_summary_model(self, tmp_path: Path) -> None:
+        fallback = TransportFallbackConfig(provider="openai", model="gpt-5.4-mini")
+        config = _make_config(
+            tmp_path,
+            provider="openai",
+            model="gpt-5.4",
+            transport_fallbacks={"openai": fallback},
+        )
+        config = replace(
+            config,
+            plan=replace(
+                config.plan,
+                ref=replace(
+                    config.plan.ref,
+                    cli="codex",
+                    provider=None,
+                    transport=transport_for("openai", "cli"),
+                    api_fallback=fallback,
+                ),
+            ),
+        )
+
+        profile, reason = knowledge_summary_flow._summary_profile(config)
+
+        assert profile is None
+        assert reason == "knowledge summaries need knowledge.ref when plan.ref uses CLI transport"
 
     def test_matching_pool_model_keeps_plan_derived_summary_limits(
         self, tmp_path: Path, calls: list[dict]
@@ -344,6 +452,73 @@ class TestGeneration:
 
         assert outcome.status == "written"
         profile = calls[0]["profile"]
+        assert profile.model == "gpt-5.4"
+        assert profile.name == "knowledge_summary"
+        assert profile.budget_usd == 0.5
+        assert profile.timeout_seconds == 300
+
+    def test_nonmatching_pool_model_does_not_override_an_api_plan_summary_model(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = replace(
+            _make_config(tmp_path, provider="openai", model="gpt-5.4"),
+            agents=[
+                AgentDef(
+                    name="google-gemini-2-5-pro",
+                    provider="google",
+                    model="gemini-2.5-pro",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    transport=transport_for("google", "api"),
+                ),
+            ],
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "written"
+        profile = calls[0]["profile"]
+        assert profile.mode == "api"
+        assert profile.model == "gpt-5.4"
+        assert profile.name == "knowledge_summary"
+        assert profile.budget_usd == 0.5
+        assert profile.timeout_seconds == 300
+
+    def test_pool_transport_fallback_does_not_override_an_api_plan_summary_model(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        fallback = TransportFallbackConfig(provider="openai", model="gpt-5.4-mini")
+        config = replace(
+            _make_config(
+                tmp_path,
+                provider="openai",
+                model="gpt-5.4",
+                transport_fallbacks={"anthropic": fallback},
+            ),
+            agents=[
+                AgentDef(
+                    name="anthropic-sonnet",
+                    provider=None,
+                    model="claude-sonnet-4-5",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    cli="claude",
+                    transport=transport_for("anthropic", "cli"),
+                ),
+            ],
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "written"
+        profile = calls[0]["profile"]
+        assert profile.mode == "api"
         assert profile.model == "gpt-5.4"
         assert profile.name == "knowledge_summary"
         assert profile.budget_usd == 0.5
@@ -379,7 +554,7 @@ class TestGeneration:
         assert "run_summary:" in prompt
         assert single_shot_runner.call_args.kwargs == {"plain_text": True}
 
-    def test_a_cli_plan_model_without_an_api_fallback_is_not_dispatched(
+    def test_a_cli_plan_model_without_knowledge_ref_is_not_dispatched(
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
         from dataclasses import replace
@@ -395,13 +570,16 @@ class TestGeneration:
         )
         assert outcome.status == "skipped"
         assert outcome.attempted is True
+        assert (
+            outcome.reason
+            == "knowledge summaries need knowledge.ref when plan.ref uses CLI transport"
+        )
         assert calls == []
         assert not summary_path(tmp_path, RUN_ID).exists()
 
-    def test_phase_eligible_matching_cli_pool_model_can_use_plan_ref_api_fallback(
+    def test_explicit_knowledge_ref_keeps_cli_plan_summary_dispatchable(
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
-        fallback = TransportFallbackConfig(provider="openai", model="gpt-5.4-mini")
         config = _make_config(tmp_path, provider="openai", model="gpt-5.4")
         config = replace(
             config,
@@ -412,21 +590,17 @@ class TestGeneration:
                     cli="codex",
                     provider=None,
                     transport=transport_for("openai", "cli"),
-                    api_fallback=fallback,
                 ),
             ),
-            agents=[
-                AgentDef(
-                    name="openai-gpt-5-4",
-                    provider=None,
-                    cli="codex",
-                    model="gpt-5.4",
-                    budget_usd=3.0,
-                    timeout_seconds=900,
-                    tier="mid",
-                    transport=transport_for("openai", "cli"),
+            knowledge=KnowledgeConfig(
+                run_summaries=True,
+                ref=ModelRef(
+                    provider="openai",
+                    model="gpt-5.4-mini",
+                    budget_usd=0.5,
+                    timeout_seconds=300,
                 ),
-            ],
+            ),
         )
 
         outcome = knowledge_summary_flow.maybe_generate_run_summary(

@@ -1047,10 +1047,12 @@ Two properties are worth knowing before enabling it:
   actually exists in that run's audit record. A citation that does not resolve
   rejects the whole summary rather than persisting an unverifiable claim.
 
-Generation dispatches a bounded, tool-free agent over an API transport derived
-from the plan model (via its `transport_fallback` when the plan model is a CLI).
-A plan model with no API transport available skips generation with a warning.
-Its cost is recorded on the artifact under `generation.cost_usd`, because it is
+Generation dispatches a bounded, tool-free agent over an API transport.
+`knowledge.ref` chooses the summary model explicitly; when omitted, summaries
+inherit `plan.ref` only if planning already dispatches over API transport. A
+CLI plan model with no explicit `knowledge.ref` skips generation with a
+warning. `transport_fallback` does not choose the durable-knowledge author. Its
+cost is recorded on the artifact under `generation.cost_usd`, because it is
 spent after the run's own cost accounting has closed.
 
 `knowledge.prior_run_context` enables Layer 3 consumption: context assembly may

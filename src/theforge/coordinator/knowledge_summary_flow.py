@@ -42,7 +42,7 @@ from theforge.knowledge_summary import (
     validate_proposed_summary,
     write_summary,
 )
-from theforge.model_capabilities import identity_for_agent, identity_for_profile
+from theforge.model_capabilities import identity_for_agent
 from theforge.task.summary_prompts import build_run_summary_prompt
 
 from . import util as _cu
@@ -192,19 +192,6 @@ def _agent_phase_eligibility(config: "ForgeConfig", agent: object) -> frozenset[
     return DEFAULT_PHASE_ELIGIBILITY
 
 
-def _apply_summary_transport_fallback(
-    config: "ForgeConfig",
-    profile: "ModelProfile",
-) -> "ModelProfile":
-    fallbacks = getattr(config, "transport_fallbacks", None) or {}
-    if not fallbacks or profile.api_fallback is not None:
-        return profile
-
-    from theforge.config.profiles import _apply_transport_fallback  # noqa: PLC0415
-
-    return _apply_transport_fallback(profile, fallbacks)
-
-
 def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | None":
     if profile.mode == "api":
         return profile
@@ -225,37 +212,26 @@ def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | Non
     )
 
 
-def _summary_dispatch_profile(
-    summary_envelope: "ModelProfile",
-    selected: "ModelProfile",
-) -> "ModelProfile":
-    """Keep the plan role envelope while swapping in the selected model identity."""
-    return replace(
-        summary_envelope,
-        cli=selected.cli,
-        provider=selected.provider,
-        transport=selected.transport,
-        base_url=selected.base_url,
-        model=selected.model,
-        fallback_models=selected.fallback_models,
-        api_fallback=selected.api_fallback,
-        registry_id=selected.registry_id,
-        registry_source=selected.registry_source,
-        reasoning_mode=selected.reasoning_mode,
-    )
-
-
 def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str | None]:
-    """Derive a tool-free API profile for the summary agent, or None.
+    """Resolve the tool-free API summary profile after eligibility checks.
 
-    Built from ``config.plan.ref`` — the plan model is the cheap bounded-writing
-    role and the summary is the same kind of work. A CLI-transport ref is
-    projected onto its configured same-provider API fallback; without one there
-    is no dispatch path that is mechanically tool-free, and the caller skips.
+    Model selection is authoritative from ``knowledge.ref`` when present,
+    otherwise from the inherited ``plan.ref``. The configured agent pool only
+    gates whether ``knowledge_summary`` is allowed to run at all; it never
+    supplies or swaps the role's identity.
     """
     from theforge.config.bridge import model_ref_to_profile  # noqa: PLC0415
 
-    ref = getattr(getattr(config, "plan", None), "ref", None)
+    knowledge_cfg = getattr(config, "knowledge", None)
+    knowledge_ref = getattr(knowledge_cfg, "ref", None)
+    ref = knowledge_ref
+    if ref is None:
+        ref = getattr(getattr(config, "plan", None), "ref", None)
+        if ref is not None and ref.mode != "api":
+            return (
+                None,
+                "knowledge summaries need knowledge.ref when plan.ref uses CLI transport",
+            )
     if ref is None:
         return (None, None)
 
@@ -266,59 +242,26 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
         phase=PHASE_KNOWLEDGE_SUMMARY,
         sandbox_mode="read-only",
     )
-    summary_envelope = _apply_summary_transport_fallback(config, summary_envelope)
     base_profile = _project_summary_api_profile(summary_envelope)
+    if knowledge_ref is not None:
+        return (base_profile, None)
 
     agents = getattr(config, "agents", None) or []
     if not agents:
         return (base_profile, None)
 
-    phase_eligible = [
-        agent
-        for agent in agents
-        if PHASE_KNOWLEDGE_SUMMARY in _agent_phase_eligibility(config, agent)
-    ]
-    if not phase_eligible:
+    # A configured pool can veto this role entirely, but it does not participate
+    # in model selection once the summary profile has been derived above.
+    any_phase_eligible = any(
+        PHASE_KNOWLEDGE_SUMMARY in _agent_phase_eligibility(config, agent) for agent in agents
+    )
+    if not any_phase_eligible:
         return (
             None,
             "routing.phase_eligibility excludes knowledge_summary for every configured candidate",
         )
 
-    summary_identity = identity_for_profile(summary_envelope)
-    base_identity = identity_for_profile(base_profile) if base_profile is not None else None
-    projected: list[ModelProfile] = []
-    for agent in phase_eligible:
-        candidate = replace(
-            agent.to_model_profile(allowed_tools=()),
-            phase=PHASE_KNOWLEDGE_SUMMARY,
-            sandbox_mode="read-only",
-        )
-        candidate = _apply_summary_transport_fallback(config, candidate)
-        candidate = _project_summary_api_profile(candidate)
-        if candidate is not None:
-            projected.append(candidate)
-    if not projected:
-        if base_profile is not None and summary_identity is not None:
-            if any(identity_for_agent(agent) == summary_identity for agent in phase_eligible):
-                return (base_profile, None)
-        return (
-            None,
-            "no phase-eligible configured model can dispatch knowledge_summary over a tool-free "
-            "API transport",
-        )
-
-    if base_identity is not None:
-        matching = next(
-            (
-                candidate
-                for candidate in projected
-                if identity_for_profile(candidate) == base_identity
-            ),
-            None,
-        )
-        if matching is not None:
-            return (base_profile, None)
-    return (_summary_dispatch_profile(summary_envelope, projected[0]), None)
+    return (base_profile, None)
 
 
 def _should_generate(config: "ForgeConfig", result: "CoordinatorResult", run_id: str) -> bool:
@@ -378,8 +321,8 @@ def maybe_generate_run_summary(
         profile, profile_reason = _summary_profile(config)
         if profile is None:
             reason = profile_reason or (
-                "no tool-free API transport available for the plan model "
-                "(configure transport_fallback to enable summaries)"
+                "no tool-free API transport available for knowledge_summary "
+                "(configure knowledge.ref to enable summaries)"
             )
             _log(f"  ⚠ knowledge summary skipped: {reason}")
             return _record_summary_outcome(
