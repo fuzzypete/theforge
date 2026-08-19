@@ -222,9 +222,16 @@ retry:
 # evidence-backed summary to .forge/knowledge/summaries/{run_id}.yaml. Every
 # learned claim must cite a finding, plan step, review cycle, file, or diff ref
 # from that run — unevidenced summaries are rejected, not persisted. Generation
-# is a post-DONE side effect: it never changes a run's outcome. Ships disabled.
+# is a post-DONE side effect: it never changes a run's outcome. ``knowledge.ref``
+# directly names the API model that authors summaries; when omitted, summaries
+# inherit ``plan.ref`` only if planning already dispatches over API transport.
+# CLI plan refs do not consult ``transport_fallback`` for summary authoring.
+# Ships disabled.
 # knowledge:
 #   run_summaries: true
+#   ref:
+#     provider: openai
+#     model: o4-mini
 
 context:
   preflight_budget: 200
@@ -236,7 +243,9 @@ context:
 # unavailable. The provider never changes — only the transport. For any CLI
 # model in models: whose same-provider API variant is registered, TheForge wires
 # the fallback automatically. Set auto_transport_fallback: false to disable
-# auto-pairing, or declare transport_fallback to override it.
+# auto-pairing, or declare transport_fallback to override it. This key does not
+# choose the durable-knowledge summary model; configure ``knowledge.ref`` for
+# that role.
 # transport_fallback:
 #   openai:
 #     model: o4-mini

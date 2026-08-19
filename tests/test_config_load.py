@@ -779,11 +779,51 @@ class TestKnowledgeConfig:
         assert config.knowledge.run_summaries is True
         # Layer 3 consumption stays off — the two knobs are independent.
         assert config.knowledge.prior_run_context is False
+        assert config.knowledge.ref is None
+
+    def test_knowledge_ref_can_name_the_summary_model(self, tmp_path):
+        config = load_config(
+            _write_config(
+                {
+                    "knowledge": {
+                        "run_summaries": True,
+                        "ref": {
+                            "provider": "openai",
+                            "model": "gpt-5.4-mini",
+                            "budget_usd": 0.75,
+                            "timeout_seconds": 420,
+                        },
+                    }
+                },
+                tmp_path,
+            )
+        )
+
+        assert config.knowledge.run_summaries is True
+        assert config.knowledge.ref is not None
+        assert config.knowledge.ref.provider == "openai"
+        assert config.knowledge.ref.cli is None
+        assert config.knowledge.ref.model == "gpt-5.4-mini"
+        assert config.knowledge.ref.budget_usd == 0.75
+        assert config.knowledge.ref.timeout_seconds == 420
 
     @pytest.mark.parametrize("key", ["run_summaries", "prior_run_context"])
     def test_a_non_bool_value_is_rejected(self, key, tmp_path):
         config_path = _write_config({"knowledge": {key: "yes"}}, tmp_path)
         with pytest.raises(ValueError, match=f"knowledge.{key}"):
+            load_config(config_path)
+
+    def test_knowledge_ref_rejects_cli_transport(self, tmp_path):
+        config_path = _write_config(
+            {"knowledge": {"ref": {"cli": "codex", "model": "gpt-5.4"}}},
+            tmp_path,
+        )
+        with pytest.raises(ValueError, match="knowledge.ref.*API transport"):
+            load_config(config_path)
+
+    def test_knowledge_ref_requires_provider_and_model(self, tmp_path):
+        config_path = _write_config({"knowledge": {"ref": {"provider": "openai"}}}, tmp_path)
+        with pytest.raises(ValueError, match="knowledge.ref.model"):
             load_config(config_path)
 
     def test_a_non_mapping_knowledge_block_is_rejected(self, tmp_path):
