@@ -34,7 +34,7 @@ from ..coordinator.agent_failure import (
     mark_infrastructure_abort,
 )
 from ..coordinator.batch_diff import BatchReviewContext, latest_dev_handoff
-from ..coordinator.cancellation import BUDGET_CANCEL_ERROR_TYPE, StopSignal
+from ..coordinator.cancellation import BUDGET_CANCEL_ERROR_TYPE, StopSignal, cancel_cause
 from ..coordinator.config_snapshot import SprintConfigSnapshot, capture_or_load
 from ..coordinator.engine import run_from_dev, run_from_review, run_review_only, run_task
 from ..coordinator.gate import run_gate_full
@@ -2498,22 +2498,42 @@ def _run_batch_group(
             f"reviews cannot attribute commits and will treat every finding as "
             f"unverifiable against the member's own change"
         )
+
+    def _cancelled_batch_member_result(
+        member: TaskStory, started_at: datetime.datetime
+    ) -> CoordinatorResult:
+        reason, error_type = cancel_cause(stop_event)
+        return _abnormal_story_result(
+            member.slug,
+            config=config,
+            sprint_name=sprint_name,
+            started_at=started_at,
+            error=reason,
+            error_type=error_type,
+            message=reason,
+        )
+
     for member in member_tasks:
         member_t0 = datetime.datetime.now(datetime.timezone.utc)
         set_worker_slug(member.slug)
         member_fn = state_update_fns.get(member.slug)
         if member_fn is not None:
             member_fn({"spec": member.slug, "phase": "REVIEW"})
+        review_started = False
         try:
-            member_result = run_review_only(
-                config,
-                member,
-                workspace_path,
-                notify=notify,
-                sprint_name=sprint_name,
-                branch_name=branch_name,
-                batch_context=batch_context,
-            )
+            if stop_event is not None and stop_event.is_set():
+                member_result = _cancelled_batch_member_result(member, member_t0)
+            else:
+                review_started = True
+                member_result = run_review_only(
+                    config,
+                    member,
+                    workspace_path,
+                    notify=notify,
+                    sprint_name=sprint_name,
+                    branch_name=branch_name,
+                    batch_context=batch_context,
+                )
         except Exception as exc:
             _log(f"ERROR {member.slug}: batch review raised {type(exc).__name__}: {exc}")
             member_result = _batch_member_failure(
@@ -2525,6 +2545,17 @@ def _run_batch_group(
             )
         finally:
             set_worker_slug("")
+        if review_started and member_fn is not None:
+            member_update: dict[str, object] = {
+                "spec": member.slug,
+                "coordinator_state": member_result.state,
+            }
+            measured_cost = _optional_cost(
+                getattr(member_result.state, "total_cost_measured", None)
+            )
+            if measured_cost is not None:
+                member_update["cost_usd"] = measured_cost
+            member_fn(member_update)
         member_result.state.preflight_batch_group = group_id
         # The gate ran once, on the shared worktree. Carry its result onto every
         # member so a batched story's audit shows the validation it actually
@@ -7294,133 +7325,173 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
 
             if expired_slugs:
                 for slug in expired_slugs:
+                    if slug not in _sprint_state.active:
+                        continue
                     if slug in _sprint_state.plan_gates:
                         _log(f"TIMEOUT releasing plan gate for {slug}")
                         _sprint_state.plan_gates[slug].set()
                         del _sprint_state.plan_gates[slug]
-                    fut = _sprint_state.active.pop(slug)
-                    story_deadlines.pop(slug, None)
-                    story_wait_started.discard(slug)
-                    # A worker killed at its deadline is not preserved work
-                    # awaiting a decision — nothing can land it, so its files
-                    # are free.
-                    _end_collision_claim(_sprint_state, slug, "worker timed out")
-                    # Set the cancellation event BEFORE cancel() so any in-flight
-                    # work stops at the next phase boundary or subprocess read.
-                    # Future.cancel() is a no-op for an already-running thread.
-                    _stop_evt = _sprint_state.stop_events.pop(slug, None)
-                    if _stop_evt is not None:
-                        _stop_evt.set()
-                    fut.cancel()
-                    # An elapsed deadline is exhausted time, not a verdict on the
-                    # work and not evidence the worker stopped responding — a
-                    # story killed here may have been converging, mid-edit, or in
-                    # a wait this system itself opened. Say which (#2333).
-                    _wait_credit = worker_budget.operator_wait_credit(slug)
-                    _was_waiting, _wait_phase, _wait_len = worker_budget.waiting_on_operator(slug)
-                    _wait_note = ""
-                    if _wait_credit > 0:
-                        _wait_note = (
-                            f"; {_fmt_duration(_wait_credit)} of operator-decision wait"
-                            " was excluded from the deadline"
+                    fut = _sprint_state.active[slug]
+                    affected_slugs = [
+                        active_slug
+                        for active_slug, active_fut in _sprint_state.active.items()
+                        if active_fut is fut
+                    ]
+                    recovered_snapshot = _sprint_state.cost.snapshot()
+                    for affected_slug in affected_slugs:
+                        del _sprint_state.active[affected_slug]
+                        story_deadlines.pop(affected_slug, None)
+                        story_wait_started.discard(affected_slug)
+                        # A worker killed at its deadline is not preserved work
+                        # awaiting a decision — nothing can land it, so its files
+                        # are free.
+                        _end_collision_claim(_sprint_state, affected_slug, "worker timed out")
+                        # Set the cancellation event BEFORE cancel() so any in-flight
+                        # work stops at the next phase boundary or subprocess read.
+                        # Future.cancel() is a no-op for an already-running thread.
+                        _stop_evt = _sprint_state.stop_events.pop(affected_slug, None)
+                        if _stop_evt is not None:
+                            _stop_evt.set()
+                        fut.cancel()
+                    for affected_slug in affected_slugs:
+                        # An elapsed deadline is exhausted time, not a verdict on the
+                        # work and not evidence the worker stopped responding — a
+                        # story killed here may have been converging, mid-edit, or in
+                        # a wait this system itself opened. Say which (#2333).
+                        _wait_credit = worker_budget.operator_wait_credit(affected_slug)
+                        _was_waiting, _wait_phase, _wait_len = worker_budget.waiting_on_operator(
+                            affected_slug
                         )
-                    if _was_waiting:
-                        _wait_note += (
-                            f"; still waiting on an operator decision"
-                            f"{f' at {_wait_phase}' if _wait_phase else ''}"
-                            f" after {_fmt_duration(_wait_len)}"
+                        _wait_note = ""
+                        if _wait_credit > 0:
+                            _wait_note = (
+                                f"; {_fmt_duration(_wait_credit)} of operator-decision wait"
+                                " was excluded from the deadline"
+                            )
+                        if _was_waiting:
+                            _wait_note += (
+                                f"; still waiting on an operator decision"
+                                f"{f' at {_wait_phase}' if _wait_phase else ''}"
+                                f" after {_fmt_duration(_wait_len)}"
+                            )
+                        _log(
+                            f"TIMEOUT {affected_slug} (story deadline exhausted after "
+                            f"{story_worker_timeouts[affected_slug]}s of working time{_wait_note}"
+                            " — marking as failed on wall clock, not on quality)"
                         )
-                    _log(
-                        f"TIMEOUT {slug} (story deadline exhausted after "
-                        f"{story_worker_timeouts[slug]}s of working time{_wait_note}"
-                        " — marking as failed on wall clock, not on quality)"
-                    )
-                    worker_budget.unregister_worker_budget(slug)
-                    spec_str = slug_to_spec[slug]
-                    timed_out_at = datetime.datetime.now(datetime.timezone.utc)
-                    snapshot = _snapshot_last_known(slug, _sprint_state.state_writer)
-                    last_phase = snapshot["last_phase"]
-                    if slug in _sprint_state.story_times:
-                        story_started_at = _sprint_state.story_times[slug][0]
-                    elif snapshot["last_started_at"] is not None:
-                        story_started_at = snapshot["last_started_at"]
-                    else:
-                        story_started_at = timed_out_at
-                    _phase_label = f" during phase {last_phase}" if last_phase else ""
-                    # Deadline exhaustion, stated as such. The operator action for
-                    # a story that ran out of wall clock is not the action for one
-                    # that produced an unacceptable result, and only the second is
-                    # evidence about the work (#2333).
-                    _timeout_error = (
-                        f"Story deadline exhausted (>{story_worker_timeouts[slug]}s of "
-                        f"working time){_phase_label}{_wait_note}"
-                    )
-                    _timeout_result = _abnormal_story_result(
-                        slug,
-                        config=_ctx.config,
-                        sprint_name=_ctx.resolved.name,
-                        started_at=story_started_at,
-                        error=_timeout_error,
-                        error_type="TimeoutError",
-                        message=(
-                            f"Story deadline exhausted after {story_worker_timeouts[slug]}s "
-                            "of working time — not a review or quality failure"
-                        ),
-                    )
-                    _timeout_cause = build_abnormal_cause(
-                        kind=ABNORMAL_WORKER_TIMEOUT,
-                        cause=_timeout_error,
-                        error_type="TimeoutError",
-                        phase=last_phase,
-                        run_id=_timeout_result.state.run_id,
-                        source="sprint.runner:worker-deadline",
-                    )
-                    _timeout_result.state.abnormal_termination = _timeout_cause
-                    _sprint_state.latest_live_costs.pop(slug, None)
-                    _sprint_state.story_times[slug] = (story_started_at, timed_out_at)
-                    _sprint_state.live_telemetry_snapshots[slug] = snapshot
-                    # A worker the auth breaker cancelled can also cross its
-                    # deadline before returning. It is still a story the sprint
-                    # killed over a dead credential, not one that failed — same
-                    # attribution as the ordinary cancellation path below.
-                    _timeout_outcome: StoryOutcome = StoryOutcome.FAILED
-                    if slug in auth_cancelled_slugs:
-                        auth_cancelled_slugs.discard(slug)
-                        _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
-                        _mark_story_auth_cancelled(
-                            _timeout_result, auth_circuit, reason=_cancel_reason
+                        worker_budget.unregister_worker_budget(affected_slug)
+                        spec_str = slug_to_spec[affected_slug]
+                        timed_out_at = datetime.datetime.now(datetime.timezone.utc)
+                        snapshot = _snapshot_last_known(affected_slug, _sprint_state.state_writer)
+                        last_live_cost = _sprint_state.latest_live_costs.pop(affected_slug, None)
+                        if _sprint_state.cost.has_in_flight_cost(affected_slug) or (
+                            len(affected_slugs) == 1
+                            and (last_live_cost is not None or snapshot["last_cost"] is not None)
+                        ):
+                            recovered_snapshot = _sprint_state.cost.recover_in_flight_cost(
+                                affected_slug,
+                                fallback_cost=(
+                                    last_live_cost.amount
+                                    if last_live_cost is not None
+                                    else snapshot["last_cost"]
+                                ),
+                                fallback_measured=(
+                                    True if last_live_cost is None else last_live_cost.measured
+                                ),
+                            )
+                        last_phase = snapshot["last_phase"]
+                        if affected_slug in _sprint_state.story_times:
+                            story_started_at = _sprint_state.story_times[affected_slug][0]
+                        elif snapshot["last_started_at"] is not None:
+                            story_started_at = snapshot["last_started_at"]
+                        else:
+                            story_started_at = timed_out_at
+                        _phase_label = f" during phase {last_phase}" if last_phase else ""
+                        # Deadline exhaustion, stated as such. The operator action for
+                        # a story that ran out of wall clock is not the action for one
+                        # that produced an unacceptable result, and only the second is
+                        # evidence about the work (#2333).
+                        _timeout_error = (
+                            "Story deadline exhausted (>"
+                            f"{story_worker_timeouts[affected_slug]}s of "
+                            f"working time){_phase_label}{_wait_note}"
                         )
-                        _timeout_outcome = StoryOutcome.SKIPPED
-                        _log(f"SKIPPED {slug} ({_cancel_reason})")
-                    _sprint_state.results.append((spec_str, _timeout_result))
-                    _write_story_audit(
-                        _ctx.config,
-                        _ctx.slug_to_context[slug][0],
-                        _timeout_result,
-                        sprint_id=_ctx.sprint_id,
-                        telemetry_snapshot=snapshot,
-                    )
-                    _set_outcome(
-                        _sprint_state,
-                        slug,
-                        _timeout_outcome,
-                        phase="ESCALATE",
-                        last_phase=last_phase,
-                        failure_cause=_timeout_cause,
-                        # The gate this story may have been sitting in never
-                        # reported a decision and never will; leaving the live
-                        # detail at gate_status=running is what made the state
-                        # file claim a running gate on a failed story (#2013).
-                        detail_updates={"gate_status": GATE_STATUS_TIMEOUT},
-                    )
-                    _persist_current_story_result(
-                        _sprint_state,
-                        slug,
-                        _timeout_result,
-                        started_at=story_started_at,
-                        finished_at=timed_out_at,
-                    )
-                    _sprint_state.dag.mark_skipped(slug)
+                        _timeout_result = _abnormal_story_result(
+                            affected_slug,
+                            config=_ctx.config,
+                            sprint_name=_ctx.resolved.name,
+                            started_at=story_started_at,
+                            error=_timeout_error,
+                            error_type="TimeoutError",
+                            message=(
+                                "Story deadline exhausted after "
+                                f"{story_worker_timeouts[affected_slug]}s of working time — "
+                                "not a review or quality failure"
+                            ),
+                        )
+                        _timeout_cause = build_abnormal_cause(
+                            kind=ABNORMAL_WORKER_TIMEOUT,
+                            cause=_timeout_error,
+                            error_type="TimeoutError",
+                            phase=last_phase,
+                            run_id=_timeout_result.state.run_id,
+                            source="sprint.runner:worker-deadline",
+                        )
+                        _timeout_result.state.abnormal_termination = _timeout_cause
+                        _sprint_state.story_times[affected_slug] = (
+                            story_started_at,
+                            timed_out_at,
+                        )
+                        _sprint_state.live_telemetry_snapshots[affected_slug] = snapshot
+                        # A worker the auth breaker cancelled can also cross its
+                        # deadline before returning. It is still a story the sprint
+                        # killed over a dead credential, not one that failed — same
+                        # attribution as the ordinary cancellation path below.
+                        _timeout_outcome: StoryOutcome = StoryOutcome.FAILED
+                        if affected_slug in auth_cancelled_slugs:
+                            auth_cancelled_slugs.discard(affected_slug)
+                            _cancel_reason = f"cancelled mid-flight: {auth_circuit_reason}"
+                            _mark_story_auth_cancelled(
+                                _timeout_result, auth_circuit, reason=_cancel_reason
+                            )
+                            _timeout_outcome = StoryOutcome.SKIPPED
+                            _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        elif affected_slug in _sprint_state.budget_cancelled_slugs:
+                            _sprint_state.budget_cancelled_slugs.discard(affected_slug)
+                            _cancel_reason = _budget_cancel_reason(_sprint_state)
+                            _mark_story_budget_cancelled(_timeout_result, reason=_cancel_reason)
+                            _timeout_outcome = StoryOutcome.SKIPPED
+                            _log(f"SKIPPED {affected_slug} ({_cancel_reason})")
+                        _sprint_state.results.append((spec_str, _timeout_result))
+                        _write_story_audit(
+                            _ctx.config,
+                            _ctx.slug_to_context[affected_slug][0],
+                            _timeout_result,
+                            sprint_id=_ctx.sprint_id,
+                            telemetry_snapshot=snapshot,
+                        )
+                        _set_outcome(
+                            _sprint_state,
+                            affected_slug,
+                            _timeout_outcome,
+                            phase="ESCALATE",
+                            last_phase=last_phase,
+                            failure_cause=_timeout_cause,
+                            # The gate this story may have been sitting in never
+                            # reported a decision and never will; leaving the live
+                            # detail at gate_status=running is what made the state
+                            # file claim a running gate on a failed story (#2013).
+                            detail_updates={"gate_status": GATE_STATUS_TIMEOUT},
+                        )
+                        _persist_current_story_result(
+                            _sprint_state,
+                            affected_slug,
+                            _timeout_result,
+                            started_at=story_started_at,
+                            finished_at=timed_out_at,
+                        )
+                        _sprint_state.dag.mark_skipped(affected_slug)
+                    _publish_live_budget_status(recovered_snapshot.spent_including_in_flight)
                 continue
 
             for slug, fut in list(_sprint_state.active.items()):

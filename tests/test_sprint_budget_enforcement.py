@@ -23,7 +23,9 @@ uses and checks the same ``stop_event`` at the same boundaries.
 
 from __future__ import annotations
 
+import datetime
 import threading
+import time
 from dataclasses import replace
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -94,10 +96,17 @@ def _make_resolved(
     )
 
 
-def _make_batch_config(tmp_path: Path) -> ForgeConfig:
+def _make_batch_config(
+    tmp_path: Path, *, max_stories: int = 2, max_complexity_budget: int = 2
+) -> ForgeConfig:
     return replace(
         _make_config(tmp_path),
-        sprint=SprintConfig(batch=SprintBatchConfig(max_stories=2, max_complexity_budget=2)),
+        sprint=SprintConfig(
+            batch=SprintBatchConfig(
+                max_stories=max_stories,
+                max_complexity_budget=max_complexity_budget,
+            )
+        ),
     )
 
 
@@ -312,6 +321,72 @@ def test_batched_worker_exception_recovers_the_shared_spend_once(tmp_path: Path)
     assert result.cost_complete is True
 
 
+def test_batched_worker_timeout_recovers_the_shared_spend_once(tmp_path: Path) -> None:
+    """The deadline recovery path must preserve the shared batch spend once."""
+    config = _make_batch_config(tmp_path)
+    resolved = replace(
+        _make_resolved(tmp_path, ("story-a", "story-b"), budget_usd=100.0),
+        worker_timeout_seconds=1,
+    )
+    states: dict[str, CoordinatorState] = {}
+    for slug in ("story-a", "story-b"):
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_complexity = "small"
+        state.preflight_work_type = "bug"
+        state.preflight_sufficiency = "implementation_ready"
+        state.preflight_likely_files = [f"src/{slug}.py"]
+        states[slug] = state
+
+    def _fake_run_batch_group(
+        _config,
+        leader_task,
+        member_tasks,
+        _sprint_run_id,
+        _sprint_name,
+        _interactive,
+        _notify,
+        _effective_auto_merge,
+        state_update_fns,
+        _no_pull,
+        _preflight_states,
+        stop_event,
+        *,
+        base_lands_locally=None,
+        lands_in_project_root=None,
+    ):
+        del base_lands_locally, lands_in_project_root
+        state_update_fns[leader_task.slug]({"phase": "DEV", "cost_usd": 4.0})
+        for member in member_tasks:
+            state_update_fns[member.slug]({"phase": "DEV", "cost_usd": 4.0, "cost_mirrored": True})
+        assert stop_event.wait(timeout=10), "worker deadline never stopped the batch"
+        finished = datetime.datetime.now(datetime.timezone.utc)
+        leader_result = _cancelled_result(stop_event, 4.0)
+        member_result = _cancelled_result(stop_event, 4.0)
+        return {
+            leader_task.slug: (leader_task, leader_result, 0.0, finished, finished),
+            member_tasks[0].slug: (member_tasks[0], member_result, 0.0, finished, finished),
+        }
+
+    with (
+        patch("theforge.sprint.runner.enforce_sprint_auth_readiness"),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value=states),
+        patch("theforge.sprint.runner._run_batch_group", side_effect=_fake_run_batch_group),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
+        patch("theforge.sprint.runner._write_story_audit"),
+    ):
+        result = run_sprint_ctx(config, resolved)
+
+    assert result.specs_failed == 2
+    assert result.total_cost_usd == 4.0
+    assert result.cost_complete is True
+
+
 def test_worker_exception_lower_bound_recovery_keeps_sprint_cost_incomplete(
     tmp_path: Path,
 ) -> None:
@@ -399,6 +474,128 @@ def test_a_budget_halt_is_not_labelled_as_a_worker_timeout(tmp_path: Path) -> No
     _spec, cancelled = result.results[0]
     assert cancelled.state.error_type == BUDGET_CANCEL_ERROR_TYPE
     assert "budget" in (cancelled.state.error or "").lower()
+
+
+def test_a_budget_cancelled_worker_timeout_stays_skipped_and_keeps_its_spend(
+    tmp_path: Path,
+) -> None:
+    """A budget halt that returns through the deadline path stays a budget halt."""
+    config = _make_config(tmp_path)
+    resolved = replace(
+        _make_resolved(tmp_path, ("story-a",), budget_usd=5.0),
+        worker_timeout_seconds=1,
+    )
+    saw_budget_stop = threading.Event()
+
+    def _fake_run_task(_config, task, **kwargs):
+        state_update_fn = kwargs["state_update_fn"]
+        stop_event = kwargs["stop_event"]
+        state_update_fn({"phase": "REVIEW", "cost_usd": 6.0})
+        assert stop_event.wait(timeout=5), "budget halt never reached the worker"
+        saw_budget_stop.set()
+        time.sleep(1.2)
+        return _cancelled_result(stop_event, 6.0)
+
+    result = _run(config, resolved, _fake_run_task)
+
+    assert saw_budget_stop.is_set()
+    assert result.stopped_reason is not None
+    assert result.stopped_reason.startswith("Budget exhausted")
+    assert result.specs_failed == 0
+    assert result.specs_skipped == 1
+    assert round(result.total_cost_usd, 2) == 6.0
+    assert result.budget_status == "over"
+    _spec, cancelled = result.results[0]
+    assert cancelled.state.error_type == BUDGET_CANCEL_ERROR_TYPE
+    assert "budget" in (cancelled.state.error or "").lower()
+    assert "timeout" not in (cancelled.state.error or "").lower()
+
+
+def test_batched_member_reviews_stop_before_starting_the_next_member_when_over_budget(
+    tmp_path: Path,
+) -> None:
+    """A member review that exhausts the cap must block later member reviews."""
+    config = _make_batch_config(tmp_path, max_stories=3, max_complexity_budget=3)
+    resolved = _make_resolved(tmp_path, ("story-a", "story-b", "story-c"), budget_usd=5.0)
+    states: dict[str, CoordinatorState] = {}
+    for slug in ("story-a", "story-b", "story-c"):
+        state = CoordinatorState()
+        state.preflight_verdict = "PROCEED"
+        state.preflight_complexity = "small"
+        state.preflight_work_type = "bug"
+        state.preflight_sufficiency = "implementation_ready"
+        state.preflight_likely_files = [f"src/{slug}.py"]
+        states[slug] = state
+    workspace = tmp_path / "batch-workspace"
+    workspace.mkdir()
+    review_calls: list[str] = []
+
+    def _fake_run_single_story(
+        _config,
+        task,
+        _triage,
+        _sprint_run_id,
+        _sprint_name,
+        _interactive,
+        _notify,
+        _resume,
+        _effective_auto_merge,
+        state_update_fn,
+        _no_pull=False,
+        _plan_gate=None,
+        _preflight_states=None,
+        _stop_event=None,
+        base_lands_locally=None,
+        lands_in_project_root=None,
+    ):
+        del base_lands_locally, lands_in_project_root
+        state_update_fn({"phase": "DEV", "cost_usd": 1.0})
+        state = CoordinatorState()
+        state.preflight_result = MagicMock(cost_usd=1.0)
+        state.workspace_path = workspace
+        state.branch_name = f"forge/{task.slug}"
+        finished = datetime.datetime.now(datetime.timezone.utc)
+        return (
+            task,
+            CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="ok"),
+            0.0,
+            finished,
+            finished,
+        )
+
+    def _fake_run_review_only(_config, task, workspace_path, **kwargs):
+        del kwargs
+        assert workspace_path == workspace
+        review_calls.append(task.slug)
+        if task.slug == "story-b":
+            return _done_result(5.0)
+        raise AssertionError("story-c review started after story-b exhausted the budget")
+
+    with (
+        patch("theforge.sprint.runner.enforce_sprint_auth_readiness"),
+        patch(
+            "theforge.sprint.runner._run_baseline_gate",
+            return_value={"passed": True, "message": "ok"},
+        ),
+        patch("theforge.sprint.runner.run_batch_preflight", return_value=states),
+        patch("theforge.sprint.runner._run_single_story", side_effect=_fake_run_single_story),
+        patch("theforge.sprint.runner.run_review_only", side_effect=_fake_run_review_only),
+        patch("theforge.sprint.audit_publish._write_sprint_audit"),
+        patch("theforge.sprint.audit_publish._write_sprint_summary"),
+        patch("theforge.sprint.runner._write_story_audit"),
+    ):
+        result = run_sprint_ctx(config, resolved)
+
+    assert review_calls == ["story-b"]
+    assert result.stopped_reason is not None
+    assert result.stopped_reason.startswith("Budget exhausted")
+    assert result.specs_succeeded == 2
+    assert result.specs_failed == 0
+    assert result.specs_skipped == 1
+    assert round(result.total_cost_usd, 2) == 6.0
+    by_slug = {Path(spec).stem: story_result for spec, story_result in result.results}
+    assert by_slug["story-c"].state.error_type == BUDGET_CANCEL_ERROR_TYPE
+    assert "budget" in (by_slug["story-c"].state.error or "").lower()
 
 
 def test_unmeasured_phase_uses_the_coordinator_lower_bound_for_budget_checks(
