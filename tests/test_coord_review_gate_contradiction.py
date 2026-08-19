@@ -30,6 +30,14 @@ from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.engine import run_from_review
 from theforge.coordinator.state import Phase
 
+# Every P1 in these fixtures cites a file inside the story's own diff, so review's
+# diff-grounding precondition (#2525) passes and the behaviour under test — the
+# gate-contradiction downgrade / AC-violation override — is what decides the
+# outcome. ``src/unchanged.py`` is unchanged by the *latest dev iteration*, not by
+# the story: grounding is computed merge-base-to-HEAD, so it grounds.
+_STORY_DIFF = ["src/changed.py", "src/unchanged.py"]
+
+
 # ── Review YAML fixtures ─────────────────────────────────────────────────────
 
 _CYCLE1_P1_CHANGED_FILE = """\
@@ -267,7 +275,7 @@ class TestGateContradiction:
         # src/unchanged.py is not in changed files → P1 gets net_new from classifier
         # Gate contradiction then downgrades it to gate_contradicted
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_TEST_FAILURE_P1)
@@ -302,7 +310,7 @@ class TestGateContradiction:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_BUILD_ERROR_P1)
@@ -335,7 +343,7 @@ class TestGateContradiction:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_LINT_FAIL_P1)
@@ -368,7 +376,7 @@ class TestGateContradiction:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_TEST_FAILURE_P1)
@@ -415,7 +423,7 @@ class TestGateContradiction:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_SUBJECTIVE_P1)
@@ -458,7 +466,7 @@ class TestGateContradiction:
         mock_changed_files.return_value = frozenset(["src/changed.py"])
         # Shell returns PASS for gate, but it only runs after first dev cycle
         # which doesn't happen here (review_cycle=1 immediately escalates)
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
 
@@ -504,7 +512,7 @@ class TestGateContradiction:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_INADEQUATE_ACCEPTANCE_AC_FALSE)
@@ -546,7 +554,7 @@ class TestGateContradiction:
         workspace.mkdir()
 
         mock_changed_files.return_value = frozenset(["src/changed.py"])
-        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=_STORY_DIFF)
         mock_dev.return_value = _make_agent_result(success=True, output="Fixed.")
         mock_preflight.return_value = _PREFLIGHT_RESULT
         mock_pool.side_effect = self._two_cycle_pool(_CYCLE2_INADEQUATE_ACCEPTANCE_AC_TRUE)

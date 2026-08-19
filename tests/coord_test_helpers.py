@@ -238,6 +238,31 @@ def _as_detailed(side_effect):
     return detailed
 
 
+_FAKE_HEAD_SHA = "a" * 40
+_FAKE_BASE_SHA = "b" * 40
+
+#: The story diff simulated when a test does not declare one. It contains the
+#: file every shared review fixture in this module cites, so a P1 from those
+#: fixtures grounds against the story's change and review's diff-grounding
+#: precondition (#2525) is satisfied — which is the ordinary case, and what a
+#: test about something *else* in the review loop means to set up. Tests whose
+#: review YAML cites other paths pass ``changed_files=[...]`` explicitly;
+#: ``changed_files=None`` simulates a diff that cannot be computed at all.
+DEFAULT_STORY_DIFF = ["src/foo.py"]
+
+
+def _changed_files_response(cmd: str, changed_files: list[str]) -> tuple | None:
+    """Answer the git commands ``collect_changed_files`` issues, or None."""
+    if cmd.startswith("git rev-parse --verify"):
+        return (True, _FAKE_HEAD_SHA, 0, False)
+    if cmd.startswith("git merge-base"):
+        return (True, _FAKE_BASE_SHA, 0, False)
+    if "diff --numstat --no-renames" in cmd:
+        numstat = "".join(f"1\t0\t{path}\n" for path in changed_files)
+        return (True, numstat, 0, False)
+    return None
+
+
 def _gate_side_effect(
     workspace: Path,
     decisions: list[str] | str = "PASS",
@@ -245,6 +270,7 @@ def _gate_side_effect(
     exit_code: int | None = None,
     timed_out: bool = False,
     output: str | None = None,
+    changed_files: list[str] | None = DEFAULT_STORY_DIFF,
 ):
     """Build a 4-tuple ``_run_shell_detailed`` side_effect that simulates gate
     execution, git-status (clean worktree), and stale-worktree checks by command.
@@ -288,6 +314,10 @@ def _gate_side_effect(
             return (observed_ok, gate_out, code, timed_out)
         if "git status --porcelain" in cmd:
             return (True, "", 0, False)  # clean worktree
+        if changed_files is not None:
+            diff_resp = _changed_files_response(cmd, changed_files)
+            if diff_resp is not None:
+                return diff_resp
         stale_resp = _handle_stale_check_cmd(cmd)
         if stale_resp is not None:
             ok, out = stale_resp
@@ -297,7 +327,12 @@ def _gate_side_effect(
     return side_effect
 
 
-def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
+def _shell_with_gate(
+    workspace: Path,
+    decisions: list[str] | str = "PASS",
+    *,
+    changed_files: list[str] | None = DEFAULT_STORY_DIFF,
+):
     """Legacy convenience seam: a gate/shell side_effect for ``_run_shell_detailed``.
 
     Re-expressed atop :func:`_gate_side_effect` so the dispatch and exit-code
@@ -305,8 +340,13 @@ def _shell_with_gate(workspace: Path, decisions: list[str] | str = "PASS"):
     ``theforge.coordinator.util._run_shell_detailed`` (the single primitive the
     production gate path calls); git-op callers reach it via ``_run_shell``
     delegation. Kept for flow tests whose behavior must be unchanged.
+
+    Pass ``changed_files`` to declare the story's merge-base-to-HEAD diff, which
+    review's diff-grounding check reads to decide whether a P1 is about this
+    story's change (#2525); it defaults to :data:`DEFAULT_STORY_DIFF`. Pass
+    ``None`` to simulate a diff that cannot be computed.
     """
-    return _gate_side_effect(workspace, decisions)
+    return _gate_side_effect(workspace, decisions, changed_files=changed_files)
 
 
 @contextmanager
@@ -317,6 +357,7 @@ def mock_gate(
     exit_code: int | None = None,
     timed_out: bool = False,
     output: str | None = None,
+    changed_files: list[str] | None = DEFAULT_STORY_DIFF,
 ):
     """The single sanctioned seam for simulating gate/shell execution in tests.
 
@@ -342,6 +383,7 @@ def mock_gate(
         exit_code=exit_code,
         timed_out=timed_out,
         output=output,
+        changed_files=changed_files,
     )
     with patch_gate_shell(side_effect=side_effect) as mock_shell:
         yield mock_shell

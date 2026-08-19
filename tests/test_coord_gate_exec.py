@@ -13,8 +13,10 @@ import pytest
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
+    DEFAULT_STORY_DIFF,
     REQUEST_CHANGES_REVIEW,
     _as_detailed,
+    _changed_files_response,
     _handle_stale_check_cmd,
     _make_agent_result,
     _make_config,
@@ -513,6 +515,12 @@ class TestDevZeroChangeGuard:
                 return (True, "OK")
             if "git status --porcelain" in cmd:
                 return (True, "")  # no dirty files
+            # The review fixture's P1 cites src/foo.py; report it as part of the
+            # story's diff so the finding grounds (#2525) and the zero-change dev
+            # guard — not diff-grounding — is what ends the run.
+            grounded = _changed_files_response(cmd, DEFAULT_STORY_DIFF)
+            if grounded is not None:
+                return grounded[:2]
             return (True, "OK")
 
         mock_shell.side_effect = _as_detailed(shell_side_effect)

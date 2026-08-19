@@ -72,7 +72,10 @@ class TestReviewOnly:
         workspace = tmp_path / "test-task"
         workspace.mkdir()
 
-        mock_shell.return_value = (True, "", 0, False)
+        # The fixture's P1 cites src/foo.py; report it as part of the story's
+        # diff so the finding grounds (#2525) and the REQUEST_CHANGES verdict is
+        # what escalates.
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")
         mock_pool.return_value = [
             _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
         ]
@@ -86,6 +89,113 @@ class TestReviewOnly:
         assert len(result.state.review_results) == 1
         assert result.state.review_results[0].verdict == "REQUEST_CHANGES"
         assert len(result.state.review_results[0].findings) > 0
+        # The grounded P1 keeps a blocking disposition.
+        assert [r.disposition for r in result.state.finding_registry] != ["diff_ungrounded"]
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch_gate_shell()
+    def test_review_only_out_of_diff_p1_does_not_escalate(self, mock_shell, mock_pool, tmp_path):
+        """#2525 via the path batch members are reviewed through.
+
+        Review-only has no DEV retry, so REQUEST_CHANGES → ESCALATE *is* the
+        outcome decision. A P1 naming a file this story never touched must not
+        make it, exactly as in the retry loop.
+        """
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        # The story touched src/changed.py; the reviewer's P1 cites src/foo.py.
+        mock_shell.side_effect = _shell_with_gate(
+            workspace, "PASS", changed_files=["src/changed.py"]
+        )
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
+        ]
+
+        result = run_review_only(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        # Not silently dropped: recorded, visible, and named in the outcome.
+        assert [r.disposition for r in result.state.finding_registry] == ["diff_ungrounded"]
+        assert "diff_ungrounded" in result.message
+        # The reviewer's verdict is preserved as reported.
+        assert result.state.review_results[0].verdict == "REQUEST_CHANGES"
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch_gate_shell()
+    def test_review_only_unavailable_diff_does_not_escalate(self, mock_shell, mock_pool, tmp_path):
+        """A comparison that could not be made is not evidence about the change."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS", changed_files=None)
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=REQUEST_CHANGES_REVIEW, profile_name="review")
+        ]
+
+        result = run_review_only(config, task, workspace)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert [r.disposition for r in result.state.finding_registry] == ["diff_ungrounded"]
+
+    @patch("theforge.coordinator.review_pool.run_agent_pool")
+    @patch_gate_shell()
+    def test_review_only_one_grounded_p1_still_escalates(self, mock_shell, mock_pool, tmp_path):
+        """Mixed cycle: a single grounded P1 carries the escalation on its own."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / "test-task"
+        workspace.mkdir()
+
+        mixed = """\
+```yaml
+verdict: REQUEST_CHANGES
+summary: "Bug found."
+findings:
+  - severity: P1
+    file: src/sibling.py
+    line: 10
+    observed: "A sibling story's criterion is unmet"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
+    suggestion: "Restore the field"
+  - severity: P1
+    file: src/foo.py
+    line: 20
+    observed: "This story's own handler is off by one"
+    expected: "Behaviour conforms to project contract for this category of inputs."
+    evidence: "(test fixture evidence)"
+    suggestion: "Fix it"
+story_compliance:
+  matches_spec: false
+  mismatches:
+    - "Acceptance criterion is unmet"
+test_coverage:
+  adequate: true
+  gaps: []
+```
+"""
+        mock_shell.side_effect = _shell_with_gate(workspace, "PASS")  # diff = src/foo.py
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=mixed, profile_name="review")
+        ]
+
+        result = run_review_only(config, task, workspace)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        dispositions = {r.file: r.disposition for r in result.state.finding_registry}
+        assert dispositions["src/sibling.py"] == "diff_ungrounded"
+        assert dispositions["src/foo.py"] != "diff_ungrounded"
+        # The escalation names the finding that actually blocked, not both.
+        assert "1 P1 finding(s)" in result.message
+        assert "1 further P1(s) recorded as diff_ungrounded" in result.message
 
     def test_review_only_missing_worktree(self, tmp_path):
         """Missing workspace_path → error result with clear message."""

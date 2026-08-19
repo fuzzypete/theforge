@@ -24,6 +24,8 @@ means the comparison was made and nothing changed.
 
 from __future__ import annotations
 
+import re
+import subprocess
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -33,6 +35,64 @@ if TYPE_CHECKING:
     from theforge.config import ForgeConfig
 
     from .state import CoordinatorState
+
+#: An abbreviated-or-full git commit id and nothing else. Deliberately narrower
+#: than git's revision grammar: ``HEAD~2``, ``main``, and ``$(id)`` are all valid
+#: revisions to git and none of them is a thing an agent should be able to hand
+#: the coordinator to resolve.
+_COMMIT_ID_RE = re.compile(r"\A[0-9a-fA-F]{7,40}\Z")
+
+#: git queries here are short metadata reads; a hung one must not stall a phase.
+_GIT_TIMEOUT_SECONDS = 15
+
+
+def is_commit_id(value: object) -> bool:
+    """Return True when ``value`` is a bare hex git commit id.
+
+    The validation boundary for revisions that arrive from outside the
+    coordinator — chiefly the commit ids a dev handoff attributes to a story
+    (#2525). Everything else in this module names refs the coordinator itself
+    chose, so this is the one place an untrusted revision is admitted.
+    """
+    return isinstance(value, str) and bool(_COMMIT_ID_RE.match(value.strip()))
+
+
+def _run_git(workspace_path: Path, args: list[str]) -> tuple[bool, str]:
+    """Run ``git`` with an argv list — no shell, so no argument can become one.
+
+    ``_run_shell`` builds a command string and runs it under ``shell=True``,
+    which is fine for refs the coordinator composes itself and unsafe for any
+    value that originated in agent output.
+    """
+    try:
+        result = subprocess.run(  # noqa: S603 — argv form, no shell
+            ["git", *args],
+            cwd=str(workspace_path),
+            capture_output=True,
+            timeout=_GIT_TIMEOUT_SECONDS,
+        )
+    except (subprocess.SubprocessError, OSError):
+        return False, ""
+    return result.returncode == 0, result.stdout.decode("utf-8", errors="replace")
+
+
+def _resolve_commit_id(workspace_path: Path, commit_id: str) -> str | None:
+    """Resolve a validated commit id to its full SHA, or None.
+
+    Refuses anything :func:`is_commit_id` rejects before touching git, so an
+    unvalidated caller cannot smuggle a revision expression through.
+    """
+    if not is_commit_id(commit_id):
+        return None
+    ok, out = _run_git(
+        workspace_path, ["rev-parse", "--verify", f"{commit_id.strip()}^{{commit}}"]
+    )
+    if not ok:
+        return None
+    sha = out.strip().splitlines()[-1].strip() if out.strip() else ""
+    if len(sha) == 40 and all(c in "0123456789abcdef" for c in sha):
+        return sha
+    return None
 
 
 def _resolve_ref(workspace_path: Path, rev: str) -> str | None:
@@ -131,6 +191,55 @@ def collect_changed_files(
     if not ok:
         return None
     return {"base_ref": base_ref, "head_ref": head_ref, "files": _parse_numstat(out)}
+
+
+def collect_commit_files(workspace_path: Path, revs: list[str]) -> dict | None:
+    """Return ``{commits, files}`` for the union of ``revs``, or None.
+
+    The per-commit counterpart of :func:`collect_changed_files`, for the case
+    where a branch carries more than one story's work and only some of its
+    commits belong to the story being asked about (a cost-aware batch group's
+    shared worktree, #2525).
+
+    ``None`` on any unresolvable rev or failed diff, and on an empty ``revs``,
+    holding the same distinction the module keeps everywhere: a comparison that
+    could not be made is not a comparison that found nothing. A caller grounding
+    findings against the result must treat ``None`` as "this story's file set is
+    unknown", never as "this story changed nothing".
+
+    Unlike every other ref in this module, ``revs`` originates in *agent output*
+    — the commit ids a dev handoff attributed to a story. They are therefore
+    validated as commit ids before use and run through argv-based git calls,
+    never the shell-backed ``_run_shell``: an id is a value, and a value that can
+    reach a shell is a command. A rev that is not a bare hex commit id is
+    rejected without being executed.
+    """
+    if not revs or not workspace_path.exists():
+        return None
+    if not all(is_commit_id(rev) for rev in revs):
+        return None
+    resolved: list[str] = []
+    for rev in revs:
+        sha = _resolve_commit_id(workspace_path, rev)
+        if sha is None:
+            return None
+        resolved.append(sha)
+    paths: dict[str, dict] = {}
+    for sha in resolved:
+        # --format= suppresses the commit header so only numstat rows remain;
+        # _parse_numstat ignores anything that is not a numstat triple anyway.
+        ok, out = _run_git(
+            workspace_path,
+            ["-c", "core.quotePath=false", "show", "--numstat", "--no-renames", "--format=", sha],
+        )
+        if not ok:
+            return None
+        for entry in _parse_numstat(out):
+            paths.setdefault(entry["path"], entry)
+    return {
+        "commits": resolved,
+        "files": sorted(paths.values(), key=lambda entry: entry["path"]),
+    }
 
 
 def capture_changed_files(

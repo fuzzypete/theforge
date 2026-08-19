@@ -339,6 +339,18 @@ def update_finding_registry(
                 "corroborated_new",
                 "regression",
                 "ac_blocking",
+                # diff_ungrounded is deliberately in this list rather than
+                # carried forward. It is not a fact about the finding, it is a
+                # fact about one cycle's diff — whether the file it cites was
+                # part of the story's change *at that moment*. A later cycle can
+                # touch that file, at which point the same finding is squarely
+                # about this change and must block. Carrying the verdict forward
+                # would make a per-cycle property sticky and permanently
+                # unblockable (#2525). The classifier therefore produces the
+                # ordinary recurrence disposition and the review phase re-grounds
+                # every current-cycle P1 afterwards, which is the only place that
+                # verdict is decided.
+                "diff_ungrounded",
             ):
                 disposition = "unresolved"
             elif prior_match.disposition == "fixed":
@@ -383,6 +395,7 @@ def update_finding_registry(
                 "corroborated_new",
                 "regression",
                 "ac_blocking",
+                "diff_ungrounded",
             ):
                 record.disposition = "fixed"  # type: ignore[assignment]
 
@@ -393,7 +406,9 @@ def has_blocking_p1(classified: list[FindingRecord]) -> bool:
     """Return True if any P1 finding has a blocking disposition.
 
     Blocking dispositions: unresolved, regression, corroborated_new, ac_blocking.
-    Non-blocking: net_new (single reviewer, latent, not in changed files).
+    Non-blocking: net_new (single reviewer, latent, not in changed files),
+    gate_contradicted (mechanically disproven by a PASS gate), and
+    diff_ungrounded (not checkable against this story's own diff, #2525).
     """
     blocking = {"unresolved", "regression", "corroborated_new", "ac_blocking"}
     return any(r.severity == "P1" and r.disposition in blocking for r in classified)
