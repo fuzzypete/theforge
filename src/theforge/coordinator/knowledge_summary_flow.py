@@ -217,7 +217,8 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
 
     Model selection is authoritative from ``knowledge.ref`` when present,
     otherwise from the inherited ``plan.ref``. The configured agent pool only
-    gates whether ``knowledge_summary`` is allowed to run at all.
+    gates whether ``knowledge_summary`` is allowed to run at all; it never
+    supplies or swaps the role's identity.
     """
     from theforge.config.bridge import model_ref_to_profile  # noqa: PLC0415
 
@@ -249,12 +250,12 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
     if not agents:
         return (base_profile, None)
 
-    phase_eligible = [
-        agent
-        for agent in agents
-        if PHASE_KNOWLEDGE_SUMMARY in _agent_phase_eligibility(config, agent)
-    ]
-    if not phase_eligible:
+    # A configured pool can veto this role entirely, but it does not participate
+    # in model selection once the summary profile has been derived above.
+    any_phase_eligible = any(
+        PHASE_KNOWLEDGE_SUMMARY in _agent_phase_eligibility(config, agent) for agent in agents
+    )
+    if not any_phase_eligible:
         return (
             None,
             "routing.phase_eligibility excludes knowledge_summary for every configured candidate",
