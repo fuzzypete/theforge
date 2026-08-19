@@ -306,6 +306,8 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
         )
         if matching is not None:
             return (base_profile, None)
+    if base_profile is not None:
+        return (base_profile, None)
     return (_summary_dispatch_profile(summary_envelope, projected[0]), None)
 
 

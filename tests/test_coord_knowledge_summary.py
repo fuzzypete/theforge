@@ -234,7 +234,7 @@ class TestGeneration:
         assert calls[0]["plain_text"] is True
         assert outcome.status == "written"
 
-    def test_phase_eligibility_can_move_summary_to_another_api_candidate(
+    def test_phase_eligibility_does_not_override_the_plan_derived_summary_model(
         self, tmp_path: Path, calls: list[dict]
     ) -> None:
         excluded = replace(
@@ -278,7 +278,7 @@ class TestGeneration:
         )
 
         assert outcome.status == "written"
-        assert calls[0]["profile"].model == "gemini-2.5-pro"
+        assert calls[0]["profile"].model == "gpt-5.4"
         assert calls[0]["profile"].name == "knowledge_summary"
         assert calls[0]["profile"].budget_usd == 0.5
         assert calls[0]["profile"].timeout_seconds == 300
@@ -414,6 +414,36 @@ class TestGeneration:
 
         assert outcome.status == "written"
         profile = calls[0]["profile"]
+        assert profile.model == "gpt-5.4"
+        assert profile.name == "knowledge_summary"
+        assert profile.budget_usd == 0.5
+        assert profile.timeout_seconds == 300
+
+    def test_nonmatching_pool_model_does_not_override_an_api_plan_summary_model(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        config = replace(
+            _make_config(tmp_path, provider="openai", model="gpt-5.4"),
+            agents=[
+                AgentDef(
+                    name="google-gemini-2-5-pro",
+                    provider="google",
+                    model="gemini-2.5-pro",
+                    budget_usd=1.0,
+                    timeout_seconds=120,
+                    tier="mid",
+                    transport=transport_for("google", "api"),
+                ),
+            ],
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "written"
+        profile = calls[0]["profile"]
+        assert profile.mode == "api"
         assert profile.model == "gpt-5.4"
         assert profile.name == "knowledge_summary"
         assert profile.budget_usd == 0.5
