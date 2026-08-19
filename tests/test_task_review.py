@@ -720,3 +720,22 @@ def test_review_prompt_includes_repository_context_pack(review_task):
 
     assert "Repository Context Pack" in prompt
     assert "review the touched modules first" in prompt
+
+
+def test_review_prompt_asserts_spec_authority_near_compliance_judgment(review_task):
+    """The prompt must restate spec authority adjacent to where compliance is
+    judged (Output Format schema and Rules), not only where context is
+    introduced — so the reviewer sees it last, right before judging."""
+    prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+
+    output_format_idx = prompt.index("## Output Format")
+    rules_idx = prompt.index("## Rules")
+
+    output_format_section = prompt[output_format_idx:rules_idx]
+    rules_section = prompt[rules_idx:]
+
+    assert "authoritative for" in output_format_section
+    assert "matches_spec" in output_format_section
+
+    assert "Only `## Spec` decides compliance" in rules_section
+    assert "Repository Context Pack" in rules_section

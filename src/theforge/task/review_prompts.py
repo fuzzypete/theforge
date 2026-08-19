@@ -331,6 +331,12 @@ def build_review_prompt(
           suggestion: ""
         ```
 
+        Only the `## Spec` section (and its `## Acceptance criteria`, if present)
+        is authoritative for `story_compliance.matches_spec` and
+        `ac_verification`. The Repository Context Pack, including any injected
+        prior-run summaries, is advisory background — never cite it as the
+        reason an AC failed or `matches_spec` is false.
+
         ```yaml
         verdict: APPROVE | REQUEST_CHANGES
         summary: "<one-line summary of your review>"
@@ -409,6 +415,13 @@ def build_review_prompt(
               (failure branch)"
 
               suggestion: ""
+
+            Only the `## Spec` section (and its `## Acceptance criteria`, if
+            present) is authoritative for `story_compliance.matches_spec` and
+            `ac_verification` in the submit_review call. The Repository Context
+            Pack, including any injected prior-run summaries, is advisory
+            background — never cite it as the reason an AC failed or
+            `matches_spec` is false.
         """)
 
     # Distinguish mechanical containment from native-flag / prompt-only runs so
@@ -576,6 +589,15 @@ def build_review_prompt(
           flags such bodies as `implementation_plan_in_body`; if you see a
           body that should have been flagged but slipped through, note it
           in `summary` so the operator can re-shape the issue.
+        - **Only `## Spec` decides compliance**: `story_compliance.matches_spec`
+          and every `ac_verification` entry must be judged solely against the
+          `## Spec` section (its `## Acceptance criteria`, if present). The
+          Repository Context Pack — including any injected prior-run
+          summaries — is advisory background for orienting your investigation,
+          never a source of truth for what the story requires. Do NOT mark an
+          AC `NOT_VERIFIED`/`PARTIAL` or set `matches_spec: false` because the
+          implementation diverges from something stated only in the Repository
+          Context Pack.
         - **Spec-to-runtime traceability**: For each AC in the spec, verify
           BOTH layers: (a) the logic exists in the codebase, AND (b) it is
           actually invoked at runtime by the calling code. Code that produces
