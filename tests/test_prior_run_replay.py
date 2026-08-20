@@ -14,6 +14,7 @@ from theforge.prior_run_replay import (
     _claim_hash,
     _discover_fixtures,
     _judgment_key,
+    _phase_inputs,
     _replay_story,
     run_prior_run_replay,
 )
@@ -409,6 +410,41 @@ def test_replay_dev_and_review_do_not_fallback_to_persisted_changed_files(tmp_pa
     assert phase_reports["review"]["file_list"] is None
 
 
+def test_replay_later_phase_inputs_are_independent_mappings(tmp_path: Path) -> None:
+    base_ref = _init_repo(tmp_path)
+    _write_fixture(
+        tmp_path,
+        "bbb222",
+        story_slug="issue-b",
+        story_name="Replay target",
+        story_text="Parser overlap in src/api.py",
+        started_at="2026-08-02T00:00:00+00:00",
+        finished_at="2026-08-02T00:10:00+00:00",
+        generated_at="2026-08-02T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+        changed_files=["src/final_impl.py", "tests/test_final_impl.py"],
+        plan_structured={
+            "steps": [
+                {
+                    "id": "step-1",
+                    "title": "Touch the api module",
+                    "files": ["src/api.py", "tests/test_api.py"],
+                }
+            ]
+        },
+    )
+
+    fixture = _discover_fixtures(tmp_path)[0]
+
+    phase_inputs = _phase_inputs(fixture.run_record)
+    assert phase_inputs["dev"] is not phase_inputs["review"]
+    assert phase_inputs["dev"]["file_list"] is not phase_inputs["review"]["file_list"]
+
+    phase_inputs["dev"]["file_list"].append("src/extra.py")
+    assert phase_inputs["review"]["file_list"] == ["src/api.py", "tests/test_api.py"]
+
+
 def test_run_prior_run_replay_omits_fence_probes_without_judgment_configuration(
     tmp_path: Path,
 ) -> None:
@@ -791,3 +827,15 @@ def test_replay_fails_when_claim_judgments_are_missing(tmp_path: Path) -> None:
         assert "missing judgment" in str(exc)
     else:
         raise AssertionError("expected replay to fail on missing judgments")
+
+
+def test_repo_judgments_replay_against_current_theforge_corpus() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    report = run_prior_run_replay(
+        [CorpusSpec("theforge", repo_root)],
+        judgments_path=repo_root / "docs" / "prior-run-replay-judgments.yaml",
+    )
+
+    corpus = report["corpora"][0]
+    assert corpus["name"] == "theforge"
+    assert corpus["story_count"] == corpus["available_story_count"]

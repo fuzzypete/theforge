@@ -255,7 +255,16 @@ def _phase_inputs(run_record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         "plan": plan_scope,
         "dev": later_phase_scope,
-        "review": later_phase_scope,
+        "review": _recovered_phase_input(
+            primary=plan_files,
+            primary_note="recovered from phases.plan.plan_structured",
+            fallback=None,
+            fallback_note="",
+            missing_note=(
+                "audit record persists no phases.plan.plan_structured; "
+                "dev/review replay runs without file overlap input"
+            ),
+        ),
     }
 
 
@@ -268,9 +277,17 @@ def _recovered_phase_input(
     missing_note: str,
 ) -> dict[str, Any]:
     if primary:
-        return {"file_list": primary, "recoverable": True, "note": primary_note}
+        return {
+            "file_list": list(primary),
+            "recoverable": True,
+            "note": primary_note,
+        }
     if fallback:
-        return {"file_list": fallback, "recoverable": True, "note": fallback_note}
+        return {
+            "file_list": list(fallback),
+            "recoverable": True,
+            "note": fallback_note,
+        }
     return {"file_list": None, "recoverable": False, "note": missing_note}
 
 
