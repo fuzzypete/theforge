@@ -4,7 +4,13 @@ from pathlib import Path
 
 import yaml
 
-from theforge.task.prior_run_selector import select_prior_runs
+from theforge.task.prior_run_selector import (
+    INDEX_STATE_MISSING,
+    INDEX_STATE_READY,
+    INDEX_STATE_STALE_SCHEMA,
+    INDEX_STATE_UNREADABLE,
+    select_prior_runs,
+)
 
 _STORY = "Refactor the sprint runner retry loop"
 _FILES = ["src/theforge/sprint/runner.py"]
@@ -289,20 +295,32 @@ def test_missing_index_yields_no_candidates(tmp_path: Path) -> None:
     assert selection.candidates == ()
     assert selection.excluded == ()
     assert selection.entry_count == 0
+    assert selection.index_state == INDEX_STATE_MISSING
+    assert selection.phase == "plan"
+    assert selection.rendering_mode == "phase_summary"
 
 
 def test_unreadable_or_wrong_schema_index_yields_no_candidates(tmp_path: Path) -> None:
     _write_index(tmp_path, [_entry("4f2a91c")], schema_version=1)
-    assert (
-        select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES).entry_count
-        == 0
-    )
+    stale = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
+    assert stale.entry_count == 0
+    assert stale.index_state == INDEX_STATE_STALE_SCHEMA
 
     (tmp_path / ".forge" / "knowledge" / "index.yaml").write_text(": not: yaml:", encoding="utf-8")
-    assert (
-        select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES).entry_count
-        == 0
-    )
+    unreadable = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
+    assert unreadable.entry_count == 0
+    assert unreadable.index_state == INDEX_STATE_UNREADABLE
+
+
+def test_valid_empty_index_still_reports_ready_state(tmp_path: Path) -> None:
+    _write_index(tmp_path, [])
+
+    selection = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
+
+    assert selection.candidates == ()
+    assert selection.excluded == ()
+    assert selection.entry_count == 0
+    assert selection.index_state == INDEX_STATE_READY
 
 
 def test_missing_summary_artifact_excludes_the_entry(tmp_path: Path) -> None:
