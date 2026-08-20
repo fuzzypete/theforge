@@ -86,6 +86,81 @@ def _story_run_artifact_label(artifact_dir: str) -> str:
     return f"story run artifacts under {artifact_dir}"
 
 
+def _porcelain_paths(dirty_status: str) -> list[str]:
+    """Paths named by a ``git status --porcelain`` block, one per entry."""
+    paths: list[str] = []
+    for line in dirty_status.splitlines():
+        if not line.strip():
+            continue
+        entry = line[3:] if len(line) > 3 else ""
+        if " -> " in entry:  # rename: the destination is what is on disk now
+            entry = entry.split(" -> ", 1)[1]
+        entry = entry.strip().strip('"').rstrip("/")
+        if entry:
+            paths.append(entry)
+    return paths
+
+
+def story_run_artifact_dirt_only(dirty_status: str) -> bool:
+    """Whether every path in a porcelain status block is a story-run artifact.
+
+    A dirty project root refuses a landing, and under ``max_parallel > 1`` the
+    dirt is routinely a *sibling* story's own canonical run record and knowledge
+    summary, written between the losing story's entry check and its merge
+    (#2602). Distinguishing that from operator dirt is what lets the integration
+    seam republish and retry instead of discarding approved, paid-for work —
+    while operator dirt still refuses exactly as before.
+
+    Returns ``False`` for a clean status: there is nothing to attribute.
+    """
+    paths = _porcelain_paths(dirty_status)
+    if not paths:
+        return False
+    return all(
+        any(
+            path == artifact_dir or path.startswith(f"{artifact_dir}/")
+            for artifact_dir in _STORY_RUN_ARTIFACT_DIRS
+        )
+        for path in paths
+    )
+
+
+def project_root_dirt_is_story_run_artifacts_only(project_root: Path) -> bool:
+    """Whether the project root's *only* dirt is pending story-run artifacts.
+
+    Asks git with ``-uall`` rather than reading the landing check's own status
+    text: the default porcelain output collapses a wholly-untracked tree to its
+    top directory (``?? .forge/``), which names something broader than the
+    artifact trees and could not be attributed to a sibling. Expanding the entry
+    is what lets a first-ever sprint — one with no committed artifacts yet — get
+    the same tolerance as a steady-state one.
+
+    Fails closed: a root git cannot describe is not a root to retry a landing
+    into.
+    """
+    from ..coordinator import util as _cu  # noqa: PLC0415
+
+    ok, out = _cu._run_shell("git status --porcelain -uall", project_root)
+    if not ok:
+        return False
+    return story_run_artifact_dirt_only(out.strip())
+
+
+def read_audit_publish_state(project_root: Path) -> str | None:
+    """The last recorded publish end state for ``project_root``, if any.
+
+    Best-effort: an unreadable or absent marker is simply no answer, never an
+    error, because every caller is reporting *about* a failure already.
+    """
+    path = project_root / _STORY_RUN_AUDIT_PUBLISH_STATE_PATH
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    recorded = payload.get("state") if isinstance(payload, dict) else None
+    return recorded if isinstance(recorded, str) else None
+
+
 class StoryRunAuditPublishError(RuntimeError):
     """Canonical story run audits could not be published to the base branch.
 
