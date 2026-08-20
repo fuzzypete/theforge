@@ -74,6 +74,21 @@ def preflight_degraded_row_fields(state: object) -> dict:
     }
 
 
+def preflight_likely_files_row_field(state: object) -> dict:
+    """Story-row field naming the file footprint scheduling actually used.
+
+    Instrumentation only (#2610): collision edges are derived from this set, so
+    a resume that lost an edge is diagnosable from the run record — which files
+    each story claimed — instead of being reconstructed from log lines. None
+    means the story made no file claim at all, which is materially different
+    from claiming nothing overlapped.
+    """
+    files = getattr(state, "preflight_likely_files", None)
+    if not isinstance(files, (list, tuple)):
+        return {"preflight_likely_files": None}
+    return {"preflight_likely_files": [str(f) for f in files]}
+
+
 def preflight_degraded_row_fields_from_row(story_row: object) -> dict:
     """Same fields, re-read from an already-written summary story row.
 
@@ -815,6 +830,7 @@ def _write_sprint_audit(
                     res.state, "preflight_cached_from_run_id", None
                 ),
                 **preflight_degraded_row_fields(res.state),
+                **preflight_likely_files_row_field(res.state),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),
@@ -1191,6 +1207,7 @@ def _write_sprint_summary(
                     res.state, "preflight_cached_from_run_id", None
                 ),
                 **preflight_degraded_row_fields(res.state),
+                **preflight_likely_files_row_field(res.state),
                 "error": res.state.error,
                 "error_type": res.state.error_type,
                 "outcome_code": res.state.error_type or outcome.lower(),

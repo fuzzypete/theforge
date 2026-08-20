@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from theforge.coordinator.resume_persistence import save_resume_record
 from theforge.coordinator.state import CoordinatorState
 from theforge.sprint.collision import (
     compute_bundle_assignments,
@@ -371,3 +372,182 @@ def test_collision_dag_serializes_unknown_footprint_pair() -> None:
     }
 
     assert compute_synthetic_edges(states, tasks) == {"story-15": ["story-12"]}
+
+
+# ── Resume: footprint recovery from the durable phase record (#2610) ───────
+#
+# A story already past preflight gets a fresh live preflight on resume, which
+# for a preserved, diverged worktree routinely yields no likely_files at all.
+# Before #2610 the only fallback was scraping the story's own plan.md, and when
+# that came up empty for two stories that genuinely collide, compute_synthetic
+# _edges treated both as unknown-footprint and deliberately left them unchained
+# — dropping an edge the original run had derived from real evidence.
+
+
+def _resumed_task(slug: str, issue: int, story_text: str = "story body") -> TaskStory:
+    return TaskStory(
+        name=slug,
+        slug=slug,
+        story_path=None,
+        story_text=story_text,
+        depends_on=[],
+        github_issue=issue,
+    )
+
+
+def _write_resume_record(
+    project_root: Path,
+    slug: str,
+    likely_files: list[str] | None,
+    *,
+    story_content: str | None = None,
+) -> None:
+    """Persist the durable phase record an earlier run's preflight would leave."""
+    save_resume_record(
+        project_root,
+        CoordinatorState(
+            preflight_verdict="PROCEED",
+            preflight_reason="prior run",
+            preflight_likely_files=likely_files,
+        ),
+        slug=slug,
+        story_content=story_content,
+        run_id="run-prior",
+    )
+
+
+def _resumed_triage(slug: str, worktree_path: Path) -> StoryTriage:
+    worktree_path.mkdir(parents=True, exist_ok=True)
+    return StoryTriage(
+        story_path=f"stories/{slug}.md",
+        action="review",
+        reason="resume",
+        worktree_path=worktree_path,
+        slug=slug,
+    )
+
+
+def test_register_resumed_story_footprints_recovers_from_resume_record(
+    tmp_path: Path,
+) -> None:
+    """Recovered preflight evidence, not plan.md, populates the resumed footprint."""
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    _write_resume_record(project_root, "issue-339", ["hdp_mcp/schema_gen.py", "a.py"])
+    _write_resume_record(project_root, "issue-340", ["hdp_mcp/schema_gen.py", "b.py"])
+
+    # What the resumed run itself has: a live preflight that produced nothing
+    # (None for one story, an empty claim for the other) and no plan.md.
+    preflight_states = {
+        "issue-339": CoordinatorState(preflight_likely_files=None),
+        "issue-340": CoordinatorState(preflight_likely_files=[]),
+    }
+    triages = {
+        "issue:339": _resumed_triage("issue-339", tmp_path / "wt-339"),
+        "issue:340": _resumed_triage("issue-340", tmp_path / "wt-340"),
+    }
+    tasks = [_resumed_task("issue-339", 339), _resumed_task("issue-340", 340)]
+
+    _register_resumed_story_footprints(
+        triages, preflight_states, project_root=project_root, tasks=tasks
+    )
+
+    assert preflight_states["issue-339"].preflight_likely_files == [
+        "a.py",
+        "hdp_mcp/schema_gen.py",
+    ]
+    assert preflight_states["issue-340"].preflight_likely_files == [
+        "b.py",
+        "hdp_mcp/schema_gen.py",
+    ]
+
+    synthetic = compute_synthetic_edges(preflight_states, tasks)
+
+    assert synthetic == {"issue-340": ["issue-339"]}
+    build_dag(inject_synthetic_deps(tasks, synthetic))
+
+
+def test_register_resumed_story_footprints_prefers_live_preflight_over_record(
+    tmp_path: Path,
+) -> None:
+    """A live preflight claim this run produced is never displaced by a recorded one."""
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    _write_resume_record(project_root, "issue-339", ["stale/old.py"])
+
+    preflight_states = {"issue-339": CoordinatorState(preflight_likely_files=["src/live.py"])}
+    triages = {"issue:339": _resumed_triage("issue-339", tmp_path / "wt-339")}
+
+    _register_resumed_story_footprints(
+        triages,
+        preflight_states,
+        project_root=project_root,
+        tasks=[_resumed_task("issue-339", 339)],
+    )
+
+    assert preflight_states["issue-339"].preflight_likely_files == ["src/live.py"]
+
+
+def test_register_resumed_story_footprints_rejected_record_falls_back_to_plan_md(
+    tmp_path: Path,
+) -> None:
+    """A record that describes different story text downgrades to the plan.md scrape.
+
+    The record is not silently taken as an empty 'known disjoint' claim: the
+    story still contributes whatever its plan.md names.
+    """
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+    _write_resume_record(
+        project_root, "issue-339", ["stale/old.py"], story_content="the story as it was"
+    )
+
+    workspace_path = tmp_path / "wt-339"
+    plan_dir = workspace_path / ".forge"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "plan.md").write_text(
+        """---
+plan:
+  approach: Resume implementation
+  steps:
+    - id: 1
+      description: Update generator
+      files:
+        - hdp_mcp/schema_gen.py
+      action: modify
+      details: Continue the resumed story
+""",
+        encoding="utf-8",
+    )
+
+    preflight_states = {"issue-339": CoordinatorState()}
+    triages = {"issue:339": _resumed_triage("issue-339", workspace_path)}
+
+    _register_resumed_story_footprints(
+        triages,
+        preflight_states,
+        project_root=project_root,
+        tasks=[_resumed_task("issue-339", 339, story_text="the story as it now is")],
+    )
+
+    assert preflight_states["issue-339"].preflight_likely_files == ["hdp_mcp/schema_gen.py"]
+
+
+def test_register_resumed_story_footprints_no_record_no_plan_stays_unknown(
+    tmp_path: Path,
+) -> None:
+    """No record and no plan.md leaves the story making no claim — unchanged behaviour."""
+    project_root = tmp_path / "repo"
+    project_root.mkdir()
+
+    preflight_states = {"issue-339": CoordinatorState()}
+    triages = {"issue:339": _resumed_triage("issue-339", tmp_path / "wt-339")}
+
+    _register_resumed_story_footprints(
+        triages,
+        preflight_states,
+        project_root=project_root,
+        tasks=[_resumed_task("issue-339", 339)],
+    )
+
+    assert preflight_states["issue-339"].preflight_likely_files == []
