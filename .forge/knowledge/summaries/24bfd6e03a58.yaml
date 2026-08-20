@@ -1,0 +1,114 @@
+schema_version: 2
+run_id: 24bfd6e03a58
+authoritative_run_record: .forge/audits/runs/24bfd6e03a58.json
+generated_at: '2026-08-20T06:33:40.982025+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00994375
+story:
+  slug: issue-2595
+  name: Run artifacts are published once per sprint but the gate that requires them
+    committed runs once per story, so every story after the first is refused
+  github_issue: 2595
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/sprint/audit_publish.py
+- src/theforge/sprint/runner.py
+- tests/test_sprint_audit_publish.py
+- tests/test_sprint_run_artifact_publish_timing.py
+what_changed:
+  description: The run changed sprint artifact publication so audit records and knowledge
+    summaries are published during the sprint after each story reaches a durable terminal
+    state, instead of only once at sprint end. It also added regression coverage for
+    multi-story landing sprints and for publish idempotence.
+  approach: The change made artifact publishing safe to invoke repeatedly, then wired
+    the sprint runner to call it after each terminal story outcome while preserving
+    the existing end-of-sprint publish path, with tests covering both repeated publish
+    calls and the landing-precondition timing scenario.
+  files_modified: *id002
+what_was_learned:
+- claim: When a sprint writes tracked run artifacts into the shared project-root checkout,
+    publishing must happen at the same cadence as story completion or later stories
+    can fail the clean-workspace landing precondition on forge's own outputs.
+  evidence:
+  - type: plan_step
+    step_id: '2'
+    description: This step explicitly invoked artifact publishing after each story
+      reaches a durable terminal state, matching publication timing to story-by-story
+      precondition enforcement.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: The runner changes are where per-story terminal-state publishing
+      was integrated into sprint execution.
+  - type: file
+    path: tests/test_sprint_run_artifact_publish_timing.py
+    description: The regression test file covers the multi-story landing sprint timing
+      behavior that depends on publishing before the next story enters the workspace
+      gate.
+- claim: Sprint artifact publication needed to be safe to call more than once within
+    a single sprint because the scheduler now performs intermediate publishes before
+    the final sprint-level publish.
+  evidence:
+  - type: plan_step
+    step_id: '1'
+    description: This step states the requirement to make audit artifact publishing
+      explicitly safe for repeated calls in one sprint.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: The publisher implementation was updated to support repeated invocation
+      semantics.
+  - type: file
+    path: tests/test_sprint_audit_publish.py
+    description: The test additions verify the repeated-call behavior of artifact
+      publication.
+- claim: Regression coverage for this area is centered on sprint-level execution timing
+    rather than only unit-testing artifact writers, because the failure emerges from
+    the interaction between story progression and workspace-entry checks.
+  evidence:
+  - type: plan_step
+    step_id: '3'
+    description: The plan called for regression coverage specifically for multi-story
+      project-root landing sprints.
+  - type: file
+    path: tests/test_sprint_run_artifact_publish_timing.py
+    description: This test file exercises the scheduler timing path where one completed
+      story affects whether the next story is admitted.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approval explicitly referenced the sequential landing-sprint
+      symptom and the targeted regression tests that covered it.
+learned_patterns:
+- per-story-durable-publish
+- idempotent-sprint-publisher
+- scheduler-timing-regression
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on preserving the terminal publish while confirming the sequential
+    landing-sprint refusal was resolved by per-story durable publishing.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 11.6922939
+  dominant_difficulty: 'The hard part was a cross-cutting timing issue: tracked artifacts,
+    workspace cleanliness enforcement, and sprint scheduling interacted across story
+    boundaries rather than within a single write path.'
