@@ -87,8 +87,10 @@ from .audit import (
     write_live_story_audit,
 )
 from .audit_publish import (
+    project_root_dirt_is_story_run_artifacts_only,
     publish_pending_story_run_audits,
     publish_story_run_audits,
+    read_audit_publish_state,
     write_terminal_sprint_audits,
 )
 from .auth_gate import enforce_sprint_auth_readiness
@@ -4559,6 +4561,45 @@ def _service_plan_gates(
             _sd_gate.set()
 
 
+# How many times a landing refused on nothing but sibling story-run artifacts
+# will republish and try again. Progress — the root's dirt actually changing —
+# is what normally ends the loop; this only bounds a sprint whose siblings
+# complete faster than the seam can commit them, so an approved story fails
+# with an attributable reason instead of holding integration_lock forever.
+_SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS = 3
+
+
+def _publish_sibling_artifacts(state: SprintExecutionState, slug: str) -> bool:
+    """Commit pending story-run artifacts before this story merges into the root.
+
+    Each story writes its canonical run record and knowledge summary straight
+    into the shared project-root checkout as it completes, outside any lock. The
+    quiescent mid-sprint publish (#2595) only fires with nothing in flight, so
+    under ``max_parallel > 1`` a sibling's completion artifacts sit there
+    untracked while an approved story reaches ``_merge_branch``'s dirty-root
+    check — and that story is refused, after dev and review have been paid for,
+    for something it did not do (#2602).
+
+    Committing them here, inside ``integration_lock`` and immediately before the
+    merge, is what makes the serialized integration path the one place that both
+    writes and reads that state. This is a new *call site* for the unchanged
+    #2595 publish, not a new publish: ``publish_pending_story_run_audits`` and
+    its required ``lands_locally`` keyword predate this seam, and the scheduler
+    loop still calls the same function with the sprint's own answer. Here that
+    answer is ``True`` by construction — the caller only reaches this when the
+    story is about to merge into the project-root base checkout, which is
+    exactly what the flag asserts.
+
+    Returns whether the publish completed; a failure is logged by the publish
+    helper and reported by the caller rather than raised, because abandoning an
+    approved story over a transport problem is the outcome this exists to stop.
+    """
+    published = publish_pending_story_run_audits(state, lands_locally=True)
+    if not published:
+        _log(f"WARN {slug}: pre-merge story run artifact publish did not complete")
+    return published
+
+
 def _attempt_integration(
     state: SprintExecutionState,
     slug: str,
@@ -4606,17 +4647,85 @@ def _attempt_integration(
         )
 
         parsed_review = resolve_landing_review(result.state)
-        merge_info, landing_status = land_story(
-            state.context.config,
-            task,
-            branch,
-            wt,
-            parsed_review,
-            result.state,
-            effective_on_approve,
-            logger=story_logger,
-            run_id=story_run_id,
-        )
+
+        def _land() -> tuple[dict, str]:
+            return land_story(
+                state.context.config,
+                task,
+                branch,
+                wt,
+                parsed_review,
+                result.state,
+                effective_on_approve,
+                logger=story_logger,
+                run_id=story_run_id,
+            )
+
+        project_root = state.context.config.project_root
+        lands_in_root = effective_on_approve == "merge"
+        publish_ok = _publish_sibling_artifacts(state, slug) if lands_in_root else True
+        merge_info, landing_status = _land()
+
+        # A sibling can finish in the few git calls between that publish and
+        # _merge_branch's own dirty check, which is the same race one step
+        # narrower. So the seam is tolerant as well as early: while the refusal
+        # names nothing but story-run artifacts, republish and land again.
+        #
+        # One retry was not enough — a second sibling finishing in the second
+        # window strands the story exactly as the first one used to. What bounds
+        # this is progress, not a single shot: each pass must actually change
+        # the root's dirt, and a publish that reports success while leaving the
+        # same files uncommitted ends it. The attempt cap is a backstop for a
+        # sprint whose siblings land faster than this loop can publish them, so
+        # an approved story fails loudly rather than spinning under the lock.
+        #
+        # Operator dirt is untouched by any of this: the loop never runs unless
+        # every dirty path is a story-run artifact, so unrelated changes refuse
+        # on the first attempt exactly as before.
+        republishes = 0
+        while (
+            lands_in_root
+            and landing_status == "failed"
+            and republishes < _SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS
+            and project_root_dirt_is_story_run_artifacts_only(project_root)
+        ):
+            dirt_before = coordinator_workspace.project_root_dirty_status(project_root)
+            republishes += 1
+            _log(
+                f"INFO {slug}: landing refused on sibling run artifacts; republishing "
+                f"and retrying ({republishes}/{_SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS})"
+            )
+            publish_ok = _publish_sibling_artifacts(state, slug)
+            if not publish_ok:
+                break
+            if coordinator_workspace.project_root_dirty_status(project_root) == dirt_before:
+                # The publish reported success and the same files are still
+                # uncommitted, so landing again would refuse for the same
+                # reason. Stopping here keeps the failure attributable.
+                _log(
+                    f"WARN {slug}: republish left the same story run artifacts uncommitted; "
+                    f"not retrying the landing again"
+                )
+                break
+            merge_info, landing_status = _land()
+
+        if republishes:
+            # The retries are part of what happened to this landing, so the
+            # audit record carries them rather than leaving the count to be
+            # reconstructed from the log.
+            merge_info["sibling_artifact_republishes"] = republishes
+
+        if lands_in_root and landing_status == "failed" and not publish_ok:
+            # Attribution the operator cannot otherwise get: a swallowed publish
+            # failure and ordinary sibling dirt produce the identical merge
+            # error, and only one of them is a checkout-health problem.
+            publish_state = read_audit_publish_state(state.context.config.project_root)
+            merge_info["story_run_audit_publish_state"] = publish_state
+            _log(
+                f"WARN {slug}: story run artifact publish did not complete before this "
+                f"landing (publish state: {publish_state or 'unrecorded'}); the merge "
+                f"refusal below may be that failure rather than ordinary sibling dirt"
+            )
 
     result.merge = merge_info
     result.landing_status = landing_status
@@ -7052,6 +7161,11 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             # parallel dispatch cannot be made race-free from here at all. Those
             # passes fall through to the next quiescent one, or to the terminal
             # sweep — exactly the behaviour they have today.
+            #
+            # This call therefore protects sequential *entry* only. Protection
+            # at merge time under concurrency lives where it can be race-free:
+            # ``_publish_sibling_artifacts``, called from _attempt_integration
+            # inside integration_lock immediately before the merge (#2602).
             #
             # A failure is deferred rather than raised: the terminal publish
             # below is the final, fatal sweep.

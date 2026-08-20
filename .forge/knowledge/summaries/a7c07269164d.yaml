@@ -1,0 +1,126 @@
+schema_version: 2
+run_id: a7c07269164d
+authoritative_run_record: .forge/audits/runs/a7c07269164d.json
+generated_at: '2026-08-20T23:33:53.413962+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011873749999999999
+story:
+  slug: issue-2619
+  name: A diagnosis cites material that already states its conclusion as independent
+    corroboration
+  github_issue: 2619
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- src/theforge/task/diagnose_prompts.py
+- tests/test_diagnose_artifact_readiness.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+- tests/test_diagnose_types.py
+what_changed:
+  description: The run introduced provenance-aware diagnosis handling so previously
+    asserted causes are rendered with explicit caveats instead of being presented
+    as independent corroboration. It also tightened parsing and rendering around confirmed-cause
+    support and provenance text.
+  approach: The change threaded source/provenance metadata through diagnosis parsing,
+    rendering, and persistence, then used review feedback to close the remaining path
+    where free-form confirmed-cause prose could still emit unsupported independence
+    language and to clean up duplicate or malformed provenance output.
+  files_modified: *id002
+what_was_learned:
+- claim: When output has both a structured support path and a free-prose confirmed-cause
+    path, provenance safeguards must be enforced on every rendering path; otherwise
+    unsupported independence claims re-enter through the unchecked prose field.
+  evidence:
+  - type: review_finding
+    finding_id: 8810c62e5314580b
+    description: This finding showed that even after provenance support existed elsewhere,
+      wording embedded directly in confirmed_cause still rendered unchanged, demonstrating
+      that adding one protected field is insufficient if parallel prose paths bypass
+      the same rule.
+  - type: review_finding
+    finding_id: f24d60d1b47d5e0d
+    description: 'This finding identified the same escape hatch from a second angle:
+      corroboration language inside confirmed_cause was not normalized into the provenance-aware
+      support path, showing future work must account for users placing assertions
+      in the wrong field.'
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 explicitly reported that hypothesis evidence and the new
+      support field were covered while the original confirmed-cause prose path still
+      leaked false independence language, confirming the lesson came from incomplete
+      per-path coverage rather than missing overall intent.
+- claim: If the same cautionary note can be generated from multiple inputs, rendering
+    needs de-duplication logic or repeated provenance warnings will appear and reduce
+    clarity.
+  evidence:
+  - type: review_finding
+    finding_id: b684d0e0af868a9e
+    description: This finding showed that when both confirmed-cause prose and support
+      prose carried the same independence language, the renderer emitted the identical
+      Independence note twice, demonstrating that multi-source normalization needs
+      explicit duplicate suppression.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approved after the de-dup change and specifically noted no
+      P1 regression, showing the duplicate-warning issue was resolved as a distinct
+      rendering concern rather than by removing the provenance caveat itself.
+- claim: YAML-backed metadata fields need explicit handling for empty scalar values,
+    because blank entries parse as null-like values that can leak into user-facing
+    prose if treated as ordinary strings.
+  evidence:
+  - type: review_finding
+    finding_id: c6c6a42e0f70a4b8
+    description: 'This finding tied an empty provenance detail field to a rendered
+      trailing ''None'', demonstrating the concrete failure mode: parser acceptance
+      of empty YAML values becomes visible output unless null handling is normalized
+      before rendering.'
+  - type: file
+    path: src/theforge/task/diagnose_prompts.py
+    description: This file was part of the prompt/schema surface where provenance
+      blocks are authored, making it the entry point for empty-value YAML cases that
+      later need defensive parsing and rendering treatment.
+learned_patterns:
+- per-render-path-provenance-guard
+- dedupe-derived-caveats
+- yaml-empty-null-normalization
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 8810c62e5314580b
+    severity: P1
+    file: src/theforge/diagnose_types.py
+    description: When independence or corroboration wording is embedded directly in
+      confirmed_cause, the rendered diagnosis emits that text unchanged with no restatement
+      or provenance caveat.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced alternate rendering paths where provenance caveats
+    were missing, duplicated, or polluted by null-valued metadata.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 7.727704749999999
+  dominant_difficulty: Free-form diagnosis prose and structured provenance data had
+    to be kept behaviorally aligned across parsing, rendering, and persistence so
+    unsupported corroboration language could not escape through an unstructured path.

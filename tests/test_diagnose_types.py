@@ -21,6 +21,7 @@ from theforge.diagnose_types import (
     PremiseAnchor,
     RelatedFinding,
     ScopeCoverageLocation,
+    SupportProvenance,
     SymptomScopeCoverage,
     render_already_resolved_markdown,
     render_artifact_markdown,
@@ -191,14 +192,31 @@ class TestDiagnoseOutputDestinations:
 
 class TestHypothesis:
     def test_status_and_evidence_round_trip(self):
-        h = Hypothesis(statement="x", status="confirmed", evidence="e")
+        h = Hypothesis(
+            statement="x",
+            status="confirmed",
+            evidence="e",
+            evidence_provenance=SupportProvenance("observed", "reproduced locally"),
+        )
         assert h.statement == "x"
         assert h.status == "confirmed"
         assert h.evidence == "e"
+        assert h.evidence_provenance.source_type == "observed"
 
     def test_evidence_defaults_to_empty(self):
         h = Hypothesis(statement="x", status="inconclusive")
         assert h.evidence == ""
+        assert h.evidence_provenance == SupportProvenance()
+
+
+class TestSupportProvenance:
+    def test_unknown_default(self):
+        assert SupportProvenance() == SupportProvenance("unknown", "")
+
+    def test_unknown_normalizes_unrecognized_source_type(self):
+        provenance = SupportProvenance(source_type="commit_message", detail="already asserted")
+        assert provenance.source_type == "unknown"
+        assert provenance.detail == "already asserted"
 
 
 class TestSymptomScopeCoverage:
@@ -439,7 +457,14 @@ class TestRenderArtifactMarkdown:
             issue_number=1,
             observed_symptom="s",
             reproduction_or_evidence="r",
-            hypotheses=(Hypothesis("the hypothesis", "confirmed", "the evidence"),),
+            hypotheses=(
+                Hypothesis(
+                    "the hypothesis",
+                    "confirmed",
+                    "the evidence",
+                    SupportProvenance("observed", "reproduced in a failing test"),
+                ),
+            ),
             confirmed_cause="c",
             affected_code_path="p",
             fix_success_criterion="f",
@@ -448,6 +473,119 @@ class TestRenderArtifactMarkdown:
         assert "[confirmed]" in md
         assert "the hypothesis" in md
         assert "Evidence: the evidence" in md
+        assert "Evidence provenance: observed" in md
+        assert "reproduced in a failing test" in md
+
+    def test_prior_assertion_support_renders_as_restatement_not_corroboration(self):
+        artifact = DiagnosisArtifact(
+            issue_number=342,
+            observed_symptom="diagnosis cites its own prior conclusion as independent",
+            reproduction_or_evidence="operator quote captured in issue body",
+            hypotheses=(
+                Hypothesis(
+                    "the schema lacks provenance",
+                    "confirmed",
+                    (
+                        "independently confirmed by commit 858ec73a whose message states "
+                        "the identical mechanism"
+                    ),
+                    SupportProvenance(
+                        "prior_assertion",
+                        "Commit 858ec73a already states the same mechanism.",
+                    ),
+                ),
+            ),
+            confirmed_cause="Diagnosis support lacks observed-vs-restated provenance.",
+            confirmed_cause_support=(
+                "The same commit message already states the cause and the diagnosis "
+                "described it as an independent fix."
+            ),
+            confirmed_cause_support_provenance=SupportProvenance(
+                "prior_assertion",
+                "Unmerged branch fix/mcp-live-surface-resources-dir already asserted the cause.",
+            ),
+            affected_code_path="src/theforge/diagnose_types.py",
+            fix_success_criterion="Prior assertions render as restatements, not corroboration.",
+        )
+        md = render_artifact_markdown(artifact)
+        assert "Support provenance: prior_assertion" in md
+        assert "restatement, not independent corroboration" in md
+        assert "Evidence provenance: prior_assertion" in md
+        assert "Independence note:" in md
+
+    def test_confirmed_cause_independence_language_uses_support_provenance_caveat(self):
+        artifact = DiagnosisArtifact(
+            issue_number=342,
+            observed_symptom="confirmed cause text itself claims independent confirmation",
+            reproduction_or_evidence="operator quote captured in issue body",
+            hypotheses=(
+                Hypothesis(
+                    "support provenance exists but the cause prose carried the claim",
+                    "confirmed",
+                    "Earlier diagnosis already stated the same mechanism",
+                ),
+            ),
+            confirmed_cause=(
+                "The renderer treated an earlier diagnosis as independently corroborating "
+                "the same cause."
+            ),
+            confirmed_cause_support_provenance=SupportProvenance(
+                "prior_assertion",
+                "The cited earlier diagnosis already stated the cause.",
+            ),
+            affected_code_path="src/theforge/diagnose_types.py",
+            fix_success_criterion="Confirmed-cause prose is caveated as a restatement.",
+        )
+        md = render_artifact_markdown(artifact)
+        assert "Support: _(none recorded)_" in md
+        assert "Support provenance: prior_assertion" in md
+        assert "already stated this cause and is not independent corroboration" in md
+
+    def test_duplicate_confirmed_cause_independence_notes_are_deduplicated(self):
+        artifact = DiagnosisArtifact(
+            issue_number=342,
+            observed_symptom="both cause and support repeat the same independence claim",
+            reproduction_or_evidence="operator quote captured in issue body",
+            hypotheses=(
+                Hypothesis(
+                    "both fields restate the same prior assertion",
+                    "confirmed",
+                    "Earlier diagnosis already stated the same mechanism",
+                ),
+            ),
+            confirmed_cause="The earlier diagnosis independently confirmed the same cause.",
+            confirmed_cause_support=(
+                "The earlier diagnosis independently confirmed the same cause."
+            ),
+            confirmed_cause_support_provenance=SupportProvenance(
+                "prior_assertion",
+                "The cited earlier diagnosis already stated the cause.",
+            ),
+            affected_code_path="src/theforge/diagnose_types.py",
+            fix_success_criterion="The support block renders one caveat, not duplicates.",
+        )
+        md = render_artifact_markdown(artifact)
+        assert md.count("Independence note:") == 1
+
+    def test_independence_language_with_observed_provenance_gets_caveat(self):
+        artifact = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="s",
+            reproduction_or_evidence="r",
+            hypotheses=(
+                Hypothesis(
+                    "the hypothesis",
+                    "confirmed",
+                    "independently confirmed by the latest test run",
+                    SupportProvenance("observed", "test_red.py failed at HEAD"),
+                ),
+            ),
+            confirmed_cause="c",
+            affected_code_path="p",
+            fix_success_criterion="f",
+        )
+        md = render_artifact_markdown(artifact)
+        assert "Verify the cited material is a second source rather than a prior assertion." in md
 
     def test_partial_artifact_renders_warning_block(self):
         artifact = DiagnosisArtifact(
