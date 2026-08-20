@@ -27,7 +27,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
-from coord_test_helpers import _make_config, _make_task
+from coord_test_helpers import _make_config, _make_task, patch_gate_shell
 
 from theforge.artifacts import ESCALATED_MARKER_PATH
 from theforge.config import (
@@ -40,7 +40,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
-from theforge.coordinator.engine import run_task
+from theforge.coordinator.engine import run_from_dev, run_from_review, run_task
 from theforge.coordinator.state import Phase
 from theforge.coordinator.workspace import _create_workspace
 from theforge.coordinator.worktree_drift import (
@@ -305,6 +305,85 @@ class TestRunTaskSeam:
         result = run_task(config, _make_task(tmp_path))
 
         assert result.message.startswith("Workspace creation failed:")
+
+
+# ── The resume rebase seam ────────────────────────────────────────────
+
+
+def _resume_shell(cmd: str, cwd, **kwargs):
+    if "git rev-parse --abbrev-ref HEAD" in cmd:
+        return (True, "forge/test-task", 0, False)
+    return (True, "", 0, False)
+
+
+class TestResumeRebaseSeam:
+    @patch("theforge.coordinator.engine.classify_rebase_conflict")
+    @patch("theforge.coordinator.engine._rebase_onto_main", return_value=(False, REBASE_STDERR))
+    @patch_gate_shell(side_effect=_resume_shell)
+    def test_run_from_review_forwards_classification(
+        self, _mock_shell, _mock_rebase, mock_classify, tmp_path
+    ):
+        classification = f"{DRIFT_HEADER} on main\n\nFiles changed on both sides:\n  - src/foo.py"
+        mock_classify.return_value = classification
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        result = run_from_review(config, task, workspace, no_pull=True)
+
+        assert result.success is False
+        assert result.phase is Phase.ESCALATE
+        assert result.message == classification
+        assert result.state.error == classification
+        mock_classify.assert_called_once_with(
+            workspace,
+            config.workspace.base_branch,
+            REBASE_STDERR,
+        )
+
+    @patch("theforge.coordinator.engine.classify_rebase_conflict")
+    @patch("theforge.coordinator.engine._rebase_onto_main", return_value=(False, REBASE_STDERR))
+    @patch_gate_shell(side_effect=_resume_shell)
+    def test_run_from_dev_forwards_classification(
+        self, _mock_shell, _mock_rebase, mock_classify, tmp_path
+    ):
+        classification = f"{DRIFT_HEADER} on main\n\nFiles changed on both sides:\n  - src/foo.py"
+        mock_classify.return_value = classification
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        result = run_from_dev(config, task, workspace, no_pull=True)
+
+        assert result.success is False
+        assert result.phase is Phase.ESCALATE
+        assert result.message == classification
+        assert result.state.error == classification
+        mock_classify.assert_called_once_with(
+            workspace,
+            config.workspace.base_branch,
+            REBASE_STDERR,
+        )
+
+    @patch("theforge.coordinator.engine.classify_rebase_conflict", return_value=None)
+    @patch("theforge.coordinator.engine._rebase_onto_main", return_value=(False, REBASE_STDERR))
+    @patch_gate_shell(side_effect=_resume_shell)
+    def test_resume_rebase_falls_back_to_raw_error_when_unclassifiable(
+        self, _mock_shell, _mock_rebase, _mock_classify, tmp_path
+    ):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir()
+
+        result = run_from_review(config, task, workspace, no_pull=True)
+
+        assert result.success is False
+        assert result.phase is Phase.ESCALATE
+        assert result.message.startswith("pre-dev rebase onto main failed")
+        assert not is_drift_classification(result.message)
 
 
 # ── The sprint-log surface ────────────────────────────────────────────

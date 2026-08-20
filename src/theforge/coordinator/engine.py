@@ -95,7 +95,7 @@ from .workspace import (
     pull_base_branch,
 )
 from .workspace_scrub import _scrub_forge_history
-from .worktree_drift import is_drift_classification
+from .worktree_drift import classify_rebase_conflict, is_drift_classification
 from .worktree_provenance import inherited_work_note, last_worktree_provenance
 
 # ── Lazy runner symbols ───────────────────────────────────────────────
@@ -1818,9 +1818,11 @@ def _run_resume_coordinator(
         rebase_ok, rebase_err = _rebase_onto_main(str(state.workspace_path), base_branch, logger)
         if not rebase_ok:
             state.phase = Phase.ESCALATE
-            state.escalate_reason = (
-                f"pre-dev rebase onto {base_branch} failed — conflicts must be resolved manually: "
-                f"{rebase_err}"
+            state.escalate_reason = classify_rebase_conflict(
+                state.workspace_path, base_branch, rebase_err
+            ) or (
+                f"pre-dev rebase onto {base_branch} failed — conflicts must be resolved "
+                f"manually: {rebase_err}"
             )
             state.error = state.escalate_reason
             logger._safe_emit("escalate", reason=state.escalate_reason, phase="RESUME_REBASE")
