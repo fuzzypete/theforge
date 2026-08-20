@@ -162,6 +162,34 @@ class TestRenderedArtifactReadiness:
         body = render_artifact_markdown(_artifact(REAL_CAUSE))
         assert classify_bug_diagnosis(body, ["bug"]) is BugDiagnosisState.CONFIRMED_CAUSE
 
+    def test_rendered_real_cause_with_support_provenance_caveat_stays_asserted(self) -> None:
+        body = render_artifact_markdown(
+            DiagnosisArtifact(
+                issue_number=2060,
+                observed_symptom="A diagnose artifact with confirmed cause stays asserted.",
+                reproduction_or_evidence="Rendered with support provenance text below the cause.",
+                hypotheses=(
+                    Hypothesis(
+                        statement="support provenance adds lines below the cause heading",
+                        status="confirmed",
+                        evidence="render_artifact_markdown now emits a support block",
+                    ),
+                ),
+                confirmed_cause=(
+                    "The earlier diagnosis independently confirmed the same cause in heading form."
+                ),
+                confirmed_cause_support_provenance=SupportProvenance(
+                    "prior_assertion",
+                    "The earlier diagnosis already stated the cause.",
+                ),
+                affected_code_path="src/theforge/diagnose_types.py",
+                fix_success_criterion="support provenance does not change cause extraction.",
+            )
+        )
+        assert cause_assertion_state(body) == "asserted"
+        assert derive_fix_ready("bug", body) == (True, False, [])
+        assert "Support provenance: prior_assertion" in body
+
 
 class TestHeadingAndBulletFormAgree:
     @pytest.mark.parametrize("cause_value", [REAL_CAUSE, *NON_ASSERTIONS])

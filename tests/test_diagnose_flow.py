@@ -2310,6 +2310,25 @@ class TestParseSupportProvenance:
         assert artifact.confirmed_cause_support == ""
         assert artifact.confirmed_cause_support_provenance == SupportProvenance()
 
+    def test_null_or_empty_provenance_detail_does_not_stringify_none(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n"
+            "  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "    evidence_provenance:\n"
+            "      source_type:\n"
+            "      detail:\n"
+            "confirmed_cause: c\n"
+            "confirmed_cause_support_provenance:\n"
+            "  source_type:\n"
+            "  detail:\n"
+            "affected_code_path: p\nfix_success_criterion: f\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert artifact.hypotheses[0].evidence_provenance == SupportProvenance()
+        assert artifact.confirmed_cause_support_provenance == SupportProvenance()
+
 
 class TestParseSymptomScopeCoverage:
     def test_parses_categorical_scope_coverage(self):

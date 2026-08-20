@@ -672,11 +672,16 @@ def _normalize_root_error(root_type: str) -> str:
 
 
 def _parse_support_provenance(raw: object) -> SupportProvenance:
+    def _yaml_scalar_text(value: object, *, default: str) -> str:
+        if value is None:
+            return default
+        return str(value)
+
     if not isinstance(raw, dict):
         return SupportProvenance()
     return SupportProvenance(
-        source_type=str(raw.get("source_type", "unknown")),
-        detail=str(raw.get("detail", "")),
+        source_type=_yaml_scalar_text(raw.get("source_type", "unknown"), default="unknown"),
+        detail=_yaml_scalar_text(raw.get("detail", ""), default=""),
     )
 
 

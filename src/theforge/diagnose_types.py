@@ -552,11 +552,18 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     if (
         artifact.confirmed_cause_support.strip()
         or artifact.confirmed_cause_support_provenance.is_meaningful()
+        or _INDEPENDENCE_VOCAB_RE.search(artifact.confirmed_cause or "")
     ):
         lines.append(f"Support: {artifact.confirmed_cause_support.strip() or '_(none recorded)_'}")
         lines.append(
             "Support provenance: "
             f"{render_provenance_text(artifact.confirmed_cause_support_provenance)}"
+        )
+        lines.extend(
+            render_independence_note(
+                artifact.confirmed_cause,
+                artifact.confirmed_cause_support_provenance,
+            )
         )
         lines.extend(
             render_independence_note(
