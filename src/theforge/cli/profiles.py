@@ -8,12 +8,20 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from theforge.config import is_canonical_model_id
+from theforge.cli.shared import _find_config, load_config_checked
+from theforge.config import is_canonical_model_id, load_config
 from theforge.model_profiles_identity import COMPLEXITY_BANDS, ROLES
 from theforge.model_profiles_storage import (
     canonical_id_for_legacy_key,
     load_profiles,
     record_profile_reset,
+)
+from theforge.model_strength_report import (
+    DEFAULT_EVIDENCE_FLOOR,
+    STATUS_UNDERPERFORMING,
+    DeclaredStrengthRow,
+    ModelStrengthReport,
+    build_model_strength_report,
 )
 
 
@@ -42,6 +50,41 @@ def register_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
         choices=ROLES,
         default=None,
         help="Show only one role",
+    )
+
+    strength_parser = profile_subparsers.add_parser(
+        "strength",
+        help="Compare declared model strength against observed dev behaviour",
+    )
+    strength_parser.add_argument(
+        "--config",
+        default=None,
+        help="Path to forge.yaml (default: nearest one above cwd)",
+    )
+    strength_parser.add_argument(
+        "--project-root",
+        default=None,
+        help="Project root containing the .forge directory (default: the config's)",
+    )
+    strength_parser.add_argument(
+        "--min-runs",
+        type=int,
+        default=DEFAULT_EVIDENCE_FLOOR,
+        help=(
+            "Runs a band needs before a disagreement is claimed "
+            f"(default: {DEFAULT_EVIDENCE_FLOOR})"
+        ),
+    )
+    strength_parser.add_argument(
+        "--complexity",
+        choices=COMPLEXITY_BANDS,
+        default=None,
+        help="Show only one complexity band",
+    )
+    strength_parser.add_argument(
+        "--model",
+        default=None,
+        help="Show only one canonical model ID",
     )
 
     reset_parser = profile_subparsers.add_parser(
@@ -80,6 +123,8 @@ def register_parser(subparsers: argparse._SubParsersAction[argparse.ArgumentPars
 def cmd_profiles(args: argparse.Namespace) -> int:
     if args.profiles_command == "list":
         return cmd_profiles_list(args)
+    if args.profiles_command == "strength":
+        return cmd_profiles_strength(args)
     if args.profiles_command == "reset":
         return cmd_profiles_reset(args)
     print(f"[forge] Unknown profiles subcommand: {args.profiles_command}", file=sys.stderr)
@@ -125,6 +170,142 @@ def cmd_profiles_list(args: argparse.Namespace) -> int:
             f"{row['terminated']:>{widths['terminated']}}"
         )
     return 0
+
+
+def cmd_profiles_strength(args: argparse.Namespace) -> int:
+    """Render the declared-vs-observed comparison (#2308). Read-only."""
+    config_path = Path(args.config).resolve() if args.config else _find_config(Path.cwd())
+    if config_path is None or not config_path.exists():
+        print(
+            "[forge] forge.yaml not found. Run 'forge init' to create one, "
+            "or pass --config path/to/forge.yaml",
+            file=sys.stderr,
+        )
+        return 1
+    config = load_config_checked(
+        config_path,
+        loader=load_config,
+        emit_startup_auth_warnings=False,
+    )
+    project_root = (
+        Path(args.project_root).resolve() if args.project_root else Path(config.project_root)
+    )
+    profiles = load_profiles(project_root / ".forge" / "model_profiles.yaml")
+
+    report = build_model_strength_report(
+        model_registry=config.model_registry or {},
+        profiles=profiles,
+        evidence_floor=args.min_runs,
+        recency=getattr(config.assignment, "recency", None),
+    )
+    print(_render_strength(report, model=args.model, complexity=args.complexity))
+    return 0
+
+
+def _render_strength(
+    report: ModelStrengthReport,
+    *,
+    model: str | None = None,
+    complexity: str | None = None,
+) -> str:
+    rows = [
+        row
+        for row in report.rows
+        if (model is None or row.canonical_id == model)
+        and (complexity is None or row.complexity == complexity)
+    ]
+    lines: list[str] = []
+    headers = ("model", "band", "declared", "observed", "samples", "declared peers", "status")
+    table = [
+        (
+            row.canonical_id,
+            row.complexity,
+            f"{row.declared_tier}/{row.declared_capability}",
+            _rate(row.observed_rate),
+            str(row.runs),
+            _peer_range(row),
+            row.status,
+        )
+        for row in rows
+    ]
+    lines.extend(_table_lines(headers, table))
+
+    lines.append("")
+    lines.append(
+        f"Evidence floor: {report.evidence_floor} runs per band — below it a band is reported "
+        "as observed-but-insufficient, never as disagreement."
+    )
+    lines.append(
+        "Evidence recency: unknown — profiles record no per-key timestamp, so a rate may rest "
+        "on history that stopped accruing."
+    )
+
+    legacy = [row for row in rows if _legacy_keys(row)]
+    if legacy:
+        lines.append("")
+        lines.append("Evidence drawn partly from non-canonical keys:")
+        for row in legacy:
+            keys = ", ".join(_legacy_keys(row))
+            lines.append(f"  {row.canonical_id} {row.complexity}: {keys}")
+
+    disagreements = [row for row in rows if row.status == STATUS_UNDERPERFORMING]
+    lines.append("")
+    if disagreements:
+        lines.append(f"Declarations the evidence disagrees with: {len(disagreements)}")
+        for row in disagreements:
+            lines.append(
+                f"  {row.canonical_id} {row.complexity}: declared "
+                f"{row.declared_tier}/{row.declared_capability}, observed "
+                f"{_rate(row.observed_rate)} over {row.runs} runs; declared peers "
+                f"{_peer_range(row)}"
+            )
+    else:
+        lines.append("Declarations the evidence disagrees with: none")
+
+    if report.unattributed:
+        lines.append("")
+        lines.append("Profile evidence excluded — not attributable to a live dev-capable model:")
+        for entry in report.unattributed:
+            resolved = entry.canonical_id or "unresolved"
+            lines.append(
+                f"  {entry.key} ({entry.reason}, resolves to {resolved}): {entry.runs} runs"
+            )
+
+    if report.excluded_non_dev_models:
+        lines.append("")
+        lines.append(
+            f"Live models excluded as not dev-capable ({len(report.excluded_non_dev_models)}): "
+            + ", ".join(report.excluded_non_dev_models)
+        )
+
+    lines.append("")
+    lines.append("Advisory only — this command does not modify any catalog declaration.")
+    return "\n".join(lines)
+
+
+def _table_lines(headers: tuple[str, ...], table: list[tuple[str, ...]]) -> list[str]:
+    widths = [
+        max(len(headers[i]), *(len(row[i]) for row in table)) if table else len(headers[i])
+        for i in range(len(headers))
+    ]
+    lines = ["  ".join(h.ljust(widths[i]) for i, h in enumerate(headers)).rstrip()]
+    for row in table:
+        lines.append("  ".join(cell.ljust(widths[i]) for i, cell in enumerate(row)).rstrip())
+    return lines
+
+
+def _rate(value: float | None) -> str:
+    return "—" if value is None else f"{float(value):.2f}"
+
+
+def _peer_range(row: DeclaredStrengthRow) -> str:
+    if row.peer_low is None or row.peer_high is None:
+        return "—"
+    return f"{row.peer_low:.2f}–{row.peer_high:.2f} ({row.peer_count})"
+
+
+def _legacy_keys(row: DeclaredStrengthRow) -> list[str]:
+    return [key for key in row.contributing_keys if key != row.canonical_id]
 
 
 def cmd_profiles_reset(args: argparse.Namespace) -> int:
