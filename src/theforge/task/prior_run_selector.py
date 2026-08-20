@@ -107,6 +107,11 @@ _NOISE_TOKENS = frozenset(
     }
 )
 
+INDEX_STATE_READY = "ready"
+INDEX_STATE_MISSING = "missing"
+INDEX_STATE_UNREADABLE = "unreadable"
+INDEX_STATE_STALE_SCHEMA = "stale_schema"
+
 
 @dataclass(frozen=True)
 class PriorRunCandidate:
@@ -143,6 +148,7 @@ class PriorRunSelection:
     candidates: tuple[PriorRunCandidate, ...] = ()
     excluded: tuple[PriorRunExclusion, ...] = ()
     entry_count: int = 0
+    index_state: str = INDEX_STATE_READY
     phase_eligible: bool = True
     phase: str = ""
     rendering_mode: str = ""
@@ -166,9 +172,15 @@ def select_prior_runs(
     if not rendering_mode:
         return PriorRunSelection(phase_eligible=False, phase=normalized_phase)
 
-    entries = _load_index_entries(Path(project_root))
+    entries, index_state = _load_index_entries(Path(project_root))
     if not entries:
-        return PriorRunSelection(entry_count=0)
+        return PriorRunSelection(
+            entry_count=0,
+            index_state=index_state,
+            phase_eligible=True,
+            phase=normalized_phase,
+            rendering_mode=rendering_mode,
+        )
 
     recent_run_ids = _recent_run_ids(entries)
     story_terms = _tokens(story_text)
@@ -283,6 +295,7 @@ def select_prior_runs(
         candidates=tuple(kept),
         excluded=tuple(excluded),
         entry_count=len(entries),
+        index_state=index_state,
         phase_eligible=True,
         phase=normalized_phase,
         rendering_mode=rendering_mode,
@@ -292,21 +305,23 @@ def select_prior_runs(
 # ── Index loading ─────────────────────────────────────────────────────────────
 
 
-def _load_index_entries(project_root: Path) -> list[Mapping[str, Any]]:
-    """Read the deterministic index, failing closed to ``[]`` on any problem."""
+def _load_index_entries(project_root: Path) -> tuple[list[Mapping[str, Any]], str]:
+    """Read the deterministic index, failing closed while reporting index health."""
     path = project_root / KNOWLEDGE_INDEX_PATH
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return [], INDEX_STATE_MISSING
     except (OSError, UnicodeDecodeError, yaml.YAMLError):
-        return []
+        return [], INDEX_STATE_UNREADABLE
     if not isinstance(raw, Mapping):
-        return []
+        return [], INDEX_STATE_UNREADABLE
     if raw.get("schema_version") != KNOWLEDGE_INDEX_SCHEMA_VERSION:
-        return []
+        return [], INDEX_STATE_STALE_SCHEMA
     entries = raw.get("entries")
     if not isinstance(entries, list):
-        return []
-    return [entry for entry in entries if isinstance(entry, Mapping)]
+        return [], INDEX_STATE_UNREADABLE
+    return [entry for entry in entries if isinstance(entry, Mapping)], INDEX_STATE_READY
 
 
 def _recent_run_ids(entries: list[Mapping[str, Any]]) -> frozenset[str]:

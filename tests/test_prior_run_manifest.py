@@ -154,7 +154,45 @@ def test_manifest_note_reports_absence_when_nothing_is_indexed(tmp_path: Path) -
 
     assert manifest["included"] == []
     assert manifest["dropped"] == []
-    assert "no relevant prior knowledge exists" in manifest["note"]
+    assert manifest["note"] == (
+        "prior-run knowledge index is missing or was never built; "
+        "run `forge index` to build .forge/knowledge/index.yaml"
+    )
+
+
+def test_manifest_note_reports_unreadable_index_with_repair(tmp_path: Path) -> None:
+    path = tmp_path / ".forge" / "knowledge" / "index.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(": not: yaml:", encoding="utf-8")
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
+
+    assert manifest["note"] == (
+        "prior-run knowledge index is unreadable; "
+        "run `forge index` to rebuild .forge/knowledge/index.yaml"
+    )
+
+
+def test_manifest_note_reports_stale_schema_index_with_repair(tmp_path: Path) -> None:
+    _write_index(tmp_path, [], schema_version=1)
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
+
+    assert manifest["note"] == (
+        "prior-run knowledge index uses an unsupported schema version; "
+        "run `forge index` to rebuild .forge/knowledge/index.yaml"
+    )
+
+
+def test_manifest_note_preserves_existing_empty_index_message(tmp_path: Path) -> None:
+    _write_index(tmp_path, [])
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
+
+    assert manifest["note"] == "no relevant prior knowledge exists (no indexed summaries)"
 
 
 def test_manifest_note_reports_unsupported_phase_ineligibility(tmp_path: Path) -> None:
