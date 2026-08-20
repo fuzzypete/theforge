@@ -615,6 +615,23 @@ class TestReviewPromptEvidenceRules:
         assert "Do NOT use phrases like `pre-existing`, `out of scope`" in prompt
         assert "active P2 policy (`in_scope`)" in prompt
 
+    def test_bug_symptom_verification_distinguishes_reported_instance_and_scope(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "the originally reported instance is fixed" in prompt
+        assert "the symptom's stated scope is covered" in prompt
+        assert "Fixing only the first reproducing instance is" in prompt
+
+    def test_bug_symptom_verification_falls_back_to_issue_text_without_diagnosis_scope(
+        self, review_task: TaskStory
+    ) -> None:
+        prompt = build_review_prompt(review_task, **_REVIEW_COMMON_KWARGS)
+        assert "diagnosis scope-coverage" in prompt
+        assert "record is visible" in prompt
+        assert "otherwise evaluate the categorical claim directly from the" in prompt
+        assert "issue's stated symptom" in prompt
+
 
 class TestReviewPromptGateEvidence:
     def test_review_prompt_surfaces_authoritative_gate_verdict_and_commit(

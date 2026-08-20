@@ -18,6 +18,13 @@ from theforge.diagnose_types import (
     InspectedFile,
     PremiseAnchor,
     RelatedFinding,
+    ScopeCoverageLocation,
+    SymptomScopeCoverage,
+)
+from theforge.shape_check.parsing import (
+    BUG_EXPECTATION_HEADING,
+    BUG_SYMPTOM_HEADING,
+    extract_section,
 )
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
@@ -56,19 +63,30 @@ Mode: {mode}
    you finish: if a cited file or pattern is absent from the baseline, the run
    is reported as "already resolved" rather than landed as a live diagnosis.
    Do NOT emit a confirmed cause for code that no longer exists.
-6. **Scope the confirmed cause to THIS issue's stated symptom — nothing more.**
-   The diagnosis boundary must match the issue boundary.  While investigating
-   you may notice other real defects in nearby code that are NOT the cause of
-   this issue's symptom (a different bug, another issue's domain, a latent
-   problem you happened to see).  Do NOT fold those into ``confirmed_cause`` or
-   ``affected_code_path`` — a downstream dev implements the confirmed cause
-   verbatim, so anything you put there becomes part of THIS issue's fix and
-   over-scopes it.  Instead, record each such adjacent problem as a separate
-   entry in ``related_findings``, naming the owning/related issue if you know
-   it (e.g. ``"#1649"``).  Ask of every claim you put in ``confirmed_cause``:
-   "is this the cause of the *stated* symptom?"  If it is a neighboring problem
-   rather than the cause of what the issue reports, it belongs in
-   ``related_findings``, not in the fix scope.
+6. **Scope the confirmed cause to THIS issue's stated symptom — nothing more,
+   and nothing less.** The diagnosis boundary must match the issue boundary.
+   While investigating you may notice other real defects in nearby code that
+   are NOT the cause of this issue's symptom (a different bug, another issue's
+   domain, a latent problem you happened to see).  Do NOT fold those into
+   ``confirmed_cause`` or ``affected_code_path`` — a downstream dev implements
+   the confirmed cause verbatim, so anything you put there becomes part of THIS
+   issue's fix and over-scopes it.  Instead, record each such adjacent problem
+   as a separate entry in ``related_findings``, naming the owning/related issue
+   if you know it (e.g. ``"#1649"``).  Ask of every claim you put in
+   ``confirmed_cause``: "is this the cause of the *stated* symptom?"  If it is
+   a neighboring problem rather than the cause of what the issue reports, it
+   belongs in ``related_findings``, not in the fix scope.
+7. If the issue states the symptom categorically (for example "every surface",
+   "any story", "regardless of X"), account for the stated scope before you
+   confirm a cause.  Check structurally analogous sibling locations: the same
+   construct, the same omission or behavior, at a sibling site.  Either cover
+   those locations in the affected code path or record which ones you examined
+   and excluded in ``symptom_scope_coverage``.  A nearby location with a
+   different construct or a distinct defect is **adjacent-but-different** and
+   stays a ``related_findings`` entry instead.  Do NOT broaden a single
+   concrete-instance symptom into a categorical one; leave
+   ``symptom_scope_coverage.symptom_is_categorical`` false for one-off
+   symptoms.
 
 == OUTPUT FORMAT ==
 
@@ -130,6 +148,25 @@ related_findings:
   # Omit or leave empty if you noticed no separate adjacent problems.
   - summary: "<one-line description of a separate adjacent defect>"
     related: "<owning/related issue ref, e.g. '#1649', or empty>"
+symptom_scope_coverage:
+  # REQUIRED when the issue's stated symptom is categorical ("every", "any",
+  # "regardless", etc.). Keep the default non-categorical record for symptoms
+  # scoped to one concrete instance. Do NOT invent a broader scope than the
+  # issue states.
+  symptom_is_categorical: false
+  stated_scope: ""
+  examined_locations: []
+  # Example categorical record:
+  # symptom_is_categorical: true
+  # stated_scope: "Every sibling surface that renders this symptom"
+  # examined_locations:
+  #   - location: "path/to/sibling_surface_a.ext:render_output"
+  #     status: covered
+  #     rationale: "Same renderer construct and same omitted field as the confirmed cause."
+  #   - location: "path/to/sibling_surface_b.ext:serialize_output"
+  #     status: excluded
+  #     rationale: "Sibling surface checked; it uses a different serializer
+  #       and already carries the field."
 ```
 """
 
@@ -146,8 +183,8 @@ diagnosis with the syntax error fixed.
 Preserve your previous output verbatim:
   - Keep the SAME confirmed_cause, word for word.  Do NOT re-scope it.
   - Keep EVERY hypothesis, with the same statement, status, and evidence.
-  - Keep EVERY inspected_files entry, premise_anchors entry, and
-    related_findings entry.
+  - Keep EVERY inspected_files entry, premise_anchors entry,
+    related_findings entry, and symptom_scope_coverage entry.
   - Keep the same notes.
 
 Dropping or altering a value to make the parse error go away is a WRONG
@@ -307,6 +344,237 @@ def build_diagnose_reformat_prompt(*, original_output: str, parse_error: str) ->
 
 
 _FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^\n`]*)[ \t]*$", re.MULTILINE)
+_CATEGORICAL_SCOPE_SENTENCE_RE = re.compile(
+    r"(?:(?<=^)|(?<=[.!?]\s))"
+    r"(?P<quantifier>every|each|any|all)\s+"
+    r"(?P<phrase>[a-z][\w-]*(?:\s+[a-z][\w-]*){0,5}?)\s+"
+    r"(?P<verb>"
+    r"should|must|needs?\s+to|can(?:not)?|cannot|does(?:\s+not|n't)|"
+    r"fails?\s+to|is|are|preserves?|includes?|covers?|renders?|drops?|"
+    r"omits?|keeps?|retains?|loses?|prints?"
+    r")\b",
+    re.IGNORECASE,
+)
+_CATEGORICAL_SCOPE_PREPOSITION_RE = re.compile(
+    r"\b(?:on|across|for|in)\s+"
+    r"(?P<quantifier>every|each|any|all)\s+"
+    r"(?P<phrase>[a-z][\w-]*(?:\s+[a-z][\w-]*){0,5})\b",
+    re.IGNORECASE,
+)
+_CATEGORICAL_SCOPE_REGARDLESS_RE = re.compile(r"\bregardless\s+of\b", re.IGNORECASE)
+_CATEGORICAL_SCOPE_QUANTIFIERS = frozenset({"all", "any", "each", "every"})
+_CARDINAL_SCOPE_WORDS = frozenset(
+    {
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "first",
+        "second",
+        "third",
+        "single",
+    }
+)
+_SCOPE_NOUN_HINTS = frozenset(
+    {
+        "adapter",
+        "agent",
+        "backend",
+        "branch",
+        "caller",
+        "case",
+        "command",
+        "dependency",
+        "endpoint",
+        "flow",
+        "frontend",
+        "handler",
+        "implementation",
+        "issue",
+        "location",
+        "mode",
+        "output",
+        "path",
+        "phase",
+        "provider",
+        "renderer",
+        "run",
+        "serializer",
+        "site",
+        "sprint",
+        "story",
+        "surface",
+        "task",
+        "variant",
+        "view",
+        "worktree",
+    }
+)
+_SCOPE_PHRASE_BOUNDARY_WORDS = frozenset(
+    {"across", "for", "in", "of", "on", "that", "which", "who", "with"}
+)
+_CONCRETE_SCOPE_NARROWING_WORDS = frozenset({"for", "in", "of", "on"})
+_CONCRETE_SCOPE_DEICTIC_DETERMINERS = frozenset({"current", "that", "this"})
+_CONCRETE_SCOPE_OPTIONAL_ARTICLES = frozenset({"the"})
+_CONCRETE_SCOPE_MODIFIERS = frozenset({"one", "single"})
+
+
+def _normalize_scope_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _tokenize_scope_text(text: str) -> list[str]:
+    return [token.lower() for token in re.findall(r"[a-z0-9][\w-]*", text)]
+
+
+def _token_matches_scope_hint(token: str) -> bool:
+    candidates = {token}
+    if token.endswith("ies") and len(token) > 3:
+        candidates.add(f"{token[:-3]}y")
+    if token.endswith("es") and len(token) > 2:
+        candidates.add(token[:-2])
+    if token.endswith("s") and len(token) > 1:
+        candidates.add(token[:-1])
+    return any(candidate in _SCOPE_NOUN_HINTS for candidate in candidates)
+
+
+def _collect_clause_head(tokens: list[str]) -> list[str]:
+    clause_head: list[str] = []
+    for token in tokens:
+        if token in _SCOPE_PHRASE_BOUNDARY_WORDS:
+            break
+        clause_head.append(token)
+    return clause_head
+
+
+def _clause_points_to_concrete_scope(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+
+    clause_head = _collect_clause_head(tokens)
+    if not clause_head or clause_head[0] in _CATEGORICAL_SCOPE_QUANTIFIERS:
+        return False
+
+    concrete_marker = False
+    if clause_head[0] in _CONCRETE_SCOPE_DEICTIC_DETERMINERS:
+        concrete_marker = True
+        clause_head = clause_head[1:]
+    elif clause_head[0] in _CONCRETE_SCOPE_OPTIONAL_ARTICLES:
+        clause_head = clause_head[1:]
+    if clause_head and clause_head[0] in _CONCRETE_SCOPE_MODIFIERS:
+        concrete_marker = True
+        clause_head = clause_head[1:]
+    if not clause_head:
+        return False
+
+    trailing_identifier = any(
+        token.isdigit() or token in _CARDINAL_SCOPE_WORDS for token in clause_head[1:]
+    )
+    if _token_matches_scope_hint(clause_head[-1]):
+        return concrete_marker or trailing_identifier
+    return _token_matches_scope_hint(clause_head[0]) and trailing_identifier
+
+
+def _phrase_narrows_to_concrete_scope(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token not in _CONCRETE_SCOPE_NARROWING_WORDS:
+            continue
+        if _clause_points_to_concrete_scope(tokens[index + 1 :]):
+            return True
+    return False
+
+
+def _phrase_is_scope_like(phrase: str, *, trailing_context: str = "") -> bool:
+    tokens = _tokenize_scope_text(phrase)
+    if not tokens:
+        return False
+    if tokens[0] in _CARDINAL_SCOPE_WORDS:
+        return False
+    head_tokens = _collect_clause_head(tokens)
+    if not head_tokens:
+        return False
+    if _phrase_narrows_to_concrete_scope(tokens):
+        return False
+    if trailing_context and _phrase_narrows_to_concrete_scope(
+        _tokenize_scope_text(trailing_context)
+    ):
+        return False
+    return _token_matches_scope_hint(head_tokens[-1])
+
+
+def _text_asserts_categorical_scope(text: str) -> bool:
+    normalized = _normalize_scope_text(text)
+    if not normalized:
+        return False
+    if _CATEGORICAL_SCOPE_REGARDLESS_RE.search(normalized):
+        return True
+    for match in _CATEGORICAL_SCOPE_SENTENCE_RE.finditer(normalized):
+        trailing_context = normalized[match.end("verb") :]
+        sentence_boundary = re.search(r"[.!?]", trailing_context)
+        if sentence_boundary:
+            trailing_context = trailing_context[: sentence_boundary.start()]
+        if _phrase_is_scope_like(match.group("phrase"), trailing_context=trailing_context):
+            return True
+    return any(
+        _phrase_is_scope_like(match.group("phrase"))
+        for match in _CATEGORICAL_SCOPE_PREPOSITION_RE.finditer(normalized)
+    )
+
+
+def derive_issue_scope_requirement(issue_title: str, issue_body: str) -> tuple[bool, str]:
+    """Return whether the fetched issue text asserts categorical symptom scope.
+
+    Prefer the bug issue's expected-behavior section, which is where this repo's
+    bug-body contract puts the generalized rule, but also inspect the observed
+    symptom section and issue title so categorical claims stated there still
+    fail closed. Detection stays intentionally narrow: the fail-closed scope
+    requirement is for category-level surface/path/story-style claims, not
+    incidental quantifiers inside a single concrete example.
+    """
+    normalized_title = _normalize_scope_text(issue_title or "")
+    symptom = extract_section(issue_body or "", BUG_SYMPTOM_HEADING)
+    normalized_symptom = _normalize_scope_text(symptom or "")
+    expected = extract_section(issue_body or "", BUG_EXPECTATION_HEADING)
+    normalized_expected = _normalize_scope_text(expected or "")
+    normalized_body = _normalize_scope_text(issue_body or "")
+
+    if normalized_expected and _text_asserts_categorical_scope(normalized_expected):
+        return True, normalized_expected
+    if normalized_symptom and _text_asserts_categorical_scope(normalized_symptom):
+        return True, normalized_symptom
+    if normalized_title and _text_asserts_categorical_scope(normalized_title):
+        return True, normalized_title
+    if (
+        not normalized_expected
+        and not normalized_symptom
+        and normalized_body
+        and _text_asserts_categorical_scope(normalized_body)
+    ):
+        return True, normalized_body
+    if normalized_expected:
+        return False, normalized_expected
+    if normalized_symptom:
+        return False, normalized_symptom
+    if normalized_body:
+        return False, normalized_body
+    return False, normalized_title
 
 
 @dataclass(frozen=True)
@@ -517,6 +785,41 @@ def parse_diagnose_output_result(
             seen_related.add(key)
             related.append(RelatedFinding(summary=summary, related=ref))
 
+    raw_scope = parsed.get("symptom_scope_coverage")
+    scope_categorical = False
+    scope_text = ""
+    scope_locations: list[ScopeCoverageLocation] = []
+    if isinstance(raw_scope, dict):
+        scope_categorical = bool(raw_scope.get("symptom_is_categorical", False))
+        scope_text = str(raw_scope.get("stated_scope", "")).strip()
+        raw_locations = raw_scope.get("examined_locations") or []
+        if isinstance(raw_locations, list):
+            seen_locations: set[tuple[str, str, str]] = set()
+            for entry in raw_locations:
+                if isinstance(entry, str):
+                    location = entry.strip()
+                    status = ""
+                    rationale = ""
+                elif isinstance(entry, dict):
+                    location = str(entry.get("location", "")).strip()
+                    status = str(entry.get("status", "")).strip().lower()
+                    rationale = str(entry.get("rationale", "")).strip()
+                else:
+                    continue
+                if not location:
+                    continue
+                key = (location, status, rationale)
+                if key in seen_locations:
+                    continue
+                seen_locations.add(key)
+                scope_locations.append(
+                    ScopeCoverageLocation(
+                        location=location,
+                        status=status,
+                        rationale=rationale,
+                    )
+                )
+
     artifact = DiagnosisArtifact(
         issue_number=issue_number,
         observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
@@ -530,5 +833,10 @@ def parse_diagnose_output_result(
         inspected_files=tuple(inspected),
         premise_anchors=tuple(anchors),
         related_findings=tuple(related),
+        symptom_scope_coverage=SymptomScopeCoverage(
+            symptom_is_categorical=scope_categorical,
+            stated_scope=scope_text,
+            examined_locations=tuple(scope_locations),
+        ),
     )
     return DiagnoseParseOutcome(artifact)
