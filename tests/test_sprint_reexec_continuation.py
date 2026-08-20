@@ -319,6 +319,42 @@ def test_await_inherited_agents_keeps_waiting_when_liveness_is_unresolved(
     ]
 
 
+def test_await_inherited_agents_logs_unobservable_wait_when_followup_probe_loses_the_group(
+    tmp_path: Path,
+) -> None:
+    """The wait log must not claim blank pgids if the follow-up probe cannot re-read them."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=4242, sandbox_dir=worktrees / "issue-1945"
+    )
+    calls = iter([True, OSError("transient scan failure"), OSError("transient scan failure")])
+    logs: list[str] = []
+
+    def _probe(_pgid: int) -> bool:
+        result = next(calls)
+        if isinstance(result, Exception):
+            raise result
+        return result
+
+    quiesced = await_inherited_agents(
+        "issue-1945",
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+        timeout=0.05,
+        poll_interval=0.01,
+        is_group_alive=_probe,
+        log=logs.append,
+    )
+
+    assert quiesced is False
+    assert sidecar.exists()
+    assert logs == [
+        "IN-FLIGHT issue-1945: waiting up to 0s because inherited agent liveness is temporarily "
+        "unobservable; retaining its sidecar until it is confirmed finished or the wait times out"
+    ]
+
+
 def test_reclaim_inherited_agents_kills_survivor_and_clears_record(tmp_path: Path) -> None:
     """An agent that overruns is terminated, so no second agent shares its
     worktree and no later reaper inherits the pgid."""
@@ -340,6 +376,52 @@ def test_reclaim_inherited_agents_kills_survivor_and_clears_record(tmp_path: Pat
     assert reclaimed == [4242]
     assert killed == [4242]
     assert not sidecar.exists()
+
+
+def test_reclaim_inherited_agents_kills_unresolved_group_and_clears_record(tmp_path: Path) -> None:
+    """A timed-out inherited group that stays unobservable is still reclaimed."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=4242, sandbox_dir=worktrees / "issue-1945"
+    )
+    killed: list[int] = []
+
+    reclaimed = reclaim_inherited_agents(
+        "issue-1945",
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+        is_group_alive=lambda _pgid: (_ for _ in ()).throw(OSError("transient scan failure")),
+        kill_group=lambda pgid: (killed.append(pgid), True)[1],
+    )
+
+    assert reclaimed == [4242]
+    assert killed == [4242]
+    assert not sidecar.exists()
+
+
+def test_reclaim_inherited_agents_keeps_sidecar_when_unresolved_kill_is_refused(
+    tmp_path: Path,
+) -> None:
+    """A possibly-live inherited group must stay registered if the reclaim kill fails."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=4242, sandbox_dir=worktrees / "issue-1945"
+    )
+    killed: list[int] = []
+
+    reclaimed = reclaim_inherited_agents(
+        "issue-1945",
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+        is_group_alive=lambda _pgid: (_ for _ in ()).throw(OSError("transient scan failure")),
+        kill_group=lambda pgid: (killed.append(pgid), False)[1],
+    )
+
+    assert reclaimed == []
+    assert killed == [4242]
+    assert sidecar.exists()
 
 
 # ── launch-guard classification ──────────────────────────────────────

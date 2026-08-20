@@ -321,6 +321,28 @@ def resolve_live_story_slugs(
     )
 
 
+def _classify_groups(
+    groups: Iterable[InheritedAgentGroup],
+    *,
+    is_group_alive: Callable[[int], bool],
+) -> tuple[list[InheritedAgentGroup], list[InheritedAgentGroup], list[InheritedAgentGroup]]:
+    """Split groups into live, settled, and unresolved liveness buckets."""
+    live: list[InheritedAgentGroup] = []
+    settled: list[InheritedAgentGroup] = []
+    unresolved: list[InheritedAgentGroup] = []
+    for group in groups:
+        try:
+            alive = is_group_alive(group.pgid)
+        except Exception:  # noqa: BLE001 - unresolved is distinct from "settled"
+            unresolved.append(group)
+            continue
+        if alive:
+            live.append(group)
+        else:
+            settled.append(group)
+    return live, settled, unresolved
+
+
 def _discard_records(groups: Iterable[InheritedAgentGroup]) -> None:
     """Drop sidecars for groups that are finished with.
 
@@ -394,11 +416,18 @@ def await_inherited_agents(
                     owner_pid=owner_pid,
                     is_group_alive=is_group_alive,
                 )
-                pgids = ", ".join(str(g.pgid) for g in groups)
-                log(
-                    f"IN-FLIGHT {slug}: waiting up to {int(timeout)}s for the agent process "
-                    f"group(s) {pgids} inherited across the re-exec to finish before resuming"
-                )
+                if groups:
+                    pgids = ", ".join(str(g.pgid) for g in groups)
+                    log(
+                        f"IN-FLIGHT {slug}: waiting up to {int(timeout)}s for the agent process "
+                        f"group(s) {pgids} inherited across the re-exec to finish before resuming"
+                    )
+                else:
+                    log(
+                        f"IN-FLIGHT {slug}: waiting up to {int(timeout)}s because inherited "
+                        "agent liveness is temporarily unobservable; retaining its sidecar "
+                        "until it is confirmed finished or the wait times out"
+                    )
             else:
                 log(
                     f"IN-FLIGHT {slug}: waiting up to {int(timeout)}s because inherited "
@@ -424,23 +453,22 @@ def reclaim_inherited_agents(
     resumed while another agent is writing to its worktree, and leaving the group
     running would hand it to the next invocation's orphan reaper anyway.
     """
-    live = resolve_inherited_agents(
+    groups = resolve_inherited_agents(
         [slug],
         project_root=project_root,
         path_pattern=path_pattern,
         owner_pid=owner_pid,
+        only_live=False,
         is_group_alive=is_group_alive,
     )
-    for group in live:
-        kill_group(group.pgid)
-    _discard_records(
-        resolve_inherited_agents(
-            [slug],
-            project_root=project_root,
-            path_pattern=path_pattern,
-            owner_pid=owner_pid,
-            only_live=False,
-            is_group_alive=is_group_alive,
-        )
-    )
-    return [group.pgid for group in live]
+    live, settled, unresolved = _classify_groups(groups, is_group_alive=is_group_alive)
+
+    killed: list[int] = []
+    discarded: list[InheritedAgentGroup] = list(settled)
+    for group in [*live, *unresolved]:
+        if kill_group(group.pgid):
+            killed.append(group.pgid)
+            discarded.append(group)
+
+    _discard_records(discarded)
+    return killed
