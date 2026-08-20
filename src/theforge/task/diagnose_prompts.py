@@ -421,7 +421,9 @@ _SCOPE_NOUN_HINTS = frozenset(
         "view",
     }
 )
-_SCOPE_PHRASE_BOUNDARY_WORDS = frozenset({"across", "for", "in", "of", "on"})
+_SCOPE_PHRASE_BOUNDARY_WORDS = frozenset(
+    {"across", "for", "in", "of", "on", "that", "which", "who", "with"}
+)
 
 
 def _normalize_scope_text(text: str) -> str:

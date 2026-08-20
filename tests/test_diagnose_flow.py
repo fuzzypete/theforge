@@ -117,6 +117,24 @@ def _observed_section_categorical_bug_body() -> str:
     )
 
 
+def _categorical_bug_body_with_modified_scope_noun() -> str:
+    return (
+        "## What happened\n"
+        "One story lost its notes after rerun.\n\n"
+        "## What was expected\n"
+        "Any story with notes should preserve them.\n"
+    )
+
+
+def _categorical_bug_body_with_relative_clause() -> str:
+    return (
+        "## What happened\n"
+        "One story that failed review was not retried.\n\n"
+        "## What was expected\n"
+        "Any story that fails review is retried.\n"
+    )
+
+
 def _single_instance_bug_body_with_quantifier() -> str:
     return (
         "## What happened\n"
@@ -373,6 +391,20 @@ class TestPromptBuilder:
         )
         assert categorical is True
         assert scope_text == "Every run should preserve landing evidence."
+
+    def test_issue_scope_requirement_detects_scope_noun_before_with_modifier(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _categorical_bug_body_with_modified_scope_noun()
+        )
+        assert categorical is True
+        assert scope_text == "Any story with notes should preserve them."
+
+    def test_issue_scope_requirement_detects_scope_noun_before_relative_clause(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _categorical_bug_body_with_relative_clause()
+        )
+        assert categorical is True
+        assert scope_text == "Any story that fails review is retried."
 
     def test_issue_scope_requirement_ignores_single_word_concrete_nouns(self):
         categorical, scope_text = derive_issue_scope_requirement(
@@ -795,6 +827,45 @@ class TestDiagnoseFlow:
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": "Every user-facing surface fails to include the run id.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_modified_scope_noun_categorical_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 49,
+            "title": "story notes disappear on rerun",
+            "body": _categorical_bug_body_with_modified_scope_noun(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=49,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-49-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Any story with notes should preserve them.",
         }
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
