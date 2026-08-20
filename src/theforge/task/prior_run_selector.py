@@ -321,7 +321,9 @@ def _load_index_entries(project_root: Path) -> tuple[list[Mapping[str, Any]], st
     entries = raw.get("entries")
     if not isinstance(entries, list):
         return [], INDEX_STATE_UNREADABLE
-    return [entry for entry in entries if isinstance(entry, Mapping)], INDEX_STATE_READY
+    if any(not isinstance(entry, Mapping) for entry in entries):
+        return [], INDEX_STATE_UNREADABLE
+    return entries, INDEX_STATE_READY
 
 
 def _recent_run_ids(entries: list[Mapping[str, Any]]) -> frozenset[str]:

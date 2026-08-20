@@ -174,6 +174,22 @@ def test_manifest_note_reports_unreadable_index_with_repair(tmp_path: Path) -> N
     )
 
 
+def test_manifest_note_reports_malformed_entries_as_unreadable(tmp_path: Path) -> None:
+    _write_index(tmp_path, [])
+    path = tmp_path / ".forge" / "knowledge" / "index.yaml"
+    payload = yaml.safe_load(path.read_text(encoding="utf-8"))
+    payload["entries"] = ["not-a-mapping"]
+    path.write_text(yaml.safe_dump(payload, sort_keys=False), encoding="utf-8")
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
+
+    assert manifest["note"] == (
+        "prior-run knowledge index is unreadable; "
+        "run `forge index` to rebuild .forge/knowledge/index.yaml"
+    )
+
+
 def test_manifest_note_reports_stale_schema_index_with_repair(tmp_path: Path) -> None:
     _write_index(tmp_path, [], schema_version=1)
 
