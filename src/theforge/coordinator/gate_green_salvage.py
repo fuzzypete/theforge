@@ -1,4 +1,4 @@
-"""Land the last gate-green commit when a later iteration turns the gate red (#2028).
+"""Land the last gate-green commit when later cleanup cannot improve on it (#2028/#2593).
 
 A story can be driven from a passing, reviewed-and-approved state into a failing
 one by its own last dev iteration. The shape that produced this issue: the gate
@@ -16,9 +16,10 @@ This module is that floor. It has three responsibilities, in run order:
 1. :func:`record_gate_green_checkpoint` — at the moment an approving review
    routes back into DEV for P2 cleanup, remember the commit that was both
    gate-green and review-approved.
-2. :func:`salvage_gate_green_landing` — when VALIDATE later escalates on a
-   terminal gate failure, convert that failure into the existing deferred
-   landing path for the checkpoint, or record why it declined to.
+2. :func:`salvage_gate_green_landing` — when a later optional cleanup either
+   escalates on a terminal gate failure or is refused before DEV runs, convert
+   that failure into the existing deferred landing path for the checkpoint, or
+   record why it declined to.
 3. :func:`apply_gate_green_rollback` — at landing time, reset the story branch
    back to the checkpoint and report the commits that were dropped.
 
@@ -152,6 +153,38 @@ def _terminal_block_reason(state: CoordinatorState) -> str | None:
     return reason if isinstance(reason, str) else None
 
 
+def _salvage_context(state: CoordinatorState) -> tuple[str, str] | None:
+    """Return ``(block_reason, discard_reason)`` when the checkpoint may land.
+
+    The established #2028 shape is a terminal gate failure after a cleanup dev
+    attempt ran and turned the gate red. #2593 adds the adjacent case where the
+    cleanup attempt is refused before DEV runs at all because the story's
+    non-review allocation is exhausted. Both are "cleanup did not improve on the
+    approved floor" and should land that floor; all other escalations remain
+    unchanged.
+    """
+    if state.retry_reason is RetryReason.GATE_FAIL:
+        block_reason = _terminal_block_reason(state)
+        if block_reason in SALVAGEABLE_BLOCK_REASONS:
+            return (
+                block_reason,
+                "the final dev iteration left the gate red and no dev iterations remained "
+                f"to recover it ({block_reason})",
+            )
+        return None
+    if (
+        state.retry_reason is RetryReason.P2_CLEANUP
+        and state.error_type == "allocation_exhausted"
+        and state.phase == Phase.ESCALATE
+    ):
+        return (
+            "allocation_exhausted",
+            "the optional P2 cleanup dev iteration was refused before it ran because "
+            "non-review funding was exhausted",
+        )
+    return None
+
+
 def _decline(state: CoordinatorState, reason: str, detail: str) -> None:
     """Record why a terminal gate failure was NOT salvaged, and say so once."""
     state.gate_green_salvage_declined = {"reason": reason, "detail": detail}
@@ -224,11 +257,10 @@ def salvage_gate_green_landing(
     """
     checkpoint = state.gate_green_checkpoint
 
-    if state.retry_reason is not RetryReason.GATE_FAIL:
+    context = _salvage_context(state)
+    if context is None:
         return result
-    block_reason = _terminal_block_reason(state)
-    if block_reason not in SALVAGEABLE_BLOCK_REASONS:
-        return result
+    block_reason, discard_reason = context
 
     # From here the run *is* the shape this feature exists for: a terminal gate
     # failure with no dev remedy left. Every exit below is a decline worth
@@ -276,7 +308,7 @@ def salvage_gate_green_landing(
     if head is None:
         _decline(state, "head_unresolvable", "could not resolve worktree HEAD")
         return result
-    if head == checkpoint.commit:
+    if head == checkpoint.commit and block_reason != "allocation_exhausted":
         # The gate-red work is not on the branch (uncommitted, or already
         # discarded). Nothing to roll back to — and nothing this path improves.
         _decline(
@@ -308,10 +340,6 @@ def salvage_gate_green_landing(
         )
         return result
 
-    discard_reason = (
-        "the final dev iteration left the gate red and no dev iterations remained "
-        f"to recover it ({block_reason})"
-    )
     state.gate_green_salvage = {
         "status": SALVAGE_PENDING,
         "checkpoint": checkpoint.to_audit_dict(),
@@ -347,10 +375,14 @@ def salvage_gate_green_landing(
         f"Branch: {branch_name}"
     )
 
+    _tail = (
+        f"cleanup attempt never ran; {discard_reason}"
+        if head == checkpoint.commit
+        else f"dropping later work at {head[:8]} — {discard_reason}"
+    )
     _log(
         f"  ⤺ SALVAGE   landing gate-green commit {checkpoint.commit[:8]} "
-        f"(review-approved, cycle {checkpoint.review_cycle}); dropping later work at "
-        f"{head[:8]} — {discard_reason}"
+        f"(review-approved, cycle {checkpoint.review_cycle}); {_tail}"
     )
     if logger is not None:
         logger._safe_emit(
