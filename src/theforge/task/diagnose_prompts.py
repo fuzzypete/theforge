@@ -21,7 +21,11 @@ from theforge.diagnose_types import (
     ScopeCoverageLocation,
     SymptomScopeCoverage,
 )
-from theforge.shape_check.parsing import BUG_EXPECTATION_HEADING, extract_section
+from theforge.shape_check.parsing import (
+    BUG_EXPECTATION_HEADING,
+    BUG_SYMPTOM_HEADING,
+    extract_section,
+)
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
 You are an investigative diagnosis agent.  A symptom bug has been reported but
@@ -421,13 +425,28 @@ def _normalize_scope_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def _token_matches_scope_hint(token: str) -> bool:
+    candidates = {token}
+    if token.endswith("ies") and len(token) > 3:
+        candidates.add(f"{token[:-3]}y")
+    if token.endswith("es") and len(token) > 2:
+        candidates.add(token[:-2])
+    if token.endswith("s") and len(token) > 1:
+        candidates.add(token[:-1])
+    return any(candidate in _SCOPE_NOUN_HINTS for candidate in candidates)
+
+
 def _phrase_is_scope_like(phrase: str) -> bool:
     tokens = [token.lower() for token in re.findall(r"[a-z0-9][\w-]*", phrase)]
     if not tokens:
         return False
     if tokens[0] in _CARDINAL_SCOPE_WORDS:
         return False
-    return any(token in _SCOPE_NOUN_HINTS for token in tokens)
+    if any(_token_matches_scope_hint(token) for token in tokens):
+        return True
+    # Treat "every run"/"every sprint"-style singular category claims as
+    # scope-like even when the noun is not in the curated hint set.
+    return len(tokens) == 1
 
 
 def _text_asserts_categorical_scope(text: str) -> bool:
@@ -447,29 +466,36 @@ def derive_issue_scope_requirement(issue_title: str, issue_body: str) -> tuple[b
     """Return whether the fetched issue text asserts categorical symptom scope.
 
     Prefer the bug issue's expected-behavior section, which is where this repo's
-    bug-body contract puts the generalized rule, but also inspect the issue
-    title so categorical claims stated only there still fail closed. Detection
-    stays intentionally narrow: the fail-closed scope requirement is for
-    category-level surface/path/story-style claims, not incidental quantifiers
-    inside a single concrete example.
+    bug-body contract puts the generalized rule, but also inspect the observed
+    symptom section and issue title so categorical claims stated there still
+    fail closed. Detection stays intentionally narrow: the fail-closed scope
+    requirement is for category-level surface/path/story-style claims, not
+    incidental quantifiers inside a single concrete example.
     """
     normalized_title = _normalize_scope_text(issue_title or "")
+    symptom = extract_section(issue_body or "", BUG_SYMPTOM_HEADING)
+    normalized_symptom = _normalize_scope_text(symptom or "")
     expected = extract_section(issue_body or "", BUG_EXPECTATION_HEADING)
     normalized_expected = _normalize_scope_text(expected or "")
     normalized_body = _normalize_scope_text(issue_body or "")
 
     if normalized_expected and _text_asserts_categorical_scope(normalized_expected):
         return True, normalized_expected
+    if normalized_symptom and _text_asserts_categorical_scope(normalized_symptom):
+        return True, normalized_symptom
     if normalized_title and _text_asserts_categorical_scope(normalized_title):
         return True, normalized_title
     if (
         not normalized_expected
+        and not normalized_symptom
         and normalized_body
         and _text_asserts_categorical_scope(normalized_body)
     ):
         return True, normalized_body
     if normalized_expected:
         return False, normalized_expected
+    if normalized_symptom:
+        return False, normalized_symptom
     if normalized_body:
         return False, normalized_body
     return False, normalized_title

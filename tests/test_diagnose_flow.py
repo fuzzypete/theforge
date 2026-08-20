@@ -108,6 +108,15 @@ def _categorical_bug_body() -> str:
     )
 
 
+def _observed_section_categorical_bug_body() -> str:
+    return (
+        "## What happened\n"
+        "Every user-facing surface fails to include the run id.\n\n"
+        "## What was expected\n"
+        "The CLI status view should include the run id.\n"
+    )
+
+
 def _single_instance_bug_body_with_quantifier() -> str:
     return (
         "## What happened\n"
@@ -288,6 +297,13 @@ class TestPromptBuilder:
         assert categorical is True
         assert scope_text.startswith("Every sibling renderer")
 
+    def test_issue_scope_requirement_uses_observed_section_when_expected_is_concrete(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _observed_section_categorical_bug_body()
+        )
+        assert categorical is True
+        assert scope_text == "Every user-facing surface fails to include the run id."
+
     def test_issue_scope_requirement_uses_title_when_body_is_concrete(self):
         categorical, scope_text = derive_issue_scope_requirement(
             "Any landing path should preserve merge evidence.",
@@ -303,6 +319,24 @@ class TestPromptBuilder:
         )
         assert categorical is False
         assert scope_text == "The summary should print all three cost fields for this run."
+
+    def test_issue_scope_requirement_detects_plural_scope_terms(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x",
+            "## What happened\nOne output path omitted the run id.\n\n"
+            "## What was expected\nAll surfaces should include the run id.\n",
+        )
+        assert categorical is True
+        assert scope_text == "All surfaces should include the run id."
+
+    def test_issue_scope_requirement_detects_unlisted_singular_scope_terms(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x",
+            "## What happened\nOne sprint resumed dirty after restart.\n\n"
+            "## What was expected\nEvery sprint must resume cleanly.\n",
+        )
+        assert categorical is True
+        assert scope_text == "Every sprint must resume cleanly."
 
     def test_issue_scope_requirement_falls_back_to_full_body(self):
         categorical, scope_text = derive_issue_scope_requirement(
@@ -665,6 +699,45 @@ class TestDiagnoseFlow:
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": "Any landing path should preserve merge evidence",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_observed_section_categorical_scope_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 48,
+            "title": "run id missing from CLI status view",
+            "body": _observed_section_categorical_bug_body(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=48,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-48-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Every user-facing surface fails to include the run id.",
         }
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
