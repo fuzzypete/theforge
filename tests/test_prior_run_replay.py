@@ -895,7 +895,10 @@ def test_repo_judgments_replay_against_current_theforge_corpus() -> None:
         raise AssertionError(f"judgment file references missing replay run ids: {missing}")
 
     if judged_run_ids != available_run_ids:
-        return
+        unjudged = sorted(available_run_ids - judged_run_ids)
+        raise AssertionError(
+            f"judgment file is missing replay run ids for current TheForge corpus: {unjudged}"
+        )
 
     report = run_prior_run_replay(
         [CorpusSpec("theforge", repo_root)],
