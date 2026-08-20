@@ -174,6 +174,39 @@ Evidence item shapes:
 
 A broad claim you cannot cite is worse than no claim. Omit it.
 
+## What counts as a lesson (mandatory filter)
+
+`what_was_learned` is for claims that would change a *future* run's plan,
+implementation, or verification. Before including a claim, ask: if a future
+run read only this claim, would it act differently? If not, it is not a
+lesson — do not include it.
+
+Disqualified — do NOT emit these, no matter how the sentence is phrased:
+  - Restating what changed or where it changed ("X was implemented as Y",
+    "X now does Y", "the change added Y to Z").
+  - Restating that tests or coverage now exist ("regression coverage was
+    added for X", "tests now cover Y").
+  - "Indicating" claims that dress up a description of the diff as an
+    insight ("X was done as Y, indicating the repo supports Z") when Z is
+    just a paraphrase of the change itself, not something a future run
+    could not already tell by reading the code.
+
+A clean run whose review surfaced nothing surprising has little or nothing
+to teach. In that case `what_was_learned` should be short — often empty. An
+empty list is a correct, expected output for a low-friction run. Do not
+manufacture claims to avoid returning an empty list.
+
+Order surviving claims strongest-first: the claim most likely to redirect a
+future run's behavior goes first. Only the first few claims of a summary are
+ever shown to a future run, so a weaker claim must never precede a stronger
+one.
+
+Every evidence `description` must explain the causal mechanism: *how* the
+cited finding, cycle, file, or diff demonstrates the claim — not merely that
+the file was touched or the finding occurred. "This file was modified" is
+not evidence of anything; "review flagged this file twice for the same
+omission, showing the check X must be applied per-instance, not once" is.
+
 ## Output
 
 Emit ONLY this YAML, rooted at `run_summary:`, with no prose before or after and
@@ -186,11 +219,11 @@ run_summary:
     description: "One or two sentences: what this run actually changed."
     approach: "How it was done — the shape of the change, not a diff replay."
   what_was_learned:
-    - claim: "A reusable lesson a future run on this codebase could apply."
+    - claim: "A reusable lesson a future run could apply — omit this list if there is none."
       evidence:
         - type: review_finding
           finding_id: "<an id from the catalogue above>"
-          description: "Why this reference supports the claim."
+          description: "How this reference demonstrates the claim, not just that it was involved."
   learned_patterns:
     - "short-kebab-tag"
   review_insights:
