@@ -34,6 +34,9 @@ from theforge.knowledge_summary import summary_path
 from theforge.log_util import _log_line
 from theforge.sprint.audit_publish import (
     _STORY_RUN_AUDIT_PUBLISH_STATE_PATH,
+    AUDIT_PUBLISH_BRANCH_MISMATCH,
+    AUDIT_PUBLISH_COMMIT_FAILED,
+    AUDIT_PUBLISH_VERIFY_FAILED,
     StoryRunAuditPublishError,
     publish_story_run_artifacts_for_config,
 )
@@ -202,6 +205,31 @@ def _print_startup_auth_warnings(config: ForgeConfig) -> None:
         )
 
 
+def _print_unpublished_story_run_artifact_warnings(project_root: Path) -> None:
+    """Warn when preserved single-story audit artifacts still exist off-tree."""
+    preserved_root = project_root / _UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR
+    if not preserved_root.exists():
+        return
+
+    preserved_runs: list[str] = []
+    for child in sorted(preserved_root.iterdir()):
+        if not child.is_dir():
+            continue
+        if any(path.is_file() for path in child.rglob("*")):
+            preserved_runs.append(child.name)
+
+    if not preserved_runs:
+        return
+
+    print(
+        "⚠ preserved unpublished story-run artifacts remain under "
+        f"{preserved_root}: {', '.join(preserved_runs)}. These records were kept "
+        "after an earlier canonical publish failure and are not picked up from "
+        "the canonical audit tree.",
+        file=sys.stderr,
+    )
+
+
 def print_config_load_error(
     config_path: Path,
     exc: ValueError,
@@ -246,6 +274,9 @@ def load_config_checked(
         raise SystemExit(2) from exc
     if emit_startup_auth_warnings:
         _print_startup_auth_warnings(config)
+        project_root = getattr(config, "project_root", None)
+        if isinstance(project_root, Path):
+            _print_unpublished_story_run_artifact_warnings(project_root)
     return config
 
 
@@ -380,9 +411,9 @@ def _preserve_unpublished_story_run_artifacts_on_failure(
 
     def _preserve(exc: StoryRunAuditPublishError) -> Path | None:
         if exc.state not in {
-            "branch_mismatch",
-            "commit_failed",
-            "verify_failed",
+            AUDIT_PUBLISH_BRANCH_MISMATCH,
+            AUDIT_PUBLISH_COMMIT_FAILED,
+            AUDIT_PUBLISH_VERIFY_FAILED,
         }:
             return None
         return _move_dirty_story_run_artifacts_off_tree(
@@ -435,12 +466,49 @@ def _move_dirty_story_run_artifacts_off_tree(
             dest = preserved_root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
+            _repoint_preserved_story_run_artifact_in_substrate(project_root, rel, dest)
             preserved_any = True
         _clear_pending_git_path(project_root, rel)
 
     if preserved_any:
         return preserved_root
     return None
+
+
+def _repoint_preserved_story_run_artifact_in_substrate(
+    project_root: Path,
+    source_relpath: Path,
+    preserved_path: Path,
+) -> None:
+    """Keep the substrate row readable after a run record is preserved off-tree."""
+    try:
+        runs_rel = Path(".forge") / "audits" / "runs"
+        source_relpath.relative_to(runs_rel)
+    except ValueError:
+        return
+
+    try:
+        from theforge.coordinator import audit_substrate
+
+        with open(preserved_path, encoding="utf-8") as fh:
+            record = json.load(fh)
+        if not isinstance(record, dict) or not record.get("run_id"):
+            return
+        stat = preserved_path.stat()
+        conn = audit_substrate.create_or_open(project_root)
+        try:
+            audit_substrate.upsert_run_record(
+                conn,
+                record,
+                provenance="native",
+                source_path=str(preserved_path.relative_to(project_root)),
+                source_mtime=stat.st_mtime,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        return
 
 
 def _path_has_pending_git_changes(project_root: Path, relpath: Path) -> bool:

@@ -863,8 +863,9 @@ def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool
     """Return True when indexed native rows diverge from on-disk run files.
 
     Triggers a rebuild when:
-      - any native row that records a source_path now references a file
-        that has been deleted, or whose mtime has changed since indexing;
+      - any native row whose source_path still points at the canonical
+        ``.forge/audits/runs/*.json`` tree now references a file that has been
+        deleted, or whose mtime has changed since indexing;
         or
       - per-run JSON files exist on disk for which there is no native row
         with that source_path (a new run was emitted while this process
@@ -872,7 +873,11 @@ def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool
 
     Native rows without a source_path (e.g. programmatic inserts from
     sprint rollup) are intentionally NOT validated here — they have no
-    canonical file to compare against.
+    canonical file to compare against. Native rows whose source_path was
+    deliberately repointed outside the canonical tree (for example preserved
+    single-story artifacts after a publish failure) are likewise left alone:
+    they remain readable, but only canonical run files participate in stale
+    rebuild detection.
     """
     runs = runs_dir(project_root)
     on_disk = list(runs.glob("*.json")) if runs.exists() else []
@@ -881,9 +886,14 @@ def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool
         "WHERE provenance = 'native' AND source_path IS NOT NULL"
     )
     indexed: dict[str, float | None] = {}
+    runs_rel = Path(*RUNS_RELPATH)
     for row in cur:
         rel = row[0] if not isinstance(row, sqlite3.Row) else row["source_path"]
         mtime = row[1] if not isinstance(row, sqlite3.Row) else row["source_mtime"]
+        try:
+            Path(str(rel)).relative_to(runs_rel)
+        except ValueError:
+            continue
         indexed[str(rel)] = mtime
     # File-on-disk → row-in-index check.
     for path in on_disk:

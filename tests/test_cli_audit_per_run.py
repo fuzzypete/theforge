@@ -12,6 +12,7 @@ from coord_test_helpers import _make_config, _make_task
 
 from theforge.cli.shared import _write_audit
 from theforge.config import ForgeConfig
+from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.coordinator.workspace import landing_precondition_error
@@ -334,6 +335,22 @@ class TestPerRunFileWrite:
         assert "canonical story run audit publish failed" in err
         assert "feature/wrong-branch" in err
         assert "unpublished artifacts preserved at" in err
+        conn = audit_substrate.require_substrate(clone)
+        try:
+            record = audit_substrate.latest_record_for(conn, run_id="run-cli-branch-mismatch")
+            source_row = conn.execute(
+                "SELECT source_path FROM audit_records WHERE run_id = ?",
+                ("run-cli-branch-mismatch",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert record is not None
+        assert record["run_id"] == "run-cli-branch-mismatch"
+        assert source_row is not None
+        assert source_row["source_path"] == (
+            ".forge/unpublished-story-run-artifacts/"
+            "run-cli-branch-mismatch/.forge/audits/runs/run-cli-branch-mismatch.json"
+        )
         assert (
             _git(
                 clone,
