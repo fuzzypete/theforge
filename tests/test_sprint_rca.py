@@ -9,6 +9,7 @@ classification (primary + contributing factors), evidence sourcing, the
 from __future__ import annotations
 
 import datetime
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -1315,6 +1316,105 @@ def test_survived_quota_blip_is_not_promoted_to_root_cause(tmp_path: Path) -> No
     for slug in ("issue-312", "issue-313"):
         assert stories[slug]["primary_failure_class"] == UNKNOWN_CLASS
         assert "provider_usage_limit" not in {ev["rule_id"] for ev in stories[slug]["evidence"]}
+
+
+def test_prior_attempt_review_artifact_before_current_attempt_window_is_excluded(
+    tmp_path: Path,
+) -> None:
+    """A stale prior-attempt review file must not classify the current failure."""
+    d = _sprint_dir(tmp_path, name="stale-attempt")
+    started_at = "2026-05-08T02:10:00Z"
+    finished_at = "2026-05-08T02:11:00Z"
+    rebase_error = "pre-dev rebase onto release/v0.15 failed — conflicts must be resolved manually"
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2038",
+                    "outcome": "ESCALATE",
+                    "error": rebase_error,
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-2038" / "audit.yaml",
+        {
+            "timing": {"started_at": started_at, "finished_at": finished_at},
+            "outcome": {
+                "final_phase": "ESCALATE",
+                "message": rebase_error,
+            },
+            "error": (
+                "could not apply d7ad2974... feat(sandbox): support additive capability grants"
+            ),
+        },
+    )
+    stale_review = d / "issue-2038" / "review-cycle-1" / "anthropic-opus-cli.yaml"
+    stale_review.parent.mkdir(parents=True, exist_ok=True)
+    stale_review.write_text(
+        "observed: with a retryable provider error such as a rate limit, the transport\n",
+        encoding="utf-8",
+    )
+    os.utime(
+        stale_review,
+        (
+            datetime.datetime(2026, 5, 8, 2, 5, 0, tzinfo=datetime.timezone.utc).timestamp(),
+            datetime.datetime(2026, 5, 8, 2, 5, 0, tzinfo=datetime.timezone.utc).timestamp(),
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2038"]
+    assert entry["primary_failure_class"] != "provider_quota"
+    assert not any("quota reset" in action for action in entry["recommended_next_actions"])
+    assert not any(ev["source"].endswith("anthropic-opus-cli.yaml") for ev in entry["evidence"])
+
+
+def test_current_attempt_review_artifact_within_attempt_window_still_classifies(
+    tmp_path: Path,
+) -> None:
+    """Attempt scoping keeps same-attempt review evidence available."""
+    d = _sprint_dir(tmp_path, name="current-attempt-window")
+    started_at = "2026-05-08T02:10:00Z"
+    finished_at = "2026-05-08T02:11:00Z"
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-1324",
+                    "outcome": "ESCALATE",
+                    "error": "story escalated",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-1324" / "audit.yaml",
+        {"timing": {"started_at": started_at, "finished_at": finished_at}},
+    )
+    review_artifact = d / "issue-1324" / "review-cycle-2" / "openai-gpt.yaml"
+    review_artifact.parent.mkdir(parents=True, exist_ok=True)
+    review_artifact.write_text(
+        "output: |\n  ERROR: You've hit your usage limit. Try again at 6:57 PM.\n",
+        encoding="utf-8",
+    )
+    os.utime(
+        review_artifact,
+        (
+            datetime.datetime(2026, 5, 8, 2, 10, 30, tzinfo=datetime.timezone.utc).timestamp(),
+            datetime.datetime(2026, 5, 8, 2, 10, 30, tzinfo=datetime.timezone.utc).timestamp(),
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-1324"]
+    assert entry["primary_failure_class"] == "provider_quota"
+    assert any(ev["source"].endswith("openai-gpt.yaml") for ev in entry["evidence"])
 
 
 # ── Engine: determinism / regenerability ──────────────────────────────────────
