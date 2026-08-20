@@ -947,6 +947,7 @@ counters adaptive routing reads).
 
 ```bash
 forge profiles list                          # show current profile counters
+forge profiles strength                      # declared tier/capability vs. observed dev behaviour
 forge profiles reset --model <model-id>      # reset counters for one canonical model ID
 ```
 
@@ -956,12 +957,53 @@ forge profiles reset --model <model-id>      # reset counters for one canonical 
 |------------|------|-------------|
 | `list` | `--model <id>` | Show only one canonical model ID |
 | `list` | `--role <role>` | Show only one role |
+| `strength` | `--config <path>` | forge.yaml to read declarations from (default: nearest above cwd) |
+| `strength` | `--model <id>` | Show only one canonical model ID |
+| `strength` | `--complexity <band>` | Show only one complexity band |
+| `strength` | `--min-runs <N>` | Runs a band needs before a disagreement is claimed (default: 10) |
 | `reset` | `--model <id>` | Canonical model ID to reset (required) |
 | `reset` | `--role <role>` | Reset only one role's history |
 | `reset` | `--complexity <band>` | Reset only one dev complexity bucket |
 | `reset` | `--reason <text>` | Operator-supplied reason recorded in the reset audit log |
 
-Both subcommands also accept `--project-root <path>` (default: cwd).
+Every subcommand also accepts `--project-root <path>` (default: cwd, or the
+config's project root for `strength`).
+
+### `forge profiles strength`
+
+A catalog entry's `tier`/`capability` is declared once and gates eligibility;
+the profiles record what the model then actually did. `strength` puts the two
+side by side, one row per live dev-capable model per complexity band, so a wrong
+declaration can be corrected instead of merely routed around:
+
+| status | meaning |
+|--------|---------|
+| `unobserved` | never selected at this band — no evidence either way, not agreement |
+| `insufficient_evidence` | observed, but under `--min-runs`; too thin to argue with the declaration |
+| `observed` | enough evidence, and no supported disagreement with the declaration |
+| `underperforming_declaration` | observed below its declared peers by a margin the sample size supports |
+
+A disagreement is claimed only when the band clears `--min-runs` and at least
+two peers — same declared tier, same band, each clearing the floor themselves —
+have observed rates of their own; the peer range and sample count print
+alongside every row. Profile keys that cannot be attributed to a live
+dev-capable model (legacy shorthands, role names, unresolved identities) are
+listed separately rather than folded into some live model's rate, and evidence
+recency is reported as unknown because profiles carry no per-key timestamp.
+
+Attribution is by canonical model ID, transport included, and every stored key
+is classified exactly once: a key is either claimed by one live dev-capable
+model and counted in its rows, or it is listed as excluded. This is stricter
+than the adaptive router's own matching, which resolves a candidate's history on
+`(provider, model)` alone — deliberately so, since a report that argues with a
+declaration must not draw on evidence it reports as unattributable. A
+consequence worth knowing: evidence recorded under `openai/gpt-5.4/cli` counts
+for that entry only, and `openai/gpt-5.4/api` reads as unobserved until it has
+runs of its own.
+
+The command is advisory and strictly read-only: it never edits a catalog
+declaration or the profile store. Acting on a reported disagreement — editing
+`tier`/`capability` in `forge.yaml` — stays the operator's call.
 
 ---
 
