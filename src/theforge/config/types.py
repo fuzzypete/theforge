@@ -393,6 +393,11 @@ class ModelProfile:
     # containment. Stamped by the coordinator from ForgeConfig.sandbox; None
     # means default containment (#1947).
     sandbox_capability_profile: str | None = None
+    # Project-declared additive grants, stamped from ForgeConfig.sandbox next to
+    # the preset above. Empty tuples mean "preset only", so a profile built
+    # anywhere else keeps exactly today's capability set (#2038).
+    sandbox_write_roots: tuple[str, ...] = ()
+    sandbox_mach_services: tuple[str, ...] = ()
     registry_id: str | None = None  # canonical model registry key, when sourced from a registry
     registry_source: str = "builtin"  # "builtin" | "forge.yaml"
     # The canonical TransportSpec. Populated at construction (explicitly, or
@@ -1159,9 +1164,19 @@ class DevConfig:
 
 @dataclass(frozen=True)
 class SandboxConfig:
-    """Project-selected forge-owned sandbox capability profile."""
+    """The project's sandbox capability declaration.
+
+    ``capability_profile`` selects a forge-owned preset by name. ``write_roots``
+    and ``mach_services`` are project-authored grants **added** to whatever that
+    preset grants (or granted on their own, with no preset selected), because
+    the shipped presets cannot anticipate every toolchain (#2038). There is no
+    field here that subtracts from a preset, disables containment, or grants
+    allow-default — the declaration only ever enumerates.
+    """
 
     capability_profile: str | None = None
+    write_roots: tuple[str, ...] = ()
+    mach_services: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)

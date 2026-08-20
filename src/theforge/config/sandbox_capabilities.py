@@ -7,22 +7,34 @@ mach-lookups for the simulator/toolchain; inside the default profile those
 return ``Operation not permitted``, so the agent cannot build and therefore
 cannot verify its own work (#1947).
 
-A project widens the sandbox by *selecting a preset by name* in ``forge.yaml``:
+A project widens the sandbox by *selecting a preset by name* in ``forge.yaml``,
+and may add its own bounded grants alongside it:
 
 .. code-block:: yaml
 
     sandbox:
       capability_profile: xcode
+      write_roots:
+        - ~/Library/Preferences
+      mach_services:
+        - com.apple.dt.Xcode.something
 
-Presets are forge-owned. A project cannot author, extend, or override the
-contents of one, and there is deliberately no value that disables the sandbox
-or grants ``allow default`` — widening is always a named, bounded capability
-set. Selecting nothing keeps today's behavior exactly.
+Presets stay forge-owned: a project cannot author, override or subtract from
+the contents of one. What a project *can* do is add write roots and mach
+services of its own, because the set of things a real toolchain needs is not
+knowable in advance from inside this repository (#2038). Project grants are
+strictly **additive** to the selected preset — there is deliberately no value
+that disables the sandbox or grants ``allow default``, so widening is always a
+bounded, enumerated capability set. Declaring nothing keeps today's behavior
+exactly.
 
 The declared capability set is pure data: :func:`resolve_capabilities` expands
-it without probing the host for an installed toolchain, so a preset resolves
-identically on any machine. That is what makes "what does ``xcode`` grant?"
-answerable without running an agent.
+it without probing the host for an installed toolchain, so a declaration
+resolves identically on any machine. That is what makes "what does ``xcode``
+grant?" answerable without running an agent. What it will *not* do is resolve
+quietly when an axis cannot be expressed: a mach service on a ``bwrap`` host,
+or a write root that resolves to ``/`` or the invoking home, raises
+:class:`UnsupportedCapabilityProfileError` naming exactly what was denied.
 
 This module is stdlib-only and dependency-free by design: ``config.load``
 validates preset names at load time and ``runners.sandbox`` consumes the
@@ -31,6 +43,7 @@ resolved capabilities, and neither should have to import the other.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -85,34 +98,53 @@ class SandboxCapabilityPreset:
 
 @dataclass(frozen=True)
 class ResolvedSandboxCapabilities:
-    """The concrete capability set a selected preset expands to.
+    """The concrete capability set a declaration expands to.
 
-    ``profile`` is ``None`` for the default (no preset selected) case, which
-    resolves to no extra write roots and no extra services — byte-for-byte the
-    containment boundary forge has always applied.
+    ``write_roots`` and ``mach_services`` are the *merged* set actually applied:
+    the selected preset's grants plus any the project declared inline.
+    ``project_write_roots``/``project_mach_services`` carry the project-declared
+    subset separately so an audit reader can tell a forge-owned grant from one
+    the project added.
+
+    ``profile`` is ``None`` when no preset was selected. With no project grants
+    either, that is the default case — no extra write roots and no extra
+    services, byte-for-byte the containment boundary forge has always applied.
     """
 
     profile: str | None
     write_roots: tuple[Path, ...] = ()
     mach_services: tuple[str, ...] = ()
+    project_write_roots: tuple[Path, ...] = ()
+    project_mach_services: tuple[str, ...] = ()
 
     @property
     def is_default(self) -> bool:
-        """True when no preset was selected (default containment)."""
-        return self.profile is None
+        """True when nothing was declared at all (default containment)."""
+        return self.profile is None and not self.write_roots and not self.mach_services
 
     def audit_payload(self) -> dict:
         """Serialise for the run audit record.
 
-        Always emits every key — an explicit ``None``/empty value records
+        Always emits the applied set — an explicit ``None``/empty value records
         "default containment" rather than "capability data omitted", so a
         reviewer can tell the two apart in an audit log.
+
+        The ``project_*`` provenance keys appear only when the project actually
+        declared a grant. A record without them is a run whose capabilities were
+        entirely forge-owned, which is what every record said before project
+        grants existed — so the base shape is unchanged and no reader has to
+        migrate across this addition.
         """
-        return {
+        payload: dict = {
             "profile": self.profile,
             "write_roots": [str(path) for path in self.write_roots],
             "mach_services": list(self.mach_services),
         }
+        if self.project_write_roots:
+            payload["project_write_roots"] = [str(path) for path in self.project_write_roots]
+        if self.project_mach_services:
+            payload["project_mach_services"] = list(self.project_mach_services)
+        return payload
 
 
 # ── Preset table ──────────────────────────────────────────────────────────
@@ -182,35 +214,80 @@ def _expand(template: str, home: Path) -> Path:
     return Path(template).resolve()
 
 
+def _expand_write_roots(
+    templates: Iterable[str],
+    *,
+    home: Path,
+    source: str,
+    into: list[Path],
+    seen: set[Path],
+) -> list[Path]:
+    """Expand *templates*, appending newly-seen paths to *into*.
+
+    Returns the expanded paths from *templates* alone (before de-duplication
+    against *seen*), so a caller can record provenance separately from the
+    merged set.
+
+    A grant that resolves to a filesystem or home root is a wholesale sandbox
+    escape wearing a grant's name, whatever declared it — so the guard applies
+    to forge's own preset table and to project declarations alike.
+    """
+    expanded: list[Path] = []
+    for template in templates:
+        path = _expand(template, home)
+        if path in (Path("/"), home):
+            raise UnsupportedCapabilityProfileError(
+                f"{source} declares write root {template!r} which resolves to "
+                f"{path} — a sandbox grant may not include a filesystem or home root."
+            )
+        expanded.append(path)
+        if path in seen:
+            continue
+        seen.add(path)
+        into.append(path)
+    return expanded
+
+
 def resolve_capabilities(
     profile: str | None,
     *,
     home: Path | None = None,
     system: str | None = None,
+    write_roots: Iterable[str] = (),
+    mach_services: Iterable[str] = (),
 ) -> ResolvedSandboxCapabilities:
-    """Expand a selected preset name into its concrete capability set.
+    """Expand a capability declaration into its concrete capability set.
 
     Resolution is pure: it expands ``~`` and normalises paths, and never probes
-    the host for an installed toolchain or an existing directory. The result is
-    therefore exactly the preset's declared set and nothing more, on any host.
+    the host for an installed toolchain, an existing directory, or a registered
+    mach service. The result is therefore exactly the declared set and nothing
+    more, on any host.
 
     Args:
-        profile: preset name, or ``None`` for default containment.
+        profile: preset name, or ``None`` when no preset is selected.
         home: home directory used to expand ``~``; defaults to the real one.
-        system: ``platform.system()`` value to validate the preset against.
+        system: ``platform.system()`` value to validate the declaration against.
             ``None`` (the default) skips the platform check, which is what
-            makes inspection possible on a host that could not run the preset.
+            makes inspection possible on a host that could not run it.
+        write_roots: project-declared write-root templates, added to whatever
+            the selected preset grants. Keyword-only with an empty default so
+            every existing caller keeps resolving exactly the preset.
+        mach_services: project-declared mach services, likewise additive.
 
     Raises:
         UnknownCapabilityProfileError: *profile* names no forge-owned preset.
         UnsupportedCapabilityProfileError: *system* is given and that platform's
-            sandbox backend cannot express the preset.
+            sandbox backend cannot express the declaration, or a declared write
+            root resolves to a filesystem or home root.
     """
-    if profile is None:
+    project_root_templates = tuple(write_roots)
+    project_services = tuple(dict.fromkeys(mach_services))
+
+    if profile is None and not project_root_templates and not project_services:
         return ResolvedSandboxCapabilities(profile=None)
 
-    preset = get_preset(profile)
-    if system is not None and system not in preset.supported_platforms:
+    preset = get_preset(profile) if profile is not None else None
+    if preset is not None and system is not None and system not in preset.supported_platforms:
         raise UnsupportedCapabilityProfileError(
             f"sandbox capability profile {preset.name!r} is not supported on "
             f"{system} — it declares capabilities "
@@ -219,28 +296,43 @@ def resolve_capabilities(
             f"express. Supported platforms: {sorted(preset.supported_platforms)}. "
             "Refusing to run with the declared capability absent."
         )
+    # A project may declare a mach service without selecting a preset, so the
+    # preset's supported_platforms check above does not cover it. Only Darwin's
+    # sandbox backend has a mach-lookup axis; bwrap has none, so a declaration
+    # there must refuse rather than resolve with the service silently absent.
+    if project_services and system is not None and system != "Darwin":
+        raise UnsupportedCapabilityProfileError(
+            f"forge.yaml 'sandbox.mach_services' declares {list(project_services)}, "
+            f"which the {system} sandbox backend (bwrap) cannot express — it has no "
+            "mach-lookup axis. Refusing to run with the declared capability absent."
+        )
 
     resolved_home = (home or Path.home()).resolve()
-    write_roots: list[Path] = []
+    merged_roots: list[Path] = []
     seen: set[Path] = set()
-    for template in preset.write_roots:
-        path = _expand(template, resolved_home)
-        # A preset that resolves to a filesystem or home root would be a
-        # wholesale sandbox escape wearing a preset's name. Presets are
-        # forge-owned, so this is a guard against our own table, not user input.
-        if path in (Path("/"), resolved_home):
-            raise UnsupportedCapabilityProfileError(
-                f"sandbox capability profile {preset.name!r} declares write root "
-                f"{template!r} which resolves to {path} — presets may not grant "
-                "a filesystem or home root."
-            )
-        if path in seen:
-            continue
-        seen.add(path)
-        write_roots.append(path)
+    if preset is not None:
+        _expand_write_roots(
+            preset.write_roots,
+            home=resolved_home,
+            source=f"sandbox capability profile {preset.name!r}",
+            into=merged_roots,
+            seen=seen,
+        )
+    project_roots = _expand_write_roots(
+        project_root_templates,
+        home=resolved_home,
+        source="forge.yaml 'sandbox.write_roots'",
+        into=merged_roots,
+        seen=seen,
+    )
+
+    preset_services = preset.mach_services if preset is not None else ()
+    merged_services = tuple(dict.fromkeys((*preset_services, *project_services)))
 
     return ResolvedSandboxCapabilities(
-        profile=preset.name,
-        write_roots=tuple(write_roots),
-        mach_services=preset.mach_services,
+        profile=preset.name if preset is not None else None,
+        write_roots=tuple(merged_roots),
+        mach_services=merged_services,
+        project_write_roots=tuple(dict.fromkeys(project_roots)),
+        project_mach_services=project_services,
     )

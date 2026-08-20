@@ -83,6 +83,35 @@ class TestLoadConfig:
         config_path = _write_config({"sandbox": {"capability_profile": "xcode"}}, tmp_path)
         config = load_config(config_path)
         assert config.sandbox.capability_profile == "xcode"
+        assert config.sandbox.write_roots == ()
+        assert config.sandbox.mach_services == ()
+
+    def test_sandbox_project_grants_load_alongside_a_preset(self, tmp_path):
+        """A project extends the selected preset with grants of its own (#2038)."""
+        config_path = _write_config(
+            {
+                "sandbox": {
+                    "capability_profile": "xcode",
+                    "write_roots": ["~/Library/Preferences", " /opt/toolchain "],
+                    "mach_services": ["com.example.toolchaind"],
+                }
+            },
+            tmp_path,
+        )
+        config = load_config(config_path)
+        assert config.sandbox.capability_profile == "xcode"
+        assert config.sandbox.write_roots == ("~/Library/Preferences", "/opt/toolchain")
+        assert config.sandbox.mach_services == ("com.example.toolchaind",)
+
+    def test_sandbox_project_grants_load_without_a_preset(self, tmp_path):
+        """Grants stand alone — selecting a preset is not a precondition."""
+        config_path = _write_config(
+            {"sandbox": {"write_roots": ["/opt/toolchain", "/opt/toolchain"]}}, tmp_path
+        )
+        config = load_config(config_path)
+        assert config.sandbox.capability_profile is None
+        # Duplicates collapse at load so the declaration reads as a set.
+        assert config.sandbox.write_roots == ("/opt/toolchain",)
 
     @pytest.mark.parametrize(
         ("sandbox", "message"),
@@ -90,11 +119,16 @@ class TestLoadConfig:
             (["xcode"], "sandbox' section must be a mapping"),
             ({"capability_profile": ""}, "sandbox.capability_profile' must be a non-empty string"),
             ({"capability_profile": 3}, "sandbox.capability_profile' must be a non-empty string"),
-            ({"write_roots": ["~/x"]}, "remove inline capability key"),
-            ({"mach_services": ["svc"]}, "remove inline capability key"),
-            ({"allow_default": True}, "remove inline capability key"),
-            ({"disabled": True}, "remove inline capability key"),
-            ({"mode": "none"}, "remove inline capability key"),
+            # Additive grants are supported; weakening containment never is.
+            ({"allow_default": True}, "may not weaken containment"),
+            ({"disabled": True}, "may not weaken containment"),
+            ({"mode": "none"}, "may not weaken containment"),
+            # A grant list that is not a list of non-empty strings is an error,
+            # never a silently-dropped capability.
+            ({"write_roots": "~/x"}, "sandbox.write_roots' must be a list of strings"),
+            ({"write_roots": ["~/x", ""]}, "sandbox.write_roots' entries must be non-empty"),
+            ({"mach_services": {"a": 1}}, "sandbox.mach_services' must be a list of strings"),
+            ({"mach_services": [3]}, "sandbox.mach_services' entries must be non-empty"),
             ({"capability_profile": "xcode", "extra": True}, "unknown key"),
             # A typo'd preset must fail at load, not resolve to default containment.
             ({"capability_profile": "xcodee"}, "unknown sandbox capability profile"),

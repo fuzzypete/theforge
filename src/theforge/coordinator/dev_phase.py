@@ -856,27 +856,41 @@ def _pending_dev_transport_retry_failure_extra(state: CoordinatorState) -> dict:
 
 
 def _resolve_dev_sandbox_capabilities(config: ForgeConfig) -> dict:
-    """Resolve the project's sandbox capability profile for audit + logging (#1947).
+    """Resolve the project's sandbox capability declaration for audit + logging.
 
-    Returns the audit payload for the capabilities the dev run will be granted.
-    With no profile selected this is an explicit null/empty payload — default
+    Returns the audit payload for the capabilities the dev run will be granted:
+    the selected preset (#1947) merged with the project's own additive
+    ``sandbox.write_roots``/``sandbox.mach_services`` grants (#2038). With
+    nothing declared this is an explicit null/empty payload — default
     containment, recorded rather than omitted.
 
-    A profile this host's sandbox backend cannot express resolves to *empty*
+    A declaration this host's sandbox backend cannot express resolves to *empty*
     grants (the runner refuses the run), so the audit trail never claims a
-    capability that was not actually applied. The declared name is kept under
-    ``requested_profile`` so the refusal is diagnosable.
+    capability that was not actually applied. What was asked for is kept under
+    ``requested_profile``/``requested_write_roots``/``requested_mach_services``
+    so the refusal is diagnosable from the audit record alone.
     """
     requested = config.sandbox.capability_profile
+    requested_roots = config.sandbox.write_roots
+    requested_services = config.sandbox.mach_services
     try:
-        return resolve_capabilities(requested, system=platform.system()).audit_payload()
+        return resolve_capabilities(
+            requested,
+            system=platform.system(),
+            write_roots=requested_roots,
+            mach_services=requested_services,
+        ).audit_payload()
     except SandboxCapabilityError as exc:
         _log(
-            f"  WARNING: sandbox capability profile {requested!r} is not usable on this "
-            f"host — the dev run will fail closed. {exc}"
+            f"  WARNING: the declared sandbox capabilities (profile {requested!r}, "
+            f"write_roots {list(requested_roots)}, mach_services "
+            f"{list(requested_services)}) are not usable on this host — the dev run "
+            f"will fail closed. {exc}"
         )
         payload = resolve_capabilities(None).audit_payload()
         payload["requested_profile"] = requested
+        payload["requested_write_roots"] = list(requested_roots)
+        payload["requested_mach_services"] = list(requested_services)
         payload["unsupported_reason"] = str(exc)
         return payload
 
@@ -938,11 +952,24 @@ def _run_dev_phase(
         )
     elif state.dev_containment == "mechanical":
         _log("  dev write containment: mechanical (host sandbox wrapper)")
-    if state.dev_sandbox_capabilities.get("profile"):
+    _capabilities = state.dev_sandbox_capabilities
+    # Log whenever *anything* was declared — a project's inline grants apply
+    # with no preset selected, so keying the log on 'profile' alone would hide
+    # the inline-only case from the operator entirely (#2038).
+    _declared = any(_capabilities.get(key) for key in ("profile", "write_roots", "mach_services"))
+    if _declared:
         _log(
-            f"  sandbox capability profile: {state.dev_sandbox_capabilities['profile']} "
-            f"({len(state.dev_sandbox_capabilities['write_roots'])} extra write roots, "
-            f"{len(state.dev_sandbox_capabilities['mach_services'])} mach services)"
+            f"  sandbox capability profile: {_capabilities['profile'] or '(none)'} "
+            f"({len(_capabilities['write_roots'])} extra write roots, "
+            f"{len(_capabilities['mach_services'])} mach services; "
+            f"{len(_capabilities.get('project_write_roots', []))} roots and "
+            f"{len(_capabilities.get('project_mach_services', []))} services "
+            "declared by the project)"
+        )
+    elif _capabilities.get("unsupported_reason"):
+        _log(
+            "  sandbox capability declaration refused on this host: "
+            f"{_capabilities['unsupported_reason']}"
         )
     _preserve_error_type = state.error_type == "max_iterations_no_submit"
     if not _preserve_error_type:
@@ -1362,6 +1389,8 @@ def _run_dev_phase(
         max_iterations=state.adaptive_dev_max or config.dev_profile.max_iterations,
         stuck_detection=_scaled_stuck,
         sandbox_capability_profile=config.sandbox.capability_profile,
+        sandbox_write_roots=config.sandbox.write_roots,
+        sandbox_mach_services=config.sandbox.mach_services,
     )
 
     _dev_total_start = time.monotonic()
