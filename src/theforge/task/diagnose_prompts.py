@@ -19,6 +19,7 @@ from theforge.diagnose_types import (
     PremiseAnchor,
     RelatedFinding,
     ScopeCoverageLocation,
+    SupportProvenance,
     SymptomScopeCoverage,
 )
 from theforge.shape_check.parsing import (
@@ -50,12 +51,18 @@ Mode: {mode}
 3. For each hypothesis, gather evidence that either rules it out or confirms
    it.  Spawn focused sub-investigations as needed (e.g. read a specific
    audit YAML, grep for a code path, run a targeted command).
-4. Settle on a single confirmed cause OR — if you cannot confirm one within
+4. Before you treat a citation as confirming or independent support, classify
+   whether you observed it directly or read it as a prior assertion. Commit
+   messages, issue comments, memory files, unmerged branches, and earlier
+   diagnoses that already state the same cause are prior assertions, not
+   independent corroboration. You may cite them, but describe them as
+   restatements of an existing conclusion rather than a second agreeing source.
+5. Settle on a single confirmed cause OR — if you cannot confirm one within
    your budget — report the strongest remaining hypothesis with
    ``confirmed_cause: ""`` and explain in ``notes`` what evidence is missing.
    **Do NOT guess** — partial honest output is more valuable than a confident
    wrong diagnosis.
-5. Before confirming a cause, verify the bug's premise still exists in the
+6. Before confirming a cause, verify the bug's premise still exists in the
    current baseline.  A bug's premise can be silently deleted by an intervening
    commit — the code it describes may already be gone.  List the concrete,
    falsifiable premise anchors (file + a literal code substring you actually
@@ -63,7 +70,7 @@ Mode: {mode}
    you finish: if a cited file or pattern is absent from the baseline, the run
    is reported as "already resolved" rather than landed as a live diagnosis.
    Do NOT emit a confirmed cause for code that no longer exists.
-6. **Scope the confirmed cause to THIS issue's stated symptom — nothing more,
+7. **Scope the confirmed cause to THIS issue's stated symptom — nothing more,
    and nothing less.** The diagnosis boundary must match the issue boundary.
    While investigating you may notice other real defects in nearby code that
    are NOT the cause of this issue's symptom (a different bug, another issue's
@@ -76,7 +83,7 @@ Mode: {mode}
    ``confirmed_cause``: "is this the cause of the *stated* symptom?"  If it is
    a neighboring problem rather than the cause of what the issue reports, it
    belongs in ``related_findings``, not in the fix scope.
-7. If the issue states the symptom categorically (for example "every surface",
+8. If the issue states the symptom categorically (for example "every surface",
    "any story", "regardless of X"), account for the stated scope before you
    confirm a cause.  Check structurally analogous sibling locations: the same
    construct, the same omission or behavior, at a sibling site.  Either cover
@@ -110,12 +117,24 @@ hypotheses:
   - statement: "Hypothesis A — what could be causing it"
     status: ruled_out      # or: confirmed | inconclusive
     evidence: "What you observed that ruled this out / confirmed it"
+    evidence_provenance:
+      source_type: observed
+      detail: "Reproduced at HEAD in a failing test run."
   - statement: "Hypothesis B"
     status: confirmed
-    evidence: "..."
+    evidence: "The cited commit message already states the same mechanism."
+    evidence_provenance:
+      source_type: prior_assertion
+      detail: "Commit 858ec73a already asserted the cause; this is not independent corroboration."
 confirmed_cause: |
   The single root cause supported by the evidence.  Empty string if
   no cause was confirmed.
+confirmed_cause_support: |
+  The strongest support for the confirmed cause. If this support comes from
+  material that already states the cause, say that plainly as a restatement.
+confirmed_cause_support_provenance:
+  source_type: observed    # or: prior_assertion | mixed | unknown
+  detail: "Short source note: what was observed directly, or where the prior assertion lived."
 affected_code_path: |
   File path(s) and function/line locations involved in the bug.
 fix_success_criterion: |
@@ -182,7 +201,8 @@ diagnosis with the syntax error fixed.
 
 Preserve your previous output verbatim:
   - Keep the SAME confirmed_cause, word for word.  Do NOT re-scope it.
-  - Keep EVERY hypothesis, with the same statement, status, and evidence.
+  - Keep the SAME confirmed_cause_support and confirmed_cause_support_provenance.
+  - Keep EVERY hypothesis, with the same statement, status, evidence, and evidence_provenance.
   - Keep EVERY inspected_files entry, premise_anchors entry,
     related_findings entry, and symptom_scope_coverage entry.
   - Keep the same notes.
@@ -651,6 +671,15 @@ def _normalize_root_error(root_type: str) -> str:
     return f"YAML block did not parse to a mapping of diagnosis keys (root was {root_type})."
 
 
+def _parse_support_provenance(raw: object) -> SupportProvenance:
+    if not isinstance(raw, dict):
+        return SupportProvenance()
+    return SupportProvenance(
+        source_type=str(raw.get("source_type", "unknown")),
+        detail=str(raw.get("detail", "")),
+    )
+
+
 @dataclass(frozen=True)
 class DiagnoseParseOutcome:
     """Result of one strict parse attempt over diagnose agent output.
@@ -722,6 +751,9 @@ def parse_diagnose_output_result(
                     status=str(entry.get("status", "inconclusive")).strip().lower()
                     or "inconclusive",
                     evidence=str(entry.get("evidence", "")).strip(),
+                    evidence_provenance=_parse_support_provenance(
+                        entry.get("evidence_provenance")
+                    ),
                 )
             )
 
@@ -837,6 +869,10 @@ def parse_diagnose_output_result(
             symptom_is_categorical=scope_categorical,
             stated_scope=scope_text,
             examined_locations=tuple(scope_locations),
+        ),
+        confirmed_cause_support=str(parsed.get("confirmed_cause_support", "")).strip(),
+        confirmed_cause_support_provenance=_parse_support_provenance(
+            parsed.get("confirmed_cause_support_provenance")
         ),
     )
     return DiagnoseParseOutcome(artifact)

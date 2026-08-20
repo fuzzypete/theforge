@@ -41,6 +41,35 @@ class DiagnosePartialReason(Enum):
 
 # Output destinations for a completed diagnosis artifact.
 DIAGNOSE_OUTPUT_DESTINATIONS: frozenset[str] = frozenset({"comment", "body_section", "pr_to_body"})
+DIAGNOSE_SUPPORT_SOURCE_TYPES: frozenset[str] = frozenset(
+    {"observed", "prior_assertion", "mixed", "unknown"}
+)
+_INDEPENDENCE_VOCAB_RE = re.compile(
+    r"\b(independent(?:ly)?|corroborat\w*|converg\w*|second source)\b",
+    re.IGNORECASE,
+)
+
+
+def _normalize_support_source_type(source_type: str) -> str:
+    normalized = source_type.strip().lower()
+    if normalized in DIAGNOSE_SUPPORT_SOURCE_TYPES:
+        return normalized
+    return "unknown"
+
+
+@dataclass(frozen=True)
+class SupportProvenance:
+    """Where a piece of diagnosis support came from."""
+
+    source_type: str = "unknown"
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source_type", _normalize_support_source_type(self.source_type))
+        object.__setattr__(self, "detail", self.detail.strip())
+
+    def is_meaningful(self) -> bool:
+        return self.source_type != "unknown" or bool(self.detail)
 
 
 @dataclass(frozen=True)
@@ -50,6 +79,7 @@ class Hypothesis:
     statement: str
     status: str  # "ruled_out" | "confirmed" | "inconclusive"
     evidence: str = ""
+    evidence_provenance: SupportProvenance = field(default_factory=SupportProvenance)
 
 
 @dataclass(frozen=True)
@@ -220,6 +250,13 @@ class DiagnosisArtifact:
     # categorical scope so a fix-ready diagnosis cannot silently under-scope
     # the bug by omitting or negating the record.
     symptom_scope_coverage: SymptomScopeCoverage = field(default_factory=SymptomScopeCoverage)
+    # Optional support text for the confirmed cause, separate from the cause
+    # statement itself so corroboration/restatement provenance can be rendered
+    # explicitly.
+    confirmed_cause_support: str = ""
+    confirmed_cause_support_provenance: SupportProvenance = field(
+        default_factory=SupportProvenance
+    )
 
     def missing_required_fields(
         self, *, issue_requires_categorical_scope: bool = False
@@ -425,6 +462,47 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
         for f in artifact.inspected_files:
             digest = f.content_sha256 or "unknown"
             lines.append(f"- `{f.path}` — `sha256:{digest}`")
+
+    def render_provenance_text(provenance: SupportProvenance) -> str:
+        if provenance.source_type == "observed":
+            text = "observed — directly observed during this investigation."
+        elif provenance.source_type == "prior_assertion":
+            text = (
+                "prior_assertion — cited material already stated this cause; "
+                "it is a restatement, not independent corroboration."
+            )
+        elif provenance.source_type == "mixed":
+            text = (
+                "mixed — combines direct observations with material that already "
+                "stated this cause; the prior-assertion portion is not independent "
+                "corroboration."
+            )
+        else:
+            text = (
+                "unknown — the diagnosis did not record whether this support was "
+                "directly observed or read as a prior assertion."
+            )
+        if provenance.detail:
+            return f"{text} {provenance.detail}"
+        return text
+
+    def render_independence_note(
+        text: str, provenance: SupportProvenance, *, indent: str = ""
+    ) -> list[str]:
+        if not _INDEPENDENCE_VOCAB_RE.search(text or ""):
+            return []
+        if provenance.source_type in {"prior_assertion", "mixed"}:
+            note = (
+                "This text uses independence/corroboration language, but the cited "
+                "material already stated this cause and is not independent corroboration."
+            )
+        else:
+            note = (
+                "This text uses independence/corroboration language. Verify the cited "
+                "material is a second source rather than a prior assertion."
+            )
+        return [f"{indent}Independence note: {note}"]
+
     lines.extend(
         [
             "",
@@ -447,6 +525,12 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             lines.append(f"- **[{display_status}]** {h.statement.strip()}")
             if h.evidence.strip():
                 lines.append(f"  - Evidence: {h.evidence.strip()}")
+                lines.append(
+                    f"  - Evidence provenance: {render_provenance_text(h.evidence_provenance)}"
+                )
+                lines.extend(
+                    render_independence_note(h.evidence, h.evidence_provenance, indent="  - ")
+                )
     else:
         lines.append("_(none recorded)_")
     lines.extend(
@@ -463,6 +547,26 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             artifact.confirmed_cause.strip()
             or "unknown — the investigation did not confirm a cause",
             "",
+        ]
+    )
+    if (
+        artifact.confirmed_cause_support.strip()
+        or artifact.confirmed_cause_support_provenance.is_meaningful()
+    ):
+        lines.append(f"Support: {artifact.confirmed_cause_support.strip() or '_(none recorded)_'}")
+        lines.append(
+            "Support provenance: "
+            f"{render_provenance_text(artifact.confirmed_cause_support_provenance)}"
+        )
+        lines.extend(
+            render_independence_note(
+                artifact.confirmed_cause_support,
+                artifact.confirmed_cause_support_provenance,
+            )
+        )
+        lines.append("")
+    lines.extend(
+        [
             "### Affected code path",
             "",
             artifact.affected_code_path.strip() or "_(empty)_",

@@ -26,6 +26,7 @@ from theforge.diagnose_types import (
     DiagnoseState,
     DiagnosisArtifact,
     Hypothesis,
+    SupportProvenance,
     SymptomScopeCoverage,
     render_artifact_markdown,
     upsert_diagnosis_section,
@@ -374,6 +375,17 @@ class TestPromptBuilder:
         assert "the same omission or behavior" in lower
         assert "do not broaden" in lower
         assert "concrete-instance symptom" in lower
+
+    def test_prompt_marks_prior_assertions_as_non_independent_support(self):
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        lower = prompt.lower()
+        assert "prior assertions" in lower
+        assert "commit" in lower and "messages" in lower
+        assert "issue comments" in lower
+        assert "memory files" in lower
+        assert "not independent corroboration" in lower
+        assert "evidence_provenance" in prompt
+        assert "confirmed_cause_support_provenance" in prompt
 
     def test_scope_coverage_example_stays_stack_neutral(self):
         prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
@@ -733,6 +745,47 @@ class TestDiagnoseFlow:
                 "rationale": "Checked sibling path; different serializer already includes it.",
             },
         ]
+
+    def test_audit_persists_support_provenance(self):
+        from theforge.coordinator.diagnose_flow import _artifact_to_dict
+
+        artifact = DiagnosisArtifact(
+            issue_number=43,
+            observed_symptom="symptom",
+            reproduction_or_evidence="evidence",
+            hypotheses=(
+                Hypothesis(
+                    "hypothesis",
+                    "confirmed",
+                    "commit message already states the same mechanism",
+                    SupportProvenance(
+                        "prior_assertion",
+                        "Earlier fix branch already asserted it.",
+                    ),
+                ),
+            ),
+            confirmed_cause="root cause",
+            confirmed_cause_support="Earlier diagnosis already states the same cause",
+            confirmed_cause_support_provenance=SupportProvenance(
+                "prior_assertion",
+                "Diagnosis hdp#342 already asserted the cause.",
+            ),
+            affected_code_path="src/theforge/task/diagnose_prompts.py",
+            fix_success_criterion="render prior assertions as restatements",
+        )
+
+        payload = _artifact_to_dict(artifact)
+        assert payload["hypotheses"][0]["evidence_provenance"] == {
+            "source_type": "prior_assertion",
+            "detail": "Earlier fix branch already asserted it.",
+        }
+        assert payload["confirmed_cause_support"] == (
+            "Earlier diagnosis already states the same cause"
+        )
+        assert payload["confirmed_cause_support_provenance"] == {
+            "source_type": "prior_assertion",
+            "detail": "Diagnosis hdp#342 already asserted the cause.",
+        }
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
@@ -2220,6 +2273,42 @@ class TestParseRelatedFindings:
         assert artifact is not None
         assert len(artifact.related_findings) == 1
         assert artifact.related_findings[0].summary == "dup"
+
+
+class TestParseSupportProvenance:
+    def test_parses_support_provenance_fields(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n"
+            "  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "    evidence_provenance:\n"
+            "      source_type: prior_assertion\n"
+            "      detail: Earlier diagnosis already stated it.\n"
+            "confirmed_cause: c\n"
+            "confirmed_cause_support: commit message already states the same cause\n"
+            "confirmed_cause_support_provenance:\n"
+            "  source_type: mixed\n"
+            "  detail: Mix of reproduced failure and operator note.\n"
+            "affected_code_path: p\nfix_success_criterion: f\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert artifact.hypotheses[0].evidence_provenance.source_type == "prior_assertion"
+        assert artifact.hypotheses[0].evidence_provenance.detail == (
+            "Earlier diagnosis already stated it."
+        )
+        assert artifact.confirmed_cause_support == "commit message already states the same cause"
+        assert artifact.confirmed_cause_support_provenance.source_type == "mixed"
+        assert artifact.confirmed_cause_support_provenance.detail == (
+            "Mix of reproduced failure and operator note."
+        )
+
+    def test_missing_support_provenance_defaults_to_unknown(self):
+        artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
+        assert artifact is not None
+        assert artifact.hypotheses[0].evidence_provenance == SupportProvenance()
+        assert artifact.confirmed_cause_support == ""
+        assert artifact.confirmed_cause_support_provenance == SupportProvenance()
 
 
 class TestParseSymptomScopeCoverage:

@@ -18,7 +18,12 @@ import textwrap
 
 import pytest
 
-from theforge.diagnose_types import DiagnosisArtifact, Hypothesis, render_artifact_markdown
+from theforge.diagnose_types import (
+    DiagnosisArtifact,
+    Hypothesis,
+    SupportProvenance,
+    render_artifact_markdown,
+)
 from theforge.intake.groom_flow import BugDiagnosisState, classify_bug_diagnosis
 from theforge.shape_check.diagnosis_spec import REQUIRED_DIAGNOSIS_COMPONENTS
 from theforge.shape_check.heuristics import (
@@ -85,6 +90,44 @@ class TestRenderedArtifactReadiness:
         # for `confirmed_cause: ""` when nothing was confirmed. That outcome
         # must not carry the implementation-ready verdict.
         body = render_artifact_markdown(_artifact(""))
+        assert cause_assertion_state(body) == "non_asserted"
+        fix_ready, investigation_ready, warnings = derive_fix_ready("bug", body)
+        assert (fix_ready, investigation_ready) == (True, True)
+        assert warnings and "investigation-ready" in warnings[0]
+
+    def test_rendered_empty_cause_with_support_lines_stays_investigation_ready(self) -> None:
+        body = render_artifact_markdown(
+            DiagnosisArtifact(
+                issue_number=2060,
+                observed_symptom=(
+                    "A diagnose artifact with no confirmed cause derives as fix-ready."
+                ),
+                reproduction_or_evidence=(
+                    "Rendered at baseline `f2caf7d` and passed to derive_fix_ready."
+                ),
+                hypotheses=(
+                    Hypothesis(
+                        statement="the extractor never reads the heading form",
+                        status="confirmed",
+                        evidence="`_extract_confirmed_cause_value` stripped bullet markers only",
+                        evidence_provenance=SupportProvenance(
+                            "observed",
+                            "Read directly from code.",
+                        ),
+                    ),
+                ),
+                confirmed_cause="",
+                confirmed_cause_support=(
+                    "An earlier diagnosis independently confirmed the same cause."
+                ),
+                confirmed_cause_support_provenance=SupportProvenance(
+                    "prior_assertion",
+                    "Earlier diagnosis already stated the same cause.",
+                ),
+                affected_code_path="src/theforge/shape_check/heuristics.py",
+                fix_success_criterion="an empty-cause artifact derives as investigation-ready.",
+            )
+        )
         assert cause_assertion_state(body) == "non_asserted"
         fix_ready, investigation_ready, warnings = derive_fix_ready("bug", body)
         assert (fix_ready, investigation_ready) == (True, True)
