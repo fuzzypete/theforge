@@ -1,0 +1,102 @@
+schema_version: 2
+run_id: b122a93bf342
+authoritative_run_record: .forge/audits/runs/b122a93bf342.json
+generated_at: '2026-08-20T14:55:30.002986+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.008698749999999998
+story:
+  slug: issue-2610
+  name: A resume rewrites a sprint's derived batching into a single parallel batch,
+    so stories the original run sequenced apart are dispatched together
+  github_issue: 2610
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/sprint/audit.py
+- src/theforge/sprint/runner.py
+- tests/test_sprint_collision.py
+- tests/test_sprint_resume_collision_footprint.py
+what_changed:
+  description: Resume handling was changed so sprint re-entry recovers the original
+    run's collision-derived footprint data before synthetic dependency edges are computed,
+    preserving the prior sequencing instead of flattening stories into one parallel
+    batch. The change also added focused tests for collision scheduling and resume-specific
+    footprint recovery.
+  approach: The implementation routes recovered audit/state information back into
+    sprint startup so DAG construction can reuse persisted collision footprints on
+    resume, then verifies that behavior with unit-level collision tests and a seam
+    test covering the resume path.
+  files_modified: *id002
+what_was_learned:
+- claim: Resume-time DAG reconstruction must restore persisted collision footprints
+    before recomputing synthetic scheduling edges, or stories that were previously
+    serialized can become co-ready.
+  evidence:
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: Runner changes implement resume-time recovery before dependency recomputation.
+  - type: file
+    path: src/theforge/sprint/audit.py
+    description: Audit support was added to carry the persisted footprint data used
+      during resume recovery.
+  - type: review_cycle
+    cycle: '1'
+    description: Review noted that resume footprint recovery is invoked before synthetic
+      edge computation.
+  - type: diff
+    ref: addd2d1c4f83281aa4f6dc8490d6762dd55e2f09
+    description: The patch introduces the resume-footprint recovery path used during
+      sprint restart.
+- claim: Collision scheduling behavior is best protected with both direct scheduling
+    tests and a resume-path test that exercises persisted state re-entry.
+  evidence:
+  - type: file
+    path: tests/test_sprint_collision.py
+    description: Focused tests cover collision-derived sequencing behavior.
+  - type: file
+    path: tests/test_sprint_resume_collision_footprint.py
+    description: A dedicated test exercises recovery of collision footprints across
+      resume.
+  - type: diff
+    ref: b716361bd3b5eb817136b9ddc83c1154add54a91
+    description: The test additions cover both base collision behavior and the resume
+      seam.
+  - type: review_cycle
+    cycle: '1'
+    description: Review called out focused unit and seam tests for the recovered footprint
+      flow.
+learned_patterns:
+- resume-footprint-recovery
+- synthetic-edge-rehydration
+- resume-seam-testing
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review consistently centered on whether recovered footprint data was restored
+    early enough to influence synthetic edge computation and whether that path was
+    covered by dedicated tests.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 6.539750199999999
+  dominant_difficulty: Preserving evidence-derived concurrency constraints across
+    resume required reconstructing the same scheduling inputs at re-entry, not just
+    rebuilding the DAG from current story records.
