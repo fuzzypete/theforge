@@ -347,7 +347,7 @@ _FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^\n`]*)[ \t]*$", r
 _CATEGORICAL_SCOPE_SENTENCE_RE = re.compile(
     r"(?:(?<=^)|(?<=[.!?]\s))"
     r"(?P<quantifier>every|each|any|all)\s+"
-    r"(?P<phrase>[a-z][\w-]*(?:\s+[a-z][\w-]*){0,5})\s+"
+    r"(?P<phrase>[a-z][\w-]*(?:\s+[a-z][\w-]*){0,5}?)\s+"
     r"(?P<verb>"
     r"should|must|needs?\s+to|can(?:not)?|cannot|does(?:\s+not|n't)|"
     r"fails?\s+to|is|are|preserves?|includes?|covers?|renders?|drops?|"
@@ -421,6 +421,7 @@ _SCOPE_NOUN_HINTS = frozenset(
         "view",
     }
 )
+_SCOPE_PHRASE_BOUNDARY_WORDS = frozenset({"across", "for", "in", "of", "on"})
 
 
 def _normalize_scope_text(text: str) -> str:
@@ -444,7 +445,14 @@ def _phrase_is_scope_like(phrase: str) -> bool:
         return False
     if tokens[0] in _CARDINAL_SCOPE_WORDS:
         return False
-    return any(_token_matches_scope_hint(token) for token in tokens)
+    head_tokens: list[str] = []
+    for token in tokens:
+        if token in _SCOPE_PHRASE_BOUNDARY_WORDS:
+            break
+        head_tokens.append(token)
+    if not head_tokens:
+        return False
+    return _token_matches_scope_hint(head_tokens[-1])
 
 
 def _text_asserts_categorical_scope(text: str) -> bool:
