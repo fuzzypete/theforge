@@ -25,6 +25,7 @@ from theforge.log_util import _log_line
 
 from ..config import ModelProfile
 from ..config.models import model_fallback_transport
+from .sandbox import capability_transport_refusal
 
 # ── Logging helpers ───────────────────────────────────────────────────
 
@@ -202,6 +203,29 @@ def _parse_quota_reset(output: str) -> str | None:
     return None
 
 
+def _capability_refusal_result(
+    profile: ModelProfile, transport_label: str, refusal: str
+) -> AgentResult:
+    """Fail-closed startup failure for a transport that cannot express a declaration.
+
+    Uses the same ``SANDBOX_CAPABILITY_PROFILE_UNSUPPORTED`` marker the CLI
+    runners emit, so the coordinator's existing failure classification
+    (``agent_failure``, ``sprint.rca``) sees one capability-gap signal
+    regardless of which transport refused.
+    """
+    _log(f"✗ {transport_label}: {refusal}")
+    return AgentResult(
+        success=False,
+        output=f"SANDBOX_CAPABILITY_PROFILE_UNSUPPORTED: {refusal}",
+        session_id=None,
+        cost_usd=None,
+        exit_code=-1,
+        raw={},
+        profile_name=profile.name,
+        startup_failure=True,
+    )
+
+
 def _fallback_unavailable_reason(profile: ModelProfile) -> str:
     """Explain why no transport fallback could be attempted for ``profile``."""
     provider = profile.provider_family or profile.provider or "unknown"
@@ -362,7 +386,9 @@ def _maybe_run_api_fallback(
 
     reason = decision.reason
 
-    def _annotate_cli_result(cli_result: AgentResult) -> AgentResult:
+    def _annotate_cli_result(
+        cli_result: AgentResult, not_applied: str | None = None
+    ) -> AgentResult:
         """Annotate a failure for which no fallback was ever attempted.
 
         The failure was classified as fallback-eligible, so recording only the
@@ -371,7 +397,7 @@ def _maybe_run_api_fallback(
         carry that time forward so the coordinator can tell a failure certain to
         repeat from one merely likely to (#2298).
         """
-        not_applied = _fallback_unavailable_reason(profile)
+        not_applied = not_applied or _fallback_unavailable_reason(profile)
         reset_at = (
             _parse_quota_reset(cli_result.output or "")
             if decision.cli_quota_error_observed
@@ -403,6 +429,13 @@ def _maybe_run_api_fallback(
             transport_fallback_reason=reason,
             transport_used="api",
         )
+
+    # A CLI that declared sandbox capabilities must not fall back to a transport
+    # that cannot express them — that would turn a fail-closed capability
+    # refusal into a quiet run without the capability (#2038).
+    capability_refusal = capability_transport_refusal(profile, "api")
+    if capability_refusal is not None:
+        return _annotate_cli_result(result, not_applied=capability_refusal)
 
     if session_id is not None:
         _log(
@@ -598,6 +631,14 @@ def run_agent(
     its own stdout stream. Codex and Gemini are affected.
     """
     if _profile_transport_kind(profile) == "api":
+        # The API tool runtime confines writes by path check, not by host
+        # sandbox, so it has no axis for a declared write root or mach service.
+        # Refuse before dispatch rather than run with the capability absent.
+        refusal = capability_transport_refusal(profile, "api")
+        if refusal is not None:
+            return _stamp_configured_identity(
+                _capability_refusal_result(profile, "api", refusal), profile
+            )
         from theforge.runners import api as runner_api  # noqa: PLC0415
 
         api_result = runner_api.run_api_agent(
@@ -641,6 +682,14 @@ def run_agent(
         return _fill_invocation_identity(result, profile)
 
     if cli == "codex":
+        # Codex brings its own `--sandbox` containment and never goes through
+        # workspace_effect_sandbox_command, so a declared grant would be
+        # silently dropped. Refuse instead (#2038).
+        refusal = capability_transport_refusal(profile, "codex")
+        if refusal is not None:
+            return _stamp_configured_identity(
+                _capability_refusal_result(profile, "codex", refusal), profile
+            )
         from .runner_codex import _run_codex  # noqa: PLC0415
 
         result = _run_codex(
@@ -691,6 +740,13 @@ def run_agent(
         return _fill_invocation_identity(result, profile)
 
     if cli == "ghaw":
+        # gh-aw runs the work on a GitHub Actions runner, not under this host's
+        # sandbox, so a host write root or mach service cannot be granted there.
+        refusal = capability_transport_refusal(profile, "ghaw")
+        if refusal is not None:
+            return _stamp_configured_identity(
+                _capability_refusal_result(profile, "ghaw", refusal), profile
+            )
         from .runner_ghaw import _run_ghaw  # noqa: PLC0415
 
         # No API fallback on this transport: gh-aw failures (dispatch, Actions
