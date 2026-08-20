@@ -692,7 +692,20 @@ def _coordinator_loop(
                     state, config, task, _log, logger
                 )
                 if _dev_refusal is not None:
-                    return _dev_refusal
+                    from .gate_green_salvage import (  # noqa: PLC0415
+                        salvage_gate_green_landing,
+                    )
+
+                    return salvage_gate_green_landing(
+                        state,
+                        config,
+                        task,
+                        _dev_refusal,
+                        workspace_path=workspace_path,
+                        branch_name=branch_name,
+                        auto_merge=auto_merge,
+                        logger=logger,
+                    )
             state.budget.consume(review_cycle=state.review_cycle)
             state.dev_trace_count += 1
             escalation = _run_dev_phase(
