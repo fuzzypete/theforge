@@ -1,0 +1,89 @@
+schema_version: 2
+run_id: e1650bb1bc37
+authoritative_run_record: .forge/audits/runs/e1650bb1bc37.json
+generated_at: '2026-08-20T04:02:00.315306+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00774
+story:
+  slug: issue-2569
+  name: A story whose pre-dev rebase conflicts leaves the conflicting worktree in
+    place, so every later run of that story fails the same way
+  github_issue: 2569
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/engine.py
+- tests/test_coord_worktree_drift.py
+what_changed:
+  description: Resume rebase failures in the preserved-worktree entry points were
+    changed to surface the existing worktree-drift classification instead of only
+    returning a raw git conflict escalate. Targeted tests were added to cover both
+    resume paths.
+  approach: The change threaded the established drift/error classification through
+    the resume rebase seam in coordinator logic, then added seam-focused regression
+    tests that exercise run_from_review and run_from_dev when pre-dev rebase conflicts
+    occur.
+  files_modified: *id002
+what_was_learned:
+- claim: The coordinator already has a reusable worktree-drift classification that
+    can be applied at resume-time rebase failures, not just in other workspace checks.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/engine.py
+    description: The coordinator logic was updated in engine.py to forward drift classification
+      from the resume rebase path.
+  - type: diff
+    ref: 45db6a03e8e906926b22c289478663f09580c155
+    description: This diff captures the engine change that routes resume rebase failures
+      through the existing classification path.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved that the resume rebase seam now forwards the existing
+      drift classification for both resume entry points.
+- claim: Both preserved-worktree resume entry points share the same failure mode and
+    can be regression-tested with focused seam coverage.
+  evidence:
+  - type: file
+    path: tests/test_coord_worktree_drift.py
+    description: The test file gained coverage for resume rebase conflict handling
+      across both run_from_review and run_from_dev.
+  - type: diff
+    ref: ce58d663083956a2ea1e26a962562e8cf79979f7
+    description: This diff records the added regression tests exercising the two resume
+      paths under rebase-conflict conditions.
+  - type: review_cycle
+    cycle: '1'
+    description: Review explicitly noted seam coverage for both resume entry points
+      and passing targeted tests.
+learned_patterns:
+- resume-rebase-drift-forwarding
+- dual-entrypoint-regression-tests
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The review loop centered on whether the resume rebase seam forwarded the established
+    drift classification consistently for both resume entry points.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.618172
+  dominant_difficulty: Distinguishing a persistent preserved-worktree state failure
+    from an ordinary per-run git rebase failure at the resume seam.

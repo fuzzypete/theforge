@@ -1,0 +1,123 @@
+schema_version: 2
+run_id: 4ceb174bd71a
+authoritative_run_record: .forge/audits/runs/4ceb174bd71a.json
+generated_at: '2026-08-20T02:37:52.648421+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0114675
+story:
+  slug: issue-1848
+  name: "Spike: mechanical reviewer-reliability proxy \u2014 finding-fate rates from\
+    \ structured records"
+  github_issue: 1848
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- docs/README.md
+- docs/plans/1848-reviewer-finding-fate-spike.md
+- src/theforge/finding_fate_proxy/__init__.py
+- src/theforge/finding_fate_proxy/__main__.py
+- src/theforge/finding_fate_proxy/analysis.py
+- src/theforge/finding_fate_proxy/report.py
+- tests/test_finding_fate_proxy_report.py
+what_changed:
+  description: This run added a finding-fate proxy spike artifact, a CLI-accessible
+    analysis/reporting module, and tests for the rendered output. The spike record
+    captures which fate classes are derivable from existing structured records, reports
+    the POC output over the audit corpus, and records the current adoption decision.
+  approach: 'The work was implemented as a read-only data-processing path: analysis
+    code derives per-reviewer fate aggregates from structured audit records with admissibility
+    gates applied, report code renders the spike output, and the written spike document
+    records derivations, underivable classes, and the decision outcome.'
+  files_modified: *id002
+what_was_learned:
+- claim: The current structured records support a mechanical proxy only for the derivable
+    fate subset, while other fate classes must be reported as underivable unless a
+    specific new structured event exists.
+  evidence:
+  - type: file
+    path: docs/plans/1848-reviewer-finding-fate-spike.md
+    description: The spike write-up records fate-class derivability and names missing
+      structured events for classes that cannot be derived from current records.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approval states the deliverables honestly report two fate
+      classes as derived mechanically and two as underivable with named missing events.
+- claim: When only addressed and survived are derivable in a run, publishing both
+    as separate rate columns yields complementary values rather than independent dimensions.
+  evidence:
+  - type: review_finding
+    finding_id: ff82138569de5a3f
+    description: The review finding notes that addressed and survived are the only
+      derivable fates in the presented output and therefore survived is always one
+      minus addressed.
+  - type: file
+    path: docs/plans/1848-reviewer-finding-fate-spike.md
+    description: The spike document is where the per-reviewer fate-rate presentation
+      and its explanation were recorded.
+- claim: For analyzer rule markers, keeping a single authoritative matching path avoids
+    dead constants drifting away from the implemented classification logic.
+  evidence:
+  - type: review_finding
+    finding_id: 1bb45c770e3bb181
+    description: The review finding identifies an unused contradiction-marker constant
+      while the real matching happened through inline comparisons.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that a later iteration removed the dead _ADJACENT_CONTRADICTION_MARKERS
+      constant.
+  - type: file
+    path: src/theforge/finding_fate_proxy/analysis.py
+    description: The analysis module contains the fate-derivation logic where the
+      unused constant and subsequent cleanup applied.
+- claim: Rendered transcript examples and explanatory commentary need to stay aligned
+    with the actual report renderer output to avoid documentation drifting from executable
+    behavior.
+  evidence:
+  - type: review_finding
+    finding_id: 552559476522ac42
+    description: The review finding reports that explanatory text was inserted inside
+      a fenced block presented as concrete POC output even though render() did not
+      emit that text.
+  - type: file
+    path: src/theforge/finding_fate_proxy/report.py
+    description: The report renderer defines the actual emitted output that the documentation
+      transcript was expected to match.
+  - type: file
+    path: tests/test_finding_fate_proxy_report.py
+    description: Report tests back the rendered-output shape that documentation examples
+      should reflect.
+learned_patterns:
+- structured-fate-derivation
+- complementary-rate-columns
+- single-source-classification-rules
+- doc-renderer-transcript-alignment
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review repeatedly focused on keeping the spike output mechanically honest: no
+    unused derivation paths, no misleading extra degrees of freedom in reported rates,
+    and no transcript text that the renderer does not actually emit.'
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 5.6881356
+  dominant_difficulty: Mapping reviewer-fate concepts onto only those downstream events
+    that are truly coordinator-observable in existing structured records.
