@@ -8,7 +8,13 @@ selector never asks: was nothing known, or was something known and withheld?
 
 from __future__ import annotations
 
-from .prior_run_selector import SUPPORTED_PHASES, PriorRunSelection
+from .prior_run_selector import (
+    INDEX_STATE_MISSING,
+    INDEX_STATE_STALE_SCHEMA,
+    INDEX_STATE_UNREADABLE,
+    SUPPORTED_PHASES,
+    PriorRunSelection,
+)
 
 
 def disabled_manifest() -> dict:
@@ -97,6 +103,21 @@ def _build_note(
             f"(supported phases: {', '.join(sorted(SUPPORTED_PHASES))})"
         )
     if selection.entry_count == 0:
+        if selection.index_state == INDEX_STATE_MISSING:
+            return (
+                "prior-run knowledge index is missing or was never built; "
+                "run `forge index` to build .forge/knowledge/index.yaml"
+            )
+        if selection.index_state == INDEX_STATE_UNREADABLE:
+            return (
+                "prior-run knowledge index is unreadable; "
+                "run `forge index` to rebuild .forge/knowledge/index.yaml"
+            )
+        if selection.index_state == INDEX_STATE_STALE_SCHEMA:
+            return (
+                "prior-run knowledge index uses an unsupported schema version; "
+                "run `forge index` to rebuild .forge/knowledge/index.yaml"
+            )
         return "no relevant prior knowledge exists (no indexed summaries)"
 
     inadmissible = sum(1 for item in selection.excluded if item.admissibility_excluded)

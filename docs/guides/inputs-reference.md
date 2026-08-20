@@ -1088,9 +1088,19 @@ summary prose can never select itself in.
 
 Every decision is recorded per phase in the audit record under
 `context_manifests[].prior_run_context` — what was included and why, what was
-dropped, and a `note` that distinguishes "no relevant prior knowledge exists"
-from "prior knowledge existed but was withheld as inadmissible or stale". Design
-doctrine lives in `docs/plans/knowledge-capture.md`.
+dropped, and a `note` that distinguishes:
+
+- a missing index ("missing or was never built"),
+- an unreadable index (parse failure or malformed `entries` payload),
+- an unsupported index schema version,
+- an empty but healthy index ("no indexed summaries"),
+- no relevant prior knowledge for this story,
+- and prior knowledge that existed but was withheld as inadmissible or stale.
+
+The prior-run index is a derived artifact built by `forge index`; the selector
+never builds it on demand. If the manifest reports missing, unreadable, or
+unsupported-schema index state, rebuild `.forge/knowledge/index.yaml` with
+`forge index`. Design doctrine lives in `docs/plans/knowledge-capture.md`.
 
 `knowledge.invariant_context` (default `false`) gates the #1875 invariant-index
 spike, and `knowledge.invariant_sources` lists the Markdown globs the extractor
