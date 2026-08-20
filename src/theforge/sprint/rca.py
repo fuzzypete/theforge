@@ -1157,15 +1157,21 @@ def _collect_text_sources(
     # artifacts from an earlier attempt can misclassify the current failure.
     story_dir = sprint_log_dir / slug
     attempt_started_at = _story_attempt_started_at(story, audit)
+    attempt_run_ids = _story_attempt_run_ids(story, audit)
     if story_dir.is_dir():
         for path in sorted(story_dir.rglob("*")):
             if not path.is_file():
                 continue
             if path.suffix.lower() not in {".log", ".txt", ".yaml", ".yml", ".md", ".json"}:
                 continue
-            if path.name == "audit.yaml":
+            if path.name in {"audit.yaml", ".artifact-owners.yaml"}:
                 continue
-            if not _path_in_attempt_window(path, attempt_started_at):
+            if not _artifact_belongs_to_attempt(
+                path,
+                story_dir=story_dir,
+                attempt_run_ids=attempt_run_ids,
+                started_at=attempt_started_at,
+            ):
                 continue
             # Strip numeric telemetry lines (cost/duration/token values) so a
             # coincidental digit run inside a float cannot feed context-free
@@ -1210,6 +1216,20 @@ def _story_attempt_started_at(story: dict, audit: dict) -> datetime.datetime | N
     return min(starts) if starts else None
 
 
+def _story_attempt_run_ids(story: dict, audit: dict) -> set[str]:
+    """Return the current attempt's recorded run identities, if present."""
+    ids: set[str] = set()
+    candidates = [story.get("story_run_id")]
+    if isinstance(audit, dict):
+        candidates.append(audit.get("run_id"))
+    for value in candidates:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                ids.add(text)
+    return ids
+
+
 def _parse_attempt_timestamp(value: object) -> datetime.datetime | None:
     """Parse an ISO-8601 timestamp emitted by sprint/audit records."""
     if not isinstance(value, str):
@@ -1226,6 +1246,32 @@ def _parse_attempt_timestamp(value: object) -> datetime.datetime | None:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=datetime.timezone.utc)
     return parsed.astimezone(datetime.timezone.utc)
+
+
+def _artifact_belongs_to_attempt(
+    path: Path,
+    *,
+    story_dir: Path,
+    attempt_run_ids: set[str],
+    started_at: datetime.datetime | None,
+) -> bool:
+    """Return whether *path* belongs to the current story attempt."""
+    owner_run_id = _artifact_owner_run_id(story_dir, path)
+    if owner_run_id is not None:
+        return bool(attempt_run_ids) and owner_run_id in attempt_run_ids
+    return _path_in_attempt_window(path, started_at)
+
+
+def _artifact_owner_run_id(story_dir: Path, path: Path) -> str | None:
+    """Return the run id recorded for *path* in the story artifact manifest."""
+    manifest = _load_yaml(story_dir / ".artifact-owners.yaml")
+    if not isinstance(manifest, dict):
+        return None
+    entries = manifest.get("artifacts")
+    if not isinstance(entries, dict):
+        return None
+    owner = entries.get(_rel(path, story_dir))
+    return owner.strip() if isinstance(owner, str) and owner.strip() else None
 
 
 def _path_in_attempt_window(path: Path, started_at: datetime.datetime | None) -> bool:

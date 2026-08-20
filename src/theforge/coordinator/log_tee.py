@@ -7,6 +7,8 @@ import threading
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import yaml
+
 # The worker-slug thread-local now lives in the stdlib-only leaf module
 # ``theforge.log_util`` so the shared log-line emitter can prefix every line
 # (coordinator *and* runner) with it. Re-exported here for backward
@@ -56,7 +58,13 @@ def _make_story_log_dir(
         return None
 
 
-def _write_log_artifact(log_dir: "Path | None", relative_path: str, content: str) -> None:
+def _write_log_artifact(
+    log_dir: "Path | None",
+    relative_path: str,
+    content: str,
+    *,
+    owner_run_id: str | None = None,
+) -> None:
     """Write content to <log_dir>/<relative_path>. Best-effort; never raises."""
     if log_dir is None:
         return
@@ -64,6 +72,30 @@ def _write_log_artifact(log_dir: "Path | None", relative_path: str, content: str
         dest = log_dir / relative_path
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(content, encoding="utf-8")
+        if owner_run_id:
+            _record_log_artifact_owner(log_dir, relative_path, owner_run_id)
+    except Exception:
+        pass
+
+
+def _record_log_artifact_owner(log_dir: Path, relative_path: str, owner_run_id: str) -> None:
+    """Best-effort manifest recording which run last wrote a story artifact."""
+    manifest_path = log_dir / ".artifact-owners.yaml"
+    try:
+        existing = {}
+        if manifest_path.exists():
+            loaded = yaml.safe_load(manifest_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                existing = loaded
+        entries = existing.get("artifacts")
+        if not isinstance(entries, dict):
+            entries = {}
+        entries[str(relative_path)] = owner_run_id
+        existing["artifacts"] = entries
+        manifest_path.write_text(
+            yaml.safe_dump(existing, sort_keys=True),
+            encoding="utf-8",
+        )
     except Exception:
         pass
 

@@ -430,6 +430,7 @@ def _retry_transient_review_failures(
                 state.log_dir,
                 f"review-cycle-{cycle_num}/{profile.name}-transport-retry{retry_count}.yaml",
                 retried.output or "",
+                owner_run_id=state.run_id,
             )
             # ``current`` is being superseded by ``retried`` — it was a distinct
             # (failed) reviewer invocation and must be recorded before it is
@@ -872,6 +873,7 @@ def _run_review_pool(
             state.log_dir,
             f"review-cycle-{_cycle_num}/{r.profile_name}.yaml",
             r.output or "",
+            owner_run_id=state.run_id,
         )
 
     # ── Transient transport retry ─────────────────────────────────────
@@ -1271,5 +1273,6 @@ def _run_review_pool(
         state.log_dir,
         f"review-cycle-{_cycle_num}/synthesized.yaml",
         _synthesis_content,
+        owner_run_id=state.run_id,
     )
     return successful, failed_results, merged, individual_parsed, named_parsed

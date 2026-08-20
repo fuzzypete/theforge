@@ -1417,6 +1417,110 @@ def test_current_attempt_review_artifact_within_attempt_window_still_classifies(
     assert any(ev["source"].endswith("openai-gpt.yaml") for ev in entry["evidence"])
 
 
+def test_prior_attempt_review_artifact_with_stale_owner_run_id_is_excluded_after_copy(
+    tmp_path: Path,
+) -> None:
+    """Manifest ownership beats copied-tree mtimes when they disagree."""
+    d = _sprint_dir(tmp_path, name="copied-attempt")
+    started_at = "2026-05-08T02:10:00Z"
+    finished_at = "2026-05-08T02:11:00Z"
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-2038",
+                    "story_run_id": "run-current",
+                    "outcome": "ESCALATE",
+                    "error": "story escalated",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-2038" / "audit.yaml",
+        {
+            "run_id": "run-current",
+            "timing": {"started_at": started_at, "finished_at": finished_at},
+        },
+    )
+    stale_review = d / "issue-2038" / "review-cycle-1" / "anthropic-opus-cli.yaml"
+    stale_review.parent.mkdir(parents=True, exist_ok=True)
+    stale_review.write_text(
+        "observed: with a retryable provider error such as a rate limit, the transport\n",
+        encoding="utf-8",
+    )
+    _write(
+        d / "issue-2038" / ".artifact-owners.yaml",
+        {"artifacts": {"review-cycle-1/anthropic-opus-cli.yaml": "run-prior"}},
+    )
+    os.utime(
+        stale_review,
+        (
+            datetime.datetime(2026, 5, 8, 2, 10, 30, tzinfo=datetime.timezone.utc).timestamp(),
+            datetime.datetime(2026, 5, 8, 2, 10, 30, tzinfo=datetime.timezone.utc).timestamp(),
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-2038"]
+    assert entry["primary_failure_class"] != "provider_quota"
+    assert not any(ev["source"].endswith("anthropic-opus-cli.yaml") for ev in entry["evidence"])
+
+
+def test_current_attempt_review_artifact_with_current_owner_run_id_survives_stale_mtime(
+    tmp_path: Path,
+) -> None:
+    """Manifest ownership keeps same-attempt evidence when mtimes are not durable."""
+    d = _sprint_dir(tmp_path, name="manifest-owned-attempt")
+    started_at = "2026-05-08T02:10:00Z"
+    finished_at = "2026-05-08T02:11:00Z"
+    _write(
+        d / "sprint-summary.yaml",
+        _summary(
+            [
+                {
+                    "slug": "issue-1324",
+                    "story_run_id": "run-current",
+                    "outcome": "ESCALATE",
+                    "error": "story escalated",
+                    "started_at": started_at,
+                    "finished_at": finished_at,
+                }
+            ]
+        ),
+    )
+    _write(
+        d / "issue-1324" / "audit.yaml",
+        {
+            "run_id": "run-current",
+            "timing": {"started_at": started_at, "finished_at": finished_at},
+        },
+    )
+    review_artifact = d / "issue-1324" / "review-cycle-2" / "openai-gpt.yaml"
+    review_artifact.parent.mkdir(parents=True, exist_ok=True)
+    review_artifact.write_text(
+        "output: |\n  ERROR: You've hit your usage limit. Try again at 6:57 PM.\n",
+        encoding="utf-8",
+    )
+    _write(
+        d / "issue-1324" / ".artifact-owners.yaml",
+        {"artifacts": {"review-cycle-2/openai-gpt.yaml": "run-current"}},
+    )
+    os.utime(
+        review_artifact,
+        (
+            datetime.datetime(2026, 5, 8, 2, 5, 0, tzinfo=datetime.timezone.utc).timestamp(),
+            datetime.datetime(2026, 5, 8, 2, 5, 0, tzinfo=datetime.timezone.utc).timestamp(),
+        ),
+    )
+
+    entry = _build(d)["stories"]["issue-1324"]
+    assert entry["primary_failure_class"] == "provider_quota"
+    assert any(ev["source"].endswith("openai-gpt.yaml") for ev in entry["evidence"])
+
+
 # ── Engine: determinism / regenerability ──────────────────────────────────────
 
 

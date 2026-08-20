@@ -1228,11 +1228,17 @@ def _run_preflight_phase(
         "attempts": attempts,
     }
     state.preflight_cache_snapshot = dict(_preflight_artifact["cache_snapshot"])
-    _write_log_artifact(state.log_dir, "preflight-raw.log", preflight_result.output or "")
+    _write_log_artifact(
+        state.log_dir,
+        "preflight-raw.log",
+        preflight_result.output or "",
+        owner_run_id=state.run_id,
+    )
     _write_log_artifact(
         state.log_dir,
         "preflight.yaml",
         yaml.dump(_preflight_artifact, default_flow_style=False, allow_unicode=True),
+        owner_run_id=state.run_id,
     )
     if state.preflight_partial_evidence is not None:
         _write_log_artifact(
@@ -1243,6 +1249,7 @@ def _run_preflight_phase(
                 default_flow_style=False,
                 allow_unicode=True,
             ),
+            owner_run_id=state.run_id,
         )
 
     # ── stop_phase gate ────────────────────────────────────────────────
