@@ -14,6 +14,7 @@ from theforge.cli.shared import _write_audit
 from theforge.config import ForgeConfig
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.workspace import landing_precondition_error
 
 BASE = "release/v0.13"
 
@@ -304,6 +305,8 @@ class TestPerRunFileWrite:
         _origin, clone = _origin_and_clone(tmp_path)
         config = _published_config(clone)
         task = _make_task(clone)
+        _git(clone, "add", task.story_path.name)
+        _git(clone, "commit", "-m", "add story fixture")
         result = _make_result(clone, run_id="run-cli-branch-mismatch")
         _git(clone, "checkout", "-b", "feature/wrong-branch")
 
@@ -313,9 +316,69 @@ class TestPerRunFileWrite:
         state_path = clone / ".forge" / "audit-publish-state.json"
         state = json.loads(state_path.read_text(encoding="utf-8"))
         run_file = clone / ".forge" / "audits" / "runs" / "run-cli-branch-mismatch.json"
+        preserved_file = (
+            clone
+            / ".forge"
+            / "unpublished-story-run-artifacts"
+            / "run-cli-branch-mismatch"
+            / ".forge"
+            / "audits"
+            / "runs"
+            / "run-cli-branch-mismatch.json"
+        )
 
         assert audit_path == clone / ".forge" / "audits" / "forge_audit.yaml"
-        assert run_file.exists()
+        assert not run_file.exists()
+        assert preserved_file.exists()
         assert state["state"] == "branch_mismatch"
         assert "canonical story run audit publish failed" in err
         assert "feature/wrong-branch" in err
+        assert "unpublished artifacts preserved at" in err
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )
+        assert landing_precondition_error(config) is None
+
+    def test_write_audit_warns_and_keeps_the_checkout_clean_when_publish_cannot_reconcile(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone)
+        task = _make_task(clone)
+        _git(clone, "add", task.story_path.name)
+        _git(clone, "commit", "-m", "add story fixture")
+        result = _make_result(clone, run_id="run-cli-no-origin")
+        _git(clone, "remote", "set-url", "origin", str(tmp_path / "missing-origin.git"))
+
+        audit_path = _write_audit(result, config, task)
+
+        err = capsys.readouterr().err
+        state_path = clone / ".forge" / "audit-publish-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        run_file = clone / ".forge" / "audits" / "runs" / "run-cli-no-origin.json"
+
+        assert audit_path == clone / ".forge" / "audits" / "forge_audit.yaml"
+        assert run_file.exists()
+        assert state["state"] == "reconcile_failed"
+        assert "canonical story run audit publish failed" in err
+        assert "Failed to fetch origin" in err
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )
+        assert landing_precondition_error(config) is None
