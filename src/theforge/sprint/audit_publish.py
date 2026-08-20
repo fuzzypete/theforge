@@ -478,3 +478,36 @@ def publish_story_run_audits(
         )
         _log(f"✗ SPRINT  canonical story run audit publish failed: {exc}{state_suffix}")
         raise
+
+
+def publish_pending_story_run_audits(
+    state: Any,  # SprintExecutionState — see the module docstring on why not typed
+    *,
+    lands_locally: bool,
+) -> bool:
+    """Publish whatever canonical run artifacts are already pending, mid-sprint.
+
+    A sprint writes each story's run record and knowledge summary into the
+    project-root checkout as that story finishes, and re-evaluates the landing
+    precondition — which refuses on *any* project-root dirt, untracked files
+    included — at every later story's entry. Publishing only at sprint exit
+    therefore left a story's own artifacts standing across the window in which
+    they would refuse its successor (#2595). This is the same publish, called
+    while the run is still going, so publication keeps pace with enforcement.
+
+    It differs from :func:`publish_story_run_audits` in exactly one way: a
+    failure is reported and swallowed rather than raised. At sprint exit there
+    is nothing left to lose by raising; here, raising would abandon the stories
+    still to run over a transport problem that the terminal sweep — which does
+    raise — will retry and, if it persists, report. Returns whether the publish
+    completed.
+    """
+    try:
+        publish_story_run_audits(state, lands_locally=lands_locally)
+    except RuntimeError as exc:
+        _log(
+            "⚠ SPRINT  mid-sprint story run audit publish did not complete; deferring to "
+            f"the terminal publish: {exc}"
+        )
+        return False
+    return True
