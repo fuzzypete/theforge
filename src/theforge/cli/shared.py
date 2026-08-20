@@ -28,6 +28,8 @@ from theforge.coordinator.knowledge_summary_flow import maybe_generate_run_summa
 from theforge.coordinator.redact import redact
 from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import CoordinatorResult
+from theforge.coordinator.workspace import _base_branch_lands_locally
+from theforge.sprint.audit_publish import publish_story_run_artifacts_for_config
 from theforge.task import (
     TaskStory,
     build_dev_prompt,
@@ -262,7 +264,13 @@ def _build_task(story_path: Path, slug: str | None = None) -> TaskStory:
     )
 
 
-def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory) -> Path:
+def _write_audit(
+    result: CoordinatorResult,
+    config: ForgeConfig,
+    task: TaskStory,
+    *,
+    auto_merge: bool = False,
+) -> Path:
     """Write the canonical audit log and preserve minimal worktree state on ESCALATE."""
     audit = generate_audit_log(config, task, result)
     audits_dir = config.project_root / ".forge" / "audits"
@@ -313,6 +321,10 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
             pass  # best-effort
     # Write per-run JSON record (Phase A dual-write).
     _write_per_run_record(result, config, audit, audits_dir)
+    publish_story_run_artifacts_for_config(
+        config,
+        lands_locally=_base_branch_lands_locally(config, auto_merge=auto_merge),
+    )
     return audit_path
 
 

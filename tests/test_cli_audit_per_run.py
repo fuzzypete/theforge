@@ -2,21 +2,92 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
 from coord_test_helpers import _make_config, _make_task
 
 from theforge.cli.shared import _write_audit
+from theforge.config import ForgeConfig
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+
+BASE = "release/v0.13"
+
+_FORGE_GITIGNORE = """\
+.forge/**
+!.forge/audits/
+!.forge/audits/runs/
+!.forge/audits/runs/**
+!.forge/knowledge/
+!.forge/knowledge/summaries/
+!.forge/knowledge/summaries/**
+"""
 
 
 def _make_result(tmp_path: Path, run_id: str | None = "run-test-001") -> CoordinatorResult:
     state = CoordinatorState()
     state.run_id = run_id
     return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
+
+
+def _git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _configure(repo: Path) -> None:
+    _git(repo, "config", "user.email", "forge@example.com")
+    _git(repo, "config", "user.name", "Forge Test")
+
+
+def _origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(origin, "init", "--bare", "--initial-branch", BASE)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "--initial-branch", BASE)
+    _configure(seed)
+    (seed / "README.md").write_text("seed\n", encoding="utf-8")
+    (seed / ".gitignore").write_text(_FORGE_GITIGNORE, encoding="utf-8")
+    _git(seed, "add", "README.md", ".gitignore")
+    _git(seed, "commit", "-m", "seed")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "push", "-u", "origin", BASE)
+
+    clone = tmp_path / "project"
+    _git(tmp_path, "clone", str(origin), str(clone))
+    _configure(clone)
+    return origin, clone
+
+
+def _published_config(
+    project_root: Path,
+    *,
+    on_approve: str = "merge",
+    auto_push: bool = True,
+) -> ForgeConfig:
+    config = _make_config(project_root)
+    return dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(
+            config.workspace,
+            base_branch=BASE,
+            on_approve=on_approve,
+            auto_push=auto_push,
+        ),
+    )
 
 
 class TestPerRunFileWrite:
@@ -179,3 +250,50 @@ class TestPerRunFileWrite:
         run_file = tmp_path / ".forge" / "audits" / "runs" / "run-env-redact-001.json"
         data = json.loads(run_file.read_text())
         assert data["output"] == "using key [REDACTED] in request"
+
+    def test_write_audit_publishes_single_story_run_artifacts(self, tmp_path: Path) -> None:
+        origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone)
+        task = _make_task(clone)
+        result = _make_result(clone, run_id="run-cli-publish")
+
+        _write_audit(result, config, task)
+
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )
+        tree = _git(origin, "ls-tree", "-r", "--name-only", BASE)
+        assert ".forge/audits/runs/run-cli-publish.json" in tree
+
+    def test_write_audit_records_local_only_when_auto_merge_lands_locally_without_push(
+        self, tmp_path: Path
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone, on_approve="none", auto_push=False)
+        task = _make_task(clone)
+        result = _make_result(clone, run_id="run-cli-local-only")
+
+        _write_audit(result, config, task, auto_merge=True)
+
+        state_path = clone / ".forge" / "audit-publish-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert state["state"] == "local_only"
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )

@@ -123,7 +123,7 @@ def cmd_review(args: object) -> int:
     )
 
     # Write audit log
-    audit_path = _write_audit(result, config, task)
+    audit_path = _write_audit(result, config, task, auto_merge=auto_merge)
 
     # Summary
     print(file=sys.stderr)
