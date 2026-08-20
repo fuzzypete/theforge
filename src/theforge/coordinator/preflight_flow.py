@@ -36,6 +36,11 @@ from theforge.config import (
     ModelProfile,
     resolve_preflight_tools,
 )
+from theforge.policy_provenance import (
+    adjudicate_blocked_verdict,
+    load_policy_assertions,
+    parse_citations,
+)
 from theforge.sprint.dag import _is_branch_merged
 from theforge.task import ContextAssembler, TaskStory, build_preflight_prompt
 
@@ -55,12 +60,14 @@ from .notify import _escalate_notify, _ntfy_done_notify
 from .preflight import (
     _apply_preflight_config,
     _detect_large_preflight_story_categories,
+    _parse_preflight_blocking_basis,
     _parse_preflight_complexity,
     _parse_preflight_complexity_score,
     _parse_preflight_contract_change,
     _parse_preflight_criteria_checked,
     _parse_preflight_domains,
     _parse_preflight_likely_files,
+    _parse_preflight_policy_assertions,
     _parse_preflight_sufficiency,
     _parse_preflight_symptom_verification,
     _parse_preflight_verdict,
@@ -270,6 +277,90 @@ def _live_degraded_detail(state: CoordinatorState) -> dict[str, object]:
         "preflight_risk_signals": fields["risk_signals"],
         "complexity_source": fields["complexity_source"],
     }
+
+
+def _policy_refusal_detail(state: CoordinatorState) -> str:
+    """Name the ratified assertion(s) that upheld a BLOCKED verdict, if any.
+
+    Reads the resolved-assertion records on ``state`` rather than re-adjudicating,
+    so the cached-preflight and resume dispatch paths — which restore those records
+    instead of running the adjudication — produce the same refusal text.
+    """
+    labels = [
+        str(entry.get("label") or entry.get("text") or "")
+        for entry in state.preflight_policy_assertions_resolved or []
+        if isinstance(entry, dict) and entry.get("carries_blocking_authority")
+    ]
+    labels = [label for label in labels if label]
+    if not labels:
+        return ""
+    return "Blocked by ratified policy assertion(s): " + "; ".join(labels)
+
+
+def _adjudicate_policy_provenance(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    verdict: str,
+    reason: str,
+) -> tuple[str, str]:
+    """Apply policy-assertion provenance authority to a BLOCKED verdict (#2137).
+
+    Generated or unmarked policy prose may propose, but it may not stop chartered
+    work: only an assertion the operator ratified — an ADR clause or a recorded
+    operator decision, named in ``.forge/policy-assertions.yaml`` — carries blocking
+    authority. A BLOCKED founded solely on unratified rationale is downgraded to
+    PROCEED and the conflict is recorded as a retraction candidate instead.
+
+    Blockers that are not policy claims (missing credentials, a direct
+    specification contradiction, an absent external dependency) are untouched:
+    ``adjudicate_blocked_verdict`` returns ``engaged=False`` for them.
+
+    Returns the (possibly rewritten) ``(verdict, reason)`` and records the full
+    adjudication on ``state`` for the artifact, resume record, and audit log.
+    """
+    if verdict != "BLOCKED":
+        return verdict, reason
+
+    registry = load_policy_assertions(config.project_root)
+    citations = parse_citations(state.preflight_policy_assertions_cited)
+    adjudication = adjudicate_blocked_verdict(
+        reason=reason or "",
+        blocking_basis=state.preflight_blocking_basis or "",
+        citations=citations,
+        registry=registry,
+    )
+    if not adjudication.engaged:
+        return verdict, reason
+
+    state.preflight_policy_adjudication = adjudication.audit_fields()
+    state.preflight_policy_assertions_resolved = [r.to_dict() for r in adjudication.resolved]
+    state.preflight_policy_retraction_candidates = [
+        dict(c) for c in adjudication.retraction_candidates
+    ]
+    state.preflight_policy_ratification_candidates = [
+        dict(c) for c in adjudication.ratification_candidates
+    ]
+    state.preflight_policy_blocking_authority = adjudication.upheld
+    state.preflight_warnings = list(state.preflight_warnings or []) + list(adjudication.warnings)
+    for warning in adjudication.warnings:
+        _log(f"  ⚠ {warning}")
+
+    if adjudication.upheld:
+        _log(f"  ✗ PREFLIGHT BLOCKED upheld — {adjudication.refusal_detail()}")
+        return verdict, reason
+
+    downgrade_reason = (
+        f"{reason} — downgraded to PROCEED: the cited policy assertion(s) carry no "
+        "operator ratification, so this conflict is a retraction candidate rather "
+        "than a blocker."
+    )
+    state.preflight_verdict = "PROCEED"
+    state.preflight_reason = downgrade_reason
+    for candidate in adjudication.retraction_candidates:
+        _log(f"  ⓘ retraction candidate: {candidate['assertion']}")
+    for candidate in adjudication.ratification_candidates:
+        _log(f"  ⓘ ratification candidate: {candidate['assertion']}")
+    return "PROCEED", downgrade_reason
 
 
 def _sanitize_preflight_profile(
@@ -687,6 +778,12 @@ def _run_preflight_phase(
         state.preflight_criteria_checked = criteria_checked
         symptom_verification = _parse_preflight_symptom_verification(preflight_result.output)
         state.preflight_symptom_verification = symptom_verification
+        # Policy-assertion provenance inputs (#2137). Parsed for every verdict so
+        # the audit trail records what the classifier cited even when the verdict
+        # was not BLOCKED; the adjudication below only fires on BLOCKED.
+        state.preflight_blocking_basis = _parse_preflight_blocking_basis(preflight_result.output)
+        _policy_citations = _parse_preflight_policy_assertions(preflight_result.output)
+        state.preflight_policy_assertions_cited = [c.to_dict() for c in _policy_citations]
 
         # ── Deterministic contract-change policy ───────────────────────
         # A contract change touches a shared interface field, prompt template
@@ -1003,6 +1100,12 @@ def _run_preflight_phase(
             f"{state.preflight_degraded_reason or 'preflight_failed'})"
         )
 
+    # ── Policy-assertion provenance adjudication (#2137) ────────────────
+    # Runs on both the parsed and the degraded path, and *before* the artifact
+    # write, the resume record, and the stop_phase return — so a batch preflight
+    # that stops here caches the adjudicated verdict rather than the raw one.
+    verdict, reason = _adjudicate_policy_provenance(state, config, verdict, reason)
+
     if state_update_fn is not None:
         state_update_fn(
             {
@@ -1097,6 +1200,18 @@ def _run_preflight_phase(
         ),
         "criteria_checked": state.preflight_criteria_checked,
         "symptom_verification": dict(state.preflight_symptom_verification or {}),
+        # Policy-assertion provenance (#2137): which kind of blocker fired, what
+        # standing policy the classifier cited, how each citation resolved, and
+        # the retraction/ratification candidates the adjudication produced.
+        "blocking_basis": state.preflight_blocking_basis,
+        "policy_assertions_cited": list(state.preflight_policy_assertions_cited or []),
+        "policy_assertions_resolved": list(state.preflight_policy_assertions_resolved or []),
+        "policy_retraction_candidates": list(state.preflight_policy_retraction_candidates or []),
+        "policy_ratification_candidates": list(
+            state.preflight_policy_ratification_candidates or []
+        ),
+        "policy_blocking_authority": state.preflight_policy_blocking_authority,
+        "policy_adjudication": dict(state.preflight_policy_adjudication or {}),
         "degraded": state.preflight_degraded,
         "degraded_reason": state.preflight_degraded_reason,
         "risk_signals": list(state.preflight_risk_signals),
@@ -1301,6 +1416,13 @@ def _handle_preflight_verdict(
     if verdict == "BLOCKED":
         state.phase = Phase.ESCALATE
         state.error = f"Preflight: spec is blocked. {reason}"
+        # A refusal that rests on a policy assertion must name the assertion and
+        # the kind of authority behind it, so the operator can see which stopped
+        # the work without reading git history (#2137). Rebuilt from state rather
+        # than passed in, so a cached or resumed BLOCKED names it too.
+        _assertion_detail = _policy_refusal_detail(state)
+        if _assertion_detail:
+            state.error = f"{state.error} {_assertion_detail}"
         _log(f"✗ ESCALATE   {state.error}")
         if logger:
             logger._safe_emit("escalate", reason=state.error, phase="PREFLIGHT")

@@ -323,6 +323,11 @@ the run ended before it ever reached the publish step.
 - **Label and milestone at creation** (`gh issue create --label bug --milestone
   vX.Y.Z`) or the shape gate / triage skips it. When reporting a filed issue,
   include full intake state: labels, milestone, sprint-gate readiness.
+- **A refusal that cites a standing policy names its provenance class.** If a
+  run surfaces a retraction or ratification candidate, decide which it is —
+  ratify it with a durable reference, or retract it — per
+  [policy assertion provenance](policy-provenance.md). Unmarked policy prose is
+  advisory and cannot block chartered work.
 
 ---
 

@@ -148,14 +148,29 @@ def _looks_like_documentation(title: str, body: str, labels: set[str]) -> bool:
     return False
 
 
-def _looks_like_adr_candidate(title: str, body: str, labels: set[str]) -> bool:
+#: How an ADR-candidate match was reached. The distinction is load-bearing: a
+#: label or an ADR-marked title is the operator saying "this is a decision to
+#: make", while a ``## Decision`` / ``## Trade-offs`` heading is only a shape a
+#: body happens to have — and a chartered story that explains the decision behind
+#: the behavior it asks for has that shape too (#2137).
+_ADR_SIGNAL_LABEL = "label"
+_ADR_SIGNAL_TITLE = "title"
+_ADR_SIGNAL_HEADING = "heading"
+
+
+def _adr_candidate_signal(title: str, body: str, labels: set[str]) -> str | None:
+    """Return which signal makes this draft look ADR-shaped, or None."""
     if "adr" in labels or "adr-candidate" in labels:
-        return True
+        return _ADR_SIGNAL_LABEL
     if _has_any(title, _ADR_TITLE_TOKENS):
-        return True
+        return _ADR_SIGNAL_TITLE
     if has_heading(body, r"decision|alternatives considered|trade[- ]?offs?"):
-        return True
-    return False
+        return _ADR_SIGNAL_HEADING
+    return None
+
+
+def _looks_like_adr_candidate(title: str, body: str, labels: set[str]) -> bool:
+    return _adr_candidate_signal(title, body, labels) is not None
 
 
 def _looks_like_operator_action(title: str, body: str, labels: set[str]) -> bool:
@@ -231,16 +246,27 @@ def classify(title: str, body: str, labels: list[str]) -> ShapeProposal:
     body = body or ""
     label_set = _label_set(labels or [])
 
+    enhancement = _looks_like_enhancement(title, body, label_set)
+    adr_signal = _adr_candidate_signal(title, body, label_set)
+    # A story that carries acceptance criteria is asking for chartered work to be
+    # implemented. Explaining the decision behind that work — under a ``## Decision``
+    # or ``## Trade-offs`` heading — does not make it a decision the operator has
+    # yet to make, and routing it to adr-candidate is how chartered work gets
+    # stalled at intake by its own rationale (#2137). An explicit ADR label or an
+    # ADR-marked title still wins: those are the operator's own classification.
+    if adr_signal == _ADR_SIGNAL_HEADING and enhancement:
+        adr_signal = None
+
     matches: list[Classification] = []
     if _looks_like_duplicate_or_stale(title, body, label_set):
         matches.append(Classification.DUPLICATE_OR_STALE)
     if _looks_like_epic(title, body, label_set):
         matches.append(Classification.EPIC)
-    if _looks_like_adr_candidate(title, body, label_set):
+    if adr_signal is not None:
         matches.append(Classification.ADR_CANDIDATE)
     if _looks_like_bug(title, body, label_set):
         matches.append(Classification.BUG)
-    if _looks_like_enhancement(title, body, label_set):
+    if enhancement:
         matches.append(Classification.ENHANCEMENT)
     if _looks_like_documentation(title, body, label_set):
         matches.append(Classification.DOCUMENTATION)

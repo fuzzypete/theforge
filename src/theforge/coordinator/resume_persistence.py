@@ -182,6 +182,23 @@ def _preflight_block(state: "CoordinatorState") -> dict[str, Any] | None:
         "degraded_reason": state.preflight_degraded_reason,
         "failure_action": state.preflight_failure_action,
         "partial_evidence": _jsonable(state.preflight_partial_evidence),
+        # Policy-assertion provenance (#2137). A resumed attempt allocates a fresh
+        # CoordinatorState, so without these a ratified refusal could not name its
+        # assertion on resume and a downgrade's retraction/ratification candidates
+        # would be absent from the final run audit.
+        "blocking_basis": state.preflight_blocking_basis,
+        "policy_assertions_cited": _jsonable(list(state.preflight_policy_assertions_cited or [])),
+        "policy_assertions_resolved": _jsonable(
+            list(state.preflight_policy_assertions_resolved or [])
+        ),
+        "policy_retraction_candidates": _jsonable(
+            list(state.preflight_policy_retraction_candidates or [])
+        ),
+        "policy_ratification_candidates": _jsonable(
+            list(state.preflight_policy_ratification_candidates or [])
+        ),
+        "policy_blocking_authority": bool(state.preflight_policy_blocking_authority),
+        "policy_adjudication": _jsonable(dict(state.preflight_policy_adjudication or {})),
         "duration_s": state.preflight_duration_s,
         "cache_snapshot": dict(state.preflight_cache_snapshot or {}),
         # Provenance only. Deliberately NOT restored onto the resumed state:
@@ -841,6 +858,13 @@ def _apply_preflight(state: "CoordinatorState", block: dict[str, Any]) -> bool:
         ("preflight_partial_evidence", "partial_evidence"),
         ("preflight_duration_s", "duration_s"),
         ("preflight_cache_snapshot", "cache_snapshot"),
+        ("preflight_blocking_basis", "blocking_basis"),
+        ("preflight_policy_assertions_cited", "policy_assertions_cited"),
+        ("preflight_policy_assertions_resolved", "policy_assertions_resolved"),
+        ("preflight_policy_retraction_candidates", "policy_retraction_candidates"),
+        ("preflight_policy_ratification_candidates", "policy_ratification_candidates"),
+        ("preflight_policy_blocking_authority", "policy_blocking_authority"),
+        ("preflight_policy_adjudication", "policy_adjudication"),
     ):
         applied = _set_if_unset(state, attr, block.get(key)) or applied
     return applied
