@@ -54,6 +54,7 @@ from theforge.task.diagnose_prompts import (
     DiagnoseParseOutcome,
     build_diagnose_prompt,
     build_diagnose_reformat_prompt,
+    derive_issue_scope_requirement,
     parse_diagnose_output_result,
 )
 
@@ -626,6 +627,10 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             "reference_labels": list(state.starting_evidence_labels),
             "chars": state.starting_evidence_chars,
             "declined_unqualified_refs": list(state.starting_evidence_declined),
+        },
+        "issue_scope_requirement": {
+            "symptom_is_categorical": state.issue_scope_is_categorical,
+            "stated_scope": state.issue_scope_text,
         },
         "baseline": {
             "sha": state.baseline_sha,
@@ -1260,6 +1265,10 @@ def _run_diagnose_flow_body(
             f"issue-body reference(s) (no repository named, not resolved against "
             f"this checkout): {', '.join(evidence.declined_labels)}"
         )
+    (
+        state.issue_scope_is_categorical,
+        state.issue_scope_text,
+    ) = derive_issue_scope_requirement(state.issue_body)
 
     # ── INVESTIGATE ───────────────────────────────────────────────────
     emit_phase(DiagnosePhase.INVESTIGATE)
@@ -1451,7 +1460,10 @@ def _run_diagnose_flow_body(
     # If essential fields are missing OR the run breached its budget/timeout
     # envelope, return the partial work for operator review rather than landing
     # a misleading "fix-ready" artifact. Name the specific reason when known.
-    if not artifact.is_complete() or partial:
+    missing_required_fields = artifact.missing_required_fields(
+        issue_requires_categorical_scope=state.issue_scope_is_categorical
+    )
+    if missing_required_fields or partial:
         if budget_exceeded:
             partial_phase = DiagnosePhase.BUDGET_EXCEEDED
             partial_reason = DiagnosePartialReason.BUDGET_EXCEEDED
@@ -1490,6 +1502,8 @@ def _run_diagnose_flow_body(
             cause_label = f"budget exceeded (${config.diagnose.budget_usd})"
         elif state.agent_failure_code == "timeout":
             cause_label = f"timed out after {int(profile.timeout_seconds)}s"
+        elif missing_required_fields == ("symptom_scope_coverage",):
+            cause_label = "diagnosis scope-coverage incomplete"
         else:
             cause_label = "incomplete diagnosis"
         return DiagnoseResult(

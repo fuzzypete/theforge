@@ -204,6 +204,7 @@ class TestHypothesis:
 class TestSymptomScopeCoverage:
     def test_non_categorical_record_is_complete_by_default(self):
         assert SymptomScopeCoverage().is_complete()
+        assert SymptomScopeCoverage().satisfies_issue_requirement()
 
     def test_categorical_record_requires_valid_examined_locations(self):
         record = SymptomScopeCoverage(
@@ -218,6 +219,12 @@ class TestSymptomScopeCoverage:
             ),
         )
         assert record.is_complete()
+        assert record.satisfies_issue_requirement(issue_requires_categorical_scope=True)
+
+    def test_issue_level_categorical_requirement_rejects_default_record(self):
+        assert not SymptomScopeCoverage().satisfies_issue_requirement(
+            issue_requires_categorical_scope=True
+        )
 
     def test_invalid_examined_location_status_breaks_completeness(self):
         record = SymptomScopeCoverage(
@@ -283,6 +290,7 @@ class TestDiagnosisArtifact:
             )
         )
         assert not missing_coverage.is_complete()
+        assert not missing_coverage.is_complete(issue_requires_categorical_scope=True)
 
         covered = self._make(
             symptom_scope_coverage=SymptomScopeCoverage(
@@ -305,6 +313,15 @@ class TestDiagnosisArtifact:
             )
         )
         assert covered.is_complete()
+        assert covered.is_complete(issue_requires_categorical_scope=True)
+
+    def test_issue_level_categorical_requirement_reports_missing_scope_coverage(self):
+        artifact = self._make()
+        assert artifact.is_complete()
+        assert not artifact.is_complete(issue_requires_categorical_scope=True)
+        assert artifact.missing_required_fields(issue_requires_categorical_scope=True) == (
+            "symptom_scope_coverage",
+        )
 
     def test_has_substantive_content_true_when_any_field_filled(self):
         base = dict(

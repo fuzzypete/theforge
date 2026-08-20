@@ -154,6 +154,14 @@ class SymptomScopeCoverage:
             and all(location.is_valid() for location in self.examined_locations)
         )
 
+    def satisfies_issue_requirement(
+        self, *, issue_requires_categorical_scope: bool = False
+    ) -> bool:
+        """Return whether this record satisfies the issue's stated scope contract."""
+        if issue_requires_categorical_scope and not self.symptom_is_categorical:
+            return False
+        return self.is_complete()
+
 
 @dataclass(frozen=True)
 class AbsentPremise:
@@ -207,21 +215,39 @@ class DiagnosisArtifact:
     # confirmed_cause — they are not the cause of this issue's stated symptom.
     related_findings: tuple[RelatedFinding, ...] = ()
     # Audit-visible coverage record for categorically stated symptoms. This is
-    # descriptive only: the coordinator does not route on it, but completeness
-    # does require it for diagnoses that themselves say the symptom is
-    # categorical so a fix-ready diagnosis cannot silently under-scope the bug.
+    # descriptive only: the coordinator does not route on it, but diagnose
+    # completeness can require it when the fetched issue text states
+    # categorical scope so a fix-ready diagnosis cannot silently under-scope
+    # the bug by omitting or negating the record.
     symptom_scope_coverage: SymptomScopeCoverage = field(default_factory=SymptomScopeCoverage)
 
-    def is_complete(self) -> bool:
+    def missing_required_fields(
+        self, *, issue_requires_categorical_scope: bool = False
+    ) -> tuple[str, ...]:
+        """Return the required diagnosis fields still missing from this artifact."""
+        missing: list[str] = []
+        if not self.observed_symptom.strip():
+            missing.append("observed_symptom")
+        if not self.reproduction_or_evidence.strip():
+            missing.append("reproduction_or_evidence")
+        if not self.hypotheses:
+            missing.append("hypotheses")
+        if not self.confirmed_cause.strip():
+            missing.append("confirmed_cause")
+        if not self.affected_code_path.strip():
+            missing.append("affected_code_path")
+        if not self.fix_success_criterion.strip():
+            missing.append("fix_success_criterion")
+        if not self.symptom_scope_coverage.satisfies_issue_requirement(
+            issue_requires_categorical_scope=issue_requires_categorical_scope
+        ):
+            missing.append("symptom_scope_coverage")
+        return tuple(missing)
+
+    def is_complete(self, *, issue_requires_categorical_scope: bool = False) -> bool:
         """Return True only when every required field is non-empty."""
-        return bool(
-            self.observed_symptom.strip()
-            and self.reproduction_or_evidence.strip()
-            and self.hypotheses
-            and self.confirmed_cause.strip()
-            and self.affected_code_path.strip()
-            and self.fix_success_criterion.strip()
-            and self.symptom_scope_coverage.is_complete()
+        return not self.missing_required_fields(
+            issue_requires_categorical_scope=issue_requires_categorical_scope
         )
 
     def has_substantive_content(self) -> bool:
@@ -299,6 +325,10 @@ class DiagnoseState:
     # this checkout would inject same-numbered content from the wrong project).
     # Recorded so the audit distinguishes "declined on purpose" from "found
     # nothing".
+    issue_scope_is_categorical: bool = False
+    issue_scope_text: str = ""
+    # Derived from the fetched issue text and recorded in the audit because it
+    # influences whether a parsed diagnosis can land as fix-ready.
     # Machine-readable failure identifier returned by the runner (e.g.
     # "timeout"). None when the run did not fail or the runner reported no
     # code. Recorded so the audit trail distinguishes a timeout from a crash.

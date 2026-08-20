@@ -21,6 +21,7 @@ from theforge.diagnose_types import (
     ScopeCoverageLocation,
     SymptomScopeCoverage,
 )
+from theforge.shape_check.parsing import extract_section
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
 You are an investigative diagnosis agent.  A symptom bug has been reported but
@@ -339,6 +340,26 @@ def build_diagnose_reformat_prompt(*, original_output: str, parse_error: str) ->
 
 
 _FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^\n`]*)[ \t]*$", re.MULTILINE)
+_CATEGORICAL_SCOPE_MARKER_RE = re.compile(
+    r"\b(?:every|any|all|each|regardless(?:\s+of)?)\b",
+    re.IGNORECASE,
+)
+_BUG_EXPECTATION_SECTION_RE = r"what was expected|expected"
+
+
+def derive_issue_scope_requirement(issue_body: str) -> tuple[bool, str]:
+    """Return whether the fetched issue text asserts categorical symptom scope.
+
+    Prefer the bug issue's expected-behavior section, which is where this repo's
+    bug-body contract puts the generalized rule. Fall back to the whole body for
+    manual or legacy issues that omit headings.
+    """
+    expected = extract_section(issue_body or "", _BUG_EXPECTATION_SECTION_RE)
+    scope_text = (expected if expected is not None else issue_body or "").strip()
+    if not scope_text:
+        return False, ""
+    scope_text = re.sub(r"\s+", " ", scope_text)
+    return bool(_CATEGORICAL_SCOPE_MARKER_RE.search(scope_text)), scope_text
 
 
 @dataclass(frozen=True)
