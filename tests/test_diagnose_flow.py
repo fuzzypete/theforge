@@ -108,6 +108,15 @@ def _categorical_bug_body() -> str:
     )
 
 
+def _single_instance_bug_body_with_quantifier() -> str:
+    return (
+        "## What happened\n"
+        "The run summary omits one of the cost fields.\n\n"
+        "## What was expected\n"
+        "The summary should print all three cost fields for this run.\n"
+    )
+
+
 # ── Artifact / rendering tests ────────────────────────────────────────
 
 
@@ -275,13 +284,29 @@ class TestPromptBuilder:
         assert "src/theforge/ui/status_web.py:serialize_status" not in prompt
 
     def test_issue_scope_requirement_prefers_expected_section(self):
-        categorical, scope_text = derive_issue_scope_requirement(_categorical_bug_body())
+        categorical, scope_text = derive_issue_scope_requirement("x", _categorical_bug_body())
         assert categorical is True
         assert scope_text.startswith("Every sibling renderer")
 
+    def test_issue_scope_requirement_uses_title_when_body_is_concrete(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "Any landing path should preserve merge evidence.",
+            "## What happened\nOne landing run lost merge evidence.\n\n"
+            "## What was expected\nThe merge evidence should be preserved.\n",
+        )
+        assert categorical is True
+        assert scope_text == "Any landing path should preserve merge evidence."
+
+    def test_issue_scope_requirement_ignores_incidental_quantifiers(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_quantifier()
+        )
+        assert categorical is False
+        assert scope_text == "The summary should print all three cost fields for this run."
+
     def test_issue_scope_requirement_falls_back_to_full_body(self):
         categorical, scope_text = derive_issue_scope_requirement(
-            "Any landing path should preserve merge evidence."
+            "", "Any landing path should preserve merge evidence."
         )
         assert categorical is True
         assert scope_text == "Any landing path should preserve merge evidence."
@@ -603,6 +628,48 @@ class TestDiagnoseFlow:
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_title_only_categorical_scope_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 46,
+            "title": "Any landing path should preserve merge evidence",
+            "body": (
+                "## What happened\nOne landing path dropped the merge evidence.\n\n"
+                "## What was expected\nThe merge evidence should be preserved.\n"
+            ),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=46,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-46-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Any landing path should preserve merge evidence",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_categorical_issue_with_false_scope_flag_lands_partial(
         self, mock_agent, mock_fetch, mock_post, tmp_path
     ):
@@ -642,6 +709,41 @@ class TestDiagnoseFlow:
         assert result.state.artifact is not None
         assert result.state.artifact.partial is True
         assert result.state.artifact.symptom_scope_coverage.symptom_is_categorical is False
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_single_instance_quantifier_issue_does_not_require_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 47,
+            "title": "summary omits a field",
+            "body": _single_instance_bug_body_with_quantifier(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=47,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert result.state.issue_scope_is_categorical is False
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-47-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": False,
+            "stated_scope": "The summary should print all three cost fields for this run.",
+        }
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")

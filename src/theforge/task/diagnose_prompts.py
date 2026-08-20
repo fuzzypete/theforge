@@ -21,7 +21,7 @@ from theforge.diagnose_types import (
     ScopeCoverageLocation,
     SymptomScopeCoverage,
 )
-from theforge.shape_check.parsing import extract_section
+from theforge.shape_check.parsing import BUG_EXPECTATION_HEADING, extract_section
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
 You are an investigative diagnosis agent.  A symptom bug has been reported but
@@ -340,26 +340,139 @@ def build_diagnose_reformat_prompt(*, original_output: str, parse_error: str) ->
 
 
 _FENCE_LINE_RE = re.compile(r"^(?P<indent>[ \t]*)```(?P<info>[^\n`]*)[ \t]*$", re.MULTILINE)
-_CATEGORICAL_SCOPE_MARKER_RE = re.compile(
-    r"\b(?:every|any|all|each|regardless(?:\s+of)?)\b",
+_CATEGORICAL_SCOPE_SENTENCE_RE = re.compile(
+    r"(?:(?<=^)|(?<=[.!?]\s))"
+    r"(?P<quantifier>every|each|any|all)\s+"
+    r"(?P<phrase>[a-z][\w-]*(?:\s+[a-z][\w-]*){0,5})\s+"
+    r"(?P<verb>"
+    r"should|must|needs?\s+to|can(?:not)?|cannot|does(?:\s+not|n't)|"
+    r"fails?\s+to|is|are|preserves?|includes?|covers?|renders?|drops?|"
+    r"omits?|keeps?|retains?|loses?|prints?"
+    r")\b",
     re.IGNORECASE,
 )
-_BUG_EXPECTATION_SECTION_RE = r"what was expected|expected"
+_CATEGORICAL_SCOPE_PREPOSITION_RE = re.compile(
+    r"\b(?:on|across|for|in)\s+"
+    r"(?P<quantifier>every|each|any|all)\s+"
+    r"(?P<phrase>[a-z][\w-]*(?:\s+[a-z][\w-]*){0,5})\b",
+    re.IGNORECASE,
+)
+_CATEGORICAL_SCOPE_REGARDLESS_RE = re.compile(r"\bregardless\s+of\b", re.IGNORECASE)
+_CARDINAL_SCOPE_WORDS = frozenset(
+    {
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "10",
+        "one",
+        "two",
+        "three",
+        "four",
+        "five",
+        "six",
+        "seven",
+        "eight",
+        "nine",
+        "ten",
+        "first",
+        "second",
+        "third",
+        "single",
+    }
+)
+_SCOPE_NOUN_HINTS = frozenset(
+    {
+        "adapter",
+        "backend",
+        "branch",
+        "caller",
+        "case",
+        "command",
+        "endpoint",
+        "flow",
+        "frontend",
+        "handler",
+        "implementation",
+        "issue",
+        "location",
+        "mode",
+        "output",
+        "path",
+        "provider",
+        "renderer",
+        "serializer",
+        "site",
+        "story",
+        "surface",
+        "variant",
+        "view",
+    }
+)
 
 
-def derive_issue_scope_requirement(issue_body: str) -> tuple[bool, str]:
+def _normalize_scope_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _phrase_is_scope_like(phrase: str) -> bool:
+    tokens = [token.lower() for token in re.findall(r"[a-z0-9][\w-]*", phrase)]
+    if not tokens:
+        return False
+    if tokens[0] in _CARDINAL_SCOPE_WORDS:
+        return False
+    return any(token in _SCOPE_NOUN_HINTS for token in tokens)
+
+
+def _text_asserts_categorical_scope(text: str) -> bool:
+    normalized = _normalize_scope_text(text)
+    if not normalized:
+        return False
+    if _CATEGORICAL_SCOPE_REGARDLESS_RE.search(normalized):
+        return True
+    return any(
+        _phrase_is_scope_like(match.group("phrase"))
+        for pattern in (_CATEGORICAL_SCOPE_SENTENCE_RE, _CATEGORICAL_SCOPE_PREPOSITION_RE)
+        for match in pattern.finditer(normalized)
+    )
+
+
+def derive_issue_scope_requirement(issue_title: str, issue_body: str) -> tuple[bool, str]:
     """Return whether the fetched issue text asserts categorical symptom scope.
 
     Prefer the bug issue's expected-behavior section, which is where this repo's
-    bug-body contract puts the generalized rule. Fall back to the whole body for
-    manual or legacy issues that omit headings.
+    bug-body contract puts the generalized rule, but also inspect the issue
+    title so categorical claims stated only there still fail closed. Detection
+    stays intentionally narrow: the fail-closed scope requirement is for
+    category-level surface/path/story-style claims, not incidental quantifiers
+    inside a single concrete example.
     """
-    expected = extract_section(issue_body or "", _BUG_EXPECTATION_SECTION_RE)
-    scope_text = (expected if expected is not None else issue_body or "").strip()
-    if not scope_text:
-        return False, ""
-    scope_text = re.sub(r"\s+", " ", scope_text)
-    return bool(_CATEGORICAL_SCOPE_MARKER_RE.search(scope_text)), scope_text
+    normalized_title = _normalize_scope_text(issue_title or "")
+    expected = extract_section(issue_body or "", BUG_EXPECTATION_HEADING)
+    normalized_expected = _normalize_scope_text(expected or "")
+    normalized_body = _normalize_scope_text(issue_body or "")
+
+    if normalized_expected and _text_asserts_categorical_scope(normalized_expected):
+        return True, normalized_expected
+    if normalized_title and _text_asserts_categorical_scope(normalized_title):
+        return True, normalized_title
+    if (
+        not normalized_expected
+        and normalized_body
+        and _text_asserts_categorical_scope(normalized_body)
+    ):
+        return True, normalized_body
+    if normalized_expected:
+        return False, normalized_expected
+    if normalized_body:
+        return False, normalized_body
+    return False, normalized_title
 
 
 @dataclass(frozen=True)

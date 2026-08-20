@@ -1268,7 +1268,7 @@ def _run_diagnose_flow_body(
     (
         state.issue_scope_is_categorical,
         state.issue_scope_text,
-    ) = derive_issue_scope_requirement(state.issue_body)
+    ) = derive_issue_scope_requirement(state.issue_title, state.issue_body)
 
     # ── INVESTIGATE ───────────────────────────────────────────────────
     emit_phase(DiagnosePhase.INVESTIGATE)
