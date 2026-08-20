@@ -1,0 +1,238 @@
+schema_version: 2
+run_id: b668b8ee120c
+authoritative_run_record: .forge/audits/runs/b668b8ee120c.json
+generated_at: '2026-08-20T15:56:17.167871+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.02168375
+story:
+  slug: issue-2611
+  name: A single-story run writes a canonical run record it never publishes, so the
+    next invocation of the same command is refused by the landing precondition
+  github_issue: 2611
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/review.py
+- src/theforge/cli/run.py
+- src/theforge/cli/shared.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/knowledge_index.py
+- src/theforge/sprint/audit_publish.py
+- tests/test_cli_audit_per_run.py
+- tests/test_cli_review_entrypoint.py
+- tests/test_cli_startup_config_warnings.py
+what_changed:
+  description: Single-story CLI paths were updated to use a shared story-run artifact
+    publication flow so per-run audit records and related artifacts are either published
+    on the same terms as sprint execution or moved out of the canonical tracked trees
+    when publication cannot complete. Supporting storage and index rebuild logic and
+    targeted tests were added so preserved artifacts are represented consistently.
+  approach: The change centralized post-run artifact handling in shared CLI code,
+    wired both review and single-issue run entry points into it, then extended audit/knowledge
+    rebuild paths and git-backed tests to cover clean publication, publish-failure
+    preservation, and startup-warning behavior.
+  files_modified: *id002
+what_was_learned:
+- claim: If single-story commands write the same durable run artifacts as sprint execution,
+    they need the same publication handling at the point of artifact creation rather
+    than relying on a sprint-only runner path.
+  evidence:
+  - type: file
+    path: src/theforge/cli/shared.py
+    description: Shared CLI logic was the main change site for story-run artifact
+      handling across single-story entry points.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: The existing sprint publication mechanism was part of the inspected
+      and modified publication flow.
+  - type: file
+    path: src/theforge/cli/review.py
+    description: The review entry point was updated to use the shared publication
+      path.
+  - type: file
+    path: src/theforge/cli/run.py
+    description: The single-issue run entry point was updated alongside review.
+- claim: Catching publish failures is not sufficient by itself; leaving canonical
+    run artifacts in tracked forge trees still blocks the next merge-mode invocation
+    on workspace dirt.
+  evidence:
+  - type: review_finding
+    finding_id: b4a77236abedfee4
+    description: This finding records that shared publication failures originally
+      propagated out of the audit write.
+  - type: review_finding
+    finding_id: 05b3f6de2e09e753
+    description: This finding records that after catching the failure, the command
+      still left the run record uncommitted in the project root and re-entry remained
+      blocked.
+  - type: review_cycle
+    cycle: '2'
+    description: Review cycle 2 explicitly reported that publish-failure cases still
+      left canonical run records as dirt that blocked re-entry.
+- claim: When canonical artifacts are preserved off-tree after publish failure, indexes
+    that track those artifacts must be repointed or rebuilt from both canonical and
+    preserved locations.
+  evidence:
+  - type: review_finding
+    finding_id: 847d7bc271f98466
+    description: This finding records that moving a run record off-tree without updating
+      the substrate left the indexed source file missing.
+  - type: review_finding
+    finding_id: 1d5442e31d8dd5e1
+    description: This finding records that later substrate rebuilds from canonical
+      runs alone dropped preserved runs out of the index.
+  - type: review_finding
+    finding_id: 7a5764e0e059e21b
+    description: This finding records rebuild behavior when both canonical and preserved
+      copies exist for the same run id.
+  - type: file
+    path: src/theforge/coordinator/audit_storage.py
+    description: Audit storage was modified to account for preserved and canonical
+      run artifacts during rebuilds.
+  - type: file
+    path: src/theforge/knowledge_index.py
+    description: Knowledge index rebuild behavior was updated alongside audit storage
+      handling.
+- claim: Knowledge-summary preservation has the same visibility problem as run-record
+    preservation unless summary indexing also includes preserved copies.
+  evidence:
+  - type: review_finding
+    finding_id: 4fefba41b0c33ee6
+    description: This finding records that preserved knowledge summaries became invisible
+      when moved out of the canonical summaries tree.
+  - type: review_finding
+    finding_id: c7ca7bd9f1ef9986
+    description: This finding records duplicate index entries when both canonical
+      and preserved summaries exist for the same run id.
+  - type: file
+    path: src/theforge/knowledge_index.py
+    description: Knowledge index changes support the claim that preserved summaries
+      needed explicit indexing behavior.
+- claim: Operator-facing reporting for preserved unpublished artifacts depends on
+    command-specific startup warning paths, so visibility differs by entry point unless
+    those paths are aligned.
+  evidence:
+  - type: review_finding
+    finding_id: ac9b47c59527feeb
+    description: This finding records that forge review suppressed the startup warning
+      path and therefore did not report preserved artifacts it could create.
+  - type: review_finding
+    finding_id: 36ff96cbe22500b5
+    description: This finding records inconsistent operator-facing messaging between
+      single-story and sprint paths for the same publish end state.
+  - type: file
+    path: tests/test_cli_startup_config_warnings.py
+    description: A dedicated test file was added for startup warning behavior.
+  - type: file
+    path: tests/test_cli_review_entrypoint.py
+    description: Review entrypoint behavior was tested directly.
+- claim: Preserved unpublished artifacts became a first-class state in this run, but
+    they remained separate from any later automatic republish or cleanup flow.
+  evidence:
+  - type: review_finding
+    finding_id: 1142ad347e0ebfd1
+    description: This finding records that preserved artifacts are announced once
+      and then not read, republished, or otherwise surfaced later.
+  - type: review_finding
+    finding_id: 52f2e0acafd82e60
+    description: This finding records that preserved artifacts remain indefinitely
+      and keep producing startup warnings.
+- claim: String-literal matching of publish end states in CLI preservation logic can
+    drift from publisher-defined constants.
+  evidence:
+  - type: review_finding
+    finding_id: 86808249b395dc27
+    description: This finding records that preservation-triggering end states were
+      matched with bare string literals while the publisher defined named constants.
+  - type: file
+    path: src/theforge/cli/shared.py
+    description: The shared CLI preservation logic was the place where those end-state
+      checks lived.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: The publisher module held the corresponding end-state definitions.
+- claim: Git-backed tests were essential because the behavior depends on tracked versus
+    untracked workspace state, branch state, and publishability, not just pure function
+    outcomes.
+  evidence:
+  - type: review_finding
+    finding_id: 76fed3511b76177d
+    description: This finding records that initial tests covered only clean-publish
+      and local-only paths and missed publish-failure cases.
+  - type: file
+    path: tests/test_cli_audit_per_run.py
+    description: This test file was substantially expanded to cover per-run audit
+      publication and preservation behavior.
+  - type: review_cycle
+    cycle: '4'
+    description: Review cycle 4 noted that prior P1 failure modes were covered by
+      targeted tests.
+learned_patterns:
+- shared-artifact-publication
+- preserved-artifact-indexing
+- git-backed-cli-regression-tests
+- entrypoint-warning-divergence
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: b4a77236abedfee4
+    severity: P1
+    file: src/theforge/cli/shared.py
+    description: "When a single-story run finishes and the shared story-run artifact\
+      \ publish step cannot complete \u2014 for example the project root has a branch\
+      \ other than the configured base branch checked out, or the base branch has\
+      \ no reachable origin to push to \u2014 the publish error propagates out of\
+      \ the audit write, so the command aborts with a Python traceback and exit code\
+      \ 1 after the run has already completed and been paid for, and the operator\
+      \ never sees the audit path, the outcome line, or the cost."
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 05b3f6de2e09e753
+    severity: P1
+    file: src/theforge/cli/shared.py
+    description: When a single-story run writes its run record and the shared artifact
+      publish cannot complete, the command warns and returns with the record still
+      uncommitted in the project root, so the next merge-mode invocation is refused
+      on Forge-owned dirt.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 847d7bc271f98466
+    severity: P1
+    file: src/theforge/cli/shared.py
+    description: When a single-story run's artifact publish fails with a branch mismatch
+      or a failed commit, the per-run JSON that was already indexed into the SQLite
+      audit substrate is copied to an ignored .forge path and then removed from .forge/audits/runs,
+      so the substrate holds a native row whose source file no longer exists, the
+      next runtime reader treats the substrate as stale and rebuilds it from the remaining
+      run files, and that run disappears from both the canonical tree and the substrate.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop repeatedly exposed second-order effects of publish-failure handling:
+    first uncaught errors, then blocked re-entry from leftover canonical files, then
+    stale or duplicate index state after preservation, and finally visibility gaps
+    around preserved artifacts.'
+complexity_signal:
+  actual_iterations: 6
+  review_cycles: 5
+  plan_regenerations: null
+  cost_usd: 14.84296335
+  dominant_difficulty: Keeping Forge-generated artifacts usable across re-entry required
+    coordinating CLI publish/error paths with audit substrate and knowledge index
+    invariants, not just adding a publish call.
