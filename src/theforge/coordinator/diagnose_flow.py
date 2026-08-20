@@ -664,10 +664,19 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
                 "statement": h.statement,
                 "status": h.status,
                 "evidence": h.evidence,
+                "evidence_provenance": {
+                    "source_type": h.evidence_provenance.source_type,
+                    "detail": h.evidence_provenance.detail,
+                },
             }
             for h in artifact.hypotheses
         ],
         "confirmed_cause": artifact.confirmed_cause,
+        "confirmed_cause_support": artifact.confirmed_cause_support,
+        "confirmed_cause_support_provenance": {
+            "source_type": artifact.confirmed_cause_support_provenance.source_type,
+            "detail": artifact.confirmed_cause_support_provenance.detail,
+        },
         "affected_code_path": artifact.affected_code_path,
         "fix_success_criterion": artifact.fix_success_criterion,
         "partial": artifact.partial,

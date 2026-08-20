@@ -46,14 +46,27 @@ def _payload(*, with_related: bool = True) -> dict:
                 "statement": "DAG scheduler skips dependents when a blocker fails",
                 "status": "ruled_out",
                 "evidence": "Logs show no failed blockers in this run",
+                "evidence_provenance": {
+                    "source_type": "observed",
+                    "detail": "Observed directly in the run log.",
+                },
             },
             {
                 "statement": "Worker pool size off-by-one",
                 "status": "confirmed",
                 "evidence": "scheduler.py:142 reserves N-1 slots when N requested",
+                "evidence_provenance": {
+                    "source_type": "prior_assertion",
+                    "detail": "An earlier note already states the same mechanism.",
+                },
             },
         ],
         "confirmed_cause": "Worker pool reserves N-1 slots in scheduler.py:142",
+        "confirmed_cause_support": "scheduler.py:142 reserves N-1 slots when N requested",
+        "confirmed_cause_support_provenance": {
+            "source_type": "observed",
+            "detail": "Observed directly in the current HEAD source.",
+        },
         "affected_code_path": "src/theforge/sprint/scheduler.py:142",
         "fix_success_criterion": "Running with --parallel 3 completes all 3 stories",
         "notes": _LONG_NOTES,
@@ -249,6 +262,9 @@ class TestReformatPrompt:
         # The same output contract is restated, not a relaxed variant.
         for key in (
             "confirmed_cause",
+            "confirmed_cause_support",
+            "confirmed_cause_support_provenance",
+            "evidence_provenance",
             "premise_anchors",
             "inspected_files",
             "symptom_scope_coverage",
