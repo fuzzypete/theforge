@@ -24,7 +24,6 @@ CONTRADICTED_MISSING_EVENT = (
 )
 
 _SURVIVED_DISPOSITIONS = frozenset({"unresolved", "regression", "ac_blocking"})
-_ADJACENT_CONTRADICTION_MARKERS = frozenset({"gate_contradicted", "downgraded"})
 
 
 @dataclass

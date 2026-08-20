@@ -72,6 +72,7 @@ FATE DETERMINATION
 
 PER-REVIEWER RATES
   Rates are recency-weighted means of per-run fate shares; findings counts are reported separately.
+  Within the derivable subset, addressed and survived are complements, so 99%/1% rows reflect one degree of freedom rather than two independent signals.
 
 reviewer                       findings derivable runs floor addressed dismissed contradicted survived  excl(tainted/downstream)
 gemini-reviewer                     145       116   66 pass       99%       n/a          n/a       1%  0/29
