@@ -32,6 +32,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from theforge.config.auth import check_agent_auth
 from theforge.config.model_identity import DEFAULT_PHASE_ELIGIBILITY, PHASE_KNOWLEDGE_SUMMARY
 from theforge.knowledge_summary import (
     SummaryValidationError,
@@ -212,6 +213,18 @@ def _project_summary_api_profile(profile: "ModelProfile") -> "ModelProfile | Non
     )
 
 
+def _summary_auth_reason(config: "ForgeConfig", profile: "ModelProfile") -> str | None:
+    """Return the missing-auth reason for ``profile``, if any."""
+    ready, reason = check_agent_auth(
+        profile,
+        config.secrets,
+        include_sandbox_readiness=False,
+    )
+    if ready:
+        return None
+    return reason
+
+
 def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str | None]:
     """Resolve the tool-free API summary profile after eligibility checks.
 
@@ -227,11 +240,6 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
     ref = knowledge_ref
     if ref is None:
         ref = getattr(getattr(config, "plan", None), "ref", None)
-        if ref is not None and ref.mode != "api":
-            return (
-                None,
-                "knowledge summaries need knowledge.ref when plan.ref uses CLI transport",
-            )
     if ref is None:
         return (None, None)
 
@@ -243,6 +251,12 @@ def _summary_profile(config: "ForgeConfig") -> tuple["ModelProfile | None", str 
         sandbox_mode="read-only",
     )
     base_profile = _project_summary_api_profile(summary_envelope)
+    if knowledge_ref is None and ref.mode != "api" and base_profile is None:
+        return (
+            None,
+            "knowledge summaries need knowledge.ref or transport_fallback "
+            "when plan.ref uses CLI transport",
+        )
     if knowledge_ref is not None:
         return (base_profile, None)
 
@@ -324,6 +338,19 @@ def maybe_generate_run_summary(
                 "no tool-free API transport available for knowledge_summary "
                 "(configure knowledge.ref to enable summaries)"
             )
+            _log(f"  ⚠ knowledge summary skipped: {reason}")
+            return _record_summary_outcome(
+                audit,
+                RunSummaryOutcome(
+                    status="skipped",
+                    attempted=True,
+                    written=False,
+                    reason=reason,
+                ),
+            )
+        auth_reason = _summary_auth_reason(config, profile)
+        if auth_reason is not None:
+            reason = f"summary API credential missing: {auth_reason}"
             _log(f"  ⚠ knowledge summary skipped: {reason}")
             return _record_summary_outcome(
                 audit,
