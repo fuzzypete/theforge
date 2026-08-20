@@ -1,0 +1,946 @@
+{
+  "corpus_version": 1,
+  "notes": "Judgments are hand-authored for every P1-level plan finding the approved plan carried into dev on a completed (DONE) local run, as of 2026-08-19. Each row was decided by reading the finding against the shipped diff, the run's own dev handoff notes, and the code as it stands. Findings whose registry disposition is 'fixed' were resolved by plan regeneration before dev ever saw them and are excluded by the analyzer, not judged here. The hdp adopter's three runs are not reachable from this repository and are not in the corpus.",
+  "judgments": [
+    {
+      "finding_key": "726945a4203a:0:04006af7",
+      "run_id": "726945a4203a",
+      "slug": "issue-1019",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "fad876d0 adds the per-axis threshold/bucket fields and updates the consumers beyond the plan's three test files: src/theforge/cli/explain.py renders them and tests/test_cli_explain.py pins that rendering."
+    },
+    {
+      "finding_key": "82b965babe1e:0:1d7cb5b2",
+      "run_id": "82b965babe1e",
+      "slug": "issue-1904",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "67b1e0d4 updates three of the four named files (tests/test_diagnosis_spec.py, tests/test_fix_readiness.py, tests/test_shape_verdict_diagnosis_split.py); test_diagnose_types.py needed no change because src/theforge/diagnose_types.py dropped the component rather than renaming it."
+    },
+    {
+      "finding_key": "82b965babe1e:1:d92c1459",
+      "run_id": "82b965babe1e",
+      "slug": "issue-1904",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "67b1e0d4 deletes _RULED_OUT_RE from src/theforge/shape_check/heuristics.py outright and rewrites _diagnosis_cause_unknown, so the misclassification path the finding described cannot arise."
+    },
+    {
+      "finding_key": "2039e6241e01:0:b89c13a2",
+      "run_id": "2039e6241e01",
+      "slug": "issue-1947",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "5bb31329 threads the preset through config/types.py and config/load.py into runners/runner_claude.py, runners/runner_gemini.py and runners/sandbox.py; runners/cli.py (the plan's named site) is untouched."
+    },
+    {
+      "finding_key": "2039e6241e01:1:96e46783",
+      "run_id": "2039e6241e01",
+      "slug": "issue-1947",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "5bb31329 writes the capability fields in src/theforge/coordinator/audit.py as well as audit_substrate.py, and ships tests/fixtures/audit_record_schema_v10.json."
+    },
+    {
+      "finding_key": "2039e6241e01:2:d3e519ca",
+      "run_id": "2039e6241e01",
+      "slug": "issue-1947",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "5bb31329 documents the forge.yaml key in docs/guides/inputs-reference.md (+56); docs/reference, which the plan named, is untouched."
+    },
+    {
+      "finding_key": "2039e6241e01:3:a2c5c869",
+      "run_id": "2039e6241e01",
+      "slug": "issue-1947",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "5bb31329 modifies src/theforge/coordinator/audit.py (+12) to carry the capability profile into the run record."
+    },
+    {
+      "finding_key": "2039e6241e01:4:34471515",
+      "run_id": "2039e6241e01",
+      "slug": "issue-1947",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same defect as the finding at ordinal 0, raised by a second reviewer; 5bb31329 wires runner_claude.py and runner_gemini.py directly."
+    },
+    {
+      "finding_key": "2039e6241e01:5:6ea24b72",
+      "run_id": "2039e6241e01",
+      "slug": "issue-1947",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same defect as the finding at ordinal 1, raised by a second reviewer; 5bb31329 changes coordinator/audit.py, not the substrate layer alone."
+    },
+    {
+      "finding_key": "94020c5a735a:0:24adc8f6",
+      "run_id": "94020c5a735a",
+      "slug": "issue-2003",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "0f271c9a changes src/theforge/coordinator/workspace.py (+24) alongside sprint/launch_guard.py and sprint/runner.py, so the sweep the finding named is covered."
+    },
+    {
+      "finding_key": "94020c5a735a:1:dd9c4521",
+      "run_id": "94020c5a735a",
+      "slug": "issue-2003",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "0f271c9a decides it explicitly: src/theforge/sprint/live_stories.py states a live worktree 'must not be re-dispatched while the inherited agent runs' and supplies await_inherited_agents / reclaim_inherited_agents."
+    },
+    {
+      "finding_key": "94020c5a735a:2:68364883",
+      "run_id": "94020c5a735a",
+      "slug": "issue-2003",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "0f271c9a rewrites the dispatch point in src/theforge/sprint/runner.py (+262) so re-exec enters continuation handling; covered by tests/test_sprint_reexec_continuation.py."
+    },
+    {
+      "finding_key": "3dcd2e32efda:0:203f7dea",
+      "run_id": "3dcd2e32efda",
+      "slug": "issue-1937",
+      "class": "already-implemented",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "b0d034e8 ships one mechanism, not two: the no-merge disposition path stays in src/theforge/sprint/sources.py (+153) and no parallel comment/close path was added."
+    },
+    {
+      "finding_key": "3dcd2e32efda:1:e5becf4d",
+      "run_id": "3dcd2e32efda",
+      "slug": "issue-1937",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "b0d034e8 does not touch coordinator/preflight_flow.py; the disposition hook lives in sprint/sources.py where the story source is in scope."
+    },
+    {
+      "finding_key": "3dcd2e32efda:2:df148cf5",
+      "run_id": "3dcd2e32efda",
+      "slug": "issue-1937",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "b0d034e8 does not touch src/theforge/operator_action_queue.py; the operator-action labelling is done in sprint/sources.py instead, so the non-existent queue API was never relied on."
+    },
+    {
+      "finding_key": "3dcd2e32efda:3:319be450",
+      "run_id": "3dcd2e32efda",
+      "slug": "issue-1937",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "b0d034e8 leaves src/theforge/sprint/rca.py alone and splits the ALREADY SATISFIED bucket in cli/sprint_digest.py (+47), so ALREADY_DONE stays in the succeeded set as the finding required."
+    },
+    {
+      "finding_key": "cd127a3e2b3c:0:611fcdca",
+      "run_id": "cd127a3e2b3c",
+      "slug": "issue-1945",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "d83ef3a0 makes gate_timeout explicitly per-leg: coordinator/gate.py passes gate_timeout into each leg runner and comments that continuing would 'spend another full gate_timeout per' leg. (The story was later reverted wholesale by 839ca5cc for unrelated reasons.)"
+    },
+    {
+      "finding_key": "cd127a3e2b3c:1:2b57eb33",
+      "run_id": "cd127a3e2b3c",
+      "slug": "issue-1945",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "d83ef3a0 changes coordinator/validate_phase.py (+29) to per-leg trace names '{iter}-gate-py{version}.txt' via a new _gate_trace_path, with tests/test_validate_phase.py (+63)."
+    },
+    {
+      "finding_key": "6f619a5997a1:0:ffcfb300",
+      "run_id": "6f619a5997a1",
+      "slug": "issue-2019",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "e98a2d8e restates the correction in the code: the _UNTRACKED_COST_CLIS comment in sprint/runner.py now says the set 'is only the pre-sprint warning, evaluated over config profiles before any run exists', and the real unblock is the measured cost in runners/runner_codex.py (+317)."
+    },
+    {
+      "finding_key": "6f619a5997a1:1:e498b9f7",
+      "run_id": "6f619a5997a1",
+      "slug": "issue-2019",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "e98a2d8e adds _agent_text_from_events / _looks_like_codex_events in runners/runner_codex.py and replaces the raw-stdout fallback, with a comment naming the JSONL-into-handoff failure the finding described."
+    },
+    {
+      "finding_key": "6f619a5997a1:2:3aee9479",
+      "run_id": "6f619a5997a1",
+      "slug": "issue-2019",
+      "class": "contract/interface mismatch",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "e98a2d8e updates tests/test_runner_api_local.py (+28) and keeps the PRICING_TABLE unpacking in runners/runner_claude.py working unchanged."
+    },
+    {
+      "finding_key": "6f619a5997a1:3:81b71185",
+      "run_id": "6f619a5997a1",
+      "slug": "issue-2019",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "e98a2d8e makes the runners/cli.py change opt-in: partial_cost_fn defaults to None and its docstring states Claude and Gemini 'behave exactly as before'."
+    },
+    {
+      "finding_key": "6f619a5997a1:4:846642e6",
+      "run_id": "6f619a5997a1",
+      "slug": "issue-2019",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "e98a2d8e keeps _estimate_cost backward-compatible \u2014 runners/adapters/{openai,google,anthropic}.py are untouched and still call it positionally."
+    },
+    {
+      "finding_key": "dc070b9d88ab:0:e4193a97",
+      "run_id": "dc070b9d88ab",
+      "slug": "issue-2050",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "escaped",
+      "shipped_addressed": false,
+      "evidence": "2d5bfdd1 defines the request/response artifact protocol in coordinator/dev_verification.py but no blocking discipline between write and read. Rediscovered when an adopter story produced no work at all and shipped as #2077; ~$4.43 across the wasted run and two fix stories.",
+      "detection_point": "adopter run"
+    },
+    {
+      "finding_key": "dc070b9d88ab:1:1bb88d38",
+      "run_id": "dc070b9d88ab",
+      "slug": "issue-2050",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "2d5bfdd1 constructs the broker once per iteration in coordinator/dev_phase.py and starts it outside the transport-retry loop, so max_requests is a defined per-iteration budget across retries."
+    },
+    {
+      "finding_key": "5564b09a9fa2:0:42224251",
+      "run_id": "5564b09a9fa2",
+      "slug": "issue-2107",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "59397a3f uses fcntl.flock on a separately-opened descriptor per acquisition and documents why: 'POSIX record locks (fcntl.lockf) are per-process' and would not serialize threads."
+    },
+    {
+      "finding_key": "5564b09a9fa2:1:c942e60a",
+      "run_id": "5564b09a9fa2",
+      "slug": "issue-2107",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "59397a3f adds the shared_infrastructure_abort rule to src/theforge/sprint/rca.py (+100) and bumps RULESET_VERSION to 6."
+    },
+    {
+      "finding_key": "5564b09a9fa2:2:1a998b09",
+      "run_id": "5564b09a9fa2",
+      "slug": "issue-2107",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "59397a3f moves _maybe_file_issue out of the locked span: advisory_conventions.py now takes the lock, releases it, calls _maybe_file_issue, then re-acquires."
+    },
+    {
+      "finding_key": "5564b09a9fa2:3:f948cf06",
+      "run_id": "5564b09a9fa2",
+      "slug": "issue-2107",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same defect as ordinal 1, raised by a second reviewer; 59397a3f adds the RCA rule so cli/sprint_digest.py renders it instead of unknown_needs_rca."
+    },
+    {
+      "finding_key": "30df162d0f7f:0:d8bbe08a",
+      "run_id": "30df162d0f7f",
+      "slug": "issue-2111",
+      "class": "missing failure mode",
+      "advisory_outcome": "escaped",
+      "shipped_addressed": false,
+      "evidence": "cbb6b0b4 ungates _has_base_commit_referencing_issue without narrowing the match, so a bare '#N' mention counted as merge evidence. Caught later by issue-2374, which shipped e82b1478 'require a closing reference for commit-message merge evidence' plus two further fix commits (76cf65cc, 2c67da01).",
+      "detection_point": "own later story"
+    },
+    {
+      "finding_key": "30df162d0f7f:1:a5bf6c64",
+      "run_id": "30df162d0f7f",
+      "slug": "issue-2111",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "cbb6b0b4 replaces the bare 'except Exception: return no_merge' in sprint/dag.py with a fall-through to the remaining evidence sources; the commit body names discarding the fallback as the defect."
+    },
+    {
+      "finding_key": "77b94cd43a39:0:584705ca",
+      "run_id": "77b94cd43a39",
+      "slug": "issue-2155",
+      "class": "contract/interface mismatch",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "43aa6cf7 commits a new tests/fixtures/audit_record_schema_v19.json rather than editing v18, and bumps the version in coordinator/audit_substrate.py."
+    },
+    {
+      "finding_key": "77b94cd43a39:1:7f8d3136",
+      "run_id": "77b94cd43a39",
+      "slug": "issue-2155",
+      "class": "contract/interface mismatch",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same schema-versioning requirement as ordinal 0, stated by a second reviewer; 43aa6cf7 performs the full bump + v19 fixture + audit.py re-export sync."
+    },
+    {
+      "finding_key": "37f96ad44eef:0:00bd15bd",
+      "run_id": "37f96ad44eef",
+      "slug": "issue-751",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "aeabe578 changes src/theforge/config/_loaders.py, the omitted construction site for PlanAgentReviewConfig."
+    },
+    {
+      "finding_key": "37f96ad44eef:1:92bf99e4",
+      "run_id": "37f96ad44eef",
+      "slug": "issue-751",
+      "class": "contract/interface mismatch",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "aeabe578 adopts the reviewer's conclusion verbatim: config/types.py states 'TransportFallbackConfig is deliberately left alone: a ModelRef *contains* one', avoiding the mutual composition and import cycle."
+    },
+    {
+      "finding_key": "37f96ad44eef:2:e3db8a3e",
+      "run_id": "37f96ad44eef",
+      "slug": "issue-751",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "aeabe578 changes src/theforge/cli/shared.py (+7) to mutate the nested ref rather than the legacy scalars."
+    },
+    {
+      "finding_key": "37f96ad44eef:3:6056a5ee",
+      "run_id": "37f96ad44eef",
+      "slug": "issue-751",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "aeabe578 changes src/theforge/config/models.py (+12), the apply_model_info site the finding named."
+    },
+    {
+      "finding_key": "37f96ad44eef:4:ec757e50",
+      "run_id": "37f96ad44eef",
+      "slug": "issue-751",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Moot by the design the reviewer's own ordinal-1 finding produced: TransportFallbackConfig keeps its scalar fields, so _build_api_fallback_profile needs no change and aeabe578 does not touch src/theforge/runners/cli.py."
+    },
+    {
+      "finding_key": "37f96ad44eef:5:eb33eb58",
+      "run_id": "37f96ad44eef",
+      "slug": "issue-751",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same omission as ordinal 0, raised by a second reviewer; aeabe578 changes config/_loaders.py."
+    },
+    {
+      "finding_key": "37f96ad44eef:6:6c92f607",
+      "run_id": "37f96ad44eef",
+      "slug": "issue-751",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "aeabe578 changes src/theforge/config/profiles.py (+18), migrating iter_plan_phase_profiles."
+    },
+    {
+      "finding_key": "e416fd364095:0:e80b4e50",
+      "run_id": "e416fd364095",
+      "slug": "issue-1587",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "9751ca98 is test-only \u2014 tests/test_assignment.py, test_check_config.py, test_config_load.py, test_coord_model_profiles_seam.py, no src/ change \u2014 so the plan's false 'forge.yaml' expectation did not become a production edit to model resolution."
+    },
+    {
+      "finding_key": "0a1bf1592dc7:0:cafe2798",
+      "run_id": "0a1bf1592dc7",
+      "slug": "issue-2189",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6321453f excludes None from UNRESOLVED_LANDING_STATUSES in sprint/prior_landing.py with a comment naming the on_approve / no-landing case the finding described."
+    },
+    {
+      "finding_key": "0a1bf1592dc7:1:75a0c367",
+      "run_id": "0a1bf1592dc7",
+      "slug": "issue-2189",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6321453f gives the record a real landing shape: prior_landing.as_prior_record accepts the full story-entry mapping and landing_settled reads landing evidence, with sprint/runner.py (+175) writing it."
+    },
+    {
+      "finding_key": "aa7b4ca2cfc1:0:c30405ce",
+      "run_id": "aa7b4ca2cfc1",
+      "slug": "issue-2284",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Dev notes on the run record state 'the plan reviewer was right that it did not exist. Added RECONCILE_NONCOMPARABLE_DEV_ESTIMATE and a matching format_reconciliation branch'; shipped in a96d96bc."
+    },
+    {
+      "finding_key": "aa7b4ca2cfc1:1:2eeb4d82",
+      "run_id": "aa7b4ca2cfc1",
+      "slug": "issue-2284",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "a96d96bc sets audit['dev_cost_estimate_basis'] on all five estimate paths in coordinator/adaptive_iterations.py, including the adaptive-disabled and no-score early returns the finding named."
+    },
+    {
+      "finding_key": "aa7b4ca2cfc1:2:0bbcfbf7",
+      "run_id": "aa7b4ca2cfc1",
+      "slug": "issue-2284",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "escaped",
+      "shipped_addressed": false,
+      "evidence": "a96d96bc changes what dev_cost_estimate_usd means (score-scoped history x BAND_HEADROOM) but touches neither coordinator/dev_phase.py nor review_phase.py. Both still read state.adaptive_dev_cost_estimate_usd as an overrun threshold (dev_phase.py:1666,1676; review_phase.py:2326) and no later commit has revisited them.",
+      "detection_point": "unshipped"
+    },
+    {
+      "finding_key": "b95f23283829:0:15b233c5",
+      "run_id": "b95f23283829",
+      "slug": "issue-2351",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "49726723 adds RESUME_SELECTION_KEY to _METADATA_KEYS in coordinator/resume_persistence.py, which is exactly the exclusion the finding said was missing."
+    },
+    {
+      "finding_key": "b95f23283829:1:8e96aada",
+      "run_id": "b95f23283829",
+      "slug": "issue-2351",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "49726723 records prior_run_id / incoming_run_id on each selection entry \u2014 the top-level ids that do exist \u2014 rather than the per-block ids the plan assumed."
+    },
+    {
+      "finding_key": "a96d23c420c0:0:ac1be4b1",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6cfcd835 makes verified_on a required ISO date in config/model_identity.py: 'a verification that cannot expire is a permanent claim about something that changes'."
+    },
+    {
+      "finding_key": "a96d23c420c0:1:7dd07e3f",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Dev notes record the design: 'Step 5's provider invocation options on ModelProfile was implemented as one typed field (reasoning_mode) plus a routing.py change to the existing reasoning-effort axis'; 6cfcd835 changes routing.py, config/types.py and config/profiles.py."
+    },
+    {
+      "finding_key": "a96d23c420c0:2:08c6fbcf",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6cfcd835 changes runners/api.py, runners/finalizers.py and runners/adapters/openai.py (+110), the real loop and finalization paths the finding named."
+    },
+    {
+      "finding_key": "a96d23c420c0:3:ef7185c3",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6cfcd835 changes runners/adapters/openai.py and runners/api.py so cache_read_tokens flow through to _estimate_cost as cached_input_tokens."
+    },
+    {
+      "finding_key": "a96d23c420c0:4:27905033",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Deferred in the first iteration (the run's deferred_items say so) and delivered under review pressure in 715ed9f2, which adds COST_ESTIMATED_UNCONFIRMED to agent_types.COST_PROVENANCE_VALUES citing #2352."
+    },
+    {
+      "finding_key": "a96d23c420c0:5:5252b97b",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6cfcd835 rewrites assignment._thinking_spend_captured to ask pricing_for instead of indexing PRICING_TABLE; the dev notes name the reviewer's flag as the reason."
+    },
+    {
+      "finding_key": "a96d23c420c0:6:f6a2a398",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6cfcd835 does not fail load on unverified entries \u2014 only a 'retired' status without a retired_reason raises, and model_catalog.py records that 'an expired check is not bad configuration, it is configuration'."
+    },
+    {
+      "finding_key": "a96d23c420c0:7:0e5d384f",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Dev notes: 'WebFetch against api-docs.deepseek.com returned the served model list, the full pricing table ... so the replacements are provider-attested rather than guessed' \u2014 the finding's demand for a source was met rather than guessed at."
+    },
+    {
+      "finding_key": "a96d23c420c0:8:9cc83b11",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6cfcd835 changes runners/adapters/openai.py (+110) to read prompt_tokens_details / completion_tokens_details."
+    },
+    {
+      "finding_key": "a96d23c420c0:9:cee20d85",
+      "run_id": "a96d23c420c0",
+      "slug": "issue-2352",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6cfcd835 updates tests/test_model_catalog.py (+14) alongside the catalog change."
+    },
+    {
+      "finding_key": "21c042885a9d:0:4329fb07",
+      "run_id": "21c042885a9d",
+      "slug": "issue-2374",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "e82b1478 updates tests/test_sprint_resume.py (+76) as well as test_sprint_runner.py; test_sprint_run_id_rollover.py needed no change for the reason the finding itself gave (it passes the reason in)."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:7:a305e45f",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "4dd555c8 separates the two ideas the plan conflated: runners/rate_registry.AccountingMode distinguishes PROVIDER_REPORTED / INDEPENDENTLY_MEASURED / TOKEN_ESTIMATED / TOKEN_ESTIMATED_IF_REPORTED, so 'no static rates' no longer implies 'unaccountable'."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:11:e2187479",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "4dd555c8's install contract in runners/rate_registry.py states 'installation happens only after a ForgeConfig has been fully constructed, so a load that raises during validation never leaves its partial rates active', and makes the replacement explicit and logged ('last install wins')."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:14:fbc3538b",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "4dd555c8's make_identity in runners/rate_registry.py refuses a partial key at construction: 'A partial key can never match a registry entry, so it is refused at construction rather than inserted and silently missed forever.'"
+    },
+    {
+      "finding_key": "9b9ce2a394d0:16:65ddccc5",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "4dd555c8 is titled 'resolve rates once onto the dispatched identity' and adds config/dispatch_rates.py, which compiles reachable identities to rates at load rather than converting at accounting time."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:17:0c3b5073",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same registry-lifetime defect as ordinal 11, raised again in a later plan cycle; answered by the same install contract in runners/rate_registry.py."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:18:6901e475",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "_UNTRACKED_COST_CLIS no longer exists in src/theforge/sprint/runner.py \u2014 4dd555c8 replaced the hardcoded set with AccountingMode."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:19:b0f73496",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "4dd555c8 maps 'ghaw' to AccountingMode.INDEPENDENTLY_MEASURED in runners/rate_registry.py, exempting it from static-rate diagnostics."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:20:7db791a2",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same Gemini/_UNTRACKED_COST_CLIS defect as ordinal 18; the set is gone from sprint/runner.py."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:21:286a04cd",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same gh-aw exemption as ordinal 19; rate_registry.py:224 classifies it INDEPENDENTLY_MEASURED."
+    },
+    {
+      "finding_key": "9b9ce2a394d0:22:a9a9554f",
+      "run_id": "9b9ce2a394d0",
+      "slug": "issue-2335",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same Gemini/_UNTRACKED_COST_CLIS defect as ordinal 18; 4dd555c8 also changes runners/runner_gemini.py (+89) to record measured cost."
+    },
+    {
+      "finding_key": "41b3bef1268f:0:8295bb09",
+      "run_id": "41b3bef1268f",
+      "slug": "issue-2373",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "2c320330 changes src/theforge/sprint/audit.py, which is where _write_story_audit lives \u2014 the upstream serialization point the finding named \u2014 so the audit carries the sprint's recorded reason."
+    },
+    {
+      "finding_key": "41b3bef1268f:1:50fe6e7f",
+      "run_id": "41b3bef1268f",
+      "slug": "issue-2373",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "2c320330 keeps final_phase as an observation ('audit_final_phase') fed into a conflict diagnostic rather than making it authoritative for the terminal outcome."
+    },
+    {
+      "finding_key": "41b3bef1268f:2:81c9b96e",
+      "run_id": "41b3bef1268f",
+      "slug": "issue-2373",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "2c320330 lands its tests flat: tests/test_sprint_rca.py and the new tests/test_sprint_rca_cost_unknown_outcome.py; no tests/cli/ or tests/sprint/ package was invented."
+    },
+    {
+      "finding_key": "41b3bef1268f:3:7535f7f7",
+      "run_id": "41b3bef1268f",
+      "slug": "issue-2373",
+      "class": "contract/interface mismatch",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "2c320330 bumps RULESET_VERSION 11 -> 12 in sprint/rca.py and updates tests/test_sprint_rca.py (+21)."
+    },
+    {
+      "finding_key": "46b5281e27d6:0:603646db",
+      "run_id": "46b5281e27d6",
+      "slug": "issue-2325",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "d5689a35 puts the tests in the mirroring module the convention requires \u2014 tests/test_sprint_runner.py (+270) for src/theforge/sprint/runner.py \u2014 rather than a new location."
+    },
+    {
+      "finding_key": "46b5281e27d6:1:47c15038",
+      "run_id": "46b5281e27d6",
+      "slug": "issue-2325",
+      "class": "factual error in rationale",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "d5689a35 rewrites run_sprint's execution state across 1076 changed lines against the frame as it actually was, not the spec's stale 16-param / 6,953-line inventory."
+    },
+    {
+      "finding_key": "36d247a95b45:2:6f775039",
+      "run_id": "36d247a95b45",
+      "slug": "issue-2347",
+      "class": "missing failure mode",
+      "advisory_outcome": "escaped",
+      "shipped_addressed": false,
+      "evidence": "617e1014 adds CoordinatorState.changed_files in coordinator/state.py but never registers it with coordinator/resume_persistence.py, which serializes explicit blocks. resume_persistence.py carries no changed_files reference to this day, so a resumed run drops the capture silently.",
+      "detection_point": "unshipped"
+    },
+    {
+      "finding_key": "36d247a95b45:3:87be06e8",
+      "run_id": "36d247a95b45",
+      "slug": "issue-2347",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "617e1014 handles it directly in coordinator/changed_files.py: 'binary = raw_ins == \"-\" and raw_del == \"-\"', recorded as a binary flag with zero counts instead of int()-parsed."
+    },
+    {
+      "finding_key": "31e0c8855436:0:2ffb2444",
+      "run_id": "31e0c8855436",
+      "slug": "issue-2434",
+      "class": "test strategy gap",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "8f84dfd5 covers both directions: test_broken_baseline_audit_reports_pre_gate_remediation_spend for the abort path and test_sprint_total_includes_intake_remediation_agent_cost / test_entry_intake_outcomes_cost_rolls_into_sprint_total for the normal fold-once path."
+    },
+    {
+      "finding_key": "31e0c8855436:1:adfa6d69",
+      "run_id": "31e0c8855436",
+      "slug": "issue-2434",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "8f84dfd5 decides it: 'a first run that does not reproduce returns through the ordinary cleanup path and leaves nothing behind', and the commit body states a non-reproduced failure leaks neither worktree nor evidence."
+    },
+    {
+      "finding_key": "cbfd089e3518:0:bbdc2239",
+      "run_id": "cbfd089e3518",
+      "slug": "issue-2380",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "f17d9fa9's _profile_for_transport in cli/provider_readiness.py sets api_fallback=None and fallback_models=(), so a probe cannot cross to another transport or model."
+    },
+    {
+      "finding_key": "cbfd089e3518:1:7dd98866",
+      "run_id": "cbfd089e3518",
+      "slug": "issue-2380",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "f17d9fa9 adds _preflight_unverified_reason and _runtime_unverified_reason in cli/provider_readiness.py, classifying missing CLI / absent credentials as unverified rather than failed."
+    },
+    {
+      "finding_key": "cbfd089e3518:2:a59c34d5",
+      "run_id": "cbfd089e3518",
+      "slug": "issue-2380",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "f17d9fa9 special-cases the CLI path: a structured result with cost_usd None on a CLI transport returns _unverified_attempt with 'not exercised: structured result returned but CLI cost is unavailable', not a transport verdict."
+    },
+    {
+      "finding_key": "4b582ddcfba0:0:3c45ff54",
+      "run_id": "4b582ddcfba0",
+      "slug": "issue-2332",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "79d0f8cb adds 'advisor' to _DEFAULT_PHASE_ELIGIBILITY in config/model_identity.py as well as KNOWN_PHASES, so default-eligible models are not rejected."
+    },
+    {
+      "finding_key": "4b582ddcfba0:1:1a46fe66",
+      "run_id": "4b582ddcfba0",
+      "slug": "issue-2332",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "79d0f8cb builds a single-role selector instead: coordinator/escalation_advisor_flow.py imports _capability_exclusions, _capability_pool and NoCapableCandidateError from assignment.py rather than routing advisor through assign_models."
+    },
+    {
+      "finding_key": "4b582ddcfba0:2:469bab38",
+      "run_id": "4b582ddcfba0",
+      "slug": "issue-2332",
+      "class": "test strategy gap",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "79d0f8cb changes escalation_advisor.parse_advisory_report to accept an empty recommendation as valid, so the regression exercises the real parser path instead of an impossible object."
+    },
+    {
+      "finding_key": "4b582ddcfba0:3:2295f19d",
+      "run_id": "4b582ddcfba0",
+      "slug": "issue-2332",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "79d0f8cb changes coordinator/state.py, resume_persistence.py and audit.py alongside escalation_advisor_flow.py, so the new advisor-unavailable reason is durable and audited."
+    },
+    {
+      "finding_key": "4b582ddcfba0:4:f2fc4f42",
+      "run_id": "4b582ddcfba0",
+      "slug": "issue-2332",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same eligibility trap as ordinal 0, stated in full; 79d0f8cb also updates the three explicit phase_eligibility lists in config/data/models.yaml to include advisor."
+    },
+    {
+      "finding_key": "4b582ddcfba0:5:a0ec8b73",
+      "run_id": "4b582ddcfba0",
+      "slug": "issue-2332",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "79d0f8cb adds 'advisor' to ROLE_REQUIRED_CAPABILITY and documents that it deliberately shares its token with routing.phase_eligibility; tests/test_capability_routing_seam.py needed no change because the extra explicit_profiles key is inert in assign_models."
+    },
+    {
+      "finding_key": "4b582ddcfba0:6:c232e5e0",
+      "run_id": "4b582ddcfba0",
+      "slug": "issue-2332",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "79d0f8cb names the entry point the plan left open by composing exactly the reusable pieces the finding listed inside coordinator/escalation_advisor_flow.py."
+    },
+    {
+      "finding_key": "364c213449ab:0:cb91552b",
+      "run_id": "364c213449ab",
+      "slug": "issue-2085",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "7537c9b2 updates tests/test_sprint_gate_timeout_scaling.py (+64) and tests/test_sprint_gate_timeout_reexec_load.py (+24) \u2014 the real old-contract sites \u2014 not the plan's named files."
+    },
+    {
+      "finding_key": "364c213449ab:1:39a2afbc",
+      "run_id": "364c213449ab",
+      "slug": "issue-2085",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "Same misnamed test targets as ordinal 0; 7537c9b2 touches neither tests/test_gate_timeout_resolver.py (which does not exist) nor tests/test_sprint_runner.py."
+    },
+    {
+      "finding_key": "364c213449ab:2:bc751ef4",
+      "run_id": "364c213449ab",
+      "slug": "issue-2085",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "7537c9b2 and be60d7ed both edit the two gate-timeout test modules, so the overcommit-field assertions the plan never listed were updated with the behaviour change."
+    },
+    {
+      "finding_key": "364c213449ab:3:7d31390c",
+      "run_id": "364c213449ab",
+      "slug": "issue-2085",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "The resolver stays pure: os.getloadavg() is called in src/theforge/sprint/runner.py:4773 and the observed load is passed into sprint/gate_timeout_resolver.py, giving the mocked-load test a seam."
+    },
+    {
+      "finding_key": "cf857907b6ed:0:f2e4137d",
+      "run_id": "cf857907b6ed",
+      "slug": "issue-2525",
+      "class": "scope / out-of-scope",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "a6f771a1 narrows the handoff itself: review_phase.py builds _dev_handoff_review by dropping ungrounded P1s from parsed_review, with a comment naming the mixed-cycle sibling case the finding described."
+    },
+    {
+      "finding_key": "cf857907b6ed:1:b89c9059",
+      "run_id": "cf857907b6ed",
+      "slug": "issue-2525",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "16b97a7c makes diff grounding a per-cycle verdict rather than a sticky disposition and changes finding_classifier.py (+20), removing the fall-through-to-unresolved reset the finding warned about."
+    },
+    {
+      "finding_key": "cf857907b6ed:2:32155a1b",
+      "run_id": "cf857907b6ed",
+      "slug": "issue-2525",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "a6f771a1's coordinator/diff_grounding.py normalizes absolute paths inside the worktree via resolve().relative_to() and treats paths outside it as ungrounded \u2014 both branches the finding asked for."
+    },
+    {
+      "finding_key": "2c7cc09417b2:0:8c610880",
+      "run_id": "2c7cc09417b2",
+      "slug": "issue-2137",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6d18ec69 scopes the downgrade in coordinator/preflight_flow.py: only a BLOCKED 'founded solely on unratified rationale' is downgraded, and 'blockers that are not policy claims (missing credentials, ...)' are explicitly exempt."
+    },
+    {
+      "finding_key": "2c7cc09417b2:1:9df21aa4",
+      "run_id": "2c7cc09417b2",
+      "slug": "issue-2137",
+      "class": "module/placement",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6d18ec69 changes coordinator/preflight_cache.py (+24) and resume_persistence.py (+24) alongside state.py, so the provenance fields survive the batch-preflight and resume paths."
+    },
+    {
+      "finding_key": "2c7cc09417b2:2:4141f590",
+      "run_id": "2c7cc09417b2",
+      "slug": "issue-2137",
+      "class": "test strategy gap",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6d18ec69 covers the prose-fallback path directly: tests/test_policy_provenance.py::test_uncited_standing_decision_claim_is_adjudicated_as_unmarked, and the adjudication surfaces 'unmarked' rather than silently demoting."
+    },
+    {
+      "finding_key": "2c7cc09417b2:3:170faf6d",
+      "run_id": "2c7cc09417b2",
+      "slug": "issue-2137",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6d18ec69's policy_provenance.policy_assertions_path takes project_root and documents that it comes from ForgeConfig.project_root 'rather than the process working directory'."
+    },
+    {
+      "finding_key": "7d7b7449225a:0:9b2b5e27",
+      "run_id": "7d7b7449225a",
+      "slug": "issue-2308",
+      "class": "missing failure mode",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "2968b61e partitions evidence by canonical identity and states the limit rather than hiding it: model_strength_report.py records contributing_keys and evidence_recency='unknown' because 'profiles carry no per-key timestamp, so no row can assert its evidence is current'."
+    },
+    {
+      "finding_key": "7d7b7449225a:1:1904bdef",
+      "run_id": "7d7b7449225a",
+      "slug": "issue-2308",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6431bdf9 defines the peer set concretely (same declared tier, same complexity band, peers that clear the evidence floor) and refuses the claim below MIN_PEERS_FOR_DISAGREEMENT = 2: 'a peer range over a single peer is not a range'."
+    },
+    {
+      "finding_key": "7d7b7449225a:2:881258ec",
+      "run_id": "7d7b7449225a",
+      "slug": "issue-2308",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6431bdf9 takes model_registry as 'the *effective* registry from a loaded config (config.model_registry), so packaged defaults and forge.yaml overlays' are both present; cli/profiles.py supplies it from load_config."
+    },
+    {
+      "finding_key": "7d7b7449225a:3:5f9e9d10",
+      "run_id": "7d7b7449225a",
+      "slug": "issue-2308",
+      "class": "unspecified mechanism",
+      "advisory_outcome": "resolved",
+      "shipped_addressed": true,
+      "evidence": "6431bdf9 returns peer_low/peer_high None when no comparable peer exists and declines the disagreement claim below MIN_PEERS_FOR_DISAGREEMENT."
+    }
+  ]
+}

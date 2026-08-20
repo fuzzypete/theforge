@@ -979,11 +979,15 @@ intake:
 knowledge:
   run_summaries: false        # emit an evidence-backed summary after a run reaches DONE
 
-# ── Sandbox capability profile (optional) ─────────────────
+# ── Sandbox capabilities (optional) ───────────────────────
 # Omit entirely for default write containment. See "Sandbox capability
 # profiles" below.
 sandbox:
   capability_profile: xcode   # forge-owned preset name; omit for the default
+  write_roots:                # project grants ADDED to the preset's (optional)
+    - ~/Library/Preferences
+  mach_services:              # macOS only; refused on other backends (optional)
+    - com.example.toolchaind
 
 # ── Secrets (optional) ────────────────────────────────────
 # API keys are read from .forge/.env (run `forge secrets-init` to create)
@@ -1158,7 +1162,7 @@ must be numbers in `[0.0, 1.0]`, min-runs must be integers at or above the
 minimum, enable flags must be actual booleans. Out-of-range values are a config
 error, never a silent clamp.
 
-### Sandbox capability profiles (`sandbox.capability_profile`)
+### Sandbox capability profiles (`sandbox`)
 
 The dev agent runs under a mechanical write-containment sandbox: writes are
 confined to the story worktree plus a fixed allow-set. Some stacks cannot
@@ -1167,45 +1171,69 @@ needs writes under `~/Library/Developer` and mach services for the simulator, so
 `xcodegen`/`xcodebuild` fail with `Operation not permitted` and the agent cannot
 build well enough to verify its own work.
 
-`sandbox.capability_profile` names a **forge-owned preset** that widens the
-sandbox by a bounded, declared amount:
+The `sandbox` block widens the sandbox by a bounded, declared amount. It has
+three keys, all optional and all additive:
 
 ```yaml
 sandbox:
-  capability_profile: xcode
+  capability_profile: xcode        # a forge-owned preset, selected by name
+  write_roots:                     # project grants, ADDED to the preset's
+    - ~/Library/Preferences
+    - /opt/toolchain
+  mach_services:                   # macOS only
+    - com.example.toolchaind
 ```
 
 | Preset | Platform | Grants |
 |--------|----------|--------|
 | `xcode` | macOS only | Xcode/SwiftPM state roots (`~/Library/Developer`, DerivedData caches, `/private/var/folders`) and the CoreSimulator / launch-services mach services. |
 
+`write_roots` and `mach_services` exist because the shipped presets cannot
+anticipate every toolchain: what a real stack needs is not knowable in advance
+from inside TheForge. They stand alone as well — a project may declare grants
+with no `capability_profile` at all.
+
 Rules that make this safe to adopt:
 
-- **Presets are forge-owned.** A project selects one *by name*. It cannot
-  author a preset, extend one, or override its contents; there is no inline
-  `write_roots`/`mach_services` key, and supplying one is a config error.
-- **Widening is always bounded.** No value disables the sandbox or grants
-  `allow default`. The granted set is exactly the preset's declared list — a
-  write to an out-of-worktree path the preset does not declare still fails.
-- **Unknown names fail at config load**, so a typo cannot silently fall back to
-  default containment.
-- **Unexpressible presets fail closed.** Declaring `xcode` on Linux refuses the
-  run with a clear reason (bwrap has no mach-service axis) rather than running
-  with the declared capability missing.
+- **Project grants are additive, never subtractive.** Presets stay forge-owned:
+  a project may add write roots and mach services alongside a preset, but it
+  cannot author a preset, override one, or remove anything one grants. The
+  applied set is the preset's list plus the project's, de-duplicated.
+- **Widening is always bounded.** No key disables the sandbox or grants
+  `allow default` — `allow_default`, `disabled`, and `mode` are config errors.
+  The granted set is exactly the declared list; a write to an out-of-worktree
+  path nobody declared still fails.
+- **A grant may not be an escape.** A `write_roots` entry that resolves to `/`
+  or to the invoking user's home directory is refused by name, rather than
+  widened into a whole-filesystem grant.
+- **Unknown preset names fail at config load**, and a malformed grant list (not
+  a list of non-empty strings) is a load error too — a silently dropped grant
+  is a capability the run believes it has and does not.
+- **Unexpressible capabilities fail closed.** Declaring `xcode` — or any
+  `mach_services` — on Linux refuses the run with a clear reason (bwrap has no
+  mach-service axis) rather than running with the declared capability missing.
+  The same applies per transport: a dev transport that does not apply forge's
+  host sandbox (codex, gh-aw, the API tool runtime) refuses a run that declares
+  capabilities, instead of dropping them silently. Use a transport that applies
+  the host sandbox (claude, gemini) for a project that declares grants.
 - **Grants are audited.** The resolved profile name, write roots, and mach
   services are recorded in the run audit record under `workspace` and per dev
-  iteration. A run with no preset records an explicit null profile with empty
-  grants, so default containment is distinguishable from missing audit data.
+  iteration, with project-declared grants listed separately under
+  `project_write_roots`/`project_mach_services`. A run with no declaration
+  records an explicit null profile with empty grants, so default containment is
+  distinguishable from missing audit data. A refused declaration records zero
+  grants plus `requested_*` and `unsupported_reason`, so a fail-closed run never
+  audits as though the capability was applied.
 
-**To adopt a preset**, an operator adds the two-line `sandbox` block above to
-`forge.yaml` and re-runs. There is no default and no auto-detection: a project
-that says nothing keeps today's containment exactly. To inspect what a preset
-grants without running an agent — on any host, whether or not the toolchain is
+**To adopt this**, an operator adds the `sandbox` block above to `forge.yaml`
+and re-runs. There is no default and no auto-detection: a project that says
+nothing keeps today's containment exactly. To inspect what a declaration grants
+without running an agent — on any host, whether or not the toolchain is
 installed:
 
 ```bash
 python -c "from theforge.config.sandbox_capabilities import resolve_capabilities; \
-print(resolve_capabilities('xcode').audit_payload())"
+print(resolve_capabilities('xcode', write_roots=('/opt/toolchain',)).audit_payload())"
 ```
 
 ### Validation profiles (`validation.profiles`)

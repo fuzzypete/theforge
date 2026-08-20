@@ -59,6 +59,11 @@ then [vision.md](vision.md) for the philosophy and reading order.
   — spike record for issue #2348: design, POC and the **defer** decision for a
   codebase-scoped structural-decay observer, with the data condition that
   reopens it.
+- [plans/2112-plan-advisory-resolution.md](plans/2112-plan-advisory-resolution.md)
+  — measurement record for issue #2112: how often dev resolves an advisory
+  plan-review finding, broken out by finding class, with the four escapes named
+  and plan-review cost as a fraction of the story it guarded. Reproduce with
+  `forge audits plan-advisory`.
 - [plans/1848-reviewer-finding-fate-spike.md](plans/1848-reviewer-finding-fate-spike.md)
   — spike record for issue #1848: finding-fate derivation from structured
   code-review records, the live Thursday, August 20, 2026 POC output, and the

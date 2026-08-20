@@ -7,6 +7,7 @@ import shutil
 import subprocess
 from functools import lru_cache
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from theforge.config.sandbox_capabilities import (
     ResolvedSandboxCapabilities,
@@ -15,8 +16,12 @@ from theforge.config.sandbox_capabilities import (
     resolve_capabilities,
 )
 
+if TYPE_CHECKING:  # import-cost only — this module stays dependency-light at runtime
+    from theforge.config.types import ModelProfile
+
 __all__ = [
     "SandboxCapabilityError",
+    "capability_transport_refusal",
     "sandbox_command",
     "workspace_effect_sandbox_command",
 ]
@@ -469,21 +474,31 @@ def _linux_command(
     return wrapped
 
 
-def _resolve_capability_profile(profile: str | None) -> ResolvedSandboxCapabilities:
-    """Resolve *profile* against the running host, failing closed if unexpressible.
+def _resolve_capability_profile(
+    profile: str | None,
+    *,
+    write_roots: tuple[str, ...] | list[str] = (),
+    mach_services: tuple[str, ...] | list[str] = (),
+) -> ResolvedSandboxCapabilities:
+    """Resolve a capability declaration against the running host, failing closed.
 
     The platform check happens here, before the command is built, so a project
-    that declares a preset this backend cannot express gets a clear refusal
+    that declares a capability this backend cannot express gets a clear refusal
     rather than a run that silently proceeds with the capability absent. The
     per-axis check is belt-and-braces behind the preset's own
-    ``supported_platforms``: it catches a future preset whose platform metadata
-    and declared axes disagree.
+    ``supported_platforms`` and the resolver's own mach-service guard: it
+    catches a future preset whose platform metadata and declared axes disagree.
     """
-    capabilities = resolve_capabilities(profile, system=_SYSTEM)
+    capabilities = resolve_capabilities(
+        profile,
+        system=_SYSTEM,
+        write_roots=write_roots,
+        mach_services=mach_services,
+    )
     if capabilities.mach_services and _SYSTEM != "Darwin":
         raise UnsupportedCapabilityProfileError(
-            f"sandbox capability profile {capabilities.profile!r} declares mach "
-            f"services {list(capabilities.mach_services)}, which the {_SYSTEM} "
+            f"sandbox capability declaration (profile {capabilities.profile!r}) grants "
+            f"mach services {list(capabilities.mach_services)}, which the {_SYSTEM} "
             "sandbox backend (bwrap) cannot express. Refusing to run with the "
             "declared capability absent."
         )
@@ -497,6 +512,8 @@ def workspace_effect_sandbox_command(
     extra_write_roots: tuple[Path, ...] | list[Path] = (),
     allow_credential_services: bool = False,
     capability_profile: str | None = None,
+    capability_write_roots: tuple[str, ...] | list[str] = (),
+    capability_mach_services: tuple[str, ...] | list[str] = (),
 ) -> list[str]:
     """Wrap *cmd* so filesystem writes are confined to *allowed_root*.
 
@@ -514,6 +531,13 @@ def workspace_effect_sandbox_command(
     always a bounded named set: there is no value here that grants
     ``allow default`` or disables the sandbox (#1947).
 
+    ``capability_write_roots`` and ``capability_mach_services`` are the project's
+    own additive grants (``sandbox.write_roots``/``sandbox.mach_services`` in
+    ``forge.yaml``), merged with the preset's before the profile is built. They
+    are additive only, and fail closed on the same terms as a preset: a root
+    resolving to ``/`` or the invoking home, or a mach service on a backend with
+    no mach-lookup axis, raises rather than resolving without it (#2038).
+
     The worktree's own git internals (private gitdir, shared object store, and
     its own branch-ref namespace) are granted automatically so ``git commit``
     from the correctly-scoped worktree works, while the main checkout and other
@@ -525,10 +549,14 @@ def workspace_effect_sandbox_command(
 
     Raises:
         SandboxCapabilityError: *capability_profile* names no forge-owned preset,
-            or this host's sandbox backend cannot express it.
+            or this host's sandbox backend cannot express the declared set.
     """
     root = allowed_root.resolve()
-    capabilities = _resolve_capability_profile(capability_profile)
+    capabilities = _resolve_capability_profile(
+        capability_profile,
+        write_roots=capability_write_roots,
+        mach_services=capability_mach_services,
+    )
     extra_write_roots = tuple(extra_write_roots) + _git_worktree_write_roots(root)
     extra_write_roots += capabilities.write_roots
     blocked_worktrees = _blocked_worktree_roots(root)
@@ -563,3 +591,45 @@ def workspace_effect_sandbox_command(
 
 def sandbox_command(cmd: list[str], allowed_root: Path) -> list[str]:
     return workspace_effect_sandbox_command(cmd, allowed_root)
+
+
+def capability_transport_refusal(profile: ModelProfile, transport_label: str) -> str | None:
+    """Explain why *transport_label* cannot honor *profile*'s capability declaration.
+
+    Only the transports whose invocation goes through
+    :func:`workspace_effect_sandbox_command` (claude, gemini) can apply a
+    declaration at all. Every other transport either brings its own sandbox
+    (codex's ``--sandbox``), runs the work off-host (gh-aw), or confines tools
+    by path check rather than by host sandbox (the API tool runtime) — none has
+    a write-root or mach-service axis forge can widen. Those call this before
+    dispatching and refuse when it returns a message.
+
+    Returns ``None`` when there is nothing to honor (no declaration) or nothing
+    to contain (``sandbox_mode: none``, an explicit opt-out of containment
+    altogether, under which no grant is meaningful).
+
+    This is the fail-closed half of the project-extensible capability model:
+    a declaration the invoked transport cannot express must refuse *before*
+    dispatch, because the alternative is a run whose audit record claims a
+    capability the agent never had — exactly the gap that let a capability
+    failure reach the operator as a code-quality verdict (#2038).
+    """
+    if profile.sandbox_mode == "none":
+        return None
+    declared: list[str] = []
+    if profile.sandbox_capability_profile:
+        declared.append(f"capability_profile={profile.sandbox_capability_profile!r}")
+    if profile.sandbox_write_roots:
+        declared.append(f"write_roots={list(profile.sandbox_write_roots)}")
+    if profile.sandbox_mach_services:
+        declared.append(f"mach_services={list(profile.sandbox_mach_services)}")
+    if not declared:
+        return None
+    return (
+        f"forge.yaml declares sandbox capabilities ({', '.join(declared)}) that the "
+        f"{transport_label} transport cannot express — it does not apply forge's host "
+        "sandbox, so the declared write roots and mach services would be absent. "
+        "Refusing to run rather than record a capability the agent never had. "
+        "Assign a dev transport that applies the host sandbox (claude, gemini), or "
+        "remove the declaration."
+    )
