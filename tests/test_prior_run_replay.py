@@ -10,6 +10,7 @@ from theforge.prior_run_replay import (
     CorpusSpec,
     Judgment,
     PriorRunReplayError,
+    _aggregate_corpus_metrics,
     _claim_hash,
     _discover_fixtures,
     _judgment_key,
@@ -688,6 +689,70 @@ def test_replay_reports_candidate_and_claim_cap_pressure(tmp_path: Path) -> None
     assert any(item["reason"] == "below_selection_cap(3)" for item in plan["excluded"])
     overflow = next(item for item in plan["candidates"] if item["run_id"] == "aaa111")
     assert overflow["overflowed_selection_cap"] is True
+
+
+def test_aggregate_metrics_keep_qualifying_signals_per_phase() -> None:
+    metrics = _aggregate_corpus_metrics(
+        [
+            {
+                "run_id": "story-1",
+                "phase_replays": [
+                    {
+                        "phase": "plan",
+                        "candidates": [
+                            {
+                                "run_id": "prior-1",
+                                "qualifying_signal": "file_overlap(src/api.py)",
+                                "overflowed_selection_cap": False,
+                            }
+                        ],
+                        "metrics": {
+                            "useful_candidate_cap_truncation": False,
+                            "useful_claim_cap_truncation": False,
+                        },
+                    },
+                    {
+                        "phase": "dev",
+                        "candidates": [
+                            {
+                                "run_id": "prior-1",
+                                "qualifying_signal": "story_match",
+                                "overflowed_selection_cap": False,
+                            }
+                        ],
+                        "metrics": {
+                            "useful_candidate_cap_truncation": False,
+                            "useful_claim_cap_truncation": False,
+                        },
+                    },
+                    {
+                        "phase": "review",
+                        "candidates": [
+                            {
+                                "run_id": "prior-1",
+                                "qualifying_signal": "story_match",
+                                "overflowed_selection_cap": False,
+                            }
+                        ],
+                        "metrics": {
+                            "useful_candidate_cap_truncation": False,
+                            "useful_claim_cap_truncation": False,
+                        },
+                    },
+                ],
+            }
+        ]
+    )
+
+    assert metrics["qualifying_signal_counts_by_phase"] == {
+        "plan": {"file_overlap(src/api.py)": 1},
+        "dev": {"story_match": 1},
+        "review": {"story_match": 1},
+    }
+    assert metrics["qualifying_signal_counts"] == {
+        "file_overlap(src/api.py)": 1,
+        "story_match": 2,
+    }
 
 
 def test_replay_fails_when_claim_judgments_are_missing(tmp_path: Path) -> None:
