@@ -39,7 +39,6 @@ _DEFAULT_PHASE_LIMIT = 3
 _HIGH_LIMIT = 999
 _JUDGMENT_EFFECTS = frozenset({"plan", "implementation", "verification", "none"})
 _PHASES = ("plan", "dev", "review")
-_FENCE_PROBE_RUN_IDS = ("1a6b6e18d232", "73d7de156730")
 
 
 class PriorRunReplayError(RuntimeError):
@@ -234,7 +233,7 @@ def _phase_inputs(run_record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     structured = phase_plan.get("plan_structured") if isinstance(phase_plan, dict) else None
     plan_files = plan_file_list(structured) if isinstance(structured, dict) else None
 
-    plan_data = _recovered_phase_input(
+    shared_scope = _recovered_phase_input(
         primary=plan_files,
         primary_note="recovered from phases.plan.plan_structured",
         fallback=changed_files,
@@ -244,16 +243,11 @@ def _phase_inputs(run_record: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "replay runs without file overlap input"
         ),
     )
-    later_phase = _recovered_phase_input(
-        primary=changed_files,
-        primary_note="recovered from persisted changed_files",
-        fallback=None,
-        fallback_note="",
-        missing_note=(
-            "audit record does not persist changed_files; replay runs without file overlap input"
-        ),
-    )
-    return {"plan": plan_data, "dev": later_phase, "review": copy.deepcopy(later_phase)}
+    return {
+        "plan": shared_scope,
+        "dev": copy.deepcopy(shared_scope),
+        "review": copy.deepcopy(shared_scope),
+    }
 
 
 def _recovered_phase_input(
@@ -562,10 +556,6 @@ def _run_fence_probes(
     *,
     probe_groups: tuple[tuple[str, ...], ...],
 ) -> list[dict[str, Any]]:
-    if not probe_groups:
-        relevant = tuple(_FENCE_PROBE_RUN_IDS) if spec.name == "theforge" else ()
-        probe_groups = (relevant,) if relevant else ()
-
     probes: list[dict[str, Any]] = []
     fixture_by_run = {fixture.run_id: fixture for fixture in fixtures}
     all_fixtures = sorted(fixtures, key=lambda item: (item.generated_at, item.run_id))
