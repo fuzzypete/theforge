@@ -62,7 +62,7 @@ from ..intake import (
 from ..log_util import _log_line
 from ..process_group import ProcessTeardown
 from ..runners.rate_registry import AccountingMode, accounting_mode_for
-from ..task import BatchMember, TaskStory
+from ..task import BatchMember, TaskStory, load_story
 from ..validation_profiles import PHASE_MERGE, select_validation
 from . import unmeasured as unmeasured_spend_policy
 from .abnormal import (
@@ -83,6 +83,7 @@ from .audit import (
     persist_accepted_unmeasured_spend,
     persist_accumulated_story_state,
     preflight_degraded_row_fields,
+    preflight_likely_files_row_field,
     write_live_story_audit,
 )
 from .audit_publish import (
@@ -1992,11 +1993,76 @@ def _populate_resumed_story_footprint(
     return state
 
 
+def _recovered_story_footprint(
+    slug: str,
+    project_root: Path | None,
+    task: TaskStory | None,
+) -> tuple[list[str] | None, str]:
+    """Return ``(likely_files, source_reason)`` from the durable resume record.
+
+    A story already past preflight gets a *fresh* live preflight attempt on
+    resume, and for a preserved, diverged worktree that attempt routinely fails
+    or drift-classifies, leaving ``preflight_likely_files=None``. The original
+    run's real, evidence-backed footprint is still on disk in the coordinator's
+    resume record, so it is read back here rather than re-derived from the
+    strictly weaker plan.md scrape (#2610). ``likely_files`` is None when no
+    usable footprint could be recovered; the reason names why, so an empty
+    footprint in a real repro can be attributed to a source instead of guessed.
+    """
+    if project_root is None:
+        return None, "no_project_root"
+    from ..coordinator.resume_persistence import (  # noqa: PLC0415
+        apply_resume_record_to_state,
+        load_resume_record,
+        validate_resume_record,
+    )
+
+    record = load_resume_record(project_root, slug)
+    if record is None:
+        return None, "no_record"
+    story_content: str | None = None
+    if task is not None:
+        try:
+            if task.story_text is not None:
+                story_content = task.story_text
+            elif task.story_path is not None:
+                story_content = load_story(Path(task.story_path))
+        except OSError:
+            story_content = None
+    # story_content=None is accepted by validate_resume_record as
+    # ``unverified_story``: the record still names phases that demonstrably ran,
+    # and discarding it would throw away a usable footprint for every
+    # issue-backed story that carries no story file.
+    usable, reason = validate_resume_record(record, story_content=story_content)
+    if not usable:
+        return None, reason
+    probe = CoordinatorState()
+    try:
+        apply_resume_record_to_state(probe, record)
+    except Exception:  # pragma: no cover - defensive; record is best-effort data
+        return None, "record_unusable"
+    files = probe.preflight_likely_files
+    if not files:
+        return None, f"{reason}:no_likely_files"
+    return sorted({str(f) for f in files}), reason
+
+
 def _register_resumed_story_footprints(
     triages: dict[str, StoryTriage],
     preflight_states: dict[str, CoordinatorState],
+    *,
+    project_root: Path | None = None,
+    tasks: list[TaskStory] | None = None,
 ) -> dict[str, CoordinatorState]:
-    """Ensure resumed dev/review stories contribute likely_files to collision detection."""
+    """Ensure resumed dev/review stories contribute likely_files to collision detection.
+
+    Footprint sources, in precedence order: this run's own live preflight
+    result, the durable coordinator resume record from the run that first
+    scheduled the story, then the story's plan.md. Which one populated the
+    footprint is logged, because a collision edge that silently went missing is
+    the failure this path exists to prevent (#2610).
+    """
+    tasks_by_slug = {t.slug: t for t in (tasks or [])}
     for triage in triages.values():
         if triage.action not in {"review", "dev"} or triage.worktree_path is None:
             continue
@@ -2004,7 +2070,37 @@ def _register_resumed_story_footprints(
         if state is None:
             state = CoordinatorState()
             preflight_states[triage.slug] = state
+        if state.preflight_likely_files:
+            # A live preflight that produced a concrete claim this run is
+            # authoritative; nothing recorded displaces it.
+            _log(
+                f"Resumed story {triage.slug}: footprint source=live preflight "
+                f"({len(state.preflight_likely_files)} file(s))"
+            )
+            continue
+        recovered, reason = _recovered_story_footprint(
+            triage.slug, project_root, tasks_by_slug.get(triage.slug)
+        )
+        if recovered:
+            state.preflight_likely_files = recovered
+            _log(
+                f"Resumed story {triage.slug}: footprint source=resume record "
+                f"({reason}); registered {len(recovered)} file(s) for collision "
+                f"detection: {recovered}"
+            )
+            continue
+        _log(
+            f"Resumed story {triage.slug}: no durable footprint available "
+            f"({reason}); falling back to plan.md"
+        )
         _populate_resumed_story_footprint(triage.slug, state, triage.worktree_path)
+        if not state.preflight_likely_files:
+            _log(
+                f"Resumed story {triage.slug}: footprint source=none — no live "
+                f"preflight, no resume record ({reason}), no plan.md files; this "
+                f"story makes no file claim and will not be serialized against "
+                f"another story that makes none either"
+            )
     return preflight_states
 
 
@@ -4123,6 +4219,8 @@ def _persist_current_story_result(
         # (#2346). Escalated stories carry it too: failure_action='escalate'
         # is the half that stopped, and it belongs on the same row.
         **preflight_degraded_row_fields(result.state),
+        # The footprint collision scheduling used for this story (#2610).
+        **preflight_likely_files_row_field(result.state),
         "error": result.state.error,
         "error_type": result.state.error_type,
         "outcome_code": result.state.error_type or outcome.lower(),
@@ -6065,7 +6163,12 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             f"({_complexity} complexity, {_source})"
         )
     if _ctx.resume:
-        _register_resumed_story_footprints(triages, preflight_states)
+        _register_resumed_story_footprints(
+            triages,
+            preflight_states,
+            project_root=_ctx.config.project_root,
+            tasks=list(normalized.tasks),
+        )
     bundle_assignments = compute_bundle_assignments(preflight_states, normalized.tasks)
     if bundle_assignments:
         _log(f"Computed deterministic bundles: {bundle_assignments}")
@@ -6558,6 +6661,11 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 "preflight_degraded_reason": prior_entry.get("preflight_degraded_reason"),
                 "preflight_failure_action": prior_entry.get("preflight_failure_action"),
                 "preflight_risk_signals": list(prior_entry.get("preflight_risk_signals") or []),
+                # Same carry-forward reason as the degraded fields above: the
+                # footprint this story was scheduled on is a fact about the run
+                # (#2610), and a re-exec that dropped it would erase the only
+                # record of what the collision edges were derived from.
+                "preflight_likely_files": prior_entry.get("preflight_likely_files"),
                 "error": prior_entry.get("error"),
                 "error_type": prior_entry.get("error_type"),
                 "merge": bool(prior_entry.get("merge", False)),
