@@ -8,14 +8,19 @@ import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from coord_test_helpers import _make_config, _make_task
 
-from theforge.cli.shared import _write_audit
+from theforge.cli.shared import (
+    _move_dirty_story_run_artifacts_off_tree,
+    _write_audit,
+)
 from theforge.config import ForgeConfig
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.coordinator.workspace import landing_precondition_error
+from theforge.knowledge_index import rebuild_knowledge_index
 
 BASE = "release/v0.13"
 
@@ -399,3 +404,105 @@ class TestPerRunFileWrite:
             == ""
         )
         assert landing_precondition_error(config) is None
+
+    def test_preserved_summary_repoints_its_run_record_and_survives_rebuilds(
+        self, tmp_path: Path
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        run_id = "run-cli-preserved-summary"
+        run_file = clone / ".forge" / "audits" / "runs" / f"{run_id}.json"
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        run_record = {
+            "run_id": run_id,
+            "trust_status": "trusted",
+            "trust_checks": [],
+            "finding_registry": [],
+            "reviews": [],
+            "phases": {"plan": {"plan_structured": {"steps": []}}},
+            "changed_files": {"base_ref": None, "head_ref": None, "files": []},
+        }
+        run_file.write_text(json.dumps(run_record, indent=2), encoding="utf-8")
+
+        summary_file = clone / ".forge" / "knowledge" / "summaries" / f"{run_id}.yaml"
+        summary_file.parent.mkdir(parents=True, exist_ok=True)
+        summary_file.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "run_id": run_id,
+                    "generated_at": None,
+                    "story": {"slug": "demo", "name": "Demo", "github_issue": 339},
+                    "story_shape": {
+                        "work_type": "bugfix",
+                        "complexity": "small",
+                        "complexity_score": 2,
+                        "contract_change": False,
+                    },
+                    "domains": ["cli"],
+                    "changed_files": ["src/theforge/cli/shared.py"],
+                    "learned_patterns": ["audit-publish"],
+                    "authoritative_run_record": f".forge/audits/runs/{run_id}.json",
+                },
+                sort_keys=False,
+                default_flow_style=False,
+            ),
+            encoding="utf-8",
+        )
+
+        conn = audit_substrate.create_or_open(clone)
+        try:
+            stat = run_file.stat()
+            audit_substrate.upsert_run_record(
+                conn,
+                run_record,
+                provenance="native",
+                source_path=str(run_file.relative_to(clone)),
+                source_mtime=stat.st_mtime,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        preserved_root = _move_dirty_story_run_artifacts_off_tree(
+            clone,
+            [run_file, summary_file],
+            run_id=run_id,
+        )
+
+        assert preserved_root is not None
+        preserved_run_rel = (
+            f".forge/unpublished-story-run-artifacts/{run_id}/.forge/audits/runs/{run_id}.json"
+        )
+        preserved_summary_rel = (
+            ".forge/unpublished-story-run-artifacts/"
+            f"{run_id}/.forge/knowledge/summaries/{run_id}.yaml"
+        )
+        assert not run_file.exists()
+        assert not summary_file.exists()
+
+        preserved_summary = yaml.safe_load(
+            (clone / preserved_summary_rel).read_text(encoding="utf-8")
+        )
+        assert preserved_summary["authoritative_run_record"] == preserved_run_rel
+
+        summary = audit_substrate.rebuild_from_runs(clone)
+        assert summary.runs_seen == 1
+        assert summary.imported == 1
+
+        conn = audit_substrate.require_substrate(clone)
+        try:
+            row = conn.execute(
+                "SELECT source_path FROM audit_records WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["source_path"] == preserved_run_rel
+
+        result = rebuild_knowledge_index(clone)
+        assert result.payload["source_count"] == 1
+        assert result.payload["indexed_count"] == 1
+        entry = result.payload["entries"][0]
+        assert entry["run_id"] == run_id
+        assert entry["summary_path"] == preserved_summary_rel

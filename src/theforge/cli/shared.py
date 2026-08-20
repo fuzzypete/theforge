@@ -212,7 +212,12 @@ def _print_unpublished_story_run_artifact_warnings(project_root: Path) -> None:
         return
 
     preserved_runs: list[str] = []
-    for child in sorted(preserved_root.iterdir()):
+    try:
+        children = sorted(preserved_root.iterdir())
+    except OSError:
+        return
+
+    for child in children:
         if not child.is_dir():
             continue
         if any(path.is_file() for path in child.rglob("*")):
@@ -252,6 +257,7 @@ def load_config_checked(
     *,
     loader: Callable[[Path], ForgeConfig] | None = None,
     emit_startup_auth_warnings: bool = True,
+    emit_startup_artifact_warnings: bool = True,
 ) -> ForgeConfig:
     """Load config for a run/sprint entrypoint, enforcing startup contracts.
 
@@ -274,6 +280,7 @@ def load_config_checked(
         raise SystemExit(2) from exc
     if emit_startup_auth_warnings:
         _print_startup_auth_warnings(config)
+    if emit_startup_artifact_warnings:
         project_root = getattr(config, "project_root", None)
         if isinstance(project_root, Path):
             _print_unpublished_story_run_artifact_warnings(project_root)
@@ -454,6 +461,7 @@ def _move_dirty_story_run_artifacts_off_tree(
         project_root / _UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR / (run_id or "unknown-run")
     )
     preserved_any = False
+    preserved_relpaths: dict[Path, Path] = {}
 
     for path in artifact_paths:
         try:
@@ -466,13 +474,53 @@ def _move_dirty_story_run_artifacts_off_tree(
             dest = preserved_root / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(path, dest)
+            preserved_relpaths[rel] = dest.relative_to(project_root)
             _repoint_preserved_story_run_artifact_in_substrate(project_root, rel, dest)
             preserved_any = True
         _clear_pending_git_path(project_root, rel)
 
+    _rewrite_preserved_summary_authoritative_records(project_root, preserved_relpaths)
+
     if preserved_any:
         return preserved_root
     return None
+
+
+def _rewrite_preserved_summary_authoritative_records(
+    project_root: Path,
+    preserved_relpaths: dict[Path, Path],
+) -> None:
+    """Point preserved summaries at preserved run records when both were moved."""
+    runs_rel = Path(".forge") / "audits" / "runs"
+    summaries_rel = Path(".forge") / "knowledge" / "summaries"
+
+    for source_relpath, preserved_relpath in preserved_relpaths.items():
+        try:
+            source_relpath.relative_to(summaries_rel)
+        except ValueError:
+            continue
+
+        run_id = source_relpath.stem
+        preserved_run_relpath = preserved_relpaths.get(runs_rel / f"{run_id}.json")
+        if preserved_run_relpath is None:
+            continue
+
+        preserved_summary_path = project_root / preserved_relpath
+        try:
+            payload = yaml.safe_load(preserved_summary_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        payload["authoritative_run_record"] = str(preserved_run_relpath)
+        try:
+            preserved_summary_path.write_text(
+                yaml.safe_dump(payload, sort_keys=False, default_flow_style=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            continue
 
 
 def _repoint_preserved_story_run_artifact_in_substrate(

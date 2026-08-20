@@ -70,6 +70,7 @@ def cmd_review(args: object) -> int:
         config_path,
         loader=load_config,
         emit_startup_auth_warnings=False,
+        emit_startup_artifact_warnings=True,
     )
     if story_path is not None:
         task = _build_task(story_path, slug=args.slug)
