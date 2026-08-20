@@ -59,6 +59,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -968,6 +969,24 @@ def group_members_checked(pgid: int) -> tuple[dict[int, str], bool]:
     return {}, False
 
 
+def group_has_running_members(pgid: int) -> bool:
+    """True when *pgid* still has non-zombie members; false when it is settled.
+
+    Unlike :func:`group_is_alive`, this asks the kernel for current membership so
+    an unreaped corpse does not count as live work. When the group cannot be
+    enumerated but still answers a signal-0 probe, the result is unknown rather
+    than "alive", so callers that need a definite answer can surface that
+    uncertainty instead of waiting on a process they can no longer observe.
+    """
+    for _attempt in range(3):
+        members, enumerated = group_members_checked(pgid)
+        if enumerated:
+            return bool(members)
+    if not group_is_alive(pgid):
+        return False
+    raise OSError(f"process group {pgid} could not be enumerated")
+
+
 def _enumerate_group_linux(pgid: int) -> tuple[dict[int, str], bool]:
     """Linux: one ``/proc/<pid>/stat`` read per process gives group and state."""
     try:
@@ -1049,11 +1068,35 @@ def register_agent_group(
     }
     try:
         agents_dir.mkdir(parents=True, exist_ok=True)
-        _sidecar_path(agents_dir, owner_pid, pgid).write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
+        _write_sidecar_json(_sidecar_path(agents_dir, owner_pid, pgid), payload)
     except OSError:
         pass
+
+
+def _write_sidecar_json(path: Path, payload: dict[str, object]) -> None:
+    """Atomically replace a sidecar JSON record in-place.
+
+    Sidecar readers treat a malformed ``*.json`` as unresolved liveness. Writing
+    via a same-directory temp file keeps that failure mode reserved for truly
+    broken records rather than our own partial writes.
+    """
+    encoded = json.dumps(payload)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+            handle.write(encoded)
+        Path(tmp_name).replace(path)
+    except Exception:
+        try:
+            Path(tmp_name).unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _update_sidecar(pgid: int, field: str, value: dict[str, str]) -> None:
@@ -1076,7 +1119,7 @@ def _update_sidecar(pgid: int, field: str, value: dict[str, str]) -> None:
         return
     data[field] = value
     try:
-        path.write_text(json.dumps(data), encoding="utf-8")
+        _write_sidecar_json(path, data)
     except OSError:
         pass
 

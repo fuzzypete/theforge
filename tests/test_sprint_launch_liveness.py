@@ -234,6 +234,31 @@ def test_clean_scan_resolves_confirmed_live_and_nothing_else(tmp_path: Path) -> 
     assert resolution.resolved is True
 
 
+def test_temp_sidecar_does_not_taint_liveness_scan(tmp_path: Path) -> None:
+    """A writer temp file is not a sidecar and must not defer unrelated stories."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-2048").mkdir(parents=True)
+    agents_dir = tmp_path / ".forge" / "runs" / "agents"
+    agents_dir.mkdir(parents=True)
+    _write_agent_sidecar(
+        tmp_path,
+        owner_pid=os.getpid(),
+        pgid=os.getpgrp(),
+        sandbox_dir=worktrees / "issue-2048",
+    )
+    (agents_dir / ".broken.json.tmp").write_text("{not json", encoding="utf-8")
+
+    resolution = resolve_liveness(
+        ["issue-2048"],
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+    )
+
+    assert resolution.live_slugs == {"issue-2048"}
+    assert resolution.unresolved_slugs == frozenset()
+    assert resolution.resolved is True
+
+
 def test_failed_liveness_probe_is_unresolved_not_dead(tmp_path: Path) -> None:
     """A probe that raises says nothing about the group — least of all that it exited."""
     worktrees = tmp_path / ".forge" / "worktrees"
