@@ -290,6 +290,35 @@ def test_await_inherited_agents_reports_overrun_without_killing(tmp_path: Path) 
     assert sidecar.exists()
 
 
+def test_await_inherited_agents_keeps_waiting_when_liveness_is_unresolved(
+    tmp_path: Path,
+) -> None:
+    """An unobservable inherited group is not finished work."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    sidecar = _write_agent_sidecar(
+        tmp_path, owner_pid=os.getpid(), pgid=4242, sandbox_dir=worktrees / "issue-1945"
+    )
+    logs: list[str] = []
+
+    quiesced = await_inherited_agents(
+        "issue-1945",
+        project_root=tmp_path,
+        path_pattern=".forge/worktrees/{slug}",
+        timeout=0.05,
+        poll_interval=0.01,
+        is_group_alive=lambda _pgid: (_ for _ in ()).throw(OSError("transient scan failure")),
+        log=logs.append,
+    )
+
+    assert quiesced is False
+    assert sidecar.exists()
+    assert logs == [
+        "IN-FLIGHT issue-1945: waiting up to 0s because inherited agent liveness is temporarily "
+        "unobservable; retaining its sidecar until it is confirmed finished or the wait times out"
+    ]
+
+
 def test_reclaim_inherited_agents_kills_survivor_and_clears_record(tmp_path: Path) -> None:
     """An agent that overruns is terminated, so no second agent shares its
     worktree and no later reaper inherits the pgid."""

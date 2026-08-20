@@ -977,9 +977,10 @@ def group_has_running_members(pgid: int) -> bool:
     than "alive", so callers that need a definite answer can surface that
     uncertainty instead of waiting on a process they can no longer observe.
     """
-    members, enumerated = group_members_checked(pgid)
-    if enumerated:
-        return bool(members)
+    for _attempt in range(3):
+        members, enumerated = group_members_checked(pgid)
+        if enumerated:
+            return bool(members)
     if not group_is_alive(pgid):
         return False
     raise OSError(f"process group {pgid} could not be enumerated")

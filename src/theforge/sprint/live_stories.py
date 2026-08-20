@@ -360,14 +360,14 @@ def await_inherited_agents(
     deadline = time.monotonic() + max(0.0, float(timeout))
     waited = False
     while True:
-        groups = resolve_inherited_agents(
+        resolution = resolve_liveness(
             [slug],
             project_root=project_root,
             path_pattern=path_pattern,
             owner_pid=owner_pid,
             is_group_alive=is_group_alive,
         )
-        if not groups:
+        if slug not in resolution.deferred_slugs:
             settled = resolve_inherited_agents(
                 [slug],
                 project_root=project_root,
@@ -386,11 +386,25 @@ def await_inherited_agents(
         if remaining <= 0:
             return False
         if not waited and log is not None:
-            pgids = ", ".join(str(g.pgid) for g in groups)
-            log(
-                f"IN-FLIGHT {slug}: waiting up to {int(timeout)}s for the agent process "
-                f"group(s) {pgids} inherited across the re-exec to finish before resuming"
-            )
+            if slug in resolution.live_slugs:
+                groups = resolve_inherited_agents(
+                    [slug],
+                    project_root=project_root,
+                    path_pattern=path_pattern,
+                    owner_pid=owner_pid,
+                    is_group_alive=is_group_alive,
+                )
+                pgids = ", ".join(str(g.pgid) for g in groups)
+                log(
+                    f"IN-FLIGHT {slug}: waiting up to {int(timeout)}s for the agent process "
+                    f"group(s) {pgids} inherited across the re-exec to finish before resuming"
+                )
+            else:
+                log(
+                    f"IN-FLIGHT {slug}: waiting up to {int(timeout)}s because inherited "
+                    "agent liveness is temporarily unobservable; retaining its sidecar "
+                    "until it is confirmed finished or the wait times out"
+                )
         waited = True
         time.sleep(min(max(0.01, poll_interval), remaining))
 
