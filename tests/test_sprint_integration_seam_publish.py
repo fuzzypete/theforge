@@ -34,6 +34,7 @@ from theforge.sprint.audit_publish import (
 )
 from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.runner import (
+    _SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS,
     SprintExecutionState,
     SprintRunContext,
     _attempt_integration,
@@ -292,6 +293,96 @@ def test_a_sibling_landing_after_the_publish_is_retried_not_refused(tmp_path: Pa
     assert len(attempts) == 2, "the seam must republish and retry once"
     assert attempts[1] == "", "the retry must see the late sibling's artifacts committed"
     assert result.landing_status == "merged"
+
+
+def _refusal(dirty: str) -> tuple[dict, str]:
+    """What ``land_story`` returns when the root is dirty at merge time."""
+    return (
+        {
+            "attempted": True,
+            "merged": False,
+            "base_branch": "main",
+            "error": f"Uncommitted changes in project root: {dirty}",
+        },
+        "failed",
+    )
+
+
+def test_siblings_in_successive_windows_still_land(tmp_path: Path) -> None:
+    """Two siblings, one per window, do not strand the approved story.
+
+    A single retry left the second window as wide as the first was: a sibling
+    finishing there refused the story for exactly the reason the seam exists to
+    remove. Retrying while the refusal is still attributable is what closes it.
+    """
+    root = _repo(tmp_path)
+    state, task = _state(root)
+    result = _approved_result(task)
+    attempts: list[str] = []
+
+    def _land_story(config, task_, branch, wt, review, st, on_approve, **kwargs):
+        dirty = project_root_dirty_status(config.project_root)
+        attempts.append(dirty)
+        if len(attempts) <= 2:
+            # A different sibling completes in each successive window.
+            _write_sibling_artifacts(config.project_root, run_id=f"latecomer000{len(attempts)}")
+            return _refusal(dirty)
+        return {"attempted": True, "merged": True, "base_branch": "main", "error": None}, "merged"
+
+    assert _run_integration(state, task, result, _land_story) is True
+
+    assert len(attempts) == 3, "each attributable refusal earns another republish"
+    assert attempts[2] == "", "the last attempt must see both siblings' artifacts committed"
+    assert result.landing_status == "merged"
+    assert result.merge is not None
+    assert result.merge["sibling_artifact_republishes"] == 2
+
+
+def test_relentless_siblings_fail_the_landing_at_the_attempt_cap(tmp_path: Path) -> None:
+    """The loop is bounded: a story fails loudly rather than spinning under the lock."""
+    root = _repo(tmp_path)
+    state, task = _state(root)
+    result = _approved_result(task)
+    attempts: list[str] = []
+
+    def _land_story(config, task_, branch, wt, review, st, on_approve, **kwargs):
+        dirty = project_root_dirty_status(config.project_root)
+        attempts.append(dirty)
+        _write_sibling_artifacts(config.project_root, run_id=f"relentless{len(attempts):04d}")
+        return _refusal(dirty)
+
+    assert _run_integration(state, task, result, _land_story) is True
+
+    assert len(attempts) == 1 + _SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS
+    assert result.landing_status == "failed"
+    assert result.merge is not None
+    assert result.merge["sibling_artifact_republishes"] == _SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS
+
+
+def test_a_republish_that_makes_no_progress_stops_the_loop(tmp_path: Path) -> None:
+    """A publish that reports success while committing nothing ends the retries.
+
+    Landing again would refuse for the identical reason, so the loop stops on
+    the absence of progress rather than burning the whole attempt budget.
+    """
+    root = _repo(tmp_path)
+    _write_sibling_artifacts(root)
+    state, task = _state(root)
+    result = _approved_result(task)
+    attempts: list[str] = []
+
+    def _land_story(config, task_, branch, wt, review, st, on_approve, **kwargs):
+        dirty = project_root_dirty_status(config.project_root)
+        attempts.append(dirty)
+        return _refusal(dirty)
+
+    with patch("theforge.sprint.runner.publish_pending_story_run_audits", return_value=True):
+        assert _run_integration(state, task, result, _land_story) is True
+
+    assert len(attempts) == 1, "no progress means no second landing attempt"
+    assert result.landing_status == "failed"
+    assert result.merge is not None
+    assert result.merge["sibling_artifact_republishes"] == 1
 
 
 def test_operator_dirt_still_refuses_the_landing(tmp_path: Path) -> None:

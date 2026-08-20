@@ -4561,6 +4561,14 @@ def _service_plan_gates(
             _sd_gate.set()
 
 
+# How many times a landing refused on nothing but sibling story-run artifacts
+# will republish and try again. Progress — the root's dirt actually changing —
+# is what normally ends the loop; this only bounds a sprint whose siblings
+# complete faster than the seam can commit them, so an approved story fails
+# with an attributable reason instead of holding integration_lock forever.
+_SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS = 3
+
+
 def _publish_sibling_artifacts(state: SprintExecutionState, slug: str) -> bool:
     """Commit pending story-run artifacts before this story merges into the root.
 
@@ -4653,25 +4661,59 @@ def _attempt_integration(
                 run_id=story_run_id,
             )
 
+        project_root = state.context.config.project_root
         lands_in_root = effective_on_approve == "merge"
         publish_ok = _publish_sibling_artifacts(state, slug) if lands_in_root else True
         merge_info, landing_status = _land()
 
         # A sibling can finish in the few git calls between that publish and
         # _merge_branch's own dirty check, which is the same race one step
-        # narrower. So the seam is tolerant as well as early: when the refusal
-        # names nothing but story-run artifacts, republish and land again once.
-        # Operator dirt is untouched by this and refuses exactly as before.
-        if (
+        # narrower. So the seam is tolerant as well as early: while the refusal
+        # names nothing but story-run artifacts, republish and land again.
+        #
+        # One retry was not enough — a second sibling finishing in the second
+        # window strands the story exactly as the first one used to. What bounds
+        # this is progress, not a single shot: each pass must actually change
+        # the root's dirt, and a publish that reports success while leaving the
+        # same files uncommitted ends it. The attempt cap is a backstop for a
+        # sprint whose siblings land faster than this loop can publish them, so
+        # an approved story fails loudly rather than spinning under the lock.
+        #
+        # Operator dirt is untouched by any of this: the loop never runs unless
+        # every dirty path is a story-run artifact, so unrelated changes refuse
+        # on the first attempt exactly as before.
+        republishes = 0
+        while (
             lands_in_root
             and landing_status == "failed"
-            and project_root_dirt_is_story_run_artifacts_only(state.context.config.project_root)
+            and republishes < _SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS
+            and project_root_dirt_is_story_run_artifacts_only(project_root)
         ):
+            dirt_before = coordinator_workspace.project_root_dirty_status(project_root)
+            republishes += 1
             _log(
-                f"INFO {slug}: landing refused on sibling run artifacts; republishing and retrying"
+                f"INFO {slug}: landing refused on sibling run artifacts; republishing "
+                f"and retrying ({republishes}/{_SIBLING_ARTIFACT_REPUBLISH_ATTEMPTS})"
             )
             publish_ok = _publish_sibling_artifacts(state, slug)
+            if not publish_ok:
+                break
+            if coordinator_workspace.project_root_dirty_status(project_root) == dirt_before:
+                # The publish reported success and the same files are still
+                # uncommitted, so landing again would refuse for the same
+                # reason. Stopping here keeps the failure attributable.
+                _log(
+                    f"WARN {slug}: republish left the same story run artifacts uncommitted; "
+                    f"not retrying the landing again"
+                )
+                break
             merge_info, landing_status = _land()
+
+        if republishes:
+            # The retries are part of what happened to this landing, so the
+            # audit record carries them rather than leaving the count to be
+            # reconstructed from the log.
+            merge_info["sibling_artifact_republishes"] = republishes
 
         if lands_in_root and landing_status == "failed" and not publish_ok:
             # Attribution the operator cannot otherwise get: a swallowed publish
