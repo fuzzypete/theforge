@@ -593,6 +593,36 @@ class TestGroupMembers:
             os.kill(proc.pid, signal.SIGKILL)
             proc.wait(timeout=5)
 
+    def test_group_has_running_members_retries_a_transient_unreadable_scan(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls = iter([({}, False), ({1234: "started"}, True)])
+
+        monkeypatch.setattr(
+            process_group,
+            "group_members_checked",
+            lambda _pgid: next(calls),
+        )
+        monkeypatch.setattr(process_group, "group_is_alive", lambda _pgid: True)
+
+        assert process_group.group_has_running_members(4242) is True
+
+    def test_group_has_running_members_treats_a_zombie_only_group_as_settled(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(process_group, "group_members_checked", lambda _pgid: ({}, True))
+
+        assert process_group.group_has_running_members(4242) is False
+
+    def test_group_has_running_members_raises_when_a_live_group_stays_unreadable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(process_group, "group_members_checked", lambda _pgid: ({}, False))
+        monkeypatch.setattr(process_group, "group_is_alive", lambda _pgid: True)
+
+        with pytest.raises(OSError, match="could not be enumerated"):
+            process_group.group_has_running_members(4242)
+
     def test_a_group_holding_only_a_zombie_settles_immediately(self) -> None:
         """The liveness wait must not sit out its grace period for a corpse.
 
