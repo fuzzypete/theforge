@@ -20,6 +20,7 @@ then [vision.md](vision.md) for the philosophy and reading order.
   [provider setup](guides/choose-your-provider-setup.md),
   [routing policy](guides/routing-policy.md),
   [adaptive assignment](guides/adaptive-assignment.md),
+  [policy assertion provenance](guides/policy-provenance.md),
   [storage layout](guides/forge-storage.md),
   [troubleshooting](guides/troubleshooting.md),
   [controller runbook](guides/controller-runbook.md), and more.

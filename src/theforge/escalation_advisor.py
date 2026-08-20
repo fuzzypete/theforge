@@ -24,9 +24,18 @@ and consequence (what happens if selected).
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 
 import yaml
+
+from theforge.policy_provenance import (
+    MATCH_UNMATCHED,
+    PROVENANCE_GENERATED,
+    PROVENANCE_RATIFIED,
+    PolicyAssertionRegistry,
+    ResolvedAssertion,
+    parse_citations,
+)
 
 # ── Fixed action taxonomy ─────────────────────────────────────────────────────
 #
@@ -193,6 +202,10 @@ class AdvisoryOption:
     forge_operation: str  # concrete forge operation named for this action
     risk: str
     consequence: str
+    # Standing policy assertions this option's evidence leans on (#2137). Parsed
+    # as claims; ``resolve_advisory_assertions`` stamps each with the provenance
+    # class the registry decides. Empty for options that cite no policy.
+    policy_assertions: tuple[ResolvedAssertion, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -202,6 +215,7 @@ class AdvisoryOption:
             "forge_operation": self.forge_operation,
             "risk": self.risk,
             "consequence": self.consequence,
+            "policy_assertions": [a.to_dict() for a in self.policy_assertions],
         }
 
 
@@ -221,6 +235,9 @@ class AdvisoryReport:
     options: list[AdvisoryOption]
     parse_errors: list[str] = field(default_factory=list)
     raw: dict = field(default_factory=dict)
+    # Report-level policy assertions (#2137): the standing policy the advisor's
+    # rationale leans on, independent of any single option.
+    policy_assertions: tuple[ResolvedAssertion, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -239,6 +256,7 @@ class AdvisoryReport:
             "rationale": self.rationale,
             "options": [o.to_dict() for o in self.options],
             "parse_errors": list(self.parse_errors),
+            "policy_assertions": [a.to_dict() for a in self.policy_assertions],
         }
 
 
@@ -247,6 +265,50 @@ def _truncate(value: object) -> str:
     if len(text) > _FIELD_MAX_LEN:
         return text[: _FIELD_MAX_LEN - 1] + "…"
     return text
+
+
+def _parse_policy_assertions(raw: object) -> tuple[ResolvedAssertion, ...]:
+    """Parse cited policy assertions from advisor output, unresolved.
+
+    Parsing is not adjudication: a citation starts out ``generated`` /
+    ``unmatched`` — the same default an unmarked assertion gets everywhere else —
+    and only :func:`resolve_advisory_assertions` can upgrade it to ``ratified``
+    against the registry. This means an advisor that *claims* an assertion is
+    ratified does not thereby make it so.
+    """
+    return tuple(
+        ResolvedAssertion(
+            citation=citation,
+            provenance=PROVENANCE_GENERATED,
+            match_basis=MATCH_UNMATCHED,
+        )
+        for citation in parse_citations(raw)
+    )
+
+
+def resolve_advisory_assertions(
+    report: AdvisoryReport, registry: PolicyAssertionRegistry
+) -> AdvisoryReport:
+    """Return ``report`` with every cited policy assertion resolved against ``registry``.
+
+    The advisor may cite policy; only the registry says whether that policy was
+    ratified. Keeping resolution out of the parser means the schema boundary stays
+    a pure function of the agent's text, while the authority question is answered
+    from durable repo state.
+    """
+    return replace(
+        report,
+        policy_assertions=tuple(registry.resolve(a.citation) for a in report.policy_assertions),
+        options=[
+            replace(
+                option,
+                policy_assertions=tuple(
+                    registry.resolve(a.citation) for a in option.policy_assertions
+                ),
+            )
+            for option in report.options
+        ],
+    )
 
 
 def _extract_advisory_block(text: str) -> str | None:
@@ -358,6 +420,7 @@ def parse_advisory_report(text: str) -> AdvisoryReport:
                     forge_operation=forge_operation,
                     risk=risk,
                     consequence=consequence,
+                    policy_assertions=_parse_policy_assertions(opt.get("policy_assertions")),
                 )
             )
 
@@ -375,6 +438,7 @@ def parse_advisory_report(text: str) -> AdvisoryReport:
         options=options,
         parse_errors=[],
         raw=data,
+        policy_assertions=_parse_policy_assertions(data.get("policy_assertions")),
     )
 
 
@@ -400,6 +464,7 @@ def render_advisory_for_pending(report: AdvisoryReport, packet: EvidencePacket) 
         lines.append("RECOMMENDED ACTION: none")
     if report.rationale:
         lines.append(f"  Rationale: {report.rationale}")
+    lines.extend(_render_policy_assertions(report.policy_assertions, indent="  "))
     lines.append("")
     lines.append("Options (select one):")
     for opt in report.options:
@@ -410,4 +475,34 @@ def render_advisory_for_pending(report: AdvisoryReport, packet: EvidencePacket) 
         lines.append(f"      evidence: {opt.evidence}")
         lines.append(f"      risk: {opt.risk}")
         lines.append(f"      consequence: {opt.consequence}")
+        lines.extend(_render_policy_assertions(opt.policy_assertions, indent="      "))
     return "\n".join(lines)
+
+
+def _render_policy_assertions(
+    assertions: "tuple[ResolvedAssertion, ...]", *, indent: str
+) -> list[str]:
+    """Render cited policy assertions with the provenance class that decides them.
+
+    The operator must be able to see, without reading git history, whether the
+    advice rests on a ratified decision or on prose a run wrote. A generated or
+    unmarked assertion is labelled as what it is and named as a retraction or
+    ratification candidate rather than presented as established architecture.
+    """
+    if not assertions:
+        return []
+    lines = [f"{indent}policy assertions cited:"]
+    for item in assertions:
+        lines.append(f"{indent}  - [{item.provenance}] {item.label()}")
+        if item.provenance == PROVENANCE_RATIFIED:
+            continue
+        follow_up = (
+            "ratification candidate (no provenance recorded) / retraction candidate"
+            if item.is_unmarked
+            else "retraction candidate"
+        )
+        lines.append(
+            f"{indent}    advisory only — generated prose carries no blocking "
+            f"authority; {follow_up}"
+        )
+    return lines
