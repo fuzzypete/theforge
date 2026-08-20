@@ -968,6 +968,23 @@ def group_members_checked(pgid: int) -> tuple[dict[int, str], bool]:
     return {}, False
 
 
+def group_has_running_members(pgid: int) -> bool:
+    """True when *pgid* still has non-zombie members; false when it is settled.
+
+    Unlike :func:`group_is_alive`, this asks the kernel for current membership so
+    an unreaped corpse does not count as live work. When the group cannot be
+    enumerated but still answers a signal-0 probe, the result is unknown rather
+    than "alive", so callers that need a definite answer can surface that
+    uncertainty instead of waiting on a process they can no longer observe.
+    """
+    members, enumerated = group_members_checked(pgid)
+    if enumerated:
+        return bool(members)
+    if not group_is_alive(pgid):
+        return False
+    raise OSError(f"process group {pgid} could not be enumerated")
+
+
 def _enumerate_group_linux(pgid: int) -> tuple[dict[int, str], bool]:
     """Linux: one ``/proc/<pid>/stat`` read per process gives group and state."""
     try:

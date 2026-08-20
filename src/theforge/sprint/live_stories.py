@@ -33,7 +33,10 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import Path
 
-from theforge.process_group import group_is_alive, kill_agent_group
+from theforge.process_group import (
+    group_has_running_members,
+    kill_agent_group,
+)
 
 __all__ = [
     "InheritedAgentGroup",
@@ -207,7 +210,7 @@ def resolve_inherited_agents(
     path_pattern: str,
     owner_pid: int | None = None,
     only_live: bool = True,
-    is_group_alive: Callable[[int], bool] = group_is_alive,
+    is_group_alive: Callable[[int], bool] = group_has_running_members,
 ) -> list[InheritedAgentGroup]:
     """Agent groups spawned by this process for any of *slugs*.
 
@@ -253,7 +256,7 @@ def resolve_liveness(
     project_root: Path,
     path_pattern: str,
     owner_pid: int | None = None,
-    is_group_alive: Callable[[int], bool] = group_is_alive,
+    is_group_alive: Callable[[int], bool] = group_has_running_members,
 ) -> LivenessResolution:
     """Establish, per slug, whether this process still has an agent running for it.
 
@@ -300,7 +303,7 @@ def resolve_live_story_slugs(
     project_root: Path,
     path_pattern: str,
     owner_pid: int | None = None,
-    is_group_alive: Callable[[int], bool] = group_is_alive,
+    is_group_alive: Callable[[int], bool] = group_has_running_members,
 ) -> set[str]:
     """The subset of *slugs* whose inherited agent group is confirmed running.
 
@@ -340,7 +343,7 @@ def await_inherited_agents(
     timeout: float,
     poll_interval: float = 2.0,
     owner_pid: int | None = None,
-    is_group_alive: Callable[[int], bool] = group_is_alive,
+    is_group_alive: Callable[[int], bool] = group_has_running_members,
     stop_event=None,
     log: Callable[[str], None] | None = None,
 ) -> bool:
@@ -365,18 +368,17 @@ def await_inherited_agents(
             is_group_alive=is_group_alive,
         )
         if not groups:
-            if waited and log is not None:
-                log(f"IN-FLIGHT {slug}: inherited agent finished; resuming the story")
-            _discard_records(
-                resolve_inherited_agents(
-                    [slug],
-                    project_root=project_root,
-                    path_pattern=path_pattern,
-                    owner_pid=owner_pid,
-                    only_live=False,
-                    is_group_alive=is_group_alive,
-                )
+            settled = resolve_inherited_agents(
+                [slug],
+                project_root=project_root,
+                path_pattern=path_pattern,
+                owner_pid=owner_pid,
+                only_live=False,
+                is_group_alive=is_group_alive,
             )
+            if (waited or settled) and log is not None:
+                log(f"IN-FLIGHT {slug}: inherited agent finished; resuming the story")
+            _discard_records(settled)
             return True
         if stop_event is not None and stop_event.is_set():
             return False
@@ -399,7 +401,7 @@ def reclaim_inherited_agents(
     project_root: Path,
     path_pattern: str,
     owner_pid: int | None = None,
-    is_group_alive: Callable[[int], bool] = group_is_alive,
+    is_group_alive: Callable[[int], bool] = group_has_running_members,
     kill_group: Callable[[int], bool] = kill_agent_group,
 ) -> list[int]:
     """Kill any still-live inherited groups for *slug*; return the pgids killed.

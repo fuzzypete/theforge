@@ -16,6 +16,10 @@ from __future__ import annotations
 
 import json
 import os
+import signal
+import subprocess
+import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -220,6 +224,46 @@ def test_await_inherited_agents_returns_when_group_exits(tmp_path: Path) -> None
     assert quiesced is True
     # The image that registered it is gone, so nothing else would ever clear it.
     assert not sidecar.exists()
+
+
+def test_await_inherited_agents_treats_an_unreaped_zombie_as_finished(
+    tmp_path: Path,
+) -> None:
+    """A zombie inherited across re-exec is finished work, not running work."""
+    worktrees = tmp_path / ".forge" / "worktrees"
+    (worktrees / "issue-1945").mkdir(parents=True)
+    proc = subprocess.Popen(  # noqa: S603
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    sidecar = _write_agent_sidecar(
+        tmp_path,
+        owner_pid=os.getpid(),
+        pgid=os.getpgid(proc.pid),
+        sandbox_dir=worktrees / "issue-1945",
+    )
+    logs: list[str] = []
+    try:
+        os.kill(proc.pid, signal.SIGKILL)
+        started = time.monotonic()
+
+        quiesced = await_inherited_agents(
+            "issue-1945",
+            project_root=tmp_path,
+            path_pattern=".forge/worktrees/{slug}",
+            timeout=30,
+            poll_interval=0.01,
+            log=logs.append,
+        )
+
+        assert quiesced is True
+        assert time.monotonic() - started < 1.0
+        assert logs == ["IN-FLIGHT issue-1945: inherited agent finished; resuming the story"]
+        assert not sidecar.exists()
+    finally:
+        proc.wait(timeout=5)
 
 
 def test_await_inherited_agents_reports_overrun_without_killing(tmp_path: Path) -> None:
