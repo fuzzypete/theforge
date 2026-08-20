@@ -362,6 +362,7 @@ _CATEGORICAL_SCOPE_PREPOSITION_RE = re.compile(
     re.IGNORECASE,
 )
 _CATEGORICAL_SCOPE_REGARDLESS_RE = re.compile(r"\bregardless\s+of\b", re.IGNORECASE)
+_CATEGORICAL_SCOPE_QUANTIFIERS = frozenset({"all", "any", "each", "every"})
 _CARDINAL_SCOPE_WORDS = frozenset(
     {
         "0",
@@ -430,12 +431,17 @@ _SCOPE_PHRASE_BOUNDARY_WORDS = frozenset(
     {"across", "for", "in", "of", "on", "that", "which", "who", "with"}
 )
 _CONCRETE_SCOPE_NARROWING_WORDS = frozenset({"for", "in", "of", "on"})
-_CONCRETE_SCOPE_DETERMINERS = frozenset({"current", "that", "the", "this"})
+_CONCRETE_SCOPE_DEICTIC_DETERMINERS = frozenset({"current", "that", "this"})
+_CONCRETE_SCOPE_OPTIONAL_ARTICLES = frozenset({"the"})
 _CONCRETE_SCOPE_MODIFIERS = frozenset({"one", "single"})
 
 
 def _normalize_scope_text(text: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
+
+
+def _tokenize_scope_text(text: str) -> list[str]:
+    return [token.lower() for token in re.findall(r"[a-z0-9][\w-]*", text)]
 
 
 def _token_matches_scope_hint(token: str) -> bool:
@@ -449,30 +455,41 @@ def _token_matches_scope_hint(token: str) -> bool:
     return any(candidate in _SCOPE_NOUN_HINTS for candidate in candidates)
 
 
+def _collect_clause_head(tokens: list[str]) -> list[str]:
+    clause_head: list[str] = []
+    for token in tokens:
+        if token in _SCOPE_PHRASE_BOUNDARY_WORDS:
+            break
+        clause_head.append(token)
+    return clause_head
+
+
 def _clause_points_to_concrete_scope(tokens: list[str]) -> bool:
     if not tokens:
         return False
 
-    clause_tokens = tokens[:]
-    if clause_tokens[0] in _CONCRETE_SCOPE_DETERMINERS:
-        clause_tokens = clause_tokens[1:]
-    if clause_tokens and clause_tokens[0] in _CONCRETE_SCOPE_MODIFIERS:
-        clause_tokens = clause_tokens[1:]
-    if not clause_tokens:
+    clause_head = _collect_clause_head(tokens)
+    if not clause_head or clause_head[0] in _CATEGORICAL_SCOPE_QUANTIFIERS:
         return False
 
-    clause_head: list[str] = []
-    for token in clause_tokens:
-        if token in _SCOPE_PHRASE_BOUNDARY_WORDS:
-            break
-        clause_head.append(token)
+    concrete_marker = False
+    if clause_head[0] in _CONCRETE_SCOPE_DEICTIC_DETERMINERS:
+        concrete_marker = True
+        clause_head = clause_head[1:]
+    elif clause_head[0] in _CONCRETE_SCOPE_OPTIONAL_ARTICLES:
+        clause_head = clause_head[1:]
+    if clause_head and clause_head[0] in _CONCRETE_SCOPE_MODIFIERS:
+        concrete_marker = True
+        clause_head = clause_head[1:]
     if not clause_head:
         return False
-    if _token_matches_scope_hint(clause_head[-1]):
-        return True
-    return _token_matches_scope_hint(clause_head[0]) and any(
+
+    trailing_identifier = any(
         token.isdigit() or token in _CARDINAL_SCOPE_WORDS for token in clause_head[1:]
     )
+    if _token_matches_scope_hint(clause_head[-1]):
+        return concrete_marker or trailing_identifier
+    return _token_matches_scope_hint(clause_head[0]) and trailing_identifier
 
 
 def _phrase_narrows_to_concrete_scope(tokens: list[str]) -> bool:
@@ -484,20 +501,20 @@ def _phrase_narrows_to_concrete_scope(tokens: list[str]) -> bool:
     return False
 
 
-def _phrase_is_scope_like(phrase: str) -> bool:
-    tokens = [token.lower() for token in re.findall(r"[a-z0-9][\w-]*", phrase)]
+def _phrase_is_scope_like(phrase: str, *, trailing_context: str = "") -> bool:
+    tokens = _tokenize_scope_text(phrase)
     if not tokens:
         return False
     if tokens[0] in _CARDINAL_SCOPE_WORDS:
         return False
-    head_tokens: list[str] = []
-    for token in tokens:
-        if token in _SCOPE_PHRASE_BOUNDARY_WORDS:
-            break
-        head_tokens.append(token)
+    head_tokens = _collect_clause_head(tokens)
     if not head_tokens:
         return False
     if _phrase_narrows_to_concrete_scope(tokens):
+        return False
+    if trailing_context and _phrase_narrows_to_concrete_scope(
+        _tokenize_scope_text(trailing_context)
+    ):
         return False
     return _token_matches_scope_hint(head_tokens[-1])
 
@@ -508,10 +525,16 @@ def _text_asserts_categorical_scope(text: str) -> bool:
         return False
     if _CATEGORICAL_SCOPE_REGARDLESS_RE.search(normalized):
         return True
+    for match in _CATEGORICAL_SCOPE_SENTENCE_RE.finditer(normalized):
+        trailing_context = normalized[match.end("verb") :]
+        sentence_boundary = re.search(r"[.!?]", trailing_context)
+        if sentence_boundary:
+            trailing_context = trailing_context[: sentence_boundary.start()]
+        if _phrase_is_scope_like(match.group("phrase"), trailing_context=trailing_context):
+            return True
     return any(
         _phrase_is_scope_like(match.group("phrase"))
-        for pattern in (_CATEGORICAL_SCOPE_SENTENCE_RE, _CATEGORICAL_SCOPE_PREPOSITION_RE)
-        for match in pattern.finditer(normalized)
+        for match in _CATEGORICAL_SCOPE_PREPOSITION_RE.finditer(normalized)
     )
 
 

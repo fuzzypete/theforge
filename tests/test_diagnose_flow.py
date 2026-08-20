@@ -144,6 +144,15 @@ def _categorical_bug_body_with_domain_scope_noun(expected_sentence: str) -> str:
     )
 
 
+def _categorical_bug_body_with_nested_scope(expected_sentence: str) -> str:
+    return (
+        "## What happened\n"
+        "One concrete reproduction failed in sprint 12.\n\n"
+        "## What was expected\n"
+        f"{expected_sentence}\n"
+    )
+
+
 def _single_instance_bug_body_with_quantifier() -> str:
     return (
         "## What happened\n"
@@ -453,6 +462,21 @@ class TestPromptBuilder:
         for expected_sentence in cases:
             categorical, scope_text = derive_issue_scope_requirement(
                 "x", _categorical_bug_body_with_domain_scope_noun(expected_sentence)
+            )
+            assert categorical is True
+            assert scope_text == expected_sentence
+
+    def test_issue_scope_requirement_detects_nested_categorical_scope(self):
+        cases = (
+            "Every story in every sprint should preserve notes.",
+            "Every path in every run must be logged.",
+            "Every surface for each run should show the id.",
+            "Any story in the sprint should be retried.",
+            "Every renderer for the sprint should include the branch.",
+        )
+        for expected_sentence in cases:
+            categorical, scope_text = derive_issue_scope_requirement(
+                "x", _categorical_bug_body_with_nested_scope(expected_sentence)
             )
             assert categorical is True
             assert scope_text == expected_sentence
@@ -938,6 +962,47 @@ class TestDiagnoseFlow:
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": True,
             "stated_scope": "Any story with notes should preserve them.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_nested_categorical_scope_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 52,
+            "title": "story notes disappear in sibling sprints",
+            "body": _categorical_bug_body_with_nested_scope(
+                "Every story in every sprint should preserve notes."
+            ),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=52,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-52-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Every story in every sprint should preserve notes.",
         }
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
