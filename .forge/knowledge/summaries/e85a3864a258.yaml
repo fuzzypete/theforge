@@ -1,0 +1,131 @@
+schema_version: 2
+run_id: e85a3864a258
+authoritative_run_record: .forge/audits/runs/e85a3864a258.json
+generated_at: '2026-08-20T03:59:11.343528+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0114275
+story:
+  slug: issue-2112
+  name: Measure how often dev resolves an advisory plan-review finding, so the approve-with-findings
+    policy can be decided on evidence
+  github_issue: 2112
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- data-processing
+- docs
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/README.md
+- docs/plans/2112-plan-advisory-resolution.md
+- src/theforge/cli/audits.py
+- src/theforge/plan_advisory/__init__.py
+- src/theforge/plan_advisory/__main__.py
+- src/theforge/plan_advisory/analysis.py
+- src/theforge/plan_advisory/judgments.json
+- src/theforge/plan_advisory/report.py
+- tests/test_plan_advisory_corpus.py
+- tests/test_plan_advisory_resolution.py
+what_changed:
+  description: This run added a plan-advisory analysis/reporting capability that measures
+    whether advisory plan-review findings were resolved in shipped work, with class
+    breakouts, enumerated resolved/unresolved findings, and plan-review cost context.
+    It also documented the method and wired the capability into the CLI/audit surface.
+  approach: The implementation is a read-only analysis flow over recorded run provenance,
+    review state, and a curated judgment corpus, producing a report from joined historical
+    data rather than changing execution behavior. The work was structured as analysis
+    and report modules, a corpus JSON, CLI entrypoints, documentation, and focused
+    tests for corpus handling and resolution judgments.
+  files_modified: *id002
+what_was_learned:
+- claim: For historical outcome measurement where resolution cannot be inferred mechanically,
+    this codebase can pair recorded run provenance with a curated judgment corpus
+    to produce repeatable analysis outputs.
+  evidence:
+  - type: file
+    path: src/theforge/plan_advisory/analysis.py
+    description: Implements the analysis that joins recorded run/review data with
+      judgment inputs to determine advisory-resolution outcomes.
+  - type: file
+    path: src/theforge/plan_advisory/judgments.json
+    description: Provides the curated judgment corpus used by the analysis.
+  - type: file
+    path: tests/test_plan_advisory_resolution.py
+    description: Exercises the resolution logic against the judgment-driven analysis
+      path.
+- claim: The plan-advisory measurement was implemented as a separate reporting surface,
+    indicating this repository supports adding focused analytical tools without altering
+    the main execution path.
+  evidence:
+  - type: file
+    path: src/theforge/plan_advisory/report.py
+    description: Contains report-generation logic for the advisory-resolution measurement.
+  - type: file
+    path: src/theforge/plan_advisory/__main__.py
+    description: Adds a dedicated entrypoint for the plan_advisory tool.
+  - type: file
+    path: src/theforge/cli/audits.py
+    description: Shows the CLI/audit integration used to expose the analysis capability.
+- claim: Corpus and report loading paths need explicit validation and user-facing
+    error handling because malformed analytical inputs can otherwise surface as raw
+    exceptions.
+  evidence:
+  - type: review_finding
+    finding_id: 74a3585d24ecd283
+    description: Review identified that malformed judgment JSON caused an uncaught
+      ValueError and traceback instead of a clean CLI error.
+  - type: file
+    path: src/theforge/plan_advisory/report.py
+    description: The finding points to the report-loading path as the place where
+      malformed input handling matters.
+  - type: review_cycle
+    cycle: '2'
+    description: Final approval followed after review feedback was addressed, showing
+      the issue was incorporated into the completed run.
+- claim: This codebase is using plan-review findings as a measurable historical corpus,
+    with documentation captured alongside the implementation to preserve the measurement
+    method.
+  evidence:
+  - type: file
+    path: docs/plans/2112-plan-advisory-resolution.md
+    description: Documents the story-specific measurement approach and intended outputs.
+  - type: file
+    path: docs/README.md
+    description: Updated documentation accompanies the new analysis capability.
+  - type: file
+    path: tests/test_plan_advisory_corpus.py
+    description: Adds corpus-focused tests, reinforcing that historical findings are
+      treated as structured analyzable input.
+learned_patterns:
+- judgment-corpus-analysis
+- read-only-historical-reporting
+- dedicated-analysis-cli-surface
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review surfaced robustness at report-loading boundaries, especially clean handling
+    of malformed judgment corpus input.
+  - Review also touched documentation quality in the reporting module, not only analytical
+    correctness.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 25.209431000000002
+  dominant_difficulty: Turning historical advisory findings into a reliable resolved/unresolved
+    measure required joining repository provenance with curated human judgments and
+    presenting the result as a repeatable report.

@@ -1,0 +1,110 @@
+schema_version: 2
+run_id: 259cd32d6f09
+authoritative_run_record: .forge/audits/runs/259cd32d6f09.json
+generated_at: '2026-08-20T04:20:01.803557+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01028625
+story:
+  slug: issue-2579
+  name: A story's failure is classified from an artifact belonging to a different
+    attempt, so the summary recommends a remedy for a cause that is not the failure
+  github_issue: 2579
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/log_tee.py
+- src/theforge/coordinator/plan_flow.py
+- src/theforge/coordinator/preflight_flow.py
+- src/theforge/coordinator/review_pool.py
+- src/theforge/sprint/rca.py
+- tests/test_coord_logging.py
+- tests/test_sprint_rca.py
+what_changed:
+  description: The run changed sprint RCA so failure classification uses attempt-scoped
+    evidence instead of any artifact found in a shared per-story log directory, and
+    added regression coverage for stale-artifact misclassification and evidence ownership
+    behavior. It also added coordinator logging support used to record ownership information
+    for per-story artifacts.
+  approach: The change combined time-window filtering with run-ownership metadata
+    so RCA could distinguish artifacts produced by the current story attempt from
+    leftovers of earlier attempts, then exercised that behavior with focused tests
+    and a second review cycle refinement.
+  files_modified: *id002
+what_was_learned:
+- claim: Filesystem modification time alone is not a reliable boundary for deciding
+    which per-story artifacts belong to the current attempt.
+  evidence:
+  - type: review_finding
+    finding_id: df9ce42bb16c54c3
+    description: Review identified that copied, archived, or re-extracted log trees
+      can make prior-attempt artifacts appear current when scoping is based only on
+      mtime.
+  - type: file
+    path: src/theforge/sprint/rca.py
+    description: This file contains the RCA logic that was updated after review to
+      avoid relying solely on timestamp-based scoping.
+- claim: Run identity used for artifact ownership must match the per-story coordinator
+    run, not the sprint-level identifier from summary rows.
+  evidence:
+  - type: review_finding
+    finding_id: 8e116706b67cb6f5
+    description: Review noted that using only the sprint-level identifier prevents
+      matching manifest-owned artifacts to the current attempt when audit data is
+      unavailable.
+  - type: review_finding
+    finding_id: a341ac097e2f0a0b
+    description: Review also found the tests had conflated sprint and per-story run
+      identifiers, masking the distinction that real records require.
+  - type: file
+    path: tests/test_sprint_rca.py
+    description: The regression tests were expanded in the RCA test suite to cover
+      attempt ownership and identifier handling.
+- claim: When terminal outcome records exist for a story attempt, RCA should prioritize
+    those attempt-owned records over incidental errors found in other artifacts.
+  evidence:
+  - type: file
+    path: src/theforge/sprint/rca.py
+    description: The RCA implementation was revised to classify from attempt-scoped
+      evidence rather than arbitrary stale artifacts in the story log tree.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 review verified the added run-id ownership manifest and confirmed
+      stale per-story artifacts were scoped out.
+  - type: diff
+    ref: cf4f3baf5b63bc4f5708f47cd812e57c8065c178
+    description: This diff reference captures the RCA-side refinement that introduced
+      ownership-aware scoping after review feedback.
+learned_patterns:
+- attempt-scoped-rca
+- artifact-ownership-manifest
+- story-vs-sprint-run-id
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly surfaced that RCA correctness depended on separating current-attempt
+    evidence from stale per-story artifacts and on using the correct run identifier
+    in both code and tests.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 6.02736145
+  dominant_difficulty: Determining trustworthy provenance for shared per-story log
+    artifacts across multiple attempts.
