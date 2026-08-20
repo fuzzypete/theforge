@@ -29,7 +29,11 @@ from theforge.coordinator.redact import redact
 from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import CoordinatorResult
 from theforge.coordinator.workspace import _base_branch_lands_locally
-from theforge.sprint.audit_publish import publish_story_run_artifacts_for_config
+from theforge.sprint.audit_publish import (
+    _STORY_RUN_AUDIT_PUBLISH_STATE_PATH,
+    StoryRunAuditPublishError,
+    publish_story_run_artifacts_for_config,
+)
 from theforge.task import (
     TaskStory,
     build_dev_prompt,
@@ -321,10 +325,21 @@ def _write_audit(
             pass  # best-effort
     # Write per-run JSON record (Phase A dual-write).
     _write_per_run_record(result, config, audit, audits_dir)
-    publish_story_run_artifacts_for_config(
-        config,
-        lands_locally=_base_branch_lands_locally(config, auto_merge=auto_merge),
-    )
+    try:
+        publish_story_run_artifacts_for_config(
+            config,
+            lands_locally=_base_branch_lands_locally(config, auto_merge=auto_merge),
+        )
+    except StoryRunAuditPublishError as exc:
+        state_suffix = (
+            f" [state={exc.state}; recorded in {_STORY_RUN_AUDIT_PUBLISH_STATE_PATH}]"
+            if exc.state
+            else ""
+        )
+        print(
+            f"[forge] warning: canonical story run audit publish failed: {exc}{state_suffix}",
+            file=sys.stderr,
+        )
     return audit_path
 
 

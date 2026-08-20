@@ -297,3 +297,25 @@ class TestPerRunFileWrite:
             )
             == ""
         )
+
+    def test_write_audit_warns_and_keeps_the_run_record_when_publish_cannot_complete(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone)
+        task = _make_task(clone)
+        result = _make_result(clone, run_id="run-cli-branch-mismatch")
+        _git(clone, "checkout", "-b", "feature/wrong-branch")
+
+        audit_path = _write_audit(result, config, task)
+
+        err = capsys.readouterr().err
+        state_path = clone / ".forge" / "audit-publish-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        run_file = clone / ".forge" / "audits" / "runs" / "run-cli-branch-mismatch.json"
+
+        assert audit_path == clone / ".forge" / "audits" / "forge_audit.yaml"
+        assert run_file.exists()
+        assert state["state"] == "branch_mismatch"
+        assert "canonical story run audit publish failed" in err
+        assert "feature/wrong-branch" in err
