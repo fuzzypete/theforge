@@ -194,6 +194,8 @@ def _run_gemini(
                 cmd,
                 working_dir,
                 capability_profile=profile.sandbox_capability_profile,
+                capability_write_roots=profile.sandbox_write_roots,
+                capability_mach_services=profile.sandbox_mach_services,
             )
         except SandboxCapabilityError as exc:
             # Fail closed: a declared capability profile this host cannot express

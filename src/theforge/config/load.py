@@ -98,10 +98,11 @@ from .types import (
 
 log = logging.getLogger("theforge.config")
 _VALID_DEV_P2_POLICIES = frozenset({"in_scope", "all", "p1_only"})
-_VALID_SANDBOX_KEYS = frozenset({"capability_profile"})
-_REJECTED_INLINE_SANDBOX_KEYS = frozenset(
-    {"write_roots", "mach_services", "allow_default", "disabled", "mode"}
-)
+_VALID_SANDBOX_KEYS = frozenset({"capability_profile", "write_roots", "mach_services"})
+# Keys that would let a project *weaken* containment rather than enumerate a
+# bounded addition to it. Additive grants are supported (#2038); switching the
+# sandbox off, or opening it wholesale, never is.
+_REJECTED_INLINE_SANDBOX_KEYS = frozenset({"allow_default", "disabled", "mode"})
 
 
 def _parse_dev_config(dev_raw: Any) -> DevConfig:
@@ -132,18 +133,21 @@ def _parse_sandbox_config(sandbox_raw: Any) -> SandboxConfig:
     rejected = sorted(_REJECTED_INLINE_SANDBOX_KEYS & sandbox_raw.keys())
     if rejected:
         raise ValueError(
-            "forge.yaml 'sandbox' supports only forge-owned named presets; "
-            f"remove inline capability key(s): {rejected}"
+            "forge.yaml 'sandbox' grants are additive only — a project may add "
+            "'write_roots'/'mach_services' but may not weaken containment; "
+            f"remove key(s): {rejected}"
         )
     unknown = sorted(set(sandbox_raw) - _VALID_SANDBOX_KEYS)
     if unknown:
         raise ValueError(
-            "forge.yaml 'sandbox' mapping only supports 'capability_profile'; "
-            f"unknown key(s): {unknown}"
+            "forge.yaml 'sandbox' mapping supports "
+            f"{sorted(_VALID_SANDBOX_KEYS)}; unknown key(s): {unknown}"
         )
+    write_roots = _parse_sandbox_grant_list(sandbox_raw.get("write_roots"), "write_roots")
+    mach_services = _parse_sandbox_grant_list(sandbox_raw.get("mach_services"), "mach_services")
     profile = sandbox_raw.get("capability_profile")
     if profile is None:
-        return SandboxConfig()
+        return SandboxConfig(write_roots=write_roots, mach_services=mach_services)
     if not isinstance(profile, str) or not profile.strip():
         raise ValueError(
             "forge.yaml 'sandbox.capability_profile' must be a non-empty string when set"
@@ -152,7 +156,35 @@ def _parse_sandbox_config(sandbox_raw: Any) -> SandboxConfig:
     # Reject unknown preset names at load time rather than at dev-run time —
     # a typo'd profile must not silently resolve to default containment.
     get_preset(name)
-    return SandboxConfig(capability_profile=name)
+    return SandboxConfig(
+        capability_profile=name,
+        write_roots=write_roots,
+        mach_services=mach_services,
+    )
+
+
+def _parse_sandbox_grant_list(raw: Any, key: str) -> tuple[str, ...]:
+    """Normalize an additive ``sandbox.<key>`` grant list from forge.yaml.
+
+    Malformed shapes are an error rather than a coercion: a grant silently
+    dropped at load time is a capability the run believes it has and does not,
+    which is the exact failure this surface exists to remove.
+    """
+    if raw is None:
+        return ()
+    if isinstance(raw, str) or not isinstance(raw, (list, tuple)):
+        raise ValueError(
+            f"forge.yaml 'sandbox.{key}' must be a list of strings when set, "
+            f"got {type(raw).__name__}"
+        )
+    values: list[str] = []
+    for entry in raw:
+        if not isinstance(entry, str) or not entry.strip():
+            raise ValueError(
+                f"forge.yaml 'sandbox.{key}' entries must be non-empty strings; got {entry!r}"
+            )
+        values.append(entry.strip())
+    return tuple(dict.fromkeys(values))
 
 
 def _parse_models_section(
