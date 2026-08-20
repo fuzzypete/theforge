@@ -20,6 +20,8 @@ from theforge.diagnose_types import (
     Hypothesis,
     PremiseAnchor,
     RelatedFinding,
+    ScopeCoverageLocation,
+    SymptomScopeCoverage,
     render_already_resolved_markdown,
     render_artifact_markdown,
     upsert_diagnosis_section,
@@ -199,6 +201,46 @@ class TestHypothesis:
         assert h.evidence == ""
 
 
+class TestSymptomScopeCoverage:
+    def test_non_categorical_record_is_complete_by_default(self):
+        assert SymptomScopeCoverage().is_complete()
+        assert SymptomScopeCoverage().satisfies_issue_requirement()
+
+    def test_categorical_record_requires_valid_examined_locations(self):
+        record = SymptomScopeCoverage(
+            symptom_is_categorical=True,
+            stated_scope="every sibling renderer",
+            examined_locations=(
+                ScopeCoverageLocation(
+                    location="src/foo.py:render",
+                    status="covered",
+                    rationale="Same construct and same omission.",
+                ),
+            ),
+        )
+        assert record.is_complete()
+        assert record.satisfies_issue_requirement(issue_requires_categorical_scope=True)
+
+    def test_issue_level_categorical_requirement_rejects_default_record(self):
+        assert not SymptomScopeCoverage().satisfies_issue_requirement(
+            issue_requires_categorical_scope=True
+        )
+
+    def test_invalid_examined_location_status_breaks_completeness(self):
+        record = SymptomScopeCoverage(
+            symptom_is_categorical=True,
+            stated_scope="every sibling renderer",
+            examined_locations=(
+                ScopeCoverageLocation(
+                    location="src/foo.py:render",
+                    status="maybe",
+                    rationale="unclear",
+                ),
+            ),
+        )
+        assert not record.is_complete()
+
+
 class TestDiagnosisArtifact:
     def _make(self, **overrides) -> DiagnosisArtifact:
         defaults = dict(
@@ -228,6 +270,58 @@ class TestDiagnosisArtifact:
         # is_complete checks structural fields only; partial is a separate
         # signal carried alongside complete YAML to flag budget/timeout exits.
         assert self._make(partial=True).is_complete()
+
+    def test_non_categorical_scope_coverage_stays_optional(self):
+        artifact = self._make(
+            symptom_scope_coverage=SymptomScopeCoverage(
+                symptom_is_categorical=False,
+                stated_scope="",
+                examined_locations=(),
+            )
+        )
+        assert artifact.is_complete()
+
+    def test_categorical_scope_coverage_requires_examined_locations(self):
+        missing_coverage = self._make(
+            symptom_scope_coverage=SymptomScopeCoverage(
+                symptom_is_categorical=True,
+                stated_scope="every sibling renderer",
+                examined_locations=(),
+            )
+        )
+        assert not missing_coverage.is_complete()
+        assert not missing_coverage.is_complete(issue_requires_categorical_scope=True)
+
+        covered = self._make(
+            symptom_scope_coverage=SymptomScopeCoverage(
+                symptom_is_categorical=True,
+                stated_scope="every sibling renderer",
+                examined_locations=(
+                    ScopeCoverageLocation(
+                        location="src/foo.py:render_cli",
+                        status="covered",
+                        rationale="Same renderer construct and same omitted field.",
+                    ),
+                    ScopeCoverageLocation(
+                        location="src/foo.py:render_web",
+                        status="excluded",
+                        rationale=(
+                            "Sibling checked; different serializer already includes the field."
+                        ),
+                    ),
+                ),
+            )
+        )
+        assert covered.is_complete()
+        assert covered.is_complete(issue_requires_categorical_scope=True)
+
+    def test_issue_level_categorical_requirement_reports_missing_scope_coverage(self):
+        artifact = self._make()
+        assert artifact.is_complete()
+        assert not artifact.is_complete(issue_requires_categorical_scope=True)
+        assert artifact.missing_required_fields(issue_requires_categorical_scope=True) == (
+            "symptom_scope_coverage",
+        )
 
     def test_has_substantive_content_true_when_any_field_filled(self):
         base = dict(
@@ -480,6 +574,51 @@ class TestRenderArtifactMarkdown:
         rendered = render_artifact_markdown(with_notes)
         assert "### Notes" in rendered
         assert "Tuesdays" in rendered
+
+    def test_scope_coverage_section_only_emitted_for_categorical_symptoms(self):
+        non_categorical = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="x",
+            reproduction_or_evidence="y",
+            hypotheses=(Hypothesis("z", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="p",
+            fix_success_criterion="f",
+        )
+        assert "### Stated symptom scope coverage" not in render_artifact_markdown(non_categorical)
+
+        categorical = DiagnosisArtifact(
+            issue_number=1,
+            observed_symptom="x",
+            reproduction_or_evidence="y",
+            hypotheses=(Hypothesis("z", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="p",
+            fix_success_criterion="f",
+            symptom_scope_coverage=SymptomScopeCoverage(
+                symptom_is_categorical=True,
+                stated_scope="Every sibling renderer omitted the field",
+                examined_locations=(
+                    ScopeCoverageLocation(
+                        location="src/foo.py:render_cli",
+                        status="covered",
+                        rationale="Same renderer helper omitted the field.",
+                    ),
+                    ScopeCoverageLocation(
+                        location="src/foo.py:render_web",
+                        status="excluded",
+                        rationale=(
+                            "Checked sibling path; different serializer already includes it."
+                        ),
+                    ),
+                ),
+            ),
+        )
+        rendered = render_artifact_markdown(categorical)
+        assert "### Stated symptom scope coverage" in rendered
+        assert "Every sibling renderer omitted the field" in rendered
+        assert "[covered]" in rendered
+        assert "[excluded]" in rendered
 
 
 class TestUpsertDiagnosisSection:

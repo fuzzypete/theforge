@@ -183,6 +183,12 @@ _BUG_SYMPTOM_HEADING = r"what happened|observed|actual behaviou?r"
 _BUG_EXPECTATION_HEADING = r"what was expected|expected"
 _BUG_REPRODUCTION_HEADING = r"steps to reproduce"
 
+# Public aliases for other readers that need to recognize the same bug-body
+# sections. The accepted heading spellings must stay in one place.
+BUG_SYMPTOM_HEADING = _BUG_SYMPTOM_HEADING
+BUG_EXPECTATION_HEADING = _BUG_EXPECTATION_HEADING
+BUG_REPRODUCTION_HEADING = _BUG_REPRODUCTION_HEADING
+
 
 def has_bug_body_headings(body: str) -> bool:
     """True when ``body`` carries the heading structure of a bug report.

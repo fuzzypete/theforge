@@ -143,6 +143,9 @@ def build_synthesis_prompt(
         - Reconcile per-AC verification across reviewers — if any reviewer
           reported an AC as PARTIAL or NOT_VERIFIED, do NOT mark it VERIFIED
           unless a counter-reviewer cited concrete evidence that resolves the gap.
+        - For bug-type issues with a categorical symptom claim, treat
+          verification as two checks: the reported instance is fixed, and the
+          stated scope is covered across structurally analogous locations.
         - Be concrete: cite file + line + what is wrong + how to fix
         - Do NOT invent issues. Only report findings with evidence from the reviews.
     """)
@@ -621,8 +624,16 @@ def build_review_prompt(
         - **Bug issues** (no `## Acceptance criteria` section, only
           observed/expected) get a single ac_verification entry with criterion
           `"Symptom resolution: <one-line restatement of the observed symptom>"`,
-          status VERIFIED only when a test reproduces the original symptom and
-          would have caught it before the fix.
+          status VERIFIED only when you verify BOTH of these separately:
+          (1) the originally reported instance is fixed, with a test or other
+          evidence that would have caught it before the fix; and
+          (2) when the symptom text is categorical ("every", "any",
+          "regardless", etc.), the symptom's stated scope is covered across
+          structurally analogous locations. If a diagnosis scope-coverage
+          record is visible, use its examined locations to judge that claimed
+          scope; otherwise evaluate the categorical claim directly from the
+          issue's stated symptom. Fixing only the first reproducing instance is
+          PARTIAL for a categorical bug symptom.
         - **Cross-validation enforced**: APPROVE with any PARTIAL or
           NOT_VERIFIED ac_verification entry will be rejected by the schema
           validator and your review will be discarded — do not produce that

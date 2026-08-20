@@ -26,18 +26,22 @@ from theforge.diagnose_types import (
     DiagnoseState,
     DiagnosisArtifact,
     Hypothesis,
+    SymptomScopeCoverage,
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
 from theforge.task.diagnose_prompts import (
     build_diagnose_prompt,
     build_environment_briefing,
+    derive_issue_scope_requirement,
     parse_diagnose_output,
 )
 
 
 def _agent_yaml_output(
-    *, hypothesis_statuses: tuple[str, ...] = ("ruled_out", "confirmed")
+    *,
+    hypothesis_statuses: tuple[str, ...] = ("ruled_out", "confirmed"),
+    symptom_scope_coverage: dict | None = None,
 ) -> str:
     confirmed = "confirmed" in hypothesis_statuses
     hypotheses = []
@@ -80,6 +84,8 @@ def _agent_yaml_output(
         ),
         "notes": "",
     }
+    if symptom_scope_coverage is not None:
+        payload["symptom_scope_coverage"] = symptom_scope_coverage
     return f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
 
 
@@ -91,6 +97,123 @@ def _load_audit_artifact(tmp_path: Path) -> dict:
     artifact = audit.get("artifact")
     assert isinstance(artifact, dict), "expected artifact in audit payload"
     return artifact
+
+
+def _categorical_bug_body() -> str:
+    return (
+        "## What happened\n"
+        "The CLI status surface drops the branch name.\n\n"
+        "## What was expected\n"
+        "Every sibling renderer should include the branch name regardless of output mode.\n"
+    )
+
+
+def _observed_section_categorical_bug_body() -> str:
+    return (
+        "## What happened\n"
+        "Every user-facing surface fails to include the run id.\n\n"
+        "## What was expected\n"
+        "The CLI status view should include the run id.\n"
+    )
+
+
+def _categorical_bug_body_with_modified_scope_noun() -> str:
+    return (
+        "## What happened\n"
+        "One story lost its notes after rerun.\n\n"
+        "## What was expected\n"
+        "Any story with notes should preserve them.\n"
+    )
+
+
+def _categorical_bug_body_with_relative_clause() -> str:
+    return (
+        "## What happened\n"
+        "One story that failed review was not retried.\n\n"
+        "## What was expected\n"
+        "Any story that fails review is retried.\n"
+    )
+
+
+def _categorical_bug_body_with_domain_scope_noun(expected_sentence: str) -> str:
+    return (
+        "## What happened\n"
+        "One concrete reproduction failed in the current run.\n\n"
+        "## What was expected\n"
+        f"{expected_sentence}\n"
+    )
+
+
+def _categorical_bug_body_with_nested_scope(expected_sentence: str) -> str:
+    return (
+        "## What happened\n"
+        "One concrete reproduction failed in sprint 12.\n\n"
+        "## What was expected\n"
+        f"{expected_sentence}\n"
+    )
+
+
+def _single_instance_bug_body_with_quantifier() -> str:
+    return (
+        "## What happened\n"
+        "The run summary omits one of the cost fields.\n\n"
+        "## What was expected\n"
+        "The summary should print all three cost fields for this run.\n"
+    )
+
+
+def _single_instance_bug_body_with_single_word_scope_noun() -> str:
+    return (
+        "## What happened\n"
+        "All rows are duplicated in the exported CSV for job 42.\n\n"
+        "## What was expected\n"
+        "Each retry is logged twice for this story.\n"
+    )
+
+
+def _single_instance_bug_body_with_scope_modifier_in_symptom() -> str:
+    return (
+        "## What happened\n"
+        "All rows in the run summary are duplicated.\n\n"
+        "## What was expected\n"
+        "The exported CSV should contain each row once.\n"
+    )
+
+
+def _single_instance_bug_body_with_scope_modifier_in_expected() -> str:
+    return (
+        "## What happened\n"
+        "One retry is logged twice for story 12.\n\n"
+        "## What was expected\n"
+        "Each retry of the run is logged twice for story 12.\n"
+    )
+
+
+def _single_instance_bug_body_with_domain_scope_narrowed_by_run() -> str:
+    return (
+        "## What happened\n"
+        "One phase is shown twice in run 42.\n\n"
+        "## What was expected\n"
+        "Each phase of the run is shown once for run 42.\n"
+    )
+
+
+def _single_instance_bug_body_with_domain_scope_narrowed_by_sprint() -> str:
+    return (
+        "## What happened\n"
+        "One sprint duplicates tasks in a single incident.\n\n"
+        "## What was expected\n"
+        "All tasks in this one sprint are duplicated.\n"
+    )
+
+
+def _single_instance_bug_body_with_domain_scope_narrowed_by_dependency() -> str:
+    return (
+        "## What happened\n"
+        "One task is skipped in this dependency.\n\n"
+        "## What was expected\n"
+        "Each task of this dependency should run once.\n"
+    )
 
 
 # ── Artifact / rendering tests ────────────────────────────────────────
@@ -242,6 +365,171 @@ class TestPromptBuilder:
         assert "boundary" in lower
         assert "scope" in lower
 
+    def test_prompt_distinguishes_analogous_scope_from_adjacent_defects(self):
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        lower = prompt.lower()
+        assert "structurally analogous sibling locations" in lower
+        assert "adjacent-but-different" in lower
+        assert "same" in lower and "construct" in lower
+        assert "the same omission or behavior" in lower
+        assert "do not broaden" in lower
+        assert "concrete-instance symptom" in lower
+
+    def test_scope_coverage_example_stays_stack_neutral(self):
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        assert 'location: "path/to/sibling_surface_a.ext:render_output"' in prompt
+        assert 'location: "path/to/sibling_surface_b.ext:serialize_output"' in prompt
+        assert "src/theforge/ui/status_cli.py:render_status" not in prompt
+        assert "src/theforge/ui/status_web.py:serialize_status" not in prompt
+
+    def test_issue_scope_requirement_prefers_expected_section(self):
+        categorical, scope_text = derive_issue_scope_requirement("x", _categorical_bug_body())
+        assert categorical is True
+        assert scope_text.startswith("Every sibling renderer")
+
+    def test_issue_scope_requirement_uses_observed_section_when_expected_is_concrete(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _observed_section_categorical_bug_body()
+        )
+        assert categorical is True
+        assert scope_text == "Every user-facing surface fails to include the run id."
+
+    def test_issue_scope_requirement_uses_title_when_body_is_concrete(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "Any landing path should preserve merge evidence.",
+            "## What happened\nOne landing run lost merge evidence.\n\n"
+            "## What was expected\nThe merge evidence should be preserved.\n",
+        )
+        assert categorical is True
+        assert scope_text == "Any landing path should preserve merge evidence."
+
+    def test_issue_scope_requirement_ignores_incidental_quantifiers(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_quantifier()
+        )
+        assert categorical is False
+        assert scope_text == "The summary should print all three cost fields for this run."
+
+    def test_issue_scope_requirement_detects_plural_scope_terms(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x",
+            "## What happened\nOne output path omitted the run id.\n\n"
+            "## What was expected\nAll surfaces should include the run id.\n",
+        )
+        assert categorical is True
+        assert scope_text == "All surfaces should include the run id."
+
+    def test_issue_scope_requirement_detects_unlisted_singular_scope_terms(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x",
+            "## What happened\nOne sprint resumed dirty after restart.\n\n"
+            "## What was expected\nEvery sprint must resume cleanly.\n",
+        )
+        assert categorical is True
+        assert scope_text == "Every sprint must resume cleanly."
+
+    def test_issue_scope_requirement_detects_run_scope_term(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x",
+            "## What happened\nOne run lost its landing evidence.\n\n"
+            "## What was expected\nEvery run should preserve landing evidence.\n",
+        )
+        assert categorical is True
+        assert scope_text == "Every run should preserve landing evidence."
+
+    def test_issue_scope_requirement_detects_scope_noun_before_with_modifier(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _categorical_bug_body_with_modified_scope_noun()
+        )
+        assert categorical is True
+        assert scope_text == "Any story with notes should preserve them."
+
+    def test_issue_scope_requirement_detects_scope_noun_before_relative_clause(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _categorical_bug_body_with_relative_clause()
+        )
+        assert categorical is True
+        assert scope_text == "Any story that fails review is retried."
+
+    def test_issue_scope_requirement_detects_domain_scope_nouns(self):
+        cases = (
+            "Every phase should emit an audit record.",
+            "Every worktree should be cleaned up.",
+            "Every dependency must be resolved before scheduling.",
+            "Every agent should preserve the sprint lease.",
+            "Every task should record its diagnosis artifact.",
+        )
+        for expected_sentence in cases:
+            categorical, scope_text = derive_issue_scope_requirement(
+                "x", _categorical_bug_body_with_domain_scope_noun(expected_sentence)
+            )
+            assert categorical is True
+            assert scope_text == expected_sentence
+
+    def test_issue_scope_requirement_detects_nested_categorical_scope(self):
+        cases = (
+            "Every story in every sprint should preserve notes.",
+            "Every path in every run must be logged.",
+            "Every surface for each run should show the id.",
+            "Any story in the sprint should be retried.",
+            "Every renderer for the sprint should include the branch.",
+        )
+        for expected_sentence in cases:
+            categorical, scope_text = derive_issue_scope_requirement(
+                "x", _categorical_bug_body_with_nested_scope(expected_sentence)
+            )
+            assert categorical is True
+            assert scope_text == expected_sentence
+
+    def test_issue_scope_requirement_ignores_domain_scope_nouns_narrowed_to_one_run(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_domain_scope_narrowed_by_run()
+        )
+        assert categorical is False
+        assert scope_text == "Each phase of the run is shown once for run 42."
+
+    def test_issue_scope_requirement_ignores_domain_scope_nouns_narrowed_to_one_sprint(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_domain_scope_narrowed_by_sprint()
+        )
+        assert categorical is False
+        assert scope_text == "All tasks in this one sprint are duplicated."
+
+    def test_issue_scope_requirement_ignores_domain_scope_nouns_narrowed_to_one_dependency(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_domain_scope_narrowed_by_dependency()
+        )
+        assert categorical is False
+        assert scope_text == "Each task of this dependency should run once."
+
+    def test_issue_scope_requirement_ignores_single_word_concrete_nouns(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_single_word_scope_noun()
+        )
+        assert categorical is False
+        assert scope_text == "Each retry is logged twice for this story."
+
+    def test_issue_scope_requirement_ignores_scope_hint_modifiers_in_symptom(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_scope_modifier_in_symptom()
+        )
+        assert categorical is False
+        assert scope_text == "The exported CSV should contain each row once."
+
+    def test_issue_scope_requirement_ignores_scope_hint_modifiers_in_expected(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_scope_modifier_in_expected()
+        )
+        assert categorical is False
+        assert scope_text == "Each retry of the run is logged twice for story 12."
+
+    def test_issue_scope_requirement_falls_back_to_full_body(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "", "Any landing path should preserve merge evidence."
+        )
+        assert categorical is True
+        assert scope_text == "Any landing path should preserve merge evidence."
+
 
 class TestEnvironmentBriefing:
     """The prompt must brief the agent on TheForge's audit/log layout, field
@@ -383,6 +671,69 @@ class TestDiagnoseFlow:
         # Hypotheses preserved in audit
         assert len(loaded["artifact"]["hypotheses"]) == 2
 
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_audit_preserves_categorical_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 43,
+            "title": "broken sprint",
+            "body": "every sibling renderer drops the same field",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(
+                symptom_scope_coverage={
+                    "symptom_is_categorical": True,
+                    "stated_scope": "every sibling renderer",
+                    "examined_locations": [
+                        {
+                            "location": "src/theforge/ui/status_cli.py:render_status",
+                            "status": "covered",
+                            "rationale": "Same renderer helper omitted the field.",
+                        },
+                        {
+                            "location": "src/theforge/ui/status_web.py:serialize_status",
+                            "status": "excluded",
+                            "rationale": (
+                                "Checked sibling path; different serializer already includes it."
+                            ),
+                        },
+                    ],
+                }
+            )
+        )
+        mock_post.return_value = "https://github.com/test/repo/issues/43#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=43,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        artifact = _load_audit_artifact(tmp_path)
+        assert artifact["symptom_scope_coverage"]["symptom_is_categorical"] is True
+        assert artifact["symptom_scope_coverage"]["stated_scope"] == "every sibling renderer"
+        assert artifact["symptom_scope_coverage"]["examined_locations"] == [
+            {
+                "location": "src/theforge/ui/status_cli.py:render_status",
+                "status": "covered",
+                "rationale": "Same renderer helper omitted the field.",
+            },
+            {
+                "location": "src/theforge/ui/status_web.py:serialize_status",
+                "status": "excluded",
+                "rationale": "Checked sibling path; different serializer already includes it.",
+            },
+        ]
+
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
     def test_unparseable_agent_output_marks_failed_with_audit(
@@ -448,6 +799,394 @@ class TestDiagnoseFlow:
         assert result.state.artifact is not None
         assert result.state.artifact.partial_reason is DiagnosePartialReason.UNCLASSIFIED
         assert _load_audit_artifact(tmp_path)["partial_reason"] == "unclassified"
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_categorical_issue_without_scope_coverage_lands_partial(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 44,
+            "title": "broken renderer coverage",
+            "body": _categorical_bug_body(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=44,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        assert result.state.artifact is not None
+        assert result.state.artifact.partial is True
+        assert result.state.artifact.symptom_scope_coverage == SymptomScopeCoverage()
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-44-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": (
+                "Every sibling renderer should include the branch name regardless of output mode."
+            ),
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_title_only_categorical_scope_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 46,
+            "title": "Any landing path should preserve merge evidence",
+            "body": (
+                "## What happened\nOne landing path dropped the merge evidence.\n\n"
+                "## What was expected\nThe merge evidence should be preserved.\n"
+            ),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=46,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-46-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Any landing path should preserve merge evidence",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_observed_section_categorical_scope_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 48,
+            "title": "run id missing from CLI status view",
+            "body": _observed_section_categorical_bug_body(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=48,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-48-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Every user-facing surface fails to include the run id.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_modified_scope_noun_categorical_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 49,
+            "title": "story notes disappear on rerun",
+            "body": _categorical_bug_body_with_modified_scope_noun(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=49,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-49-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Any story with notes should preserve them.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_nested_categorical_scope_requirement_lands_partial_without_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 52,
+            "title": "story notes disappear in sibling sprints",
+            "body": _categorical_bug_body_with_nested_scope(
+                "Every story in every sprint should preserve notes."
+            ),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=52,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-52-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": True,
+            "stated_scope": "Every story in every sprint should preserve notes.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_categorical_issue_with_false_scope_flag_lands_partial(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 45,
+            "title": "broken renderer coverage",
+            "body": _categorical_bug_body(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(
+                symptom_scope_coverage={
+                    "symptom_is_categorical": False,
+                    "stated_scope": "",
+                    "examined_locations": [],
+                }
+            )
+        )
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=45,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert result.message == (
+            "Partial diagnosis landed (diagnosis scope-coverage incomplete) "
+            "— operator review required"
+        )
+        assert result.state.artifact is not None
+        assert result.state.artifact.partial is True
+        assert result.state.artifact.symptom_scope_coverage.symptom_is_categorical is False
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_single_instance_quantifier_issue_does_not_require_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 47,
+            "title": "summary omits a field",
+            "body": _single_instance_bug_body_with_quantifier(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=47,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert result.state.issue_scope_is_categorical is False
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-47-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": False,
+            "stated_scope": "The summary should print all three cost fields for this run.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_single_word_concrete_noun_issue_does_not_require_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 49,
+            "title": "duplicate rows in one export",
+            "body": _single_instance_bug_body_with_single_word_scope_noun(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=49,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert result.state.issue_scope_is_categorical is False
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-49-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": False,
+            "stated_scope": "Each retry is logged twice for this story.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_scope_modifier_concrete_issue_does_not_require_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 50,
+            "title": "duplicate retry in one run",
+            "body": _single_instance_bug_body_with_scope_modifier_in_expected(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=50,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert result.state.issue_scope_is_categorical is False
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-50-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": False,
+            "stated_scope": "Each retry of the run is logged twice for story 12.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_domain_scope_phrase_narrowed_to_one_run_does_not_require_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 51,
+            "title": "duplicate phase display in one run",
+            "body": _single_instance_bug_body_with_domain_scope_narrowed_by_run(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=51,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert result.state.issue_scope_is_categorical is False
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-51-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": False,
+            "stated_scope": "Each phase of the run is shown once for run 42.",
+        }
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
@@ -1481,6 +2220,53 @@ class TestParseRelatedFindings:
         assert artifact is not None
         assert len(artifact.related_findings) == 1
         assert artifact.related_findings[0].summary == "dup"
+
+
+class TestParseSymptomScopeCoverage:
+    def test_parses_categorical_scope_coverage(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "symptom_scope_coverage:\n"
+            "  symptom_is_categorical: true\n"
+            "  stated_scope: every sibling renderer\n"
+            "  examined_locations:\n"
+            "    - location: src/foo.py:render_cli\n"
+            "      status: covered\n"
+            "      rationale: same helper omitted the field\n"
+            "    - location: src/foo.py:render_web\n"
+            "      status: excluded\n"
+            "      rationale: sibling checked; different serializer already includes it\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert artifact.symptom_scope_coverage.symptom_is_categorical is True
+        assert artifact.symptom_scope_coverage.stated_scope == "every sibling renderer"
+        assert len(artifact.symptom_scope_coverage.examined_locations) == 2
+        assert artifact.symptom_scope_coverage.examined_locations[0].status == "covered"
+        assert artifact.symptom_scope_coverage.examined_locations[1].status == "excluded"
+        assert artifact.is_complete()
+
+    def test_missing_scope_coverage_stays_non_categorical(self):
+        artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
+        assert artifact is not None
+        assert artifact.symptom_scope_coverage == SymptomScopeCoverage()
+
+    def test_categorical_scope_without_examined_locations_is_incomplete(self):
+        artifact = parse_diagnose_output(
+            _agent_yaml_output(
+                symptom_scope_coverage={
+                    "symptom_is_categorical": True,
+                    "stated_scope": "every sibling renderer",
+                    "examined_locations": [],
+                }
+            ),
+            issue_number=1,
+        )
+        assert artifact is not None
+        assert artifact.symptom_scope_coverage.symptom_is_categorical is True
+        assert not artifact.is_complete()
 
 
 class TestBuildDiagnoseProfile:
