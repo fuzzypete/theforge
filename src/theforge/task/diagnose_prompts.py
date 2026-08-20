@@ -394,11 +394,13 @@ _CARDINAL_SCOPE_WORDS = frozenset(
 _SCOPE_NOUN_HINTS = frozenset(
     {
         "adapter",
+        "agent",
         "backend",
         "branch",
         "caller",
         "case",
         "command",
+        "dependency",
         "endpoint",
         "flow",
         "frontend",
@@ -409,6 +411,7 @@ _SCOPE_NOUN_HINTS = frozenset(
         "mode",
         "output",
         "path",
+        "phase",
         "provider",
         "renderer",
         "run",
@@ -417,8 +420,10 @@ _SCOPE_NOUN_HINTS = frozenset(
         "sprint",
         "story",
         "surface",
+        "task",
         "variant",
         "view",
+        "worktree",
     }
 )
 _SCOPE_PHRASE_BOUNDARY_WORDS = frozenset(

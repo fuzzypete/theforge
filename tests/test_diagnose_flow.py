@@ -135,6 +135,15 @@ def _categorical_bug_body_with_relative_clause() -> str:
     )
 
 
+def _categorical_bug_body_with_domain_scope_noun(expected_sentence: str) -> str:
+    return (
+        "## What happened\n"
+        "One concrete reproduction failed in the current run.\n\n"
+        "## What was expected\n"
+        f"{expected_sentence}\n"
+    )
+
+
 def _single_instance_bug_body_with_quantifier() -> str:
     return (
         "## What happened\n"
@@ -405,6 +414,21 @@ class TestPromptBuilder:
         )
         assert categorical is True
         assert scope_text == "Any story that fails review is retried."
+
+    def test_issue_scope_requirement_detects_domain_scope_nouns(self):
+        cases = (
+            "Every phase should emit an audit record.",
+            "Every worktree should be cleaned up.",
+            "Every dependency must be resolved before scheduling.",
+            "Every agent should preserve the sprint lease.",
+            "Every task should record its diagnosis artifact.",
+        )
+        for expected_sentence in cases:
+            categorical, scope_text = derive_issue_scope_requirement(
+                "x", _categorical_bug_body_with_domain_scope_noun(expected_sentence)
+            )
+            assert categorical is True
+            assert scope_text == expected_sentence
 
     def test_issue_scope_requirement_ignores_single_word_concrete_nouns(self):
         categorical, scope_text = derive_issue_scope_requirement(
