@@ -311,7 +311,7 @@ def test_replay_recovers_plan_and_later_phase_file_lists_from_persisted_artifact
         generated_at="2026-08-02T00:10:00+00:00",
         base_ref=base_ref,
         claims=[],
-        changed_files=["src/api.py", "tests/test_api.py"],
+        changed_files=["src/final_impl.py", "tests/test_final_impl.py"],
         plan_structured={
             "steps": [
                 {
@@ -342,8 +342,120 @@ def test_replay_recovers_plan_and_later_phase_file_lists_from_persisted_artifact
     assert phase_reports["plan"]["recovery_note"] == "recovered from phases.plan.plan_structured"
     assert phase_reports["dev"]["status"] == "replayed"
     assert phase_reports["dev"]["file_list"] == ["src/api.py", "tests/test_api.py"]
-    assert phase_reports["dev"]["recovery_note"] == "recovered from persisted changed_files"
+    assert phase_reports["dev"]["recovery_note"] == "recovered from phases.plan.plan_structured"
     assert phase_reports["review"]["file_list"] == ["src/api.py", "tests/test_api.py"]
+    assert phase_reports["review"]["recovery_note"] == "recovered from phases.plan.plan_structured"
+
+
+def test_replay_dev_and_review_do_not_fallback_to_persisted_changed_files(tmp_path: Path) -> None:
+    base_ref = _init_repo(tmp_path)
+    _write_fixture(
+        tmp_path,
+        "aaa111",
+        story_slug="issue-a",
+        story_name="Earlier parser fix",
+        story_text="Parser overlap in src/api.py",
+        started_at="2026-08-01T00:00:00+00:00",
+        finished_at="2026-08-01T00:10:00+00:00",
+        generated_at="2026-08-01T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=["Earlier lesson"],
+        changed_files=["src/api.py"],
+    )
+    _write_fixture(
+        tmp_path,
+        "bbb222",
+        story_slug="issue-b",
+        story_name="Replay target",
+        story_text="Parser overlap in src/api.py",
+        started_at="2026-08-02T00:00:00+00:00",
+        finished_at="2026-08-02T00:10:00+00:00",
+        generated_at="2026-08-02T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+        changed_files=["src/final_impl.py"],
+        plan_structured=None,
+    )
+
+    fixtures = _discover_fixtures(tmp_path)
+    replay_fixture = next(item for item in fixtures if item.run_id == "bbb222")
+    judgments = {
+        _judgment_key("demo", "bbb222", "plan", "aaa111", "Earlier lesson"): _judgment(
+            "demo", "bbb222", "plan", "aaa111", "Earlier lesson", "plan"
+        ),
+        _judgment_key("demo", "bbb222", "dev", "aaa111", "Earlier lesson"): _judgment(
+            "demo", "bbb222", "dev", "aaa111", "Earlier lesson", "implementation"
+        ),
+    }
+
+    report = _replay_story(CorpusSpec("demo", tmp_path), replay_fixture, fixtures, judgments)
+
+    phase_reports = {phase["phase"]: phase for phase in report["phase_replays"]}
+    assert phase_reports["plan"]["status"] == "replayed"
+    assert phase_reports["plan"]["file_list"] == ["src/final_impl.py"]
+    assert (
+        phase_reports["plan"]["recovery_note"]
+        == "plan_structured missing; fell back to persisted changed_files"
+    )
+    assert phase_reports["dev"]["status"] == "replayed_missing_file_list"
+    assert phase_reports["dev"]["file_list"] is None
+    assert (
+        phase_reports["dev"]["recovery_note"]
+        == "audit record persists no phases.plan.plan_structured; "
+        "dev/review replay runs without file overlap input"
+    )
+    assert phase_reports["review"]["status"] == "replayed_missing_file_list"
+    assert phase_reports["review"]["file_list"] is None
+
+
+def test_run_prior_run_replay_omits_fence_probes_without_judgment_configuration(
+    tmp_path: Path,
+) -> None:
+    corpus_root = tmp_path / "corpus"
+    corpus_root.mkdir()
+    base_ref = _init_repo(corpus_root)
+    _write_fixture(
+        corpus_root,
+        "aaa111",
+        story_slug="issue-a",
+        story_name="Earlier parser fix",
+        story_text="Parser bug in demo flow",
+        started_at="2026-08-01T00:00:00+00:00",
+        finished_at="2026-08-01T00:10:00+00:00",
+        generated_at="2026-08-01T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+    )
+    _write_fixture(
+        corpus_root,
+        "bbb222",
+        story_slug="issue-b",
+        story_name="Replay target",
+        story_text="Parser bug in replay target",
+        started_at="2026-08-02T00:00:00+00:00",
+        finished_at="2026-08-02T00:10:00+00:00",
+        generated_at="2026-08-02T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+    )
+    judgments_path = tmp_path / "judgments.yaml"
+    judgments_path.write_text(
+        yaml.safe_dump(
+            {
+                "corpora": {
+                    "demo": {
+                        "claims": [],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_prior_run_replay([CorpusSpec("demo", corpus_root)], judgments_path=judgments_path)
+
+    assert report["corpora"][0]["fence_probes"] == []
 
 
 def test_replay_review_rendering_matches_selector_section_caps(tmp_path: Path) -> None:

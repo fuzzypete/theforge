@@ -10,7 +10,6 @@ that existed before the replayed story started.
 
 from __future__ import annotations
 
-import copy
 import datetime as dt
 import hashlib
 import json
@@ -233,7 +232,7 @@ def _phase_inputs(run_record: dict[str, Any]) -> dict[str, dict[str, Any]]:
     structured = phase_plan.get("plan_structured") if isinstance(phase_plan, dict) else None
     plan_files = plan_file_list(structured) if isinstance(structured, dict) else None
 
-    shared_scope = _recovered_phase_input(
+    plan_scope = _recovered_phase_input(
         primary=plan_files,
         primary_note="recovered from phases.plan.plan_structured",
         fallback=changed_files,
@@ -243,10 +242,20 @@ def _phase_inputs(run_record: dict[str, Any]) -> dict[str, dict[str, Any]]:
             "replay runs without file overlap input"
         ),
     )
+    later_phase_scope = _recovered_phase_input(
+        primary=plan_files,
+        primary_note="recovered from phases.plan.plan_structured",
+        fallback=None,
+        fallback_note="",
+        missing_note=(
+            "audit record persists no phases.plan.plan_structured; "
+            "dev/review replay runs without file overlap input"
+        ),
+    )
     return {
-        "plan": shared_scope,
-        "dev": copy.deepcopy(shared_scope),
-        "review": copy.deepcopy(shared_scope),
+        "plan": plan_scope,
+        "dev": later_phase_scope,
+        "review": later_phase_scope,
     }
 
 
