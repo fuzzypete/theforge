@@ -103,6 +103,7 @@ def _make_config(
     model: str | None = None,
     knowledge_ref: ModelRef | None = None,
     transport_fallbacks: dict[str, TransportFallbackConfig] | None = None,
+    secrets: dict[str, str] | None = None,
 ) -> ForgeConfig:
     """A config whose plan model dispatches over an API transport.
 
@@ -139,6 +140,12 @@ def _make_config(
         ),
         knowledge=KnowledgeConfig(run_summaries=run_summaries, ref=knowledge_ref),
         transport_fallbacks=transport_fallbacks or {},
+        secrets=secrets
+        or {
+            "ANTHROPIC_API_KEY": "test-key",
+            "OPENAI_API_KEY": "test-key",
+            "GOOGLE_API_KEY": "test-key",
+        },
     )
 
 
@@ -465,8 +472,10 @@ class TestGeneration:
 
         profile, reason = knowledge_summary_flow._summary_profile(config)
 
-        assert profile is None
-        assert reason == "knowledge summaries need knowledge.ref when plan.ref uses CLI transport"
+        assert profile is not None
+        assert profile.mode == "api"
+        assert profile.model == "gpt-5.4-mini"
+        assert reason is None
 
     def test_matching_pool_model_keeps_plan_derived_summary_limits(
         self, tmp_path: Path, calls: list[dict]
@@ -611,9 +620,44 @@ class TestGeneration:
         assert outcome.status == "skipped"
         assert outcome.attempted is True
         assert (
-            outcome.reason
-            == "knowledge summaries need knowledge.ref when plan.ref uses CLI transport"
+            outcome.reason == "knowledge summaries need knowledge.ref or transport_fallback "
+            "when plan.ref uses CLI transport"
         )
+        assert calls == []
+        assert not summary_path(tmp_path, RUN_ID).exists()
+
+    def test_a_cli_plan_with_transport_fallback_but_no_api_credential_names_the_missing_key(
+        self, tmp_path: Path, calls: list[dict]
+    ) -> None:
+        fallback = TransportFallbackConfig(provider="openai", model="gpt-5.4-mini")
+        config = _make_config(
+            tmp_path,
+            provider="openai",
+            model="gpt-5.4",
+            transport_fallbacks={"openai": fallback},
+        )
+        config = replace(
+            config,
+            plan=replace(
+                config.plan,
+                ref=replace(
+                    config.plan.ref,
+                    cli="codex",
+                    provider=None,
+                    transport=transport_for("openai", "cli"),
+                    api_fallback=fallback,
+                ),
+            ),
+            secrets={},
+        )
+
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            config, _done_result(), _audit()
+        )
+
+        assert outcome.status == "skipped"
+        assert outcome.attempted is True
+        assert outcome.reason == "summary API credential missing: OPENAI_API_KEY not set"
         assert calls == []
         assert not summary_path(tmp_path, RUN_ID).exists()
 
