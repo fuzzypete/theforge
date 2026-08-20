@@ -180,6 +180,33 @@ def _single_instance_bug_body_with_scope_modifier_in_expected() -> str:
     )
 
 
+def _single_instance_bug_body_with_domain_scope_narrowed_by_run() -> str:
+    return (
+        "## What happened\n"
+        "One phase is shown twice in run 42.\n\n"
+        "## What was expected\n"
+        "Each phase of the run is shown once for run 42.\n"
+    )
+
+
+def _single_instance_bug_body_with_domain_scope_narrowed_by_sprint() -> str:
+    return (
+        "## What happened\n"
+        "One sprint duplicates tasks in a single incident.\n\n"
+        "## What was expected\n"
+        "All tasks in this one sprint are duplicated.\n"
+    )
+
+
+def _single_instance_bug_body_with_domain_scope_narrowed_by_dependency() -> str:
+    return (
+        "## What happened\n"
+        "One task is skipped in this dependency.\n\n"
+        "## What was expected\n"
+        "Each task of this dependency should run once.\n"
+    )
+
+
 # ── Artifact / rendering tests ────────────────────────────────────────
 
 
@@ -429,6 +456,27 @@ class TestPromptBuilder:
             )
             assert categorical is True
             assert scope_text == expected_sentence
+
+    def test_issue_scope_requirement_ignores_domain_scope_nouns_narrowed_to_one_run(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_domain_scope_narrowed_by_run()
+        )
+        assert categorical is False
+        assert scope_text == "Each phase of the run is shown once for run 42."
+
+    def test_issue_scope_requirement_ignores_domain_scope_nouns_narrowed_to_one_sprint(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_domain_scope_narrowed_by_sprint()
+        )
+        assert categorical is False
+        assert scope_text == "All tasks in this one sprint are duplicated."
+
+    def test_issue_scope_requirement_ignores_domain_scope_nouns_narrowed_to_one_dependency(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_domain_scope_narrowed_by_dependency()
+        )
+        assert categorical is False
+        assert scope_text == "Each task of this dependency should run once."
 
     def test_issue_scope_requirement_ignores_single_word_concrete_nouns(self):
         categorical, scope_text = derive_issue_scope_requirement(
@@ -1038,6 +1086,41 @@ class TestDiagnoseFlow:
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": False,
             "stated_scope": "Each retry of the run is logged twice for story 12.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_domain_scope_phrase_narrowed_to_one_run_does_not_require_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 51,
+            "title": "duplicate phase display in one run",
+            "body": _single_instance_bug_body_with_domain_scope_narrowed_by_run(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=51,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert result.state.issue_scope_is_categorical is False
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-51-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": False,
+            "stated_scope": "Each phase of the run is shown once for run 42.",
         }
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")

@@ -429,6 +429,9 @@ _SCOPE_NOUN_HINTS = frozenset(
 _SCOPE_PHRASE_BOUNDARY_WORDS = frozenset(
     {"across", "for", "in", "of", "on", "that", "which", "who", "with"}
 )
+_CONCRETE_SCOPE_NARROWING_WORDS = frozenset({"for", "in", "of", "on"})
+_CONCRETE_SCOPE_DETERMINERS = frozenset({"current", "that", "the", "this"})
+_CONCRETE_SCOPE_MODIFIERS = frozenset({"one", "single"})
 
 
 def _normalize_scope_text(text: str) -> str:
@@ -446,6 +449,41 @@ def _token_matches_scope_hint(token: str) -> bool:
     return any(candidate in _SCOPE_NOUN_HINTS for candidate in candidates)
 
 
+def _clause_points_to_concrete_scope(tokens: list[str]) -> bool:
+    if not tokens:
+        return False
+
+    clause_tokens = tokens[:]
+    if clause_tokens[0] in _CONCRETE_SCOPE_DETERMINERS:
+        clause_tokens = clause_tokens[1:]
+    if clause_tokens and clause_tokens[0] in _CONCRETE_SCOPE_MODIFIERS:
+        clause_tokens = clause_tokens[1:]
+    if not clause_tokens:
+        return False
+
+    clause_head: list[str] = []
+    for token in clause_tokens:
+        if token in _SCOPE_PHRASE_BOUNDARY_WORDS:
+            break
+        clause_head.append(token)
+    if not clause_head:
+        return False
+    if _token_matches_scope_hint(clause_head[-1]):
+        return True
+    return _token_matches_scope_hint(clause_head[0]) and any(
+        token.isdigit() or token in _CARDINAL_SCOPE_WORDS for token in clause_head[1:]
+    )
+
+
+def _phrase_narrows_to_concrete_scope(tokens: list[str]) -> bool:
+    for index, token in enumerate(tokens):
+        if token not in _CONCRETE_SCOPE_NARROWING_WORDS:
+            continue
+        if _clause_points_to_concrete_scope(tokens[index + 1 :]):
+            return True
+    return False
+
+
 def _phrase_is_scope_like(phrase: str) -> bool:
     tokens = [token.lower() for token in re.findall(r"[a-z0-9][\w-]*", phrase)]
     if not tokens:
@@ -458,6 +496,8 @@ def _phrase_is_scope_like(phrase: str) -> bool:
             break
         head_tokens.append(token)
     if not head_tokens:
+        return False
+    if _phrase_narrows_to_concrete_scope(tokens):
         return False
     return _token_matches_scope_hint(head_tokens[-1])
 
