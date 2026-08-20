@@ -31,6 +31,7 @@ Everything here is stdlib (sqlite3, json, hashlib, pathlib).
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import sqlite3
@@ -119,7 +120,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 32
+CURRENT_RECORD_SCHEMA_VERSION = 33
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1807,6 +1808,42 @@ def _migrate_v31_to_v32(record: dict) -> dict:
     return {**record, "gate_green_salvage": None}
 
 
+#: Policy-provenance keys v33 adds to the preflight block, with the value that
+#: states "this run had no such record" (#2137).
+_V33_POLICY_DEFAULTS: dict[str, object] = {
+    "blocking_basis": None,
+    "policy_assertions_cited": [],
+    "policy_assertions_resolved": [],
+    "policy_retraction_candidates": [],
+    "policy_ratification_candidates": [],
+    "policy_blocking_authority": False,
+    "policy_adjudication": {},
+}
+
+
+def _migrate_v32_to_v33(record: dict) -> dict:
+    """Backfill absent policy-assertion provenance as "nothing was adjudicated" (#2137).
+
+    v33 records which kind of blocker a BLOCKED preflight declared, the standing
+    policy assertions it cited, and how each resolved against the ratified-policy
+    registry. A v32 record predates the capability: its preflight cited nothing
+    structurally, and no provenance was ever weighed. Empty collections state that
+    absence rather than inventing citations — which would misread an old refusal as
+    having been checked against a registry that did not exist. A record whose
+    preflight block is absent (preflight never ran, or was skipped) is left alone
+    for the same reason. The stored record is never rewritten (ADR-0002
+    refusal-to-forget).
+    """
+    preflight = record.get("preflight")
+    if not isinstance(preflight, dict):
+        return record
+    migrated = dict(preflight)
+    for key, default in _V33_POLICY_DEFAULTS.items():
+        if key not in migrated:
+            migrated[key] = copy.deepcopy(default)
+    return {**record, "preflight": migrated}
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1847,6 +1884,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     29: _migrate_v29_to_v30,
     30: _migrate_v30_to_v31,
     31: _migrate_v31_to_v32,
+    32: _migrate_v32_to_v33,
 }
 
 

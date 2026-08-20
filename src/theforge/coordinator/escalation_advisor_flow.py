@@ -26,6 +26,7 @@ from theforge.escalation_advisor import (
     CycleEvidence,
     EvidencePacket,
     parse_advisory_report,
+    resolve_advisory_assertions,
 )
 from theforge.model_capabilities import (
     capabilities_path,
@@ -33,6 +34,7 @@ from theforge.model_capabilities import (
     identity_for_profile,
     load_capabilities,
 )
+from theforge.policy_provenance import load_policy_assertions
 from theforge.task.advisor_prompts import build_advisor_prompt
 
 from . import util as _cu
@@ -414,6 +416,11 @@ def run_escalation_advisor(
         return None
 
     report = parse_advisory_report(result.output or "")
+    # Any policy assertion the advisor cited is adjudicated against the repo-local
+    # ratified-policy registry, not against the advisor's own claim about it
+    # (#2137). Resolution happens here, in coordinator control flow, so the
+    # rendered advisory names the provenance class the operator can act on.
+    report = resolve_advisory_assertions(report, load_policy_assertions(config.project_root))
     state.advisory_report = report.to_dict()
     state.advisory_generated = report.ok
     if report.ok:

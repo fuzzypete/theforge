@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 <!-- v0.11.0 development (main) -->
+### Added
+
+- **Policy assertions carry a provenance class (#2137):** a standing policy that
+  intake cites to block or escalate a story is now classified as `ratified` (an
+  ADR clause or recorded operator decision, with the reference) or `generated`
+  (written by a run). An assertion with no recorded provenance is treated as
+  generated — never promoted by default. Only ratified assertions carry blocking
+  authority: a story that conflicts solely with generated or unmarked rationale
+  is no longer stopped at intake, and the conflict is recorded as a retraction
+  candidate instead. A cited assertion the registry has never recorded is
+  surfaced as a ratification candidate so demotion to advisory is visible rather
+  than silent. Ratification lives in `.forge/policy-assertions.yaml`; see
+  [policy assertion provenance](docs/guides/policy-provenance.md). Preflight
+  refusals that stand name the assertion and its provenance class, and audit
+  record schema v33 carries the citations, resolutions, and candidates.
+
 ### Changed
 
 - **Assignment history is now a derived view (#793):** completed stories no
