@@ -2,21 +2,99 @@
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import subprocess
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
 from coord_test_helpers import _make_config, _make_task
 
-from theforge.cli.shared import _write_audit
+from theforge.cli.shared import (
+    _move_dirty_story_run_artifacts_off_tree,
+    _write_audit,
+)
+from theforge.config import ForgeConfig
+from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.coordinator.workspace import landing_precondition_error
+from theforge.knowledge_index import rebuild_knowledge_index
+
+BASE = "release/v0.13"
+
+_FORGE_GITIGNORE = """\
+.forge/**
+!.forge/audits/
+!.forge/audits/runs/
+!.forge/audits/runs/**
+!.forge/knowledge/
+!.forge/knowledge/summaries/
+!.forge/knowledge/summaries/**
+"""
 
 
 def _make_result(tmp_path: Path, run_id: str | None = "run-test-001") -> CoordinatorResult:
     state = CoordinatorState()
     state.run_id = run_id
     return CoordinatorResult(success=True, phase=Phase.DONE, state=state, message="done")
+
+
+def _git(cwd: Path, *args: str) -> str:
+    proc = subprocess.run(
+        ["git", *args],
+        cwd=str(cwd),
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return proc.stdout.strip()
+
+
+def _configure(repo: Path) -> None:
+    _git(repo, "config", "user.email", "forge@example.com")
+    _git(repo, "config", "user.name", "Forge Test")
+
+
+def _origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
+    origin = tmp_path / "origin.git"
+    origin.mkdir()
+    _git(origin, "init", "--bare", "--initial-branch", BASE)
+
+    seed = tmp_path / "seed"
+    seed.mkdir()
+    _git(seed, "init", "--initial-branch", BASE)
+    _configure(seed)
+    (seed / "README.md").write_text("seed\n", encoding="utf-8")
+    (seed / ".gitignore").write_text(_FORGE_GITIGNORE, encoding="utf-8")
+    _git(seed, "add", "README.md", ".gitignore")
+    _git(seed, "commit", "-m", "seed")
+    _git(seed, "remote", "add", "origin", str(origin))
+    _git(seed, "push", "-u", "origin", BASE)
+
+    clone = tmp_path / "project"
+    _git(tmp_path, "clone", str(origin), str(clone))
+    _configure(clone)
+    return origin, clone
+
+
+def _published_config(
+    project_root: Path,
+    *,
+    on_approve: str = "merge",
+    auto_push: bool = True,
+) -> ForgeConfig:
+    config = _make_config(project_root)
+    return dataclasses.replace(
+        config,
+        workspace=dataclasses.replace(
+            config.workspace,
+            base_branch=BASE,
+            on_approve=on_approve,
+            auto_push=auto_push,
+        ),
+    )
 
 
 class TestPerRunFileWrite:
@@ -179,3 +257,252 @@ class TestPerRunFileWrite:
         run_file = tmp_path / ".forge" / "audits" / "runs" / "run-env-redact-001.json"
         data = json.loads(run_file.read_text())
         assert data["output"] == "using key [REDACTED] in request"
+
+    def test_write_audit_publishes_single_story_run_artifacts(self, tmp_path: Path) -> None:
+        origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone)
+        task = _make_task(clone)
+        result = _make_result(clone, run_id="run-cli-publish")
+
+        _write_audit(result, config, task)
+
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )
+        tree = _git(origin, "ls-tree", "-r", "--name-only", BASE)
+        assert ".forge/audits/runs/run-cli-publish.json" in tree
+
+    def test_write_audit_records_local_only_when_auto_merge_lands_locally_without_push(
+        self, tmp_path: Path
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone, on_approve="none", auto_push=False)
+        task = _make_task(clone)
+        result = _make_result(clone, run_id="run-cli-local-only")
+
+        _write_audit(result, config, task, auto_merge=True)
+
+        state_path = clone / ".forge" / "audit-publish-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        assert state["state"] == "local_only"
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )
+
+    def test_write_audit_warns_and_keeps_the_run_record_when_publish_cannot_complete(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone)
+        task = _make_task(clone)
+        _git(clone, "add", task.story_path.name)
+        _git(clone, "commit", "-m", "add story fixture")
+        result = _make_result(clone, run_id="run-cli-branch-mismatch")
+        _git(clone, "checkout", "-b", "feature/wrong-branch")
+
+        audit_path = _write_audit(result, config, task)
+
+        err = capsys.readouterr().err
+        state_path = clone / ".forge" / "audit-publish-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        run_file = clone / ".forge" / "audits" / "runs" / "run-cli-branch-mismatch.json"
+        preserved_file = (
+            clone
+            / ".forge"
+            / "unpublished-story-run-artifacts"
+            / "run-cli-branch-mismatch"
+            / ".forge"
+            / "audits"
+            / "runs"
+            / "run-cli-branch-mismatch.json"
+        )
+
+        assert audit_path == clone / ".forge" / "audits" / "forge_audit.yaml"
+        assert not run_file.exists()
+        assert preserved_file.exists()
+        assert state["state"] == "branch_mismatch"
+        assert "canonical story run audit publish failed" in err
+        assert "feature/wrong-branch" in err
+        assert "unpublished artifacts preserved at" in err
+        conn = audit_substrate.require_substrate(clone)
+        try:
+            record = audit_substrate.latest_record_for(conn, run_id="run-cli-branch-mismatch")
+            source_row = conn.execute(
+                "SELECT source_path FROM audit_records WHERE run_id = ?",
+                ("run-cli-branch-mismatch",),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert record is not None
+        assert record["run_id"] == "run-cli-branch-mismatch"
+        assert source_row is not None
+        assert source_row["source_path"] == (
+            ".forge/unpublished-story-run-artifacts/"
+            "run-cli-branch-mismatch/.forge/audits/runs/run-cli-branch-mismatch.json"
+        )
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )
+        assert landing_precondition_error(config) is None
+
+    def test_write_audit_warns_and_keeps_the_checkout_clean_when_publish_cannot_reconcile(
+        self, tmp_path: Path, capsys
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        config = _published_config(clone)
+        task = _make_task(clone)
+        _git(clone, "add", task.story_path.name)
+        _git(clone, "commit", "-m", "add story fixture")
+        result = _make_result(clone, run_id="run-cli-no-origin")
+        _git(clone, "remote", "set-url", "origin", str(tmp_path / "missing-origin.git"))
+
+        audit_path = _write_audit(result, config, task)
+
+        err = capsys.readouterr().err
+        state_path = clone / ".forge" / "audit-publish-state.json"
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+        run_file = clone / ".forge" / "audits" / "runs" / "run-cli-no-origin.json"
+
+        assert audit_path == clone / ".forge" / "audits" / "forge_audit.yaml"
+        assert run_file.exists()
+        assert state["state"] == "reconcile_failed"
+        assert "canonical story run audit publish failed" in err
+        assert "Failed to fetch origin" in err
+        assert (
+            _git(
+                clone,
+                "status",
+                "--short",
+                "--",
+                ".forge/audits/runs",
+                ".forge/knowledge/summaries",
+            )
+            == ""
+        )
+        assert landing_precondition_error(config) is None
+
+    def test_preserved_summary_repoints_its_run_record_and_survives_rebuilds(
+        self, tmp_path: Path
+    ) -> None:
+        _origin, clone = _origin_and_clone(tmp_path)
+        run_id = "run-cli-preserved-summary"
+        run_file = clone / ".forge" / "audits" / "runs" / f"{run_id}.json"
+        run_file.parent.mkdir(parents=True, exist_ok=True)
+        run_record = {
+            "run_id": run_id,
+            "trust_status": "trusted",
+            "trust_checks": [],
+            "finding_registry": [],
+            "reviews": [],
+            "phases": {"plan": {"plan_structured": {"steps": []}}},
+            "changed_files": {"base_ref": None, "head_ref": None, "files": []},
+        }
+        run_file.write_text(json.dumps(run_record, indent=2), encoding="utf-8")
+
+        summary_file = clone / ".forge" / "knowledge" / "summaries" / f"{run_id}.yaml"
+        summary_file.parent.mkdir(parents=True, exist_ok=True)
+        summary_file.write_text(
+            yaml.safe_dump(
+                {
+                    "schema_version": 1,
+                    "run_id": run_id,
+                    "generated_at": None,
+                    "story": {"slug": "demo", "name": "Demo", "github_issue": 339},
+                    "story_shape": {
+                        "work_type": "bugfix",
+                        "complexity": "small",
+                        "complexity_score": 2,
+                        "contract_change": False,
+                    },
+                    "domains": ["cli"],
+                    "changed_files": ["src/theforge/cli/shared.py"],
+                    "learned_patterns": ["audit-publish"],
+                    "authoritative_run_record": f".forge/audits/runs/{run_id}.json",
+                },
+                sort_keys=False,
+                default_flow_style=False,
+            ),
+            encoding="utf-8",
+        )
+
+        conn = audit_substrate.create_or_open(clone)
+        try:
+            stat = run_file.stat()
+            audit_substrate.upsert_run_record(
+                conn,
+                run_record,
+                provenance="native",
+                source_path=str(run_file.relative_to(clone)),
+                source_mtime=stat.st_mtime,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        preserved_root = _move_dirty_story_run_artifacts_off_tree(
+            clone,
+            [run_file, summary_file],
+            run_id=run_id,
+        )
+
+        assert preserved_root is not None
+        preserved_run_rel = (
+            f".forge/unpublished-story-run-artifacts/{run_id}/.forge/audits/runs/{run_id}.json"
+        )
+        preserved_summary_rel = (
+            ".forge/unpublished-story-run-artifacts/"
+            f"{run_id}/.forge/knowledge/summaries/{run_id}.yaml"
+        )
+        assert not run_file.exists()
+        assert not summary_file.exists()
+
+        preserved_summary = yaml.safe_load(
+            (clone / preserved_summary_rel).read_text(encoding="utf-8")
+        )
+        assert preserved_summary["authoritative_run_record"] == preserved_run_rel
+
+        summary = audit_substrate.rebuild_from_runs(clone)
+        assert summary.runs_seen == 1
+        assert summary.imported == 1
+
+        conn = audit_substrate.require_substrate(clone)
+        try:
+            row = conn.execute(
+                "SELECT source_path FROM audit_records WHERE run_id = ?",
+                (run_id,),
+            ).fetchone()
+        finally:
+            conn.close()
+        assert row is not None
+        assert row["source_path"] == preserved_run_rel
+
+        result = rebuild_knowledge_index(clone)
+        assert result.payload["source_count"] == 1
+        assert result.payload["indexed_count"] == 1
+        entry = result.payload["entries"][0]
+        assert entry["run_id"] == run_id
+        assert entry["summary_path"] == preserved_summary_rel

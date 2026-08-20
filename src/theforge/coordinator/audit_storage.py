@@ -126,6 +126,7 @@ HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
 AUDITS_RELPATH = (".forge", "audits")
 SECRETS_RELPATH = (".forge", ".env")
+UNPUBLISHED_STORY_RUN_ARTIFACTS_RELPATH = (".forge", "unpublished-story-run-artifacts")
 
 
 @dataclass(frozen=True)
@@ -197,6 +198,25 @@ def runs_dir(project_root: Path) -> Path:
 
 def audits_dir(project_root: Path) -> Path:
     return project_root.joinpath(*AUDITS_RELPATH)
+
+
+def _preserved_story_run_roots(project_root: Path) -> list[Path]:
+    root = project_root.joinpath(*UNPUBLISHED_STORY_RUN_ARTIFACTS_RELPATH)
+    if not root.exists():
+        return []
+    return sorted(path for path in root.iterdir() if path.is_dir())
+
+
+def _run_record_paths(project_root: Path) -> list[Path]:
+    paths: list[Path] = []
+    canonical_runs = runs_dir(project_root)
+    if canonical_runs.exists():
+        paths.extend(sorted(canonical_runs.glob("*.json")))
+    for preserved_root in _preserved_story_run_roots(project_root):
+        preserved_runs = preserved_root.joinpath(*RUNS_RELPATH)
+        if preserved_runs.exists():
+            paths.extend(sorted(preserved_runs.glob("*.json")))
+    return paths
 
 
 def secrets_env_path(project_root: Path) -> Path:
@@ -863,8 +883,9 @@ def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool
     """Return True when indexed native rows diverge from on-disk run files.
 
     Triggers a rebuild when:
-      - any native row that records a source_path now references a file
-        that has been deleted, or whose mtime has changed since indexing;
+      - any native row whose source_path still points at the canonical
+        ``.forge/audits/runs/*.json`` tree now references a file that has been
+        deleted, or whose mtime has changed since indexing;
         or
       - per-run JSON files exist on disk for which there is no native row
         with that source_path (a new run was emitted while this process
@@ -872,7 +893,11 @@ def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool
 
     Native rows without a source_path (e.g. programmatic inserts from
     sprint rollup) are intentionally NOT validated here — they have no
-    canonical file to compare against.
+    canonical file to compare against. Native rows whose source_path was
+    deliberately repointed outside the canonical tree (for example preserved
+    single-story artifacts after a publish failure) are likewise left alone:
+    they remain readable, but only canonical run files participate in stale
+    rebuild detection.
     """
     runs = runs_dir(project_root)
     on_disk = list(runs.glob("*.json")) if runs.exists() else []
@@ -881,9 +906,14 @@ def _native_rows_are_stale(conn: sqlite3.Connection, project_root: Path) -> bool
         "WHERE provenance = 'native' AND source_path IS NOT NULL"
     )
     indexed: dict[str, float | None] = {}
+    runs_rel = Path(*RUNS_RELPATH)
     for row in cur:
         rel = row[0] if not isinstance(row, sqlite3.Row) else row["source_path"]
         mtime = row[1] if not isinstance(row, sqlite3.Row) else row["source_mtime"]
+        try:
+            Path(str(rel)).relative_to(runs_rel)
+        except ValueError:
+            continue
         indexed[str(rel)] = mtime
     # File-on-disk → row-in-index check.
     for path in on_disk:
@@ -2099,10 +2129,12 @@ class RebuildSummary:
 def rebuild_from_runs(project_root: Path) -> RebuildSummary:
     """Drop-and-recreate the substrate from per-run JSON files.
 
-    Scans ``.forge/audits/runs/*.json``, validates ``run_id`` presence,
-    and upserts each into a freshly recreated substrate with
-    ``provenance='native'``. Records lacking a ``run_id`` are counted as
-    failures (they cannot key the substrate deterministically).
+    Scans the canonical ``.forge/audits/runs/*.json`` tree plus any preserved
+    single-story run records under
+    ``.forge/unpublished-story-run-artifacts/*/.forge/audits/runs/*.json``,
+    validates ``run_id`` presence, and upserts each into a freshly recreated
+    substrate with ``provenance='native'``. Records lacking a ``run_id`` are
+    counted as failures (they cannot key the substrate deterministically).
 
     Legacy rows imported from ``history.jsonl`` (provenance =
     ``legacy_history_jsonl``) are snapshotted before the destructive
@@ -2161,37 +2193,36 @@ def rebuild_from_runs(project_root: Path) -> RebuildSummary:
         path.unlink()
     conn = create_or_open(project_root)
     summary = RebuildSummary()
-    runs = runs_dir(project_root)
     env_file = secrets_env_path(project_root)
     env_file_arg: Path | None = env_file if env_file.exists() else None
-    if runs.exists():
-        for run_file in sorted(runs.glob("*.json")):
-            summary.runs_seen += 1
-            try:
-                with open(run_file, encoding="utf-8") as fh:
-                    record = json.load(fh)
-            except (OSError, json.JSONDecodeError) as exc:
-                summary.failed += 1
-                summary.failures.append(f"{run_file.name}: {exc}")
-                continue
-            if not isinstance(record, dict) or not record.get("run_id"):
-                summary.failed += 1
-                summary.failures.append(f"{run_file.name}: missing run_id")
-                continue
-            try:
-                stat = run_file.stat()
-                upsert_run_record(
-                    conn,
-                    record,
-                    provenance="native",
-                    source_path=str(run_file.relative_to(project_root)),
-                    source_mtime=stat.st_mtime,
-                    env_file=env_file_arg,
-                )
-                summary.imported += 1
-            except sqlite3.DatabaseError as exc:
-                summary.failed += 1
-                summary.failures.append(f"{run_file.name}: {exc}")
+    for run_file in _run_record_paths(project_root):
+        summary.runs_seen += 1
+        relpath = run_file.relative_to(project_root)
+        try:
+            with open(run_file, encoding="utf-8") as fh:
+                record = json.load(fh)
+        except (OSError, json.JSONDecodeError) as exc:
+            summary.failed += 1
+            summary.failures.append(f"{relpath}: {exc}")
+            continue
+        if not isinstance(record, dict) or not record.get("run_id"):
+            summary.failed += 1
+            summary.failures.append(f"{relpath}: missing run_id")
+            continue
+        try:
+            stat = run_file.stat()
+            upsert_run_record(
+                conn,
+                record,
+                provenance="native",
+                source_path=str(relpath),
+                source_mtime=stat.st_mtime,
+                env_file=env_file_arg,
+            )
+            summary.imported += 1
+        except sqlite3.DatabaseError as exc:
+            summary.failed += 1
+            summary.failures.append(f"{relpath}: {exc}")
     # Re-apply preserved legacy rows so a runtime rebuild does not silently
     # drop history.jsonl-imported records. ``upsert_run_record`` with
     # provenance=legacy_history_jsonl respects the native-row protection
