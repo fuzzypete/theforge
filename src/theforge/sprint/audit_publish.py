@@ -29,6 +29,7 @@ import shlex
 from pathlib import Path
 from typing import Any
 
+from ..config import ForgeConfig
 from ..coordinator import workspace as coordinator_workspace
 from ..log_util import _log_line
 from .audit import _write_sprint_audit, _write_sprint_summary
@@ -350,6 +351,27 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
     _log(f"Pushed canonical story run audit records to origin/{base_branch}.")
 
 
+def publish_story_run_artifacts_for_config(
+    config: ForgeConfig,
+    *,
+    lands_locally: bool,
+) -> None:
+    """Publish pending canonical story-run artifacts for a config-owned checkout.
+
+    This is the shared publication surface for any entry point that writes the
+    tracked story-run artifact trees into ``config.project_root``. Callers pass
+    whether their landing path leaves commits on the local base branch, and this
+    helper derives the rest of the publish contract from config.
+    """
+    from ..coordinator.workspace import _base_branch_tracks_origin  # noqa: PLC0415
+
+    _commit_story_run_audits(
+        config.project_root,
+        config.workspace.base_branch,
+        publish=_base_branch_tracks_origin(config, lands_locally=lands_locally),
+    )
+
+
 def write_terminal_sprint_audits(
     state: Any,  # SprintExecutionState — see the module docstring on why not typed
     *,
@@ -459,16 +481,9 @@ def publish_story_run_audits(
     from this checkout, so the sprint must exit nonzero rather than report
     success over divergent base-branch state.
     """
-    from ..coordinator.workspace import _base_branch_tracks_origin  # noqa: PLC0415
-
     config = state.context.config
-    base_branch = config.workspace.base_branch
     try:
-        _commit_story_run_audits(
-            config.project_root,
-            base_branch,
-            publish=_base_branch_tracks_origin(config, lands_locally=lands_locally),
-        )
+        publish_story_run_artifacts_for_config(config, lands_locally=lands_locally)
     except RuntimeError as exc:
         end_state = getattr(exc, "state", None)
         state_suffix = (

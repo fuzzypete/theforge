@@ -252,6 +252,30 @@ def test_warnings_do_not_block_load(monkeypatch, capsys):
     assert "ANTHROPIC_API_KEY not set" in capsys.readouterr().err
 
 
+def test_preserved_unpublished_story_run_artifacts_are_reported(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-present")
+    preserved = (
+        tmp_path
+        / ".forge"
+        / "unpublished-story-run-artifacts"
+        / "run-preserved-001"
+        / ".forge"
+        / "audits"
+        / "runs"
+    )
+    preserved.mkdir(parents=True, exist_ok=True)
+    (preserved / "run-preserved-001.json").write_text("{}", encoding="utf-8")
+    config = _fake_config(project_root=tmp_path)
+
+    with patch("theforge.cli.shared.load_config", return_value=config):
+        result = shared.load_config_checked("/some/forge.yaml")
+
+    assert result is config
+    err = capsys.readouterr().err
+    assert "preserved unpublished story-run artifacts remain under" in err
+    assert "run-preserved-001" in err
+
+
 def test_success_no_warnings_returns_config(monkeypatch, capsys):
     monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-present")
     config = _fake_config()

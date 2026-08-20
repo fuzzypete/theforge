@@ -137,3 +137,19 @@ class TestIssueBackedReview:
         ):
             assert cmd_review(_args(issue=2204)) == 1
         assert "could not read issue #2204" in capsys.readouterr().err
+
+    def test_review_load_keeps_artifact_warnings_enabled(self, tmp_path):
+        task = TaskStory(name="T", story_path=None, slug="issue-2204", github_issue=2204)
+        config, source = self._patches(tmp_path, task)
+        with (
+            patch("theforge.cli.review._find_config", return_value=tmp_path / "forge.yaml"),
+            patch("theforge.cli.review.load_config_checked", return_value=config) as load_checked,
+            patch("theforge.cli.review.GitHubIssueSource", return_value=source),
+            patch("theforge.cli.review.run_from_review", return_value=_fake_result()),
+            patch("theforge.cli.review._write_audit", return_value=tmp_path / "a.yaml"),
+            patch.object(Path, "exists", return_value=True),
+        ):
+            assert cmd_review(_args(issue=2204)) == 0
+
+        assert load_checked.call_args.kwargs["emit_startup_auth_warnings"] is False
+        assert load_checked.call_args.kwargs["emit_startup_artifact_warnings"] is True

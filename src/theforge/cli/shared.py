@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 from collections.abc import Callable
@@ -28,6 +29,17 @@ from theforge.coordinator.knowledge_summary_flow import maybe_generate_run_summa
 from theforge.coordinator.redact import redact
 from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import CoordinatorResult
+from theforge.coordinator.workspace import _base_branch_lands_locally
+from theforge.knowledge_summary import summary_path
+from theforge.log_util import _log_line
+from theforge.sprint.audit_publish import (
+    _STORY_RUN_AUDIT_PUBLISH_STATE_PATH,
+    AUDIT_PUBLISH_BRANCH_MISMATCH,
+    AUDIT_PUBLISH_COMMIT_FAILED,
+    AUDIT_PUBLISH_VERIFY_FAILED,
+    StoryRunAuditPublishError,
+    publish_story_run_artifacts_for_config,
+)
 from theforge.task import (
     TaskStory,
     build_dev_prompt,
@@ -39,6 +51,7 @@ from theforge.task import (
 from theforge.validation_profiles import PHASE_ADVISORY, PHASE_MERGE, select_validation
 
 _SECRETS_FILE = ".forge/.env"
+_UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR = Path(".forge") / "unpublished-story-run-artifacts"
 
 # ── forge run precondition guards ──────────────────────────────────────────
 # Some machine-local state under .forge/ is catastrophic to track in git.
@@ -78,6 +91,11 @@ def _rm_cached_command(display: str, is_dir: bool) -> str:
     """Build the `git rm --cached` command that stops tracking a path."""
     flag = "-r " if is_dir else ""
     return f"git rm --cached {flag}{display}"
+
+
+def _log(msg: str) -> None:
+    """Emit a single forge-tagged stderr log line."""
+    _log_line("[forge]", msg)
 
 
 def _tracked_files(project_root: Path) -> list[str] | None:
@@ -187,6 +205,36 @@ def _print_startup_auth_warnings(config: ForgeConfig) -> None:
         )
 
 
+def _print_unpublished_story_run_artifact_warnings(project_root: Path) -> None:
+    """Warn when preserved single-story audit artifacts still exist off-tree."""
+    preserved_root = project_root / _UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR
+    if not preserved_root.exists():
+        return
+
+    preserved_runs: list[str] = []
+    try:
+        children = sorted(preserved_root.iterdir())
+    except OSError:
+        return
+
+    for child in children:
+        if not child.is_dir():
+            continue
+        if any(path.is_file() for path in child.rglob("*")):
+            preserved_runs.append(child.name)
+
+    if not preserved_runs:
+        return
+
+    print(
+        "⚠ preserved unpublished story-run artifacts remain under "
+        f"{preserved_root}: {', '.join(preserved_runs)}. These records were kept "
+        "after an earlier canonical publish failure and are not picked up from "
+        "the canonical audit tree.",
+        file=sys.stderr,
+    )
+
+
 def print_config_load_error(
     config_path: Path,
     exc: ValueError,
@@ -209,6 +257,7 @@ def load_config_checked(
     *,
     loader: Callable[[Path], ForgeConfig] | None = None,
     emit_startup_auth_warnings: bool = True,
+    emit_startup_artifact_warnings: bool = True,
 ) -> ForgeConfig:
     """Load config for a run/sprint entrypoint, enforcing startup contracts.
 
@@ -231,6 +280,10 @@ def load_config_checked(
         raise SystemExit(2) from exc
     if emit_startup_auth_warnings:
         _print_startup_auth_warnings(config)
+    if emit_startup_artifact_warnings:
+        project_root = getattr(config, "project_root", None)
+        if isinstance(project_root, Path):
+            _print_unpublished_story_run_artifact_warnings(project_root)
     return config
 
 
@@ -262,7 +315,13 @@ def _build_task(story_path: Path, slug: str | None = None) -> TaskStory:
     )
 
 
-def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory) -> Path:
+def _write_audit(
+    result: CoordinatorResult,
+    config: ForgeConfig,
+    task: TaskStory,
+    *,
+    auto_merge: bool = False,
+) -> Path:
     """Write the canonical audit log and preserve minimal worktree state on ESCALATE."""
     audit = generate_audit_log(config, task, result)
     audits_dir = config.project_root / ".forge" / "audits"
@@ -313,7 +372,230 @@ def _write_audit(result: CoordinatorResult, config: ForgeConfig, task: TaskStory
             pass  # best-effort
     # Write per-run JSON record (Phase A dual-write).
     _write_per_run_record(result, config, audit, audits_dir)
+    unpublished_artifact_copy = _preserve_unpublished_story_run_artifacts_on_failure(
+        config, result, audit
+    )
+    try:
+        publish_story_run_artifacts_for_config(
+            config,
+            lands_locally=_base_branch_lands_locally(config, auto_merge=auto_merge),
+        )
+    except StoryRunAuditPublishError as exc:
+        preserved_path = unpublished_artifact_copy(exc)
+        state_suffix = (
+            f" [state={exc.state}; recorded in {_STORY_RUN_AUDIT_PUBLISH_STATE_PATH}]"
+            if exc.state
+            else ""
+        )
+        preserved_suffix = (
+            f"; unpublished artifacts preserved at {preserved_path}"
+            if preserved_path is not None
+            else ""
+        )
+        _log(
+            f"warning: canonical story run audit publish failed: {exc}"
+            f"{state_suffix}{preserved_suffix}"
+        )
     return audit_path
+
+
+def _preserve_unpublished_story_run_artifacts_on_failure(
+    config: ForgeConfig,
+    result: CoordinatorResult,
+    audit: dict,
+) -> Callable[[StoryRunAuditPublishError], Path | None]:
+    """Return a failure handler that preserves pending run artifacts off-tree.
+
+    Single-story runs write tracked artifacts directly into the project-root
+    checkout. If publish fails *before* they are committed, those files would
+    stand as uncommitted dirt and the next merge-path invocation would refuse at
+    the landing precondition. Preserve this run's pending artifacts under an
+    ignored .forge/ path, then remove them from the tracked tree so the next
+    run sees the same clean checkout the publish step would have produced.
+    """
+
+    artifact_paths = _story_run_artifact_paths_for_run(config, result, audit)
+
+    def _preserve(exc: StoryRunAuditPublishError) -> Path | None:
+        if exc.state not in {
+            AUDIT_PUBLISH_BRANCH_MISMATCH,
+            AUDIT_PUBLISH_COMMIT_FAILED,
+            AUDIT_PUBLISH_VERIFY_FAILED,
+        }:
+            return None
+        return _move_dirty_story_run_artifacts_off_tree(
+            config.project_root, artifact_paths, run_id=result.state.run_id
+        )
+
+    return _preserve
+
+
+def _story_run_artifact_paths_for_run(
+    config: ForgeConfig,
+    result: CoordinatorResult,
+    audit: dict,
+) -> list[Path]:
+    """Paths this single-story run may have written into tracked artifact trees."""
+    run_id = result.state.run_id
+    if not run_id:
+        return []
+
+    paths = [config.project_root / ".forge" / "audits" / "runs" / f"{run_id}.json"]
+    summary_info = audit.get("knowledge_summary")
+    if isinstance(summary_info, dict) and summary_info.get("written") is True:
+        paths.append(summary_path(config.project_root, run_id))
+    return paths
+
+
+def _move_dirty_story_run_artifacts_off_tree(
+    project_root: Path,
+    artifact_paths: list[Path],
+    *,
+    run_id: str | None,
+) -> Path | None:
+    """Copy dirty per-run artifacts into ignored local storage and clear them."""
+    if not artifact_paths:
+        return None
+
+    preserved_root = (
+        project_root / _UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR / (run_id or "unknown-run")
+    )
+    preserved_any = False
+    preserved_relpaths: dict[Path, Path] = {}
+
+    for path in artifact_paths:
+        try:
+            rel = path.relative_to(project_root)
+        except ValueError:
+            continue
+        if not _path_has_pending_git_changes(project_root, rel):
+            continue
+        if path.exists():
+            dest = preserved_root / rel
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, dest)
+            preserved_relpaths[rel] = dest.relative_to(project_root)
+            _repoint_preserved_story_run_artifact_in_substrate(project_root, rel, dest)
+            preserved_any = True
+        _clear_pending_git_path(project_root, rel)
+
+    _rewrite_preserved_summary_authoritative_records(project_root, preserved_relpaths)
+
+    if preserved_any:
+        return preserved_root
+    return None
+
+
+def _rewrite_preserved_summary_authoritative_records(
+    project_root: Path,
+    preserved_relpaths: dict[Path, Path],
+) -> None:
+    """Point preserved summaries at preserved run records when both were moved."""
+    runs_rel = Path(".forge") / "audits" / "runs"
+    summaries_rel = Path(".forge") / "knowledge" / "summaries"
+
+    for source_relpath, preserved_relpath in preserved_relpaths.items():
+        try:
+            source_relpath.relative_to(summaries_rel)
+        except ValueError:
+            continue
+
+        run_id = source_relpath.stem
+        preserved_run_relpath = preserved_relpaths.get(runs_rel / f"{run_id}.json")
+        if preserved_run_relpath is None:
+            continue
+
+        preserved_summary_path = project_root / preserved_relpath
+        try:
+            payload = yaml.safe_load(preserved_summary_path.read_text(encoding="utf-8"))
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+
+        payload["authoritative_run_record"] = str(preserved_run_relpath)
+        try:
+            preserved_summary_path.write_text(
+                yaml.safe_dump(payload, sort_keys=False, default_flow_style=False),
+                encoding="utf-8",
+            )
+        except OSError:
+            continue
+
+
+def _repoint_preserved_story_run_artifact_in_substrate(
+    project_root: Path,
+    source_relpath: Path,
+    preserved_path: Path,
+) -> None:
+    """Keep the substrate row readable after a run record is preserved off-tree."""
+    try:
+        runs_rel = Path(".forge") / "audits" / "runs"
+        source_relpath.relative_to(runs_rel)
+    except ValueError:
+        return
+
+    try:
+        from theforge.coordinator import audit_substrate
+
+        with open(preserved_path, encoding="utf-8") as fh:
+            record = json.load(fh)
+        if not isinstance(record, dict) or not record.get("run_id"):
+            return
+        stat = preserved_path.stat()
+        conn = audit_substrate.create_or_open(project_root)
+        try:
+            audit_substrate.upsert_run_record(
+                conn,
+                record,
+                provenance="native",
+                source_path=str(preserved_path.relative_to(project_root)),
+                source_mtime=stat.st_mtime,
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        return
+
+
+def _path_has_pending_git_changes(project_root: Path, relpath: Path) -> bool:
+    """Whether git currently sees relpath as dirty or untracked."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--", str(relpath)],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, FileNotFoundError):
+        return False
+    return result.returncode == 0 and bool(result.stdout.strip())
+
+
+def _clear_pending_git_path(project_root: Path, relpath: Path) -> None:
+    """Best-effort cleanup of one generated artifact from the tracked tree."""
+    try:
+        subprocess.run(
+            ["git", "reset", "-q", "HEAD", "--", str(relpath)],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "restore", "--staged", "--worktree", "--source=HEAD", "--", str(relpath)],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+        )
+        subprocess.run(
+            ["git", "clean", "-fd", "--", str(relpath)],
+            cwd=str(project_root),
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, FileNotFoundError):
+        pass
 
 
 def _write_per_run_record(
@@ -389,10 +671,7 @@ def _write_per_run_record(
     except Exception as exc:  # noqa: BLE001
         import sys as _sys
 
-        print(
-            f"[forge] warning: failed to update audit substrate: {exc}",
-            file=_sys.stderr,
-        )
+        print(f"[forge] warning: failed to update audit substrate: {exc}", file=_sys.stderr)
 
 
 def _cmd_dry_run(config: ForgeConfig, task: TaskStory, story_path: Path) -> int:

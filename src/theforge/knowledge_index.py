@@ -46,6 +46,7 @@ from theforge.knowledge_summary import (
 KNOWLEDGE_INDEX_PATH = Path(".forge") / "knowledge" / "index.yaml"
 KNOWLEDGE_INDEX_SCHEMA_VERSION = 2
 _DEFAULT_RUN_RECORD_DIR = Path(".forge") / "audits" / "runs"
+_UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR = Path(".forge") / "unpublished-story-run-artifacts"
 _GENERIC_REFERENCE_KEY = "reference"
 _GIT_TIMEOUT_SECONDS = 5.0
 _BASELINE_RESOLVED = "resolved"
@@ -155,15 +156,29 @@ def _build_entry(summary: dict[str, Any], *, summary_path: str) -> dict[str, obj
     }
 
 
+def _summary_artifact_paths(project_root: Path) -> list[Path]:
+    paths: list[Path] = []
+    summaries_root = project_root / SUMMARIES_DIR
+    if summaries_root.exists():
+        paths.extend(sorted(summaries_root.glob("*.yaml")))
+
+    preserved_root = project_root / _UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR
+    if preserved_root.exists():
+        for run_root in sorted(path for path in preserved_root.iterdir() if path.is_dir()):
+            preserved_summaries = run_root / SUMMARIES_DIR
+            if preserved_summaries.exists():
+                paths.extend(sorted(preserved_summaries.glob("*.yaml")))
+    return paths
+
+
 def rebuild_knowledge_index(project_root: Path) -> KnowledgeIndexBuildResult:
     """Rebuild ``.forge/knowledge/index.yaml`` from persisted summary artifacts."""
     project_root = Path(project_root)
-    summaries_root = project_root / SUMMARIES_DIR
     index_path = project_root / KNOWLEDGE_INDEX_PATH
 
     entries: list[dict[str, object]] = []
     diagnostics: list[KnowledgeIndexDiagnostic] = []
-    summary_paths = sorted(summaries_root.glob("*.yaml")) if summaries_root.exists() else []
+    summary_paths = _summary_artifact_paths(project_root)
 
     for path in summary_paths:
         rel_path = str(path.relative_to(project_root))
