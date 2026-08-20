@@ -1,0 +1,113 @@
+schema_version: 2
+run_id: d9de0b7f6edd
+authoritative_run_record: .forge/audits/runs/d9de0b7f6edd.json
+generated_at: '2026-08-20T14:25:01.209149+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0100775
+story:
+  slug: issue-2607
+  name: Prior-run selection reports zero candidates identically whether the knowledge
+    index is missing, unreadable, stale, or empty, so injection can be enabled against
+    an index that was never built and look like a working system with nothing to say
+  github_issue: 2607
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/inputs-reference.md
+- src/theforge/task/prior_run_manifest.py
+- src/theforge/task/prior_run_selector.py
+- tests/test_context_assembler.py
+- tests/test_prior_run_manifest.py
+- tests/test_prior_run_selector.py
+what_changed:
+  description: The run changed prior-run selection and manifest reporting so empty
+    prior knowledge results now preserve and expose index health states instead of
+    collapsing all loader failures into the same healthy-empty outcome. It also updated
+    tests and operator documentation to cover the new observable states.
+  approach: The change threaded index-state information from the selector's index-loading
+    path into the prior-run manifest output, then expanded focused tests around selector,
+    manifest, and context assembly behavior while revising the inputs guide to describe
+    the new notes and index lifecycle constraints.
+  files_modified: *id002
+what_was_learned:
+- claim: When a feature intentionally fails closed, the runtime result still needs
+    a distinct operator-visible state for structural inability to operate; otherwise
+    missing, unreadable, or stale inputs become indistinguishable from a genuine no-match
+    outcome.
+  evidence:
+  - type: file
+    path: src/theforge/task/prior_run_selector.py
+    description: This file was changed to stop treating all index-load failure modes
+      as the same empty selection outcome.
+  - type: file
+    path: src/theforge/task/prior_run_manifest.py
+    description: This file was changed so manifest notes reflect index health states
+      rather than only entry_count == 0.
+  - type: review_cycle
+    cycle: '2'
+    description: Review confirmed the runtime manifest now distinguishes missing,
+      unreadable, stale-schema, and healthy-empty prior-run index states.
+- claim: Validation of indexed entry structure must classify malformed contents as
+    an index-readability problem rather than silently degrading to a ready-but-empty
+    state.
+  evidence:
+  - type: review_finding
+    finding_id: b551361ba26a86cb
+    description: This finding identified that non-mapping entry items were being reported
+      as index_state ready with the same no-knowledge manifest note as a healthy empty
+      index.
+  - type: review_cycle
+    cycle: '2'
+    description: Review recorded that the malformed-entries issue was resolved in
+      the second cycle.
+  - type: file
+    path: tests/test_prior_run_selector.py
+    description: Selector tests were updated to cover malformed index-content handling.
+- claim: Operator-facing documentation for prior-run context must stay aligned with
+    manifest state distinctions and with the fact that the knowledge index is built
+    only through the explicit indexing path.
+  evidence:
+  - type: review_finding
+    finding_id: dd5038afb038688b
+    description: This finding noted the guide still described only the older manifest-note
+      distinctions and omitted the new index-state notes and index-build behavior.
+  - type: file
+    path: docs/guides/inputs-reference.md
+    description: This guide was updated as part of the run to document the revised
+      prior_run_context notes and index behavior.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review cycle recorded that the prior documentation issue
+      had been resolved.
+learned_patterns:
+- stateful-empty-vs-broken-empty
+- thread-loader-state-to-manifest
+- docs-follow-runtime-observability
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly focused on whether malformed index contents and operator docs
+    matched the new index-state observability model.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 2.80905515
+  dominant_difficulty: Preserving fail-closed behavior while making all empty-result
+    causes explicitly distinguishable through the selector-to-manifest path.

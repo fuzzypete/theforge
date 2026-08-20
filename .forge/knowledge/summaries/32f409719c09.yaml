@@ -1,0 +1,102 @@
+schema_version: 2
+run_id: 32f409719c09
+authoritative_run_record: .forge/audits/runs/32f409719c09.json
+generated_at: '2026-08-20T14:12:14.002447+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00911125
+story:
+  slug: issue-2606
+  name: A run with little review friction pads its knowledge summary with restatements
+    of what shipped, so injection will spend its rendered-claim budget on prose that
+    changes nothing
+  github_issue: 2606
+story_shape:
+  work_type: bug
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains: []
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/task/summary_prompts.py
+- tests/test_summary_prompts.py
+what_changed:
+  description: Updated the knowledge-summary prompt so generated summaries exclude
+    lesson entries that merely restate shipped changes, allow empty lesson lists when
+    a run produced no transferable insight, prioritize stronger claims first, and
+    require evidence descriptions to explain support rather than just name touched
+    files.
+  approach: The change was made at the prompt layer by tightening the summary-writing
+    instructions around claim selection, ordering, and evidence quality, then adding
+    targeted tests that exercise the new acceptance and rejection cases.
+  files_modified: *id002
+what_was_learned:
+- claim: In this repository, controlling knowledge-summary quality is handled in prompt
+    instructions rather than schema validation, so generation guidance can intentionally
+    produce an empty lesson list when a run has no transferable takeaways.
+  evidence:
+  - type: file
+    path: src/theforge/task/summary_prompts.py
+    description: This prompt file was updated to tell the summarizer to omit non-lessons
+      and permit no lesson entries, showing the behavior is enforced through authoring
+      instructions rather than by changing validator requirements.
+  - type: diff
+    ref: 7a3a9e793c969bbcf49bfa28c080be11a2aa800e
+    description: The diff introduces prompt language that filters filler claims and
+      allows empty `what_was_learned`, demonstrating that summary sparsity is achieved
+      by generation policy.
+- claim: When only a small number of prior claims will be rendered later, summary
+    instructions need to rank lessons strongest-first so limited injection budget
+    is spent on the most decision-changing knowledge.
+  evidence:
+  - type: file
+    path: src/theforge/task/summary_prompts.py
+    description: The prompt now explicitly tells the model to order claims by strength,
+      indicating claim ordering is treated as a meaningful part of downstream knowledge
+      usefulness.
+  - type: review_cycle
+    cycle: '1'
+    description: The approved review outcome states that the prompt now orders claims
+      strongest-first, confirming this behavior was a deliberate requirement of the
+      final change.
+- claim: 'Evidence in persisted summaries is expected to be causal: descriptions must
+    explain how a cited file, diff, or cycle demonstrates a claim, not just note that
+    the artifact was involved in the change.'
+  evidence:
+  - type: file
+    path: src/theforge/task/summary_prompts.py
+    description: The prompt was revised to require evidence descriptions that connect
+      the cited artifact to the lesson being claimed, establishing a repository-specific
+      expectation for explanatory evidence.
+  - type: file
+    path: tests/test_summary_prompts.py
+    description: The added tests cover the prompt's evidence-description requirements,
+      showing this causal standard is intended to remain enforced through regression
+      coverage.
+learned_patterns:
+- prompt-filters-summary-filler
+- strongest-claims-first
+- causal-evidence-descriptions
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review closed cleanly once the prompt explicitly banned restatement filler, allowed
+    empty lesson lists, prioritized claim order, and required evidence descriptions
+    to explain support.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.2158870000000002
+  dominant_difficulty: Translating summary-quality expectations into precise prompt
+    constraints that are specific enough to prevent filler without changing the validator.
