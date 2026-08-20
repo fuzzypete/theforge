@@ -85,7 +85,11 @@ from .audit import (
     preflight_degraded_row_fields,
     write_live_story_audit,
 )
-from .audit_publish import publish_story_run_audits, write_terminal_sprint_audits
+from .audit_publish import (
+    publish_pending_story_run_audits,
+    publish_story_run_audits,
+    write_terminal_sprint_audits,
+)
 from .auth_gate import enforce_sprint_auth_readiness
 from .budget import (
     budget_overrun_usd,
@@ -6914,6 +6918,39 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _sprint_state.dag, all_tasks, _ctx.config, _sprint_state.merged_slugs
             )
             ready = [t for t in _sprint_state.dag.ready() if t.slug not in _sprint_state.active]
+
+            # Publication keeps pace with enforcement (#2595). Every story this
+            # sprint finishes writes its canonical run record and knowledge
+            # summary into the project-root checkout, and the landing
+            # precondition — evaluated at each story's WORKSPACE entry — refuses
+            # on any project-root dirt, untracked files included. Publishing
+            # only at sprint exit meant story 1's own artifacts refused story 2.
+            #
+            # This is the one point every dispatch passes through: the loop body
+            # below is the sole place a slug is registered active, and the
+            # previous pass has already settled each finished story's terminal
+            # audit writes (including the landing-status rewrite that follows
+            # integration). So in sequential mode — where a pass with work to
+            # dispatch is always a pass with nothing in flight — no story can
+            # enter WORKSPACE between a completed story's artifact write and
+            # this publish.
+            #
+            # It is skipped while workers are in flight. Under a project-root
+            # landing workflow those workers merge into the same checkout this
+            # would be committing from, and taking the index out from under a
+            # merge would turn a bookkeeping step into a story failure. Nor
+            # would publishing there be sufficient: a sibling finishing a second
+            # after the publish dirties the root again before the next entry, so
+            # parallel dispatch cannot be made race-free from here at all. Those
+            # passes fall through to the next quiescent one, or to the terminal
+            # sweep — exactly the behaviour they have today.
+            #
+            # A failure is deferred rather than raised: the terminal publish
+            # below is the final, fatal sweep.
+            if ready and not _sprint_state.active:
+                publish_pending_story_run_audits(
+                    _sprint_state, lands_locally=_sprint_lands_locally
+                )
 
             for task in ready:
                 # ``ready`` is a snapshot taken before this pass. A batch-group

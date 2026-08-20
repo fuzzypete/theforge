@@ -24,6 +24,7 @@ import pytest
 import yaml
 from coord_test_helpers import _make_config
 
+from theforge.coordinator.workspace import project_root_dirty_status
 from theforge.sprint.audit_publish import (
     _STORY_RUN_AUDIT_PUBLISH_STATE_PATH,
     AUDIT_PUBLISH_BRANCH_MISMATCH,
@@ -35,6 +36,7 @@ from theforge.sprint.audit_publish import (
     AUDIT_PUBLISH_RECONCILE_FAILED,
     StoryRunAuditPublishError,
     _commit_story_run_audits,
+    publish_pending_story_run_audits,
     publish_story_run_audits,
     write_terminal_sprint_audits,
 )
@@ -77,6 +79,21 @@ def _write_summary(repo: Path, run_id: str) -> None:
     )
 
 
+# The re-include shape ``forge init`` generates: ``.forge/**`` denied wholesale,
+# with the two project-memory trees this module publishes carved back out. It is
+# what makes the run records tracked (and therefore publishable) while the
+# publish-state marker beside them stays local (#2595).
+_FORGE_GITIGNORE = """\
+.forge/**
+!.forge/audits/
+!.forge/audits/runs/
+!.forge/audits/runs/**
+!.forge/knowledge/
+!.forge/knowledge/summaries/
+!.forge/knowledge/summaries/**
+"""
+
+
 @pytest.fixture()
 def origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
     """A bare origin with ``BASE`` checked out in a clone, audits unignored."""
@@ -89,7 +106,8 @@ def origin_and_clone(tmp_path: Path) -> tuple[Path, Path]:
     _git(seed, "init", "--initial-branch", BASE)
     _configure(seed)
     (seed / "README.md").write_text("seed\n", encoding="utf-8")
-    _git(seed, "add", "README.md")
+    (seed / ".gitignore").write_text(_FORGE_GITIGNORE, encoding="utf-8")
+    _git(seed, "add", "README.md", ".gitignore")
     _git(seed, "commit", "-m", "seed")
     _git(seed, "remote", "add", "origin", str(origin))
     _git(seed, "push", "-u", "origin", BASE)
@@ -537,6 +555,77 @@ def test_publish_entry_point_reports_the_failure_and_re_raises(
 
     assert excinfo.value.state == AUDIT_PUBLISH_BRANCH_MISMATCH
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_BRANCH_MISMATCH
+
+
+# ── called more than once per sprint (#2595) ──────────────────────────────
+#
+# Publication has to keep pace with the landing precondition, which is
+# re-evaluated at every story's entry — so the entry point is now called during
+# the run as well as at its end. These pin the properties that makes safe:
+# a second call is a no-op, a local-only commit still cleans the checkout, and
+# a mid-run failure is deferred to the terminal sweep rather than ending the
+# sprint.
+
+
+def test_a_second_publish_commits_nothing_and_records_clean(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    """The sweep after a mid-run publish must not re-commit or restage anything."""
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-k.json")
+    _write_summary(clone, "run-k")
+    state = _make_state(clone, base_branch=BASE, auto_push=False)
+
+    publish_pending_story_run_audits(state, lands_locally=True)
+    commits_after_first = _git(clone, "rev-list", "--count", BASE)
+
+    # Operator dirt that is none of this module's business, present across the
+    # second call: a publish with nothing pending must leave it exactly there.
+    (clone / "operator-edit.txt").write_text("mid-sprint\n", encoding="utf-8")
+
+    assert publish_pending_story_run_audits(state, lands_locally=True) is True
+
+    assert _git(clone, "rev-list", "--count", BASE) == commits_after_first
+    assert _read_state(clone)["state"] == AUDIT_PUBLISH_CLEAN
+    assert _git(clone, "status", "--porcelain") == "?? operator-edit.txt"
+
+
+def test_a_local_only_commit_clears_the_project_root_dirty_status(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    """auto_push off is the configuration the reported sprint ran under (#2595).
+
+    The commit stays local there, and a local commit is still enough to make the
+    checkout clean — which is the whole condition the next story's landing
+    precondition observes.
+    """
+    _origin, clone = origin_and_clone
+    _write_audit(clone, "run-l.json")
+    _write_summary(clone, "run-l")
+    assert project_root_dirty_status(clone) != ""
+    state = _make_state(clone, base_branch=BASE, auto_push=False)
+
+    publish_pending_story_run_audits(state, lands_locally=True)
+
+    assert _read_state(clone)["state"] == AUDIT_PUBLISH_LOCAL_ONLY
+    assert project_root_dirty_status(clone) == ""
+
+
+def test_a_mid_sprint_publish_failure_is_deferred_rather_than_raised(
+    origin_and_clone: tuple[Path, Path],
+) -> None:
+    """Raising mid-run would abandon the stories still to come over a transport fault."""
+    _origin, clone = origin_and_clone
+    _git(clone, "checkout", "-b", "feature/wrong-branch")
+    _write_audit(clone, "run-m.json")
+    state = _make_state(clone, base_branch=BASE)
+
+    assert publish_pending_story_run_audits(state, lands_locally=False) is False
+    assert _read_state(clone)["state"] == AUDIT_PUBLISH_BRANCH_MISMATCH
+
+    # The terminal sweep over the same unchanged condition still ends the run.
+    with pytest.raises(StoryRunAuditPublishError):
+        publish_story_run_audits(state, lands_locally=False)
 
 
 def test_the_module_does_not_import_the_sprint_runner() -> None:
