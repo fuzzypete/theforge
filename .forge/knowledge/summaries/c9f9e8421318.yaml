@@ -1,0 +1,118 @@
+schema_version: 2
+run_id: c9f9e8421318
+authoritative_run_record: .forge/audits/runs/c9f9e8421318.json
+generated_at: '2026-08-20T23:36:27.548716+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01105
+story:
+  slug: issue-2602
+  name: A story approved and paid for is refused at landing because a concurrent sibling
+    dirtied the project root after the entry check passed
+  github_issue: 2602
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/sprint/audit_publish.py
+- src/theforge/sprint/runner.py
+- tests/test_sprint_integration_seam_publish.py
+what_changed:
+  description: The sprint landing path was changed so sibling story-run audit and
+    knowledge artifacts are published ahead of local landing, preventing approved
+    stories from failing merge because another concurrently finishing story dirtied
+    the shared project root. The publish step was also hardened to handle repeated
+    sibling completions across successive landing windows.
+  approach: The fix introduced a pre-merge integration seam in the sprint runner that
+    coordinates artifact publication with local landing attempts, and then refined
+    that seam through review to keep retrying across sibling-artifact races while
+    still preserving refusal for unrelated operator dirt.
+  files_modified: *id002
+what_was_learned:
+- claim: When a landing decision depends on shared mutable workspace state under concurrency,
+    a single pre-merge cleanup or publish pass is not enough; the handoff must tolerate
+    repeated sibling completions until the landing window is actually clear.
+  evidence:
+  - type: review_finding
+    finding_id: 29fae7aa56a111dc
+    description: Review identified that one publish attempt plus a single retry still
+      left an approved story stranded when two siblings finished in adjacent windows,
+      demonstrating that concurrent sibling writes can recur during landing and must
+      be handled as an ongoing condition rather than a one-shot race.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 requested changes specifically because the first version
+      only retried once, showing the core implementation risk was underestimating
+      how many times sibling artifact dirt could reappear before merge.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approved only after the seam was changed to republish through
+      successive sibling-artifact windows, confirming that repeated handling of the
+      race was the property needed for correctness.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: The runner is where local landing orchestration occurs; its review
+      history and final approval tie the claim to merge-time coordination logic rather
+      than to artifact generation itself.
+- claim: For concurrent-story workflows, merge blocking must distinguish sibling-produced
+    run artifacts from true external dirt, or ordinary successful sibling completion
+    can invalidate another story after approval.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 approved the direction because it publishes sibling artifacts
+      before local landing while preserving operator-dirt refusal, showing the important
+      behavioral split was between expected sibling output and unrelated workspace
+      contamination.
+  - type: file
+    path: src/theforge/sprint/audit_publish.py
+    description: The dedicated publish path is evidence that sibling-generated artifacts
+      needed separate treatment from generic dirty-root handling, because those artifacts
+      are coordinated as part of sprint execution rather than treated as arbitrary
+      dirt.
+  - type: diff
+    ref: 8e58b6c10b24a72a0a7873ccd3ec1d54c9be599d
+    description: This diff represents the introduction of the publish-side handling
+      that reclassifies sibling story artifacts into a coordinated pre-landing step,
+      demonstrating the mechanism used to avoid conflating them with merge-blocking
+      dirt.
+learned_patterns:
+- repeated-race-window
+- sibling-artifact-vs-operator-dirt
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 29fae7aa56a111dc
+    severity: P1
+    file: src/theforge/sprint/runner.py
+    description: When two sibling stories finish in the two successive windows around
+      the pre-merge publish and its single retry, the approved story still ends with
+      landing_status failed and a dirty root containing only the second sibling's
+      story-run artifacts.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced that sibling artifact races can recur across
+    multiple adjacent landing windows, so correctness depended on sustained coordination
+    rather than a single retry.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 14.5698937
+  dominant_difficulty: Coordinating merge-time behavior against project-root state
+    that is being mutated concurrently by sibling stories.
