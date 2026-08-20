@@ -14,6 +14,7 @@ from theforge.prior_run_replay import (
     _discover_fixtures,
     _judgment_key,
     _replay_story,
+    run_prior_run_replay,
 )
 
 
@@ -50,6 +51,8 @@ def _summary_payload(
     story_name: str,
     generated_at: str,
     claims: list[str],
+    changed_files: list[str] | None = None,
+    review_insights: dict | None = None,
 ) -> dict:
     return {
         "schema_version": 1,
@@ -68,7 +71,7 @@ def _summary_payload(
             "contract_change": False,
         },
         "domains": ["parser"],
-        "changed_files": ["src/demo.py"],
+        "changed_files": changed_files or ["src/demo.py"],
         "what_changed": {
             "description": "Adjusted parser behavior",
             "approach": "Changed the parser implementation",
@@ -82,7 +85,8 @@ def _summary_payload(
             for claim in claims
         ],
         "learned_patterns": ["parser-safety"],
-        "review_insights": {
+        "review_insights": review_insights
+        or {
             "recurring_findings": [],
             "resolved_findings": [],
             "observations": [],
@@ -106,6 +110,8 @@ def _run_record_payload(
     started_at: str,
     finished_at: str,
     base_ref: str,
+    changed_files: list[str] | None = None,
+    plan_structured: dict | None = None,
 ) -> dict:
     return {
         "schema_version": 31,
@@ -135,8 +141,12 @@ def _run_record_payload(
         "changed_files": {
             "base_ref": base_ref,
             "head_ref": base_ref,
-            "files": [{"path": "src/demo.py", "insertions": 1, "deletions": 0, "binary": False}],
+            "files": [
+                {"path": path, "insertions": 1, "deletions": 0, "binary": False}
+                for path in (changed_files or ["src/demo.py"])
+            ],
         },
+        "phases": {"plan": {"plan_structured": plan_structured} if plan_structured else {}},
         "trust_status": "trusted",
         "context_manifests": [],
     }
@@ -154,6 +164,9 @@ def _write_fixture(
     generated_at: str,
     base_ref: str,
     claims: list[str],
+    changed_files: list[str] | None = None,
+    review_insights: dict | None = None,
+    plan_structured: dict | None = None,
 ) -> None:
     _write(
         root / ".forge" / "knowledge" / "summaries" / f"{run_id}.yaml",
@@ -164,6 +177,8 @@ def _write_fixture(
                 story_name=story_name,
                 generated_at=generated_at,
                 claims=claims,
+                changed_files=changed_files,
+                review_insights=review_insights,
             ),
             sort_keys=False,
         ),
@@ -179,6 +194,8 @@ def _write_fixture(
                 started_at=started_at,
                 finished_at=finished_at,
                 base_ref=base_ref,
+                changed_files=changed_files,
+                plan_structured=plan_structured,
             ),
             indent=2,
         )
@@ -250,16 +267,204 @@ def test_replay_filters_future_summaries_and_leaves_source_corpus_clean(tmp_path
     judgments = {
         _judgment_key("demo", "bbb222", "plan", "aaa111", "Earlier lesson"): _judgment(
             "demo", "bbb222", "plan", "aaa111", "Earlier lesson", "plan"
-        )
+        ),
+        _judgment_key("demo", "bbb222", "dev", "aaa111", "Earlier lesson"): _judgment(
+            "demo", "bbb222", "dev", "aaa111", "Earlier lesson", "implementation"
+        ),
     }
 
     report = _replay_story(CorpusSpec("demo", tmp_path), replay_fixture, fixtures, judgments)
 
     plan = next(item for item in report["phase_replays"] if item["phase"] == "plan")
-    assert plan["status"] == "replayed_missing_file_list"
+    assert plan["status"] == "replayed"
+    assert plan["file_list"] == ["src/demo.py"]
     assert [candidate["run_id"] for candidate in plan["candidates"]] == ["aaa111"]
     assert "ccc333" not in {candidate["run_id"] for candidate in plan["candidates"]}
     assert not (tmp_path / ".forge" / "knowledge" / "index.yaml").exists()
+
+
+def test_replay_recovers_plan_and_later_phase_file_lists_from_persisted_artifacts(
+    tmp_path: Path,
+) -> None:
+    base_ref = _init_repo(tmp_path)
+    _write_fixture(
+        tmp_path,
+        "aaa111",
+        story_slug="issue-a",
+        story_name="Earlier parser fix",
+        story_text="Parser overlap in src/api.py",
+        started_at="2026-08-01T00:00:00+00:00",
+        finished_at="2026-08-01T00:10:00+00:00",
+        generated_at="2026-08-01T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=["Earlier lesson"],
+        changed_files=["src/api.py", "tests/test_api.py"],
+    )
+    _write_fixture(
+        tmp_path,
+        "bbb222",
+        story_slug="issue-b",
+        story_name="Replay target",
+        story_text="Parser overlap in src/api.py",
+        started_at="2026-08-02T00:00:00+00:00",
+        finished_at="2026-08-02T00:10:00+00:00",
+        generated_at="2026-08-02T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+        changed_files=["src/api.py", "tests/test_api.py"],
+        plan_structured={
+            "steps": [
+                {
+                    "id": "step-1",
+                    "title": "Touch the api module",
+                    "files": ["src/api.py", "tests/test_api.py"],
+                }
+            ]
+        },
+    )
+
+    fixtures = _discover_fixtures(tmp_path)
+    replay_fixture = next(item for item in fixtures if item.run_id == "bbb222")
+    judgments = {
+        _judgment_key("demo", "bbb222", "plan", "aaa111", "Earlier lesson"): _judgment(
+            "demo", "bbb222", "plan", "aaa111", "Earlier lesson", "plan"
+        ),
+        _judgment_key("demo", "bbb222", "dev", "aaa111", "Earlier lesson"): _judgment(
+            "demo", "bbb222", "dev", "aaa111", "Earlier lesson", "implementation"
+        ),
+    }
+
+    report = _replay_story(CorpusSpec("demo", tmp_path), replay_fixture, fixtures, judgments)
+
+    phase_reports = {phase["phase"]: phase for phase in report["phase_replays"]}
+    assert phase_reports["plan"]["status"] == "replayed"
+    assert phase_reports["plan"]["file_list"] == ["src/api.py", "tests/test_api.py"]
+    assert phase_reports["plan"]["recovery_note"] == "recovered from phases.plan.plan_structured"
+    assert phase_reports["dev"]["status"] == "replayed"
+    assert phase_reports["dev"]["file_list"] == ["src/api.py", "tests/test_api.py"]
+    assert phase_reports["dev"]["recovery_note"] == "recovered from persisted changed_files"
+    assert phase_reports["review"]["file_list"] == ["src/api.py", "tests/test_api.py"]
+
+
+def test_replay_review_rendering_matches_selector_section_caps(tmp_path: Path) -> None:
+    base_ref = _init_repo(tmp_path)
+    recurring = [
+        {"summary": f"Recurring finding {index}", "finding_key": f"r{index}"}
+        for index in range(1, 3)
+    ]
+    resolved = [
+        {"summary": f"Resolved finding {index}", "finding_key": f"f{index}"}
+        for index in range(1, 6)
+    ]
+    observations = ["Observation 1", "Observation 2"]
+    _write_fixture(
+        tmp_path,
+        "aaa111",
+        story_slug="issue-a",
+        story_name="Earlier review-heavy fix",
+        story_text="Review-heavy parser bug",
+        started_at="2026-08-01T00:00:00+00:00",
+        finished_at="2026-08-01T00:10:00+00:00",
+        generated_at="2026-08-01T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+        review_insights={
+            "recurring_findings": recurring,
+            "resolved_findings": resolved,
+            "observations": observations,
+        },
+    )
+    _write_fixture(
+        tmp_path,
+        "bbb222",
+        story_slug="issue-b",
+        story_name="Replay target",
+        story_text="Review-heavy parser bug",
+        started_at="2026-08-02T00:00:00+00:00",
+        finished_at="2026-08-02T00:10:00+00:00",
+        generated_at="2026-08-02T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+    )
+
+    fixtures = _discover_fixtures(tmp_path)
+    replay_fixture = next(item for item in fixtures if item.run_id == "bbb222")
+    judgments = {}
+    for claim in [
+        "Recurring finding 1",
+        "Recurring finding 2",
+        "Resolved finding 1",
+        "Resolved finding 2",
+        "Resolved finding 3",
+        "Resolved finding 4",
+        "Resolved finding 5",
+        "Observation 1",
+        "Observation 2",
+    ]:
+        effect = "verification" if claim == "Observation 2" else "none"
+        judgments[_judgment_key("demo", "bbb222", "review", "aaa111", claim)] = _judgment(
+            "demo", "bbb222", "review", "aaa111", claim, effect
+        )
+
+    report = _replay_story(CorpusSpec("demo", tmp_path), replay_fixture, fixtures, judgments)
+
+    review = next(item for item in report["phase_replays"] if item["phase"] == "review")
+    candidate = review["candidates"][0]
+    rendered_claims = {item["claim"] for item in candidate["claims"] if item["rendered"]}
+    assert "Observation 2" in rendered_claims
+    assert review["metrics"]["useful_claim_cap_truncation"] is False
+
+
+def test_run_prior_run_replay_rejects_subset_replay_run_ids(tmp_path: Path) -> None:
+    corpus_root = tmp_path / "corpus"
+    corpus_root.mkdir()
+    base_ref = _init_repo(corpus_root)
+    _write_fixture(
+        corpus_root,
+        "aaa111",
+        story_slug="issue-a",
+        story_name="Earlier parser fix",
+        story_text="Parser bug in demo flow",
+        started_at="2026-08-01T00:00:00+00:00",
+        finished_at="2026-08-01T00:10:00+00:00",
+        generated_at="2026-08-01T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+    )
+    _write_fixture(
+        corpus_root,
+        "bbb222",
+        story_slug="issue-b",
+        story_name="Replay target",
+        story_text="Parser bug in replay target",
+        started_at="2026-08-02T00:00:00+00:00",
+        finished_at="2026-08-02T00:10:00+00:00",
+        generated_at="2026-08-02T00:10:00+00:00",
+        base_ref=base_ref,
+        claims=[],
+    )
+    judgments_path = tmp_path / "judgments.yaml"
+    judgments_path.write_text(
+        yaml.safe_dump(
+            {
+                "corpora": {
+                    "demo": {
+                        "replay_run_ids": ["bbb222"],
+                        "claims": [],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    try:
+        run_prior_run_replay([CorpusSpec("demo", corpus_root)], judgments_path=judgments_path)
+    except PriorRunReplayError as exc:
+        assert "must cover every available completed story" in str(exc)
+    else:
+        raise AssertionError("expected subset replay_run_ids to fail")
 
 
 def test_replay_reports_candidate_and_claim_cap_pressure(tmp_path: Path) -> None:
@@ -338,12 +543,28 @@ def test_replay_reports_candidate_and_claim_cap_pressure(tmp_path: Path) -> None
         effect = "plan" if claim == "B claim 6" else "none"
         key = _judgment_key("demo", "zzz999", "plan", "bbb222", claim)
         judgments[key] = _judgment("demo", "zzz999", "plan", "bbb222", claim, effect)
+        judgments[_judgment_key("demo", "zzz999", "dev", "bbb222", claim)] = _judgment(
+            "demo", "zzz999", "dev", "bbb222", claim, "none"
+        )
     for run_id, claim, effect in [
         ("ccc333", "ccc333 claim", "none"),
         ("ddd444", "ddd444 claim", "none"),
     ]:
         key = _judgment_key("demo", "zzz999", "plan", run_id, claim)
         judgments[key] = _judgment("demo", "zzz999", "plan", run_id, claim, effect)
+        judgments[_judgment_key("demo", "zzz999", "dev", run_id, claim)] = _judgment(
+            "demo", "zzz999", "dev", run_id, claim, "none"
+        )
+    judgments[_judgment_key("demo", "zzz999", "dev", "aaa111", "Overflow useful claim")] = (
+        _judgment(
+            "demo",
+            "zzz999",
+            "dev",
+            "aaa111",
+            "Overflow useful claim",
+            "none",
+        )
+    )
 
     report = _replay_story(CorpusSpec("demo", tmp_path), replay_fixture, fixtures, judgments)
 
