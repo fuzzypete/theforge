@@ -257,6 +257,13 @@ class TestPromptBuilder:
         assert "do not broaden" in lower
         assert "concrete-instance symptom" in lower
 
+    def test_scope_coverage_example_stays_stack_neutral(self):
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        assert 'location: "path/to/sibling_surface_a.ext:render_output"' in prompt
+        assert 'location: "path/to/sibling_surface_b.ext:serialize_output"' in prompt
+        assert "src/theforge/ui/status_cli.py:render_status" not in prompt
+        assert "src/theforge/ui/status_web.py:serialize_status" not in prompt
+
 
 class TestEnvironmentBriefing:
     """The prompt must brief the agent on TheForge's audit/log layout, field

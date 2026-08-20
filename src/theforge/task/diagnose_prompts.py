@@ -153,12 +153,12 @@ symptom_scope_coverage:
   examined_locations: []
   # Example categorical record:
   # symptom_is_categorical: true
-  # stated_scope: "Every user-facing surface that renders diagnose status"
+  # stated_scope: "Every sibling surface that renders this symptom"
   # examined_locations:
-  #   - location: "src/theforge/ui/status_cli.py:render_status"
+  #   - location: "path/to/sibling_surface_a.ext:render_output"
   #     status: covered
   #     rationale: "Same renderer construct and same omitted field as the confirmed cause."
-  #   - location: "src/theforge/ui/status_web.py:serialize_status"
+  #   - location: "path/to/sibling_surface_b.ext:serialize_output"
   #     status: excluded
   #     rationale: "Sibling surface checked; it uses a different serializer
   #       and already carries the field."
