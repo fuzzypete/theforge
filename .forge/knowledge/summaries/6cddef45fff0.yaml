@@ -1,0 +1,103 @@
+schema_version: 2
+run_id: 6cddef45fff0
+authoritative_run_record: .forge/audits/runs/6cddef45fff0.json
+generated_at: '2026-08-20T18:59:25.451509+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00945375
+story:
+  slug: issue-2593
+  name: A story that runs out of allocation during optional cleanup discards the gate-green,
+    review-approved commit it had just named as its floor
+  github_issue: 2593
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/engine.py
+- src/theforge/coordinator/gate_green_salvage.py
+- tests/test_coord_gate_green_salvage.py
+what_changed:
+  description: The run changed cleanup-allocation refusal handling so a previously
+    recorded gate-green, review-approved checkpoint is landed instead of the story
+    being recorded as failed. It also expanded salvage coverage to exercise that path
+    under constrained and dirty-worktree conditions.
+  approach: The change was made by routing the no-funding cleanup outcome through
+    the existing gate-green salvage path and by strengthening salvage logic and tests
+    around recovering the recorded checkpoint when the gate authority is unavailable
+    or the worktree contains unrelated changes.
+  files_modified: *id002
+what_was_learned:
+- claim: Optional cleanup refusal needs to preserve the last recorded gate-green checkpoint
+    as the authoritative story outcome rather than treating the whole story as failed.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/engine.py
+    description: Engine changes cover the allocation-refusal path for cleanup so it
+      resolves via checkpoint salvage rather than immediate failure.
+  - type: diff
+    ref: 49caa112ce4a8c1e5ac80247ba23ff34237f7238
+    description: This diff records the engine-side change that redirects the cleanup
+      refusal case into salvage handling.
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved that the cleanup allocation-refusal path now lands
+      the reviewed gate-green checkpoint.
+- claim: Gate-green salvage in this codebase must be able to recover the recorded
+    reviewed checkpoint even when the usual gate authority is unavailable and the
+    worktree has uncommitted review-target changes.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/gate_green_salvage.py
+    description: Salvage logic was updated in the dedicated checkpoint recovery module
+      to support recovery from the stored floor under adverse local conditions.
+  - type: file
+    path: tests/test_coord_gate_green_salvage.py
+    description: The added tests exercise salvage with the authoritative gate unavailable
+      and with uncommitted changes present.
+  - type: review_cycle
+    cycle: '1'
+    description: Review explicitly notes the focused salvage tests passing with gate
+      authority unavailable and uncommitted review-target changes present.
+- claim: This behavior is anchored by targeted salvage tests rather than only by story-flow
+    logic, making checkpoint preservation a directly exercised invariant.
+  evidence:
+  - type: file
+    path: tests/test_coord_gate_green_salvage.py
+    description: The new test file coverage centers on checkpoint salvage outcomes
+      for cleanup-refusal scenarios.
+  - type: diff
+    ref: e306d241f5cf261ef82e86fc2409f81cee83cbc8
+    description: This diff captures the test additions that codify the expected salvage
+      behavior.
+learned_patterns:
+- checkpoint-salvage-on-cleanup-refusal
+- optional-step-cannot-overrule-approved-floor
+- salvage-tested-under-dirty-worktree
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on whether cleanup allocation refusal lands the stored reviewed
+    checkpoint and whether salvage remains correct when gate authority is unavailable.
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.729304
+  dominant_difficulty: Preserving the approved floor across a failure mode where the
+    optional iteration never starts, while still recovering safely under messy repository
+    state.
