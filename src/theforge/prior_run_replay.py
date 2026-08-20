@@ -506,14 +506,15 @@ def _review_claim_sections(summary: dict[str, Any]) -> list[list[str]]:
 
 def _aggregate_corpus_metrics(story_reports: list[dict[str, Any]]) -> dict[str, Any]:
     qualifier_counts: Counter[str] = Counter()
+    qualifier_counts_by_phase: dict[str, Counter[str]] = {phase: Counter() for phase in _PHASES}
     offered_story_count = 0
     replayed_phase_count = 0
     candidate_cap_useful = 0
     claim_cap_useful = 0
-    seen_story_run: set[tuple[str, str]] = set()
     for story in story_reports:
         story_offered = False
         for phase in story["phase_replays"]:
+            phase_name = _text(phase.get("phase"))
             replayed_phase_count += 1
             if phase["candidates"]:
                 story_offered = True
@@ -524,17 +525,19 @@ def _aggregate_corpus_metrics(story_reports: list[dict[str, Any]]) -> dict[str, 
             for candidate in phase["candidates"]:
                 if candidate["overflowed_selection_cap"]:
                     continue
-                key = (story["run_id"], candidate["run_id"])
-                if key in seen_story_run:
-                    continue
-                seen_story_run.add(key)
                 qualifier_counts[candidate["qualifying_signal"]] += 1
+                if phase_name in qualifier_counts_by_phase:
+                    qualifier_counts_by_phase[phase_name][candidate["qualifying_signal"]] += 1
         if story_offered:
             offered_story_count += 1
     return {
         "replayed_phase_count": replayed_phase_count,
         "stories_with_candidates": offered_story_count,
         "qualifying_signal_counts": dict(sorted(qualifier_counts.items())),
+        "qualifying_signal_counts_by_phase": {
+            phase: dict(sorted(counts.items()))
+            for phase, counts in qualifier_counts_by_phase.items()
+        },
         "candidate_cap_useful_phase_count": candidate_cap_useful,
         "claim_cap_useful_phase_count": claim_cap_useful,
     }
@@ -544,16 +547,25 @@ def _aggregate_report(corpora: list[dict[str, Any]]) -> dict[str, Any]:
     total_stories = sum(corpus["story_count"] for corpus in corpora)
     total_offered = sum(corpus["metrics"]["stories_with_candidates"] for corpus in corpora)
     qualifier_counts: Counter[str] = Counter()
+    qualifier_counts_by_phase: dict[str, Counter[str]] = {phase: Counter() for phase in _PHASES}
     candidate_cap_useful = 0
     claim_cap_useful = 0
     for corpus in corpora:
         qualifier_counts.update(corpus["metrics"]["qualifying_signal_counts"])
+        for phase in _PHASES:
+            qualifier_counts_by_phase[phase].update(
+                corpus["metrics"]["qualifying_signal_counts_by_phase"].get(phase, {})
+            )
         candidate_cap_useful += corpus["metrics"]["candidate_cap_useful_phase_count"]
         claim_cap_useful += corpus["metrics"]["claim_cap_useful_phase_count"]
     return {
         "story_count": total_stories,
         "stories_with_candidates": total_offered,
         "qualifying_signal_counts": dict(sorted(qualifier_counts.items())),
+        "qualifying_signal_counts_by_phase": {
+            phase: dict(sorted(counts.items()))
+            for phase, counts in qualifier_counts_by_phase.items()
+        },
         "candidate_cap_useful_phase_count": candidate_cap_useful,
         "claim_cap_useful_phase_count": claim_cap_useful,
     }
