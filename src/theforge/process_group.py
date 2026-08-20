@@ -59,6 +59,7 @@ import signal
 import struct
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -1067,11 +1068,35 @@ def register_agent_group(
     }
     try:
         agents_dir.mkdir(parents=True, exist_ok=True)
-        _sidecar_path(agents_dir, owner_pid, pgid).write_text(
-            json.dumps(payload), encoding="utf-8"
-        )
+        _write_sidecar_json(_sidecar_path(agents_dir, owner_pid, pgid), payload)
     except OSError:
         pass
+
+
+def _write_sidecar_json(path: Path, payload: dict[str, object]) -> None:
+    """Atomically replace a sidecar JSON record in-place.
+
+    Sidecar readers treat a malformed ``*.json`` as unresolved liveness. Writing
+    via a same-directory temp file keeps that failure mode reserved for truly
+    broken records rather than our own partial writes.
+    """
+    encoded = json.dumps(payload)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        text=True,
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as handle:
+            handle.write(encoded)
+        Path(tmp_name).replace(path)
+    except Exception:
+        try:
+            Path(tmp_name).unlink()
+        except OSError:
+            pass
+        raise
 
 
 def _update_sidecar(pgid: int, field: str, value: dict[str, str]) -> None:
@@ -1094,7 +1119,7 @@ def _update_sidecar(pgid: int, field: str, value: dict[str, str]) -> None:
         return
     data[field] = value
     try:
-        path.write_text(json.dumps(data), encoding="utf-8")
+        _write_sidecar_json(path, data)
     except OSError:
         pass
 
