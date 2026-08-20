@@ -26,6 +26,7 @@ from theforge.diagnose_types import (
     DiagnoseState,
     DiagnosisArtifact,
     Hypothesis,
+    SymptomScopeCoverage,
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
@@ -37,7 +38,9 @@ from theforge.task.diagnose_prompts import (
 
 
 def _agent_yaml_output(
-    *, hypothesis_statuses: tuple[str, ...] = ("ruled_out", "confirmed")
+    *,
+    hypothesis_statuses: tuple[str, ...] = ("ruled_out", "confirmed"),
+    symptom_scope_coverage: dict | None = None,
 ) -> str:
     confirmed = "confirmed" in hypothesis_statuses
     hypotheses = []
@@ -80,6 +83,8 @@ def _agent_yaml_output(
         ),
         "notes": "",
     }
+    if symptom_scope_coverage is not None:
+        payload["symptom_scope_coverage"] = symptom_scope_coverage
     return f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
 
 
@@ -242,6 +247,16 @@ class TestPromptBuilder:
         assert "boundary" in lower
         assert "scope" in lower
 
+    def test_prompt_distinguishes_analogous_scope_from_adjacent_defects(self):
+        prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
+        lower = prompt.lower()
+        assert "structurally analogous sibling locations" in lower
+        assert "adjacent-but-different" in lower
+        assert "same" in lower and "construct" in lower
+        assert "the same omission or behavior" in lower
+        assert "do not broaden" in lower
+        assert "concrete-instance symptom" in lower
+
 
 class TestEnvironmentBriefing:
     """The prompt must brief the agent on TheForge's audit/log layout, field
@@ -382,6 +397,69 @@ class TestDiagnoseFlow:
         assert "artifact" in loaded
         # Hypotheses preserved in audit
         assert len(loaded["artifact"]["hypotheses"]) == 2
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_audit_preserves_categorical_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 43,
+            "title": "broken sprint",
+            "body": "every sibling renderer drops the same field",
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(
+                symptom_scope_coverage={
+                    "symptom_is_categorical": True,
+                    "stated_scope": "every sibling renderer",
+                    "examined_locations": [
+                        {
+                            "location": "src/theforge/ui/status_cli.py:render_status",
+                            "status": "covered",
+                            "rationale": "Same renderer helper omitted the field.",
+                        },
+                        {
+                            "location": "src/theforge/ui/status_web.py:serialize_status",
+                            "status": "excluded",
+                            "rationale": (
+                                "Checked sibling path; different serializer already includes it."
+                            ),
+                        },
+                    ],
+                }
+            )
+        )
+        mock_post.return_value = "https://github.com/test/repo/issues/43#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=43,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        artifact = _load_audit_artifact(tmp_path)
+        assert artifact["symptom_scope_coverage"]["symptom_is_categorical"] is True
+        assert artifact["symptom_scope_coverage"]["stated_scope"] == "every sibling renderer"
+        assert artifact["symptom_scope_coverage"]["examined_locations"] == [
+            {
+                "location": "src/theforge/ui/status_cli.py:render_status",
+                "status": "covered",
+                "rationale": "Same renderer helper omitted the field.",
+            },
+            {
+                "location": "src/theforge/ui/status_web.py:serialize_status",
+                "status": "excluded",
+                "rationale": "Checked sibling path; different serializer already includes it.",
+            },
+        ]
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
@@ -1481,6 +1559,53 @@ class TestParseRelatedFindings:
         assert artifact is not None
         assert len(artifact.related_findings) == 1
         assert artifact.related_findings[0].summary == "dup"
+
+
+class TestParseSymptomScopeCoverage:
+    def test_parses_categorical_scope_coverage(self):
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "symptom_scope_coverage:\n"
+            "  symptom_is_categorical: true\n"
+            "  stated_scope: every sibling renderer\n"
+            "  examined_locations:\n"
+            "    - location: src/foo.py:render_cli\n"
+            "      status: covered\n"
+            "      rationale: same helper omitted the field\n"
+            "    - location: src/foo.py:render_web\n"
+            "      status: excluded\n"
+            "      rationale: sibling checked; different serializer already includes it\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
+        assert artifact is not None
+        assert artifact.symptom_scope_coverage.symptom_is_categorical is True
+        assert artifact.symptom_scope_coverage.stated_scope == "every sibling renderer"
+        assert len(artifact.symptom_scope_coverage.examined_locations) == 2
+        assert artifact.symptom_scope_coverage.examined_locations[0].status == "covered"
+        assert artifact.symptom_scope_coverage.examined_locations[1].status == "excluded"
+        assert artifact.is_complete()
+
+    def test_missing_scope_coverage_stays_non_categorical(self):
+        artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
+        assert artifact is not None
+        assert artifact.symptom_scope_coverage == SymptomScopeCoverage()
+
+    def test_categorical_scope_without_examined_locations_is_incomplete(self):
+        artifact = parse_diagnose_output(
+            _agent_yaml_output(
+                symptom_scope_coverage={
+                    "symptom_is_categorical": True,
+                    "stated_scope": "every sibling renderer",
+                    "examined_locations": [],
+                }
+            ),
+            issue_number=1,
+        )
+        assert artifact is not None
+        assert artifact.symptom_scope_coverage.symptom_is_categorical is True
+        assert not artifact.is_complete()
 
 
 class TestBuildDiagnoseProfile:

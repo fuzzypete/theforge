@@ -679,6 +679,18 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
         "related_findings": [
             {"summary": r.summary, "related": r.related} for r in artifact.related_findings
         ],
+        "symptom_scope_coverage": {
+            "symptom_is_categorical": artifact.symptom_scope_coverage.symptom_is_categorical,
+            "stated_scope": artifact.symptom_scope_coverage.stated_scope,
+            "examined_locations": [
+                {
+                    "location": location.location,
+                    "status": location.status,
+                    "rationale": location.rationale,
+                }
+                for location in artifact.symptom_scope_coverage.examined_locations
+            ],
+        },
     }
 
 

@@ -18,6 +18,8 @@ from theforge.diagnose_types import (
     InspectedFile,
     PremiseAnchor,
     RelatedFinding,
+    ScopeCoverageLocation,
+    SymptomScopeCoverage,
 )
 
 _DIAGNOSE_PROMPT_TEMPLATE = """\
@@ -56,19 +58,30 @@ Mode: {mode}
    you finish: if a cited file or pattern is absent from the baseline, the run
    is reported as "already resolved" rather than landed as a live diagnosis.
    Do NOT emit a confirmed cause for code that no longer exists.
-6. **Scope the confirmed cause to THIS issue's stated symptom — nothing more.**
-   The diagnosis boundary must match the issue boundary.  While investigating
-   you may notice other real defects in nearby code that are NOT the cause of
-   this issue's symptom (a different bug, another issue's domain, a latent
-   problem you happened to see).  Do NOT fold those into ``confirmed_cause`` or
-   ``affected_code_path`` — a downstream dev implements the confirmed cause
-   verbatim, so anything you put there becomes part of THIS issue's fix and
-   over-scopes it.  Instead, record each such adjacent problem as a separate
-   entry in ``related_findings``, naming the owning/related issue if you know
-   it (e.g. ``"#1649"``).  Ask of every claim you put in ``confirmed_cause``:
-   "is this the cause of the *stated* symptom?"  If it is a neighboring problem
-   rather than the cause of what the issue reports, it belongs in
-   ``related_findings``, not in the fix scope.
+6. **Scope the confirmed cause to THIS issue's stated symptom — nothing more,
+   and nothing less.** The diagnosis boundary must match the issue boundary.
+   While investigating you may notice other real defects in nearby code that
+   are NOT the cause of this issue's symptom (a different bug, another issue's
+   domain, a latent problem you happened to see).  Do NOT fold those into
+   ``confirmed_cause`` or ``affected_code_path`` — a downstream dev implements
+   the confirmed cause verbatim, so anything you put there becomes part of THIS
+   issue's fix and over-scopes it.  Instead, record each such adjacent problem
+   as a separate entry in ``related_findings``, naming the owning/related issue
+   if you know it (e.g. ``"#1649"``).  Ask of every claim you put in
+   ``confirmed_cause``: "is this the cause of the *stated* symptom?"  If it is
+   a neighboring problem rather than the cause of what the issue reports, it
+   belongs in ``related_findings``, not in the fix scope.
+7. If the issue states the symptom categorically (for example "every surface",
+   "any story", "regardless of X"), account for the stated scope before you
+   confirm a cause.  Check structurally analogous sibling locations: the same
+   construct, the same omission or behavior, at a sibling site.  Either cover
+   those locations in the affected code path or record which ones you examined
+   and excluded in ``symptom_scope_coverage``.  A nearby location with a
+   different construct or a distinct defect is **adjacent-but-different** and
+   stays a ``related_findings`` entry instead.  Do NOT broaden a single
+   concrete-instance symptom into a categorical one; leave
+   ``symptom_scope_coverage.symptom_is_categorical`` false for one-off
+   symptoms.
 
 == OUTPUT FORMAT ==
 
@@ -130,6 +143,25 @@ related_findings:
   # Omit or leave empty if you noticed no separate adjacent problems.
   - summary: "<one-line description of a separate adjacent defect>"
     related: "<owning/related issue ref, e.g. '#1649', or empty>"
+symptom_scope_coverage:
+  # REQUIRED when the issue's stated symptom is categorical ("every", "any",
+  # "regardless", etc.). Keep the default non-categorical record for symptoms
+  # scoped to one concrete instance. Do NOT invent a broader scope than the
+  # issue states.
+  symptom_is_categorical: false
+  stated_scope: ""
+  examined_locations: []
+  # Example categorical record:
+  # symptom_is_categorical: true
+  # stated_scope: "Every user-facing surface that renders diagnose status"
+  # examined_locations:
+  #   - location: "src/theforge/ui/status_cli.py:render_status"
+  #     status: covered
+  #     rationale: "Same renderer construct and same omitted field as the confirmed cause."
+  #   - location: "src/theforge/ui/status_web.py:serialize_status"
+  #     status: excluded
+  #     rationale: "Sibling surface checked; it uses a different serializer
+  #       and already carries the field."
 ```
 """
 
@@ -146,8 +178,8 @@ diagnosis with the syntax error fixed.
 Preserve your previous output verbatim:
   - Keep the SAME confirmed_cause, word for word.  Do NOT re-scope it.
   - Keep EVERY hypothesis, with the same statement, status, and evidence.
-  - Keep EVERY inspected_files entry, premise_anchors entry, and
-    related_findings entry.
+  - Keep EVERY inspected_files entry, premise_anchors entry,
+    related_findings entry, and symptom_scope_coverage entry.
   - Keep the same notes.
 
 Dropping or altering a value to make the parse error go away is a WRONG
@@ -517,6 +549,41 @@ def parse_diagnose_output_result(
             seen_related.add(key)
             related.append(RelatedFinding(summary=summary, related=ref))
 
+    raw_scope = parsed.get("symptom_scope_coverage")
+    scope_categorical = False
+    scope_text = ""
+    scope_locations: list[ScopeCoverageLocation] = []
+    if isinstance(raw_scope, dict):
+        scope_categorical = bool(raw_scope.get("symptom_is_categorical", False))
+        scope_text = str(raw_scope.get("stated_scope", "")).strip()
+        raw_locations = raw_scope.get("examined_locations") or []
+        if isinstance(raw_locations, list):
+            seen_locations: set[tuple[str, str, str]] = set()
+            for entry in raw_locations:
+                if isinstance(entry, str):
+                    location = entry.strip()
+                    status = ""
+                    rationale = ""
+                elif isinstance(entry, dict):
+                    location = str(entry.get("location", "")).strip()
+                    status = str(entry.get("status", "")).strip().lower()
+                    rationale = str(entry.get("rationale", "")).strip()
+                else:
+                    continue
+                if not location:
+                    continue
+                key = (location, status, rationale)
+                if key in seen_locations:
+                    continue
+                seen_locations.add(key)
+                scope_locations.append(
+                    ScopeCoverageLocation(
+                        location=location,
+                        status=status,
+                        rationale=rationale,
+                    )
+                )
+
     artifact = DiagnosisArtifact(
         issue_number=issue_number,
         observed_symptom=str(parsed.get("observed_symptom", "")).strip(),
@@ -530,5 +597,10 @@ def parse_diagnose_output_result(
         inspected_files=tuple(inspected),
         premise_anchors=tuple(anchors),
         related_findings=tuple(related),
+        symptom_scope_coverage=SymptomScopeCoverage(
+            symptom_is_categorical=scope_categorical,
+            stated_scope=scope_text,
+            examined_locations=tuple(scope_locations),
+        ),
     )
     return DiagnoseParseOutcome(artifact)

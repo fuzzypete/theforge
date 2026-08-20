@@ -247,7 +247,12 @@ class TestReformatPrompt:
         assert "related_findings" in prompt
         assert "WRONG" in prompt
         # The same output contract is restated, not a relaxed variant.
-        for key in ("confirmed_cause", "premise_anchors", "inspected_files"):
+        for key in (
+            "confirmed_cause",
+            "premise_anchors",
+            "inspected_files",
+            "symptom_scope_coverage",
+        ):
             assert key in prompt
 
 
