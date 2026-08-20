@@ -126,6 +126,15 @@ def _single_instance_bug_body_with_quantifier() -> str:
     )
 
 
+def _single_instance_bug_body_with_single_word_scope_noun() -> str:
+    return (
+        "## What happened\n"
+        "All rows are duplicated in the exported CSV for job 42.\n\n"
+        "## What was expected\n"
+        "Each retry is logged twice for this story.\n"
+    )
+
+
 # ── Artifact / rendering tests ────────────────────────────────────────
 
 
@@ -337,6 +346,22 @@ class TestPromptBuilder:
         )
         assert categorical is True
         assert scope_text == "Every sprint must resume cleanly."
+
+    def test_issue_scope_requirement_detects_run_scope_term(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x",
+            "## What happened\nOne run lost its landing evidence.\n\n"
+            "## What was expected\nEvery run should preserve landing evidence.\n",
+        )
+        assert categorical is True
+        assert scope_text == "Every run should preserve landing evidence."
+
+    def test_issue_scope_requirement_ignores_single_word_concrete_nouns(self):
+        categorical, scope_text = derive_issue_scope_requirement(
+            "x", _single_instance_bug_body_with_single_word_scope_noun()
+        )
+        assert categorical is False
+        assert scope_text == "Each retry is logged twice for this story."
 
     def test_issue_scope_requirement_falls_back_to_full_body(self):
         categorical, scope_text = derive_issue_scope_requirement(
@@ -816,6 +841,41 @@ class TestDiagnoseFlow:
         assert loaded["issue_scope_requirement"] == {
             "symptom_is_categorical": False,
             "stated_scope": "The summary should print all three cost fields for this run.",
+        }
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_single_word_concrete_noun_issue_does_not_require_scope_coverage(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 49,
+            "title": "duplicate rows in one export",
+            "body": _single_instance_bug_body_with_single_word_scope_noun(),
+            "state": "OPEN",
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=49,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        assert result.state.issue_scope_is_categorical is False
+        audit_files = sorted((tmp_path / ".forge" / "audits").glob("diagnose-issue-49-*.yaml"))
+        assert audit_files
+        loaded = yaml.safe_load(audit_files[-1].read_text())
+        assert loaded["issue_scope_requirement"] == {
+            "symptom_is_categorical": False,
+            "stated_scope": "Each retry is logged twice for this story.",
         }
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")

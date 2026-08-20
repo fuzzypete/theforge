@@ -411,8 +411,10 @@ _SCOPE_NOUN_HINTS = frozenset(
         "path",
         "provider",
         "renderer",
+        "run",
         "serializer",
         "site",
+        "sprint",
         "story",
         "surface",
         "variant",
@@ -442,11 +444,7 @@ def _phrase_is_scope_like(phrase: str) -> bool:
         return False
     if tokens[0] in _CARDINAL_SCOPE_WORDS:
         return False
-    if any(_token_matches_scope_hint(token) for token in tokens):
-        return True
-    # Treat "every run"/"every sprint"-style singular category claims as
-    # scope-like even when the noun is not in the curated hint set.
-    return len(tokens) == 1
+    return any(_token_matches_scope_hint(token) for token in tokens)
 
 
 def _text_asserts_categorical_scope(text: str) -> bool:
