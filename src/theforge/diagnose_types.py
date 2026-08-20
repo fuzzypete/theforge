@@ -109,6 +109,61 @@ class RelatedFinding:
 
 
 @dataclass(frozen=True)
+class ScopeCoverageLocation:
+    """One structurally analogous location examined for categorical scope.
+
+    ``status`` is ``"covered"`` when the location is part of the confirmed
+    defect scope and ``"excluded"`` when the agent examined it and found that
+    it does not share the same omission / behavior. The rationale is required
+    so downstream reviewers can see why the location was included or excluded.
+    """
+
+    location: str
+    status: str  # "covered" | "excluded"
+    rationale: str = ""
+
+    def is_valid(self) -> bool:
+        normalized = self.status.strip().lower()
+        return bool(
+            self.location.strip()
+            and self.rationale.strip()
+            and normalized in {"covered", "excluded"}
+        )
+
+
+@dataclass(frozen=True)
+class SymptomScopeCoverage:
+    """Diagnosis-visible coverage record for categorically stated symptoms.
+
+    Non-categorical issues leave this at its default empty record. Categorical
+    issues must fill in the stated scope and the examined structurally
+    analogous sibling locations so downstream phases can verify that the
+    diagnosis did not silently narrow the bug below what the issue claimed.
+    """
+
+    symptom_is_categorical: bool = False
+    stated_scope: str = ""
+    examined_locations: tuple[ScopeCoverageLocation, ...] = ()
+
+    def is_complete(self) -> bool:
+        if not self.symptom_is_categorical:
+            return True
+        return bool(
+            self.stated_scope.strip()
+            and self.examined_locations
+            and all(location.is_valid() for location in self.examined_locations)
+        )
+
+    def satisfies_issue_requirement(
+        self, *, issue_requires_categorical_scope: bool = False
+    ) -> bool:
+        """Return whether this record satisfies the issue's stated scope contract."""
+        if issue_requires_categorical_scope and not self.symptom_is_categorical:
+            return False
+        return self.is_complete()
+
+
+@dataclass(frozen=True)
 class AbsentPremise:
     """A cited premise reference that no longer exists in the baseline.
 
@@ -159,16 +214,40 @@ class DiagnosisArtifact:
     # are surfaced as separate linked findings and MUST NOT be folded into
     # confirmed_cause — they are not the cause of this issue's stated symptom.
     related_findings: tuple[RelatedFinding, ...] = ()
+    # Audit-visible coverage record for categorically stated symptoms. This is
+    # descriptive only: the coordinator does not route on it, but diagnose
+    # completeness can require it when the fetched issue text states
+    # categorical scope so a fix-ready diagnosis cannot silently under-scope
+    # the bug by omitting or negating the record.
+    symptom_scope_coverage: SymptomScopeCoverage = field(default_factory=SymptomScopeCoverage)
 
-    def is_complete(self) -> bool:
+    def missing_required_fields(
+        self, *, issue_requires_categorical_scope: bool = False
+    ) -> tuple[str, ...]:
+        """Return the required diagnosis fields still missing from this artifact."""
+        missing: list[str] = []
+        if not self.observed_symptom.strip():
+            missing.append("observed_symptom")
+        if not self.reproduction_or_evidence.strip():
+            missing.append("reproduction_or_evidence")
+        if not self.hypotheses:
+            missing.append("hypotheses")
+        if not self.confirmed_cause.strip():
+            missing.append("confirmed_cause")
+        if not self.affected_code_path.strip():
+            missing.append("affected_code_path")
+        if not self.fix_success_criterion.strip():
+            missing.append("fix_success_criterion")
+        if not self.symptom_scope_coverage.satisfies_issue_requirement(
+            issue_requires_categorical_scope=issue_requires_categorical_scope
+        ):
+            missing.append("symptom_scope_coverage")
+        return tuple(missing)
+
+    def is_complete(self, *, issue_requires_categorical_scope: bool = False) -> bool:
         """Return True only when every required field is non-empty."""
-        return bool(
-            self.observed_symptom.strip()
-            and self.reproduction_or_evidence.strip()
-            and self.hypotheses
-            and self.confirmed_cause.strip()
-            and self.affected_code_path.strip()
-            and self.fix_success_criterion.strip()
+        return not self.missing_required_fields(
+            issue_requires_categorical_scope=issue_requires_categorical_scope
         )
 
     def has_substantive_content(self) -> bool:
@@ -246,6 +325,10 @@ class DiagnoseState:
     # this checkout would inject same-numbered content from the wrong project).
     # Recorded so the audit distinguishes "declined on purpose" from "found
     # nothing".
+    issue_scope_is_categorical: bool = False
+    issue_scope_text: str = ""
+    # Derived from the fetched issue text and recorded in the audit because it
+    # influences whether a parsed diagnosis can land as fix-ready.
     # Machine-readable failure identifier returned by the runner (e.g.
     # "timeout"). None when the run did not fail or the runner reported no
     # code. Recorded so the audit trail distinguishes a timeout from a crash.
@@ -411,6 +494,20 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
                 lines.append(f"- {summary} (related: {ref})")
             else:
                 lines.append(f"- {summary}")
+        lines.append("")
+    if artifact.symptom_scope_coverage.symptom_is_categorical:
+        lines.extend(
+            [
+                "### Stated symptom scope coverage",
+                "",
+                artifact.symptom_scope_coverage.stated_scope.strip() or "_(empty)_",
+                "",
+            ]
+        )
+        for location in artifact.symptom_scope_coverage.examined_locations:
+            display_status = location.status.strip().lower() or "unknown"
+            lines.append(f"- **[{display_status}]** {location.location.strip()}")
+            lines.append(f"  - Rationale: {location.rationale.strip() or '_(empty)_'}")
         lines.append("")
     if artifact.notes.strip():
         lines.extend(["### Notes", "", artifact.notes.strip(), ""])
