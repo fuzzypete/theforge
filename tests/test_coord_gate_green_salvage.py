@@ -129,6 +129,23 @@ def _state_at_terminal_gate_fail(
     return state
 
 
+def _state_at_cleanup_refusal(*, checkpoint: GateGreenCheckpoint | None) -> CoordinatorState:
+    state = CoordinatorState()
+    state.branch_name = "forge/issue-246"
+    state.retry_reason = RetryReason.P2_CLEANUP
+    state.gate_decisions = ["PASS"]
+    state.validation_runs = [
+        {"profile": "complete", "result": "PASS", "commit": "a" * 40, "skipped": False}
+    ]
+    state.last_gate_commit = "a" * 40
+    state.last_gate_decision = "PASS"
+    state.gate_green_checkpoint = checkpoint
+    state.error_type = "allocation_exhausted"
+    state.error = "Story allocation exhausted: cleanup dev attempt was not funded."
+    state.phase = Phase.ESCALATE
+    return state
+
+
 def _checkpoint(commit: str = "a" * 40, p2: int = 1) -> GateGreenCheckpoint:
     return GateGreenCheckpoint(
         commit=commit,
@@ -295,6 +312,37 @@ class TestSalvageDecision:
         assert state.phase == Phase.ESCALATE
         assert state.gate_green_salvage is None
         assert state.gate_green_salvage_declined is None
+
+    def test_cleanup_refusal_with_checkpoint_becomes_pending_landing(self, tmp_path):
+        """A funded APPROVE floor survives when optional cleanup is refused pre-DEV."""
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _state_at_cleanup_refusal(checkpoint=_checkpoint())
+
+        with patch_gate_shell(side_effect=_shell_at_head("c" * 40)):
+            result = self._salvage(state, config, task, workspace=tmp_path)
+
+        assert result.success is True
+        assert result.phase == Phase.DONE
+        assert result.landing_status == "pending_integration"
+        assert state.phase == Phase.DONE
+        salvage = state.gate_green_salvage
+        assert salvage["checkpoint_commit"] == "a" * 40
+        assert salvage["dropped_head"] == "c" * 40
+        assert salvage["block_reason"] == "allocation_exhausted"
+        assert "refused before it ran" in salvage["dropped_reason"]
+
+    def test_cleanup_refusal_without_checkpoint_still_fails_unchanged(self, tmp_path):
+        config = _make_config(tmp_path)
+        task = _make_task(tmp_path)
+        state = _state_at_cleanup_refusal(checkpoint=None)
+
+        with patch_gate_shell(side_effect=_shell_at_head("c" * 40)):
+            result = self._salvage(state, config, task, workspace=tmp_path)
+
+        assert result.success is False
+        assert result.phase == Phase.ESCALATE
+        assert state.gate_green_salvage is None
 
     def test_gate_green_but_never_approved_records_the_near_miss(self, tmp_path):
         """A gate that went green on a commit no review approved is not landable.
@@ -772,6 +820,65 @@ def test_gate_never_green_still_fails(mock_dev, mock_pool, tmp_path):
     assert result.state.gate_green_checkpoint is None
     assert result.state.gate_green_salvage is None
     assert result.landing_status is None
+
+
+@patch("theforge.coordinator.story_budget.nonreview_funding_exhausted")
+@patch("theforge.coordinator.review_pool.run_agent_pool")
+@patch("theforge.coordinator.dev_phase.run_agent")
+def test_cleanup_refusal_before_dev_lands_checkpoint(
+    mock_dev, mock_pool, mock_nonreview_funds, tmp_path
+):
+    """AC seam: APPROVE+checkpoint then pre-DEV cleanup refusal lands the floor."""
+    from theforge.coordinator.engine import run_from_review
+
+    config = _make_config(tmp_path)
+    config = dataclasses.replace(
+        config, retry=dataclasses.replace(config.retry, max_dev_iterations=3)
+    )
+    task = _make_task(tmp_path)
+    workspace = tmp_path / "test-task"
+    workspace.mkdir()
+
+    green = "b" * 40
+    head = {"sha": "a" * 40}
+    side_effect = _shell_with_moving_head(workspace, ["PASS"], head)
+
+    shortfall = {
+        "allocation_usd": 1.69,
+        "nonreview_allocation_usd": 0.0,
+        "reserved_review_usd": 0.46,
+        "reserved_review_cycles": 1,
+        "reserved_review_remaining_usd": 0.46,
+        "reserved_review_released": False,
+        "observed_usd": 1.48,
+        "participants": [config.dev_profile.name],
+        "phase": "dev",
+        "nonreview_exhausted": True,
+    }
+
+    with patch_gate_shell(side_effect=side_effect):
+        mock_dev.side_effect = _dev_advancing_head(head, [green])
+        mock_pool.return_value = [
+            _make_agent_result(success=True, output=APPROVE_WITH_P2, profile_name="review")
+        ]
+        mock_nonreview_funds.return_value = shortfall
+
+        result = run_from_review(config, task, workspace, defer_landing=True, auto_merge=True)
+
+    checkpoint = result.state.gate_green_checkpoint
+    assert checkpoint is not None
+    assert checkpoint.commit == green
+    assert result.success is True
+    assert result.phase == Phase.DONE
+    assert result.state.phase == Phase.DONE
+    assert result.landing_status == "pending_integration"
+    assert mock_dev.call_count == 1
+    salvage = result.state.gate_green_salvage
+    assert salvage["checkpoint_commit"] == green
+    assert salvage["dropped_head"] == green
+    assert salvage["block_reason"] == "allocation_exhausted"
+    assert salvage["outstanding_p2_count"] >= 1
+    assert "refused before it ran" in salvage["dropped_reason"]
 
 
 # ── 6. Resume persistence ─────────────────────────────────────────────────────
