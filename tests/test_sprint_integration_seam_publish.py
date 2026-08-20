@@ -239,6 +239,30 @@ def test_sibling_artifacts_are_committed_before_land_story_runs(tmp_path: Path) 
     assert sorted(committed) == sorted(artifacts)
 
 
+def test_the_seam_reuses_the_existing_publish_with_a_local_landing(tmp_path: Path) -> None:
+    """The seam is a new call site for the #2595 publish, not a second publish.
+
+    ``lands_locally=True`` is the whole of what this call site knows that the
+    scheduler loop's does not: it runs only when the story is about to merge
+    into the project-root base checkout. Asserting the call keeps that from
+    being prose someone has to take on trust.
+    """
+    root = _repo(tmp_path)
+    _write_sibling_artifacts(root)
+    state, task = _state(root)
+    result = _approved_result(task)
+
+    def _land_story(config, task_, branch, wt, review, st, on_approve, **kwargs):
+        return {"attempted": True, "merged": True, "base_branch": "main", "error": None}, "merged"
+
+    with patch(
+        "theforge.sprint.runner.publish_pending_story_run_audits", return_value=True
+    ) as publish:
+        assert _run_integration(state, task, result, _land_story) is True
+
+    publish.assert_called_once_with(state, lands_locally=True)
+
+
 def test_a_sibling_landing_after_the_publish_is_retried_not_refused(tmp_path: Path) -> None:
     """A sibling arriving in the gap costs a republish, not the approved story."""
     root = _repo(tmp_path)

@@ -4574,9 +4574,13 @@ def _publish_sibling_artifacts(state: SprintExecutionState, slug: str) -> bool:
 
     Committing them here, inside ``integration_lock`` and immediately before the
     merge, is what makes the serialized integration path the one place that both
-    writes and reads that state. ``lands_locally`` is ``True`` by construction:
-    the caller only reaches this when the story is about to merge into the
-    project-root base checkout, which is exactly what that flag asserts.
+    writes and reads that state. This is a new *call site* for the unchanged
+    #2595 publish, not a new publish: ``publish_pending_story_run_audits`` and
+    its required ``lands_locally`` keyword predate this seam, and the scheduler
+    loop still calls the same function with the sprint's own answer. Here that
+    answer is ``True`` by construction — the caller only reaches this when the
+    story is about to merge into the project-root base checkout, which is
+    exactly what the flag asserts.
 
     Returns whether the publish completed; a failure is logged by the publish
     helper and reported by the caller rather than raised, because abandoning an
