@@ -20,6 +20,7 @@ from theforge.cli import (
     index,
     knowledge_report,
     migrate_profiles,
+    prior_run_replay,
     profiles,
     providers,
     rca,
@@ -31,9 +32,7 @@ from theforge.cli import (
     telemetry,
     todo,
 )
-from theforge.cli import (
-    audits as audits_cmd,
-)
+from theforge.cli import audits as audits_cmd
 from theforge.cli.init_commands import cmd_init, cmd_secrets_init, cmd_version
 
 
@@ -91,6 +90,7 @@ def build_parser() -> argparse.ArgumentParser:
     rca.register_parser(subparsers)
     batch_report.register_parser(subparsers)
     knowledge_report.register_parser(subparsers)
+    prior_run_replay.register_parser(subparsers)
     shape.register_parser(subparsers)
     groom.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
@@ -135,6 +135,7 @@ def main() -> None:
         "rca": rca.cmd_rca,
         "batch-report": batch_report.cmd_batch_report,
         "knowledge-report": knowledge_report.cmd_knowledge_report,
+        "prior-run-replay": prior_run_replay.cmd_prior_run_replay,
         "shape": shape.cmd_shape,
         "groom": groom.cmd_groom,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
