@@ -481,7 +481,7 @@ class TestCliDispatch:
             verbose = False
 
         assert audits_cli.cmd_audits(Args()) == 1
-        assert "does not match the audit substrate" in capsys.readouterr().err
+        assert "judgment corpus unusable" in capsys.readouterr().err
 
     def test_load_judgments_rejects_a_malformed_corpus(self, tmp_path) -> None:
         from theforge.plan_advisory.report import load_judgments
@@ -490,3 +490,70 @@ class TestCliDispatch:
         path.write_text(json.dumps({"judgments": "not a list"}), encoding="utf-8")
         with pytest.raises(ValueError, match="expected an object with a 'judgments' list"):
             load_judgments(path)
+
+
+class TestUnusableCorpus:
+    """An unreadable corpus must reach the operator as a message, not a traceback.
+
+    ``json.JSONDecodeError`` subclasses ``ValueError`` and a missing file raises
+    ``OSError``, so all three shapes below used to escape the entry points'
+    ``except`` clauses uncaught.
+    """
+
+    def _corpus(self, tmp_path, body: str | None):
+        path = tmp_path / "judgments.json"
+        if body is not None:
+            path.write_text(body, encoding="utf-8")
+        return path
+
+    @pytest.mark.parametrize(
+        "body, why",
+        [
+            (None, "missing file"),
+            ("{not json at all", "corrupt json"),
+            ('{"judgments": "not a list"}', "wrong shape"),
+            ("[]", "not an object"),
+        ],
+    )
+    def test_read_corpus_converts_every_unusable_shape(self, tmp_path, body, why) -> None:
+        from theforge.plan_advisory.report import _read_corpus
+
+        with pytest.raises(CorpusMismatchError, match="unusable"):
+            _read_corpus(self._corpus(tmp_path, body))
+
+    def test_the_module_entry_point_reports_rather_than_tracebacks(
+        self, tmp_path, monkeypatch, capsys
+    ) -> None:
+        from theforge.plan_advisory import report as report_mod
+
+        monkeypatch.setattr(report_mod, "open_readonly", lambda root: _FakeConn())
+        corpus = self._corpus(tmp_path, "{not json at all")
+        code = report_mod.main(["--project-root", str(tmp_path), "--judgments", str(corpus)])
+        assert code == 2
+        assert "judgment corpus unusable" in capsys.readouterr().err
+
+    def test_the_cli_reports_rather_than_tracebacks(self, tmp_path, monkeypatch, capsys) -> None:
+        from theforge.cli import audits as audits_cli
+        from theforge.plan_advisory import report as report_mod
+
+        (tmp_path / "forge.yaml").write_text("project: {}\n", encoding="utf-8")
+        monkeypatch.setattr(report_mod, "open_readonly", lambda root: _FakeConn())
+        monkeypatch.setattr(report_mod, "JUDGMENTS_PATH", self._corpus(tmp_path, "["))
+
+        class Args:
+            audits_command = "plan-advisory"
+            config = str(tmp_path / "forge.yaml")
+            verbose = False
+
+        assert audits_cli.cmd_audits(Args()) == 1
+        assert "judgment corpus unusable" in capsys.readouterr().err
+
+
+class _FakeConn:
+    """Stands in for the sqlite connection so no substrate file is needed."""
+
+    def execute(self, *_args, **_kwargs):
+        return iter(())
+
+    def close(self) -> None:
+        return None

@@ -53,10 +53,7 @@ def _cmd_audits_plan_advisory(args: object) -> int:
         print(f"[forge] {exc}", file=sys.stderr)
         return 1
     except CorpusMismatchError as exc:
-        print(
-            f"[forge] the plan-advisory judgment corpus does not match the audit substrate: {exc}",
-            file=sys.stderr,
-        )
+        print(f"[forge] plan-advisory judgment corpus unusable: {exc}", file=sys.stderr)
         return 1
     print(render(report, verbose=bool(getattr(args, "verbose", False))))
     return 0

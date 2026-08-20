@@ -11,13 +11,23 @@ from typing import Any, Sequence
 from theforge.coordinator.audit_read_model import iter_records
 from theforge.coordinator.audit_storage import open_readonly
 
-from .analysis import EVIDENCE_UNAVAILABLE, analyze, extract_plan_findings
+from .analysis import (
+    EVIDENCE_UNAVAILABLE,
+    CorpusMismatchError,
+    analyze,
+    extract_plan_findings,
+)
 
 JUDGMENTS_PATH = Path(__file__).with_name("judgments.json")
 
 
 def load_judgments(path: Path | None = None) -> dict[str, Any]:
-    """Read the checked-in judgment corpus."""
+    """Read the checked-in judgment corpus.
+
+    Raises ``OSError`` when the file is unreadable and ``ValueError`` (including
+    ``json.JSONDecodeError``) when its contents are not a corpus. Callers that
+    face an operator convert both — see :func:`_read_corpus`.
+    """
     source = Path(path) if path is not None else JUDGMENTS_PATH
     with open(source, encoding="utf-8") as fh:
         payload = json.load(fh)
@@ -26,15 +36,36 @@ def load_judgments(path: Path | None = None) -> dict[str, Any]:
     return payload
 
 
+def _read_corpus(judgments_path: Path | None) -> dict[str, Any]:
+    """Read the corpus, reporting an unusable file the way a mismatched one is.
+
+    An operator cannot act differently on "the corpus disagrees with the
+    substrate" and "the corpus could not be read at all" — both mean the rate is
+    not computable and the file is what to look at. Converting here keeps that
+    single failure mode at one seam, so every entry point handles it without its
+    own ``except`` clause.
+    """
+    try:
+        return load_judgments(judgments_path)
+    except (OSError, ValueError) as exc:
+        source = judgments_path or JUDGMENTS_PATH
+        raise CorpusMismatchError(f"judgment corpus at {source} is unusable: {exc}") from exc
+
+
 def load_report(project_root: Path, *, judgments_path: Path | None = None) -> dict[str, Any]:
-    """Build the report from the audit substrate. Opens read-only only."""
+    """Build the report, reading the audit substrate read-only.
+
+    Raises :class:`~theforge.plan_advisory.analysis.CorpusMismatchError` when the
+    judgment corpus cannot be read or does not line up with the substrate, and
+    ``SubstrateError`` when the substrate itself is missing or corrupt.
+    """
     project_root = Path(project_root).resolve()
     conn = open_readonly(project_root)
     try:
         extraction = extract_plan_findings(iter_records(conn, order_by_started=True))
     finally:
         conn.close()
-    payload = load_judgments(judgments_path)
+    payload = _read_corpus(judgments_path)
     report = analyze(extraction, payload["judgments"])
     report["project_root"] = str(project_root)
     report["corpus"]["judgment_source"] = str(judgments_path or JUDGMENTS_PATH)
@@ -203,15 +234,13 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from theforge.coordinator.audit_storage import SubstrateError  # noqa: PLC0415
 
-    from .analysis import CorpusMismatchError  # noqa: PLC0415
-
     try:
         report = load_report(args.project_root, judgments_path=args.judgments)
     except SubstrateError as exc:
         print(f"cannot read audit substrate: {exc}", file=sys.stderr)
         return 2
     except CorpusMismatchError as exc:
-        print(f"judgment corpus does not match the audit substrate: {exc}", file=sys.stderr)
+        print(f"judgment corpus unusable: {exc}", file=sys.stderr)
         return 2
     if args.json:
         print(json.dumps(report, indent=2, sort_keys=True))

@@ -73,7 +73,12 @@ _FIXED_IN_PLAN = "fixed"
 
 
 class CorpusMismatchError(RuntimeError):
-    """The judgment corpus does not line up with the audit substrate."""
+    """The judgment corpus is unusable: unreadable, or at odds with the substrate.
+
+    Both mean the same thing to whoever is looking at the report — no rate can be
+    computed and the corpus file is what to inspect — so they are one signal
+    rather than two an operator would have to tell apart.
+    """
 
 
 @dataclass(frozen=True)
