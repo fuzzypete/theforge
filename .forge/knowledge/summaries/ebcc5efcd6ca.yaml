@@ -1,0 +1,155 @@
+schema_version: 2
+run_id: ebcc5efcd6ca
+authoritative_run_record: .forge/audits/runs/ebcc5efcd6ca.json
+generated_at: '2026-08-20T19:42:49.470530+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.013915
+story:
+  slug: issue-2608
+  name: Replay completed stories through prior-run selection before injection is enabled,
+    so scoring weights and claim budgets are judged on evidence instead of instinct
+  github_issue: 2608
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- data-processing
+- testing
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/prior-run-replay-judgments.yaml
+- docs/prior-run-replay-record.md
+- src/theforge/cli/main.py
+- src/theforge/cli/prior_run_replay.py
+- src/theforge/prior_run_replay.py
+- src/theforge/prior_run_replay_render.py
+- tests/test_cli_prior_run_replay.py
+- tests/test_prior_run_replay.py
+- tests/test_prior_run_replay_render.py
+what_changed:
+  description: Added a prior-run replay capability that runs completed stories through
+    the existing selection path, renders the advisory output, and records per-story
+    judgments plus an aggregate replay report. The run also wired the feature into
+    the CLI and added tests around replay behavior, rendering, and corpus-backed validation.
+  approach: The implementation introduced dedicated replay and render modules, a CLI
+    entrypoint, a checked-in judgments dataset, and a generated markdown record. The
+    work was refined through review to make replay inputs line up with production
+    constraints, keep recorded phase inputs isolated, and make corpus/judgment drift
+    fail loudly in tests instead of aborting late or skipping assertions.
+  files_modified: *id002
+what_was_learned:
+- claim: Replay fixtures that are meant to reproduce a live corpus need complete judgment
+    coverage for every replayed story, otherwise the command becomes unrunnable as
+    soon as a referenced entry is missing.
+  evidence:
+  - type: review_finding
+    finding_id: 5010a599e35c24ea
+    description: The replay command aborted because a specific TheForge story lacked
+      a recorded judgment in the checked-in judgments file.
+  - type: file
+    path: docs/prior-run-replay-judgments.yaml
+    description: This file holds the replay judgments whose completeness determines
+      whether the corpus replay can run.
+- claim: Analysis probes used to summarize selector behavior need to execute under
+    the same candidate limits as production selection, or they can report co-surfacing
+    outcomes that the real budgeted assembly would never present.
+  evidence:
+  - type: review_finding
+    finding_id: caa006ea0d2a0e8d
+    description: The fence-parsing co-surface probe used a 999-candidate limit, which
+      produced a positive co-surface result that disappeared under the production
+      assembly budget.
+  - type: file
+    path: src/theforge/prior_run_replay.py
+    description: The replay implementation contains the probe logic whose limits had
+      to match production behavior.
+- claim: Recovered phase inputs should be stored as independent values per phase;
+    sharing one mutable dictionary between dev and review recordings can silently
+    corrupt the replay record if either phase is later adjusted.
+  evidence:
+  - type: review_finding
+    finding_id: fcf543d5df2417a0
+    description: Review identified that dev and review phase-input entries were bound
+      to the same dictionary object, making later mutation leak across phases.
+  - type: file
+    path: src/theforge/prior_run_replay.py
+    description: This module records replay phase inputs and was the site of the shared-dictionary
+      issue.
+- claim: When historical stories lack structured plans, replay scoring can legitimately
+    lose file-overlap evidence and fall back to weaker qualifying signals in the report.
+  evidence:
+  - type: review_finding
+    finding_id: 8bc4cded4b60556b
+    description: Review noted that most TheForge run records did not persist a structured
+      plan, so many dev and review replays had no file-overlap input and instead qualified
+      on story or domain signals.
+  - type: file
+    path: docs/prior-run-replay-record.md
+    description: The generated replay record is where those rows and their qualifying
+      signals were observed.
+- claim: Corpus-backed tests for checked-in replay judgments need to fail explicitly
+    on corpus/judgment drift; otherwise they either break for unrelated new summaries
+    or pass by returning early without validating anything.
+  evidence:
+  - type: review_finding
+    finding_id: d620d397f091d7dd
+    description: One test failed as soon as an unrelated new summary entered the tracked
+      corpus because the replay requires judgments for every claim.
+  - type: review_finding
+    finding_id: 6d98759d7ce3b30f
+    description: Another test returned early once corpus run ids diverged from the
+      judgment file, letting the suite pass without asserting replay correctness.
+  - type: file
+    path: tests/test_prior_run_replay.py
+    description: This test module contained the corpus replay checks that were adjusted
+      to handle drift loudly instead of silently.
+learned_patterns:
+- production-faithful-analysis-probes
+- independent-phase-input-snapshots
+- explicit-corpus-judgment-coverage
+- loud-fixture-drift-failures
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 5010a599e35c24ea
+    severity: P1
+    file: docs/prior-run-replay-judgments.yaml
+    description: Running the new replay command against the TheForge corpus named
+      by the report aborts with missing judgment for theforge/b122a93bf342/plan/24bfd6e03a58/dec2f2192b49.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: caa006ea0d2a0e8d
+    severity: P1
+    file: src/theforge/prior_run_replay.py
+    description: The fence-parsing co-surface probe queries prior-run selection with
+      a candidate limit of 999 instead of the budget production assembly applies,
+      so the probe anchored on the preflight-parser story reports the two fence-parsing
+      summaries as co-surfacing even though the diagnose-parser summary ranks sixth
+      and would never be offered under the real three-candidate budget.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly focused on whether the replay evidence stayed runnable and production-faithful
+    as the corpus and probes evolved.
+  - The most persistent issues were not core replay mechanics but edge conditions
+    around stale judgments, budget mismatches, and tests that hid corpus drift.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 44.3880603
+  dominant_difficulty: Making a measurement harness stay aligned with time-scoped
+    production selection and a changing checked-in corpus without producing misleading
+    results or brittle tests.
