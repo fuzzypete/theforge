@@ -331,6 +331,7 @@ def _retry_transient_plan_review_failures(
                 state.log_dir,
                 f"plan-review/attempt-{attempt}/{profile.name}-retry{retry_count}.yaml",
                 retried.output or "",
+                owner_run_id=state.run_id,
             )
             retry_events.append(
                 {
@@ -522,6 +523,7 @@ def _retry_parse_failed_plan_reviews(
                 state.log_dir,
                 f"plan-review/attempt-{attempt}/{profile.name}-parse-retry{retry_count}.yaml",
                 retried.output or "",
+                owner_run_id=state.run_id,
             )
             retry_events.append(
                 {
@@ -967,7 +969,12 @@ def _run_plan_phase(
     state.plan_results.append(plan_result)
     state.plan_session_id = plan_result.session_id or state.plan_session_id
     write_trace(workspace_path / ".forge/traces" / "plan-attempt-0.txt", plan_result.output)
-    _write_log_artifact(state.log_dir, "plan-attempt-0.txt", plan_result.output or "")
+    _write_log_artifact(
+        state.log_dir,
+        "plan-attempt-0.txt",
+        plan_result.output or "",
+        owner_run_id=state.run_id,
+    )
     if not _plan_ok:
         state.phase = Phase.ESCALATE
         state.error = _plan_diag or "PLAN phase mutated the worktree"
@@ -1220,6 +1227,7 @@ def _run_plan_agent_review(
                 state.log_dir,
                 f"plan-review/attempt-{_attempt}/{_prof.name}.yaml",
                 _res.output or "",
+                owner_run_id=state.run_id,
             )
         pr_results, _transport_retry_events = _retry_transient_plan_review_failures(
             prompt=pr_prompt,
@@ -1589,7 +1597,12 @@ def _run_plan_agent_review(
                 _log(f"  ✓ PLAN   committed {PLAN_PATH}")
             except Exception as _commit_err:
                 _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
-            _write_log_artifact(state.log_dir, "plan.md", plan_text)
+            _write_log_artifact(
+                state.log_dir,
+                "plan.md",
+                plan_text,
+                owner_run_id=state.run_id,
+            )
             return None  # continue to DEV
 
         # Advisory mode (refactor work type): log findings but never reject
@@ -1615,7 +1628,12 @@ def _run_plan_agent_review(
                     cost_usd=_round_cost(_total_pr_cost),
                     duration_s=round(_pr_elapsed, 2),
                 )
-            _write_log_artifact(state.log_dir, "plan.md", plan_text)
+            _write_log_artifact(
+                state.log_dir,
+                "plan.md",
+                plan_text,
+                owner_run_id=state.run_id,
+            )
             return None  # continue to DEV regardless of verdict
 
         # REJECT path
@@ -1858,6 +1876,7 @@ def _run_plan_agent_review(
             state.log_dir,
             f"plan-attempt-{state.plan_regen_count}.txt",
             plan_result.output or "",
+            owner_run_id=state.run_id,
         )
 
         if not plan_result.success:
@@ -1961,6 +1980,7 @@ def _run_human_plan_review(
                 state.log_dir,
                 f"plan-attempt-{state.plan_regen_count}-approved.txt",
                 updated,
+                owner_run_id=state.run_id,
             )
             _log(
                 "  ✓ PLAN_REVIEW   approve  "
@@ -1987,7 +2007,12 @@ def _run_human_plan_review(
                 _log(f"  ✓ PLAN   committed {PLAN_PATH}")
             except Exception as _commit_err:
                 _log(f"  ⚠ PLAN   could not commit {PLAN_PATH}: {_commit_err}")
-            _write_log_artifact(state.log_dir, "plan.md", plan_text)
+            _write_log_artifact(
+                state.log_dir,
+                "plan.md",
+                plan_text,
+                owner_run_id=state.run_id,
+            )
             return None  # continue to DEV
 
         if plan_review_decision == "regenerate":
@@ -2053,6 +2078,7 @@ def _run_human_plan_review(
                 state.log_dir,
                 f"plan-attempt-{state.plan_regen_count}.txt",
                 plan_result.output or "",
+                owner_run_id=state.run_id,
             )
 
             if not plan_result.success:

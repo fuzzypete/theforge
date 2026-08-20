@@ -35,6 +35,7 @@ set. Grep it to see everything the mechanical classifier knows.
 
 from __future__ import annotations
 
+import datetime
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -1150,15 +1151,27 @@ def _collect_text_sources(
         sources.append(_TextSource(summary_rel, summary_text, "structured"))
 
     # Per-story log directory: scan every readable text file (dev/review
-    # iteration logs, captured agent output yaml, etc.).
+    # iteration logs, captured agent output yaml, etc.) that falls within this
+    # attempt's recorded time window. The story directory persists across
+    # attempts of the same story in one sprint; without attempt scoping, stale
+    # artifacts from an earlier attempt can misclassify the current failure.
     story_dir = sprint_log_dir / slug
+    attempt_started_at = _story_attempt_started_at(story, audit)
+    attempt_run_ids = _story_attempt_run_ids(story, audit)
     if story_dir.is_dir():
         for path in sorted(story_dir.rglob("*")):
             if not path.is_file():
                 continue
             if path.suffix.lower() not in {".log", ".txt", ".yaml", ".yml", ".md", ".json"}:
                 continue
-            if path.name == "audit.yaml":
+            if path.name in {"audit.yaml", ".artifact-owners.yaml"}:
+                continue
+            if not _artifact_belongs_to_attempt(
+                path,
+                story_dir=story_dir,
+                attempt_run_ids=attempt_run_ids,
+                started_at=attempt_started_at,
+            ):
                 continue
             # Strip numeric telemetry lines (cost/duration/token values) so a
             # coincidental digit run inside a float cannot feed context-free
@@ -1184,6 +1197,95 @@ def _collect_text_sources(
             sources.append(_TextSource(_rel(run_log, logs_root), "\n".join(matched_lines), "log"))
 
     return sources
+
+
+def _story_attempt_started_at(story: dict, audit: dict) -> datetime.datetime | None:
+    """Return the current attempt's recorded start time, if present.
+
+    The summary row and per-story audit are the run's own records for this
+    attempt. When either supplies a start time, use it to exclude older leftover
+    files from prior attempts in the same per-story directory. Legacy fixtures
+    without timing keep the historical "scan everything" behavior.
+    """
+    summary_started = _parse_attempt_timestamp(story.get("started_at"))
+    timing = audit.get("timing") if isinstance(audit, dict) else None
+    audit_started = (
+        _parse_attempt_timestamp(timing.get("started_at")) if isinstance(timing, dict) else None
+    )
+    starts = [ts for ts in (summary_started, audit_started) if ts is not None]
+    return min(starts) if starts else None
+
+
+def _story_attempt_run_ids(story: dict, audit: dict) -> set[str]:
+    """Return the current attempt's recorded run identities, if present."""
+    ids: set[str] = set()
+    candidates = [story.get("story_run_id")]
+    if isinstance(audit, dict):
+        candidates.append(audit.get("run_id"))
+    for value in candidates:
+        if isinstance(value, str):
+            text = value.strip()
+            if text:
+                ids.add(text)
+    return ids
+
+
+def _parse_attempt_timestamp(value: object) -> datetime.datetime | None:
+    """Parse an ISO-8601 timestamp emitted by sprint/audit records."""
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text:
+        return None
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        parsed = datetime.datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed.astimezone(datetime.timezone.utc)
+
+
+def _artifact_belongs_to_attempt(
+    path: Path,
+    *,
+    story_dir: Path,
+    attempt_run_ids: set[str],
+    started_at: datetime.datetime | None,
+) -> bool:
+    """Return whether *path* belongs to the current story attempt."""
+    owner_run_id = _artifact_owner_run_id(story_dir, path)
+    if owner_run_id is not None:
+        return bool(attempt_run_ids) and owner_run_id in attempt_run_ids
+    return _path_in_attempt_window(path, started_at)
+
+
+def _artifact_owner_run_id(story_dir: Path, path: Path) -> str | None:
+    """Return the run id recorded for *path* in the story artifact manifest."""
+    manifest = _load_yaml(story_dir / ".artifact-owners.yaml")
+    if not isinstance(manifest, dict):
+        return None
+    entries = manifest.get("artifacts")
+    if not isinstance(entries, dict):
+        return None
+    owner = entries.get(_rel(path, story_dir))
+    return owner.strip() if isinstance(owner, str) and owner.strip() else None
+
+
+def _path_in_attempt_window(path: Path, started_at: datetime.datetime | None) -> bool:
+    """Return whether *path* was written after the current attempt began."""
+    if started_at is None:
+        return True
+    try:
+        modified_at = datetime.datetime.fromtimestamp(path.stat().st_mtime, datetime.timezone.utc)
+    except OSError:
+        return False
+    tolerance = datetime.timedelta(seconds=1)
+    if modified_at + tolerance < started_at:
+        return False
+    return True
 
 
 def _pattern_matches(pattern: str, lowered: str) -> bool:

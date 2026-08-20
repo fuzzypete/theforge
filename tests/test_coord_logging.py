@@ -497,6 +497,25 @@ class TestProjectLocalLogDir:
             assert _yaml.safe_load(artifact.read_text()) == {"slug": slug}
             assert list(log_dir.glob("run-*.log")) == []
 
+    def test_write_log_artifact_records_owner_run_id_manifest(self, tmp_path):
+        """Per-story artifacts can record stable run ownership for later readers."""
+        import yaml as _yaml
+
+        from theforge.coordinator.log_tee import _write_log_artifact
+
+        log_dir = tmp_path / ".forge" / "logs" / "parallel-sprint" / "story-a"
+        log_dir.mkdir(parents=True, exist_ok=True)
+
+        _write_log_artifact(
+            log_dir,
+            "review-cycle-1/openai-gpt.yaml",
+            "output: ok\n",
+            owner_run_id="run-current",
+        )
+
+        manifest = _yaml.safe_load((log_dir / ".artifact-owners.yaml").read_text(encoding="utf-8"))
+        assert manifest == {"artifacts": {"review-cycle-1/openai-gpt.yaml": "run-current"}}
+
 
 class TestSigtermHandler:
     """Tests for _make_sigterm_handler crash diagnostics."""

@@ -1,0 +1,148 @@
+schema_version: 2
+run_id: f7a4219a6d9e
+authoritative_run_record: .forge/audits/runs/f7a4219a6d9e.json
+generated_at: '2026-08-20T03:09:27.590814+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011993750000000001
+story:
+  slug: issue-2038
+  name: A project cannot extend a sandbox capability preset, so a toolchain need the
+    shipped presets do not anticipate has no configuration path
+  github_issue: 2038
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- config
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/inputs-reference.md
+- src/theforge/config/load.py
+- src/theforge/config/sandbox_capabilities.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/dev_phase.py
+- src/theforge/runners/cli.py
+- src/theforge/runners/runner_claude.py
+- src/theforge/runners/runner_gemini.py
+- src/theforge/runners/sandbox.py
+- tests/test_config_load.py
+- tests/test_coord_sandbox_capabilities.py
+- tests/test_sandbox_capabilities.py
+- tests/test_sandbox_capability_transports.py
+what_changed:
+  description: This run added a project-extensible sandbox capability model so projects
+    can declare additional grants beyond shipped presets, and wired those declarations
+    through config loading, CLI transport, runner transport, sandbox construction,
+    and coordinator handling. It also documented the new input shape and added tests
+    covering config parsing, capability composition, transport, and fail-closed behavior.
+  approach: The change introduced typed configuration for sandbox capabilities, merged
+    project-defined requirements with preset handling in the sandbox capability layer,
+    propagated the resulting capability data through the CLI and runner interfaces,
+    and updated dev-phase coordination to audit and refuse unsupported capability
+    requests rather than silently proceeding.
+  files_modified: *id002
+what_was_learned:
+- claim: Sandbox capability configuration in this codebase can be made project-extensible
+    by modeling capabilities as structured config data rather than only as fixed preset
+    names.
+  evidence:
+  - type: file
+    path: src/theforge/config/types.py
+    description: Defines the configuration types used to represent sandbox capability
+      settings.
+  - type: file
+    path: src/theforge/config/load.py
+    description: Loads the expanded sandbox capability configuration from project
+      inputs.
+  - type: file
+    path: src/theforge/config/sandbox_capabilities.py
+    description: Implements capability composition beyond the shipped preset set.
+- claim: Capability requirements can be propagated end-to-end through coordinator,
+    CLI, runners, and sandbox layers so execution receives the same declared grants
+    that configuration loaded.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/dev_phase.py
+    description: Threads sandbox capability requirements through dev-phase handling.
+  - type: file
+    path: src/theforge/runners/cli.py
+    description: Transports capability settings through the CLI surface.
+  - type: file
+    path: src/theforge/runners/runner_claude.py
+    description: Includes the capability transport update for the Claude runner.
+  - type: file
+    path: src/theforge/runners/runner_gemini.py
+    description: Includes the capability transport update for the Gemini runner.
+  - type: file
+    path: src/theforge/runners/sandbox.py
+    description: Applies the transported capability data when constructing sandbox
+      execution.
+- claim: This implementation preserves fail-closed handling for unsupported sandbox
+    capability requests instead of silently accepting configuration the execution
+    layer cannot honor.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: The approved review explicitly notes fail-closed refusal paths as
+      part of the implemented change.
+  - type: file
+    path: src/theforge/coordinator/dev_phase.py
+    description: Contains coordinator-side handling for capability audit and refusal
+      behavior.
+  - type: file
+    path: src/theforge/runners/sandbox.py
+    description: Contains sandbox-side enforcement behavior for capability requests.
+- claim: The project documents sandbox capability inputs in the user-facing inputs
+    reference, indicating the extensible capability model is part of the supported
+    configuration surface.
+  evidence:
+  - type: file
+    path: docs/guides/inputs-reference.md
+    description: Documents the updated sandbox capability configuration available
+      to projects.
+- claim: The run established regression coverage for config parsing, capability composition,
+    and transport of sandbox capability declarations.
+  evidence:
+  - type: file
+    path: tests/test_config_load.py
+    description: Covers loading of the new sandbox capability configuration.
+  - type: file
+    path: tests/test_sandbox_capabilities.py
+    description: Covers capability composition behavior.
+  - type: file
+    path: tests/test_sandbox_capability_transports.py
+    description: Covers propagation of capability data across transport boundaries.
+  - type: file
+    path: tests/test_coord_sandbox_capabilities.py
+    description: Covers coordinator behavior around sandbox capability handling.
+learned_patterns:
+- extensible-capability-config
+- capability-transport-plumbing
+- fail-closed-capability-handling
+- capability-regression-coverage
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approval highlighted that extensible sandbox grants, supported runner wiring,
+    coordinator audit, and fail-closed refusal paths were all present in the final
+    implementation.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 11.723487499999996
+  dominant_difficulty: Extending a previously preset-only sandbox capability system
+    across configuration, transport, and enforcement layers without losing fail-closed
+    behavior.
