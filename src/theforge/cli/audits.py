@@ -22,8 +22,44 @@ def cmd_audits(args: object) -> int:
         return _cmd_audits_skips(args)
     if sub == "alias-drift":
         return _cmd_audits_alias_drift(args)
+    if sub == "plan-advisory":
+        return _cmd_audits_plan_advisory(args)
     print(f"forge audits: unknown subcommand {sub!r}", file=sys.stderr)
     return 2
+
+
+def _cmd_audits_plan_advisory(args: object) -> int:
+    """Report how often dev resolved an advisory plan-review finding (issue #2112).
+
+    Plan review approves plans while still holding P1-level findings and hands
+    them to dev as advisory context. This joins those findings to a checked-in
+    judgment corpus and renders the resolution rate by finding class, the
+    enumerable resolved and escaped findings, and plan-review cost as a fraction
+    of the story it guarded.
+
+    Thin by construction (CLI CONVENTIONS): loading, joining and rendering all
+    live in ``theforge.plan_advisory``; this resolves the project root and prints.
+    """
+    from theforge.plan_advisory.analysis import CorpusMismatchError  # noqa: PLC0415
+    from theforge.plan_advisory.report import load_report, render  # noqa: PLC0415
+
+    config_path = _find_config(Path(args.config).resolve() if args.config else None)
+    if config_path is None:
+        print("[forge] forge.yaml not found. Run from a forge project root.", file=sys.stderr)
+        return 1
+    try:
+        report = load_report(config_path.parent)
+    except audit_substrate.SubstrateError as exc:
+        print(f"[forge] {exc}", file=sys.stderr)
+        return 1
+    except CorpusMismatchError as exc:
+        print(
+            f"[forge] the plan-advisory judgment corpus does not match the audit substrate: {exc}",
+            file=sys.stderr,
+        )
+        return 1
+    print(render(report, verbose=bool(getattr(args, "verbose", False))))
+    return 0
 
 
 def _cmd_audits_alias_drift(args: object) -> int:
@@ -525,6 +561,20 @@ def register_parser(subparsers: object) -> None:
         help="Only show configured identities that resolved to more than one model",
     )
     alias_drift_parser.add_argument(
+        "--config",
+        help="Path to forge.yaml (default: auto-detect)",
+    )
+
+    plan_advisory_parser = audits_sub.add_parser(
+        "plan-advisory",
+        help="Report how often dev resolved an advisory plan-review finding",
+    )
+    plan_advisory_parser.add_argument(
+        "--verbose",
+        action="store_true",
+        help="Include each finding's text and the evidence its judgment cites",
+    )
+    plan_advisory_parser.add_argument(
         "--config",
         help="Path to forge.yaml (default: auto-detect)",
     )
