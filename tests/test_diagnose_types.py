@@ -541,6 +541,32 @@ class TestRenderArtifactMarkdown:
         assert "Support provenance: prior_assertion" in md
         assert "already stated this cause and is not independent corroboration" in md
 
+    def test_duplicate_confirmed_cause_independence_notes_are_deduplicated(self):
+        artifact = DiagnosisArtifact(
+            issue_number=342,
+            observed_symptom="both cause and support repeat the same independence claim",
+            reproduction_or_evidence="operator quote captured in issue body",
+            hypotheses=(
+                Hypothesis(
+                    "both fields restate the same prior assertion",
+                    "confirmed",
+                    "Earlier diagnosis already stated the same mechanism",
+                ),
+            ),
+            confirmed_cause="The earlier diagnosis independently confirmed the same cause.",
+            confirmed_cause_support=(
+                "The earlier diagnosis independently confirmed the same cause."
+            ),
+            confirmed_cause_support_provenance=SupportProvenance(
+                "prior_assertion",
+                "The cited earlier diagnosis already stated the cause.",
+            ),
+            affected_code_path="src/theforge/diagnose_types.py",
+            fix_success_criterion="The support block renders one caveat, not duplicates.",
+        )
+        md = render_artifact_markdown(artifact)
+        assert md.count("Independence note:") == 1
+
     def test_independence_language_with_observed_provenance_gets_caveat(self):
         artifact = DiagnosisArtifact(
             issue_number=1,

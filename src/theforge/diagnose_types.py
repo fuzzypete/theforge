@@ -559,18 +559,14 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             "Support provenance: "
             f"{render_provenance_text(artifact.confirmed_cause_support_provenance)}"
         )
-        lines.extend(
-            render_independence_note(
-                artifact.confirmed_cause,
-                artifact.confirmed_cause_support_provenance,
-            )
+        independence_notes = render_independence_note(
+            artifact.confirmed_cause,
+            artifact.confirmed_cause_support_provenance,
+        ) + render_independence_note(
+            artifact.confirmed_cause_support,
+            artifact.confirmed_cause_support_provenance,
         )
-        lines.extend(
-            render_independence_note(
-                artifact.confirmed_cause_support,
-                artifact.confirmed_cause_support_provenance,
-            )
-        )
+        lines.extend(dict.fromkeys(independence_notes))
         lines.append("")
     lines.extend(
         [
