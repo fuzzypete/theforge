@@ -68,6 +68,7 @@ class Judgment:
 class JudgmentConfig:
     replay_run_ids_by_corpus: dict[str, frozenset[str]]
     judgments: dict[tuple[str, str, str, str, str], Judgment]
+    fence_probes_by_corpus: dict[str, tuple[tuple[str, ...], ...]]
 
 
 @dataclass(frozen=True)
@@ -104,11 +105,14 @@ def run_prior_run_replay(
 def _replay_corpus(spec: CorpusSpec, judgment_config: JudgmentConfig) -> dict:
     fixtures = _discover_fixtures(spec.root)
     replay_ids = judgment_config.replay_run_ids_by_corpus.get(spec.name)
-    replay_fixtures = (
-        [fixture for fixture in fixtures if fixture.run_id in replay_ids]
-        if replay_ids
-        else fixtures
-    )
+    available_run_ids = {fixture.run_id for fixture in fixtures}
+    if replay_ids is not None and replay_ids != available_run_ids:
+        raise PriorRunReplayError(
+            "judgments replay_run_ids must cover every available completed story for "
+            f"{spec.name}: expected {len(available_run_ids)} run(s), "
+            f"got {len(replay_ids)}"
+        )
+    replay_fixtures = fixtures
     story_reports = [
         _replay_story(spec, fixture, fixtures, judgment_config.judgments)
         for fixture in replay_fixtures
@@ -119,7 +123,11 @@ def _replay_corpus(spec: CorpusSpec, judgment_config: JudgmentConfig) -> dict:
         "story_count": len(replay_fixtures),
         "available_story_count": len(fixtures),
         "stories": story_reports,
-        "fence_probes": _run_fence_probes(spec, fixtures),
+        "fence_probes": _run_fence_probes(
+            spec,
+            fixtures,
+            probe_groups=judgment_config.fence_probes_by_corpus.get(spec.name, ()),
+        ),
         "metrics": _aggregate_corpus_metrics(story_reports),
     }
 
@@ -221,29 +229,57 @@ def _replay_story(
 
 
 def _phase_inputs(run_record: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    note = (
-        "audit records do not persist preflight_likely_files; "
-        "replay runs without file overlap input"
+    changed_files = _persisted_changed_files(run_record)
+    phase_plan = ((run_record.get("phases") or {}).get("plan")) or {}
+    structured = phase_plan.get("plan_structured") if isinstance(phase_plan, dict) else None
+    plan_files = plan_file_list(structured) if isinstance(structured, dict) else None
+
+    plan_data = _recovered_phase_input(
+        primary=plan_files,
+        primary_note="recovered from phases.plan.plan_structured",
+        fallback=changed_files,
+        fallback_note="plan_structured missing; fell back to persisted changed_files",
+        missing_note=(
+            "audit record persists neither phases.plan.plan_structured nor changed_files; "
+            "replay runs without file overlap input"
+        ),
     )
-    plan_data = {
-        "file_list": None,
-        "recoverable": False,
-        "note": note,
-    }
-    structured = run_record.get("plan_structured")
-    if isinstance(structured, dict):
-        replay_files = plan_file_list(structured) or None
-        data = {"file_list": replay_files, "recoverable": True, "note": ""}
-    else:
-        data = {
-            "file_list": None,
-            "recoverable": False,
-            "note": (
-                "audit record does not persist plan_structured; "
-                "replay runs without file overlap input"
-            ),
-        }
-    return {"plan": plan_data, "dev": data, "review": copy.deepcopy(data)}
+    later_phase = _recovered_phase_input(
+        primary=changed_files,
+        primary_note="recovered from persisted changed_files",
+        fallback=None,
+        fallback_note="",
+        missing_note=(
+            "audit record does not persist changed_files; replay runs without file overlap input"
+        ),
+    )
+    return {"plan": plan_data, "dev": later_phase, "review": copy.deepcopy(later_phase)}
+
+
+def _recovered_phase_input(
+    *,
+    primary: list[str] | None,
+    primary_note: str,
+    fallback: list[str] | None,
+    fallback_note: str,
+    missing_note: str,
+) -> dict[str, Any]:
+    if primary:
+        return {"file_list": primary, "recoverable": True, "note": primary_note}
+    if fallback:
+        return {"file_list": fallback, "recoverable": True, "note": fallback_note}
+    return {"file_list": None, "recoverable": False, "note": missing_note}
+
+
+def _persisted_changed_files(run_record: dict[str, Any]) -> list[str] | None:
+    changed = run_record.get("changed_files")
+    files = changed.get("files") if isinstance(changed, dict) else None
+    paths = [
+        _text(item.get("path"))
+        for item in files or []
+        if isinstance(item, dict) and _text(item.get("path"))
+    ]
+    return paths or None
 
 
 def _replay_phase(
@@ -304,16 +340,23 @@ def _phase_report_from_selection(
     useful_omitted_claims = 0
     for candidate in high_limit.candidates:
         summary = _load_yaml(replay_root / candidate.summary_path)
+        summary_data = summary if isinstance(summary, dict) else {}
         claims = _claims_for_phase(
             phase,
-            summary if isinstance(summary, dict) else {},
+            summary_data,
             touched_files=touched_files,
             touched_dirs=touched_dirs,
         )
-        rendered_claims = claims[: _render_cap_for_phase(phase)]
+        rendered_claims = _rendered_claims_for_phase(
+            phase,
+            summary_data,
+            touched_files=touched_files,
+            touched_dirs=touched_dirs,
+        )
         overflowed = candidate.run_id not in {item.run_id for item in selection.candidates}
         claim_reports = []
-        for index, claim in enumerate(claims):
+        rendered_counts = Counter(rendered_claims)
+        for claim in claims:
             key = _judgment_key(
                 corpus_name,
                 replay_run_id,
@@ -327,7 +370,9 @@ def _phase_report_from_selection(
                     "missing judgment for "
                     f"{corpus_name}/{replay_run_id}/{phase}/{candidate.run_id}/{_claim_hash(claim)}"
                 )
-            rendered = index < len(rendered_claims) and claim == rendered_claims[index]
+            rendered = rendered_counts[claim] > 0
+            if rendered:
+                rendered_counts[claim] -= 1
             useful = judgment.effect != "none"
             if rendered and useful and not overflowed:
                 useful_rendered_claims += 1
@@ -415,19 +460,45 @@ def _claims_for_phase(
             touched_dirs=touched_dirs,
         )
     if phase == "review":
-        insights = summary.get("review_insights")
-        if not isinstance(insights, dict):
-            return []
-        claims: list[str] = []
-        claims.extend(_finding_descriptions(insights.get("recurring_findings")))
-        claims.extend(_finding_descriptions(insights.get("resolved_findings")))
-        claims.extend(_text(item) for item in insights.get("observations", []) if _text(item))
-        return claims
+        rendered: list[str] = []
+        for section in _review_claim_sections(summary):
+            rendered.extend(section)
+        return rendered
     return []
 
 
-def _render_cap_for_phase(phase: str) -> int:
-    return 5
+def _rendered_claims_for_phase(
+    phase: str,
+    summary: dict[str, Any],
+    *,
+    touched_files: set[str],
+    touched_dirs: set[str],
+) -> list[str]:
+    if phase == "plan":
+        return _evidenced_claims(summary)[:5]
+    if phase == "dev":
+        return _dev_grounded_claims(
+            summary,
+            touched_files=touched_files,
+            touched_dirs=touched_dirs,
+        )[:5]
+    if phase == "review":
+        rendered: list[str] = []
+        for section in _review_claim_sections(summary):
+            rendered.extend(section[:5])
+        return rendered
+    return []
+
+
+def _review_claim_sections(summary: dict[str, Any]) -> list[list[str]]:
+    insights = summary.get("review_insights")
+    if not isinstance(insights, dict):
+        return []
+    return [
+        _finding_descriptions(insights.get("recurring_findings")),
+        _finding_descriptions(insights.get("resolved_findings")),
+        [_text(item) for item in insights.get("observations", []) if _text(item)],
+    ]
 
 
 def _aggregate_corpus_metrics(story_reports: list[dict[str, Any]]) -> dict[str, Any]:
@@ -485,58 +556,67 @@ def _aggregate_report(corpora: list[dict[str, Any]]) -> dict[str, Any]:
     }
 
 
-def _run_fence_probes(spec: CorpusSpec, fixtures: list[SummaryFixture]) -> list[dict[str, Any]]:
-    relevant = {
-        fixture.run_id: fixture for fixture in fixtures if fixture.run_id in _FENCE_PROBE_RUN_IDS
-    }
-    if len(relevant) != len(_FENCE_PROBE_RUN_IDS):
-        return []
+def _run_fence_probes(
+    spec: CorpusSpec,
+    fixtures: list[SummaryFixture],
+    *,
+    probe_groups: tuple[tuple[str, ...], ...],
+) -> list[dict[str, Any]]:
+    if not probe_groups:
+        relevant = tuple(_FENCE_PROBE_RUN_IDS) if spec.name == "theforge" else ()
+        probe_groups = (relevant,) if relevant else ()
+
+    probes: list[dict[str, Any]] = []
+    fixture_by_run = {fixture.run_id: fixture for fixture in fixtures}
     all_fixtures = sorted(fixtures, key=lambda item: (item.generated_at, item.run_id))
-    with _materialized_replay_corpus(
-        spec.root,
-        max(relevant.values(), key=lambda item: item.generated_at).base_ref,
-        all_fixtures,
-    ) as replay_root:
-        rebuild_knowledge_index(replay_root)
-        probes = []
-        for target in relevant.values():
-            summary_paths = _summary_paths_for_probe(target)
-            selection = select_prior_runs(
-                replay_root,
-                phase="dev",
-                story_text="",
-                file_list=summary_paths,
-                limit=_HIGH_LIMIT,
-            )
-            offered = {candidate.run_id: candidate for candidate in selection.candidates}
-            probes.append(
-                {
-                    "probe_run_id": target.run_id,
-                    "file_list": summary_paths,
-                    "matched": {
-                        run_id: {
-                            "offered": run_id in offered,
-                            "reason": offered[run_id].reason if run_id in offered else "",
-                        }
-                        for run_id in _FENCE_PROBE_RUN_IDS
-                    },
-                    "co_surfaced": all(run_id in offered for run_id in _FENCE_PROBE_RUN_IDS),
-                }
-            )
-        return probes
+    for probe_run_ids in probe_groups:
+        if not probe_run_ids:
+            continue
+        resolved = {run_id: fixture_by_run.get(run_id) for run_id in probe_run_ids}
+        if any(fixture is None for fixture in resolved.values()):
+            continue
+        selected = {run_id: fixture for run_id, fixture in resolved.items() if fixture is not None}
+        with _materialized_replay_corpus(
+            spec.root,
+            max(selected.values(), key=lambda item: item.generated_at).base_ref,
+            all_fixtures,
+        ) as replay_root:
+            rebuild_knowledge_index(replay_root)
+            for target in selected.values():
+                summary_paths = _summary_paths_for_probe(target)
+                selection = select_prior_runs(
+                    replay_root,
+                    phase="dev",
+                    story_text="",
+                    file_list=summary_paths,
+                    limit=_HIGH_LIMIT,
+                )
+                offered = {candidate.run_id: candidate for candidate in selection.candidates}
+                probes.append(
+                    {
+                        "probe_run_id": target.run_id,
+                        "co_surface_run_ids": list(probe_run_ids),
+                        "file_list": summary_paths,
+                        "matched": {
+                            run_id: {
+                                "offered": run_id in offered,
+                                "reason": offered[run_id].reason if run_id in offered else "",
+                            }
+                            for run_id in probe_run_ids
+                        },
+                        "co_surfaced": all(run_id in offered for run_id in probe_run_ids),
+                    }
+                )
+    return probes
 
 
 def _summary_paths_for_probe(fixture: SummaryFixture) -> list[str]:
     changed_files = fixture.summary.get("changed_files")
-    if isinstance(changed_files, list) and changed_files:
-        return [str(changed_files[0])]
-    changed = fixture.run_record.get("changed_files")
-    files = changed.get("files") if isinstance(changed, dict) else None
-    if isinstance(files, list) and files:
-        first = files[0]
-        if isinstance(first, dict) and _text(first.get("path")):
-            return [_text(first.get("path"))]
-    return []
+    if isinstance(changed_files, list):
+        paths = [str(path).strip() for path in changed_files if str(path).strip()]
+        if paths:
+            return paths
+    return _persisted_changed_files(fixture.run_record) or []
 
 
 @dataclass
@@ -601,6 +681,7 @@ def _load_judgments(path: Path) -> JudgmentConfig:
 
     replay_run_ids_by_corpus: dict[str, frozenset[str]] = {}
     loaded: dict[tuple[str, str, str, str, str], Judgment] = {}
+    fence_probes_by_corpus: dict[str, tuple[tuple[str, ...], ...]] = {}
     for corpus_name, payload in corpora.items():
         if not isinstance(payload, dict):
             raise PriorRunReplayError(f"judgments corpus {corpus_name!r} must be a mapping")
@@ -615,6 +696,30 @@ def _load_judgments(path: Path) -> JudgmentConfig:
             replay_run_ids_by_corpus[str(corpus_name)] = frozenset(
                 _text(item) for item in replay_run_ids
             )
+        raw_probes = payload.get("fence_probes")
+        if raw_probes is not None:
+            if not isinstance(raw_probes, list):
+                raise PriorRunReplayError(
+                    f"judgments corpus {corpus_name!r} fence_probes must be a list"
+                )
+            parsed_groups: list[tuple[str, ...]] = []
+            for group in raw_probes:
+                if not isinstance(group, dict):
+                    raise PriorRunReplayError(
+                        f"judgments corpus {corpus_name!r} fence_probes entries must be mappings"
+                    )
+                run_ids = group.get("run_ids")
+                if (
+                    not isinstance(run_ids, list)
+                    or len(run_ids) < 2
+                    or any(not _text(item) for item in run_ids)
+                ):
+                    raise PriorRunReplayError(
+                        f"judgments corpus {corpus_name!r} fence probe run_ids "
+                        "must be a list of at least two strings"
+                    )
+                parsed_groups.append(tuple(_text(item) for item in run_ids))
+            fence_probes_by_corpus[str(corpus_name)] = tuple(parsed_groups)
         claims = payload.get("claims")
         if not isinstance(claims, list):
             raise PriorRunReplayError(
@@ -667,7 +772,11 @@ def _load_judgments(path: Path) -> JudgmentConfig:
                     f"{judgment.prior_run_id}/{judgment.claim_hash}"
                 )
             loaded[key] = judgment
-    return JudgmentConfig(replay_run_ids_by_corpus=replay_run_ids_by_corpus, judgments=loaded)
+    return JudgmentConfig(
+        replay_run_ids_by_corpus=replay_run_ids_by_corpus,
+        judgments=loaded,
+        fence_probes_by_corpus=fence_probes_by_corpus,
+    )
 
 
 def _judgment_key(
