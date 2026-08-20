@@ -42,10 +42,18 @@ def render_terminal(report: dict[str, Any]) -> str:
             for run_id, detail in probe["matched"].items():
                 state = "offered" if detail["offered"] else "not offered"
                 suffix = f" [{detail['reason']}]" if detail["reason"] else ""
-                parts.append(f"{run_id}: {state}{suffix}")
+                expanded = ""
+                if detail.get("offered_in_expanded_probe") and not detail["offered"]:
+                    expanded_reason = detail.get("expanded_reason") or ""
+                    expanded_suffix = f" [{expanded_reason}]" if expanded_reason else ""
+                    expanded = f", expanded probe: offered{expanded_suffix}"
+                parts.append(f"{run_id}: {state}{suffix}{expanded}")
             lines.append(
                 "  fence probe "
-                f"{probe['probe_run_id']}: {'; '.join(parts)}; co-surfaced={probe['co_surfaced']}"
+                f"{probe['probe_run_id']}: {'; '.join(parts)}; "
+                f"co-surfaced(limit={probe['diagnostic']['selection_limit']})="
+                f"{probe['co_surfaced']}; "
+                f"co-surfaced(expanded)={probe['co_surfaced_in_expanded_probe']}"
             )
     return "\n".join(lines).rstrip() + "\n"
 

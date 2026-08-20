@@ -50,8 +50,8 @@ Useful truncation pressure:
 
 Corpus theforge (22 stories)
   root: /Users/pwickersham/src/theforge/.forge/worktrees/issue-2608
-  fence probe 1a6b6e18d232: 1a6b6e18d232: offered [file_overlap(src/theforge/coordinator/diagnose_flow.py), file_overlap(src/theforge/diagnose_types.py), file_overlap(src/theforge/task/diagnose_prompts.py), reduced_rank]; 73d7de156730: offered [dir_overlap(src/theforge), dir_overlap(src/theforge/coordinator), dir_overlap(tests), reduced_rank]; co-surfaced=True
-  fence probe 73d7de156730: 1a6b6e18d232: offered [dir_overlap(src/theforge), dir_overlap(src/theforge/coordinator), dir_overlap(tests), reduced_rank]; 73d7de156730: offered [file_overlap(src/theforge/coordinator/preflight.py), file_overlap(src/theforge/coordinator/preflight_cache.py), file_overlap(src/theforge/knowledge_summary.py), reduced_rank]; co-surfaced=True
+  fence probe 1a6b6e18d232: 1a6b6e18d232: offered [file_overlap(src/theforge/coordinator/diagnose_flow.py), file_overlap(src/theforge/diagnose_types.py), file_overlap(src/theforge/task/diagnose_prompts.py), reduced_rank]; 73d7de156730: offered [dir_overlap(src/theforge), dir_overlap(src/theforge/coordinator), dir_overlap(tests), reduced_rank]; co-surfaced(limit=3)=True; co-surfaced(expanded)=True
+  fence probe 73d7de156730: 1a6b6e18d232: not offered, expanded probe: offered [dir_overlap(src/theforge), dir_overlap(src/theforge/coordinator), dir_overlap(tests), reduced_rank]; 73d7de156730: offered [file_overlap(src/theforge/coordinator/preflight.py), file_overlap(src/theforge/coordinator/preflight_cache.py), file_overlap(src/theforge/knowledge_summary.py), reduced_rank]; co-surfaced(limit=3)=False; co-surfaced(expanded)=True
 
 Corpus hdp (8 stories)
   root: /Users/pwickersham/src/hdp

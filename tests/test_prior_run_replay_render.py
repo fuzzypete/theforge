@@ -31,10 +31,24 @@ def _report() -> dict:
                 "fence_probes": [
                     {
                         "probe_run_id": "story-123",
-                        "co_surfaced": True,
+                        "co_surfaced": False,
+                        "co_surfaced_in_expanded_probe": True,
+                        "diagnostic": {
+                            "selection_limit": 3,
+                        },
                         "matched": {
-                            "1a6b6e18d232": {"offered": True, "reason": "file_overlap"},
-                            "73d7de156730": {"offered": False, "reason": None},
+                            "1a6b6e18d232": {
+                                "offered": True,
+                                "reason": "file_overlap",
+                                "offered_in_expanded_probe": True,
+                                "expanded_reason": "file_overlap",
+                            },
+                            "73d7de156730": {
+                                "offered": False,
+                                "reason": None,
+                                "offered_in_expanded_probe": True,
+                                "expanded_reason": "dir_overlap",
+                            },
                         },
                     }
                 ],
@@ -55,8 +69,9 @@ class TestRenderTerminal:
         assert "Corpus theforge (2 stories)" in out
         assert "root: /repo/theforge" in out
         assert "1a6b6e18d232: offered [file_overlap]" in out
-        assert "73d7de156730: not offered" in out
-        assert "co-surfaced=True" in out
+        assert "73d7de156730: not offered, expanded probe: offered [dir_overlap]" in out
+        assert "co-surfaced(limit=3)=False" in out
+        assert "co-surfaced(expanded)=True" in out
         assert out.endswith("\n")
 
 

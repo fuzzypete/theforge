@@ -617,9 +617,19 @@ def _run_fence_probes(
                     phase="dev",
                     story_text="",
                     file_list=summary_paths,
+                    limit=_DEFAULT_PHASE_LIMIT,
+                )
+                high_limit = select_prior_runs(
+                    replay_root,
+                    phase="dev",
+                    story_text="",
+                    file_list=summary_paths,
                     limit=_HIGH_LIMIT,
                 )
                 offered = {candidate.run_id: candidate for candidate in selection.candidates}
+                expanded_offered = {
+                    candidate.run_id: candidate for candidate in high_limit.candidates
+                }
                 probes.append(
                     {
                         "probe_run_id": target.run_id,
@@ -629,10 +639,26 @@ def _run_fence_probes(
                             run_id: {
                                 "offered": run_id in offered,
                                 "reason": offered[run_id].reason if run_id in offered else "",
+                                "offered_in_expanded_probe": run_id in expanded_offered,
+                                "expanded_reason": (
+                                    expanded_offered[run_id].reason
+                                    if run_id in expanded_offered
+                                    else ""
+                                ),
                             }
                             for run_id in probe_run_ids
                         },
                         "co_surfaced": all(run_id in offered for run_id in probe_run_ids),
+                        "co_surfaced_in_expanded_probe": all(
+                            run_id in expanded_offered for run_id in probe_run_ids
+                        ),
+                        "diagnostic": {
+                            "selection_limit": _DEFAULT_PHASE_LIMIT,
+                            "high_limit_candidate_count": len(high_limit.candidates),
+                            "candidate_cap_pressure": max(
+                                0, len(high_limit.candidates) - len(selection.candidates)
+                            ),
+                        },
                     }
                 )
     return probes

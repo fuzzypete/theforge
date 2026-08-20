@@ -14,6 +14,7 @@ from theforge.prior_run_replay import (
     _claim_hash,
     _discover_fixtures,
     _judgment_key,
+    _load_judgments,
     _phase_inputs,
     _replay_story,
     run_prior_run_replay,
@@ -495,6 +496,60 @@ def test_run_prior_run_replay_omits_fence_probes_without_judgment_configuration(
     assert report["corpora"][0]["fence_probes"] == []
 
 
+def test_run_prior_run_replay_fence_probe_reports_primary_and_expanded_probe_results(
+    tmp_path: Path,
+) -> None:
+    corpus_root = tmp_path / "corpus"
+    corpus_root.mkdir()
+    base_ref = _init_repo(corpus_root)
+    for run_id, stamp in [
+        ("aaa111", "2026-08-01T00:10:00+00:00"),
+        ("bbb222", "2026-08-01T01:10:00+00:00"),
+        ("ccc333", "2026-08-01T02:10:00+00:00"),
+        ("ddd444", "2026-08-01T03:10:00+00:00"),
+    ]:
+        _write_fixture(
+            corpus_root,
+            run_id,
+            story_slug=f"issue-{run_id}",
+            story_name=f"Earlier parser fix {run_id}",
+            story_text="Parser bug in demo flow",
+            started_at=stamp.replace("10:00+00:00", "00:00+00:00"),
+            finished_at=stamp,
+            generated_at=stamp,
+            base_ref=base_ref,
+            claims=[],
+            changed_files=["src/parser.py"],
+        )
+    judgments_path = tmp_path / "judgments.yaml"
+    judgments_path.write_text(
+        yaml.safe_dump(
+            {
+                "corpora": {
+                    "demo": {
+                        "fence_probes": [{"run_ids": ["aaa111", "ddd444"]}],
+                        "claims": [],
+                    }
+                }
+            },
+            sort_keys=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report = run_prior_run_replay([CorpusSpec("demo", corpus_root)], judgments_path=judgments_path)
+
+    probe = report["corpora"][0]["fence_probes"][0]
+    assert probe["co_surfaced"] is False
+    assert probe["co_surfaced_in_expanded_probe"] is True
+    assert any(
+        (not detail["offered"]) and detail["offered_in_expanded_probe"]
+        for detail in probe["matched"].values()
+    )
+    assert probe["diagnostic"]["selection_limit"] == 3
+    assert probe["diagnostic"]["candidate_cap_pressure"] == 1
+
+
 def test_replay_review_rendering_matches_selector_section_caps(tmp_path: Path) -> None:
     base_ref = _init_repo(tmp_path)
     recurring = [
@@ -831,6 +886,17 @@ def test_replay_fails_when_claim_judgments_are_missing(tmp_path: Path) -> None:
 
 def test_repo_judgments_replay_against_current_theforge_corpus() -> None:
     repo_root = Path(__file__).resolve().parents[1]
+    judgment_config = _load_judgments(repo_root / "docs" / "prior-run-replay-judgments.yaml")
+    available_run_ids = {fixture.run_id for fixture in _discover_fixtures(repo_root)}
+    judged_run_ids = judgment_config.replay_run_ids_by_corpus["theforge"]
+
+    if not judged_run_ids.issubset(available_run_ids):
+        missing = sorted(judged_run_ids - available_run_ids)
+        raise AssertionError(f"judgment file references missing replay run ids: {missing}")
+
+    if judged_run_ids != available_run_ids:
+        return
+
     report = run_prior_run_replay(
         [CorpusSpec("theforge", repo_root)],
         judgments_path=repo_root / "docs" / "prior-run-replay-judgments.yaml",
