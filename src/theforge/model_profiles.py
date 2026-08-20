@@ -88,10 +88,12 @@ from .model_profiles_read_model import (  # noqa: F401
     get_dev_domain_signal,
     get_dev_score_cost_stats,
     get_dev_signal,
+    get_dev_signal_for_keys,
     get_dev_success_rate,
     get_observed_cost_tiebreak_signal,
     get_review_signal,
     get_role_reliability_signal,
+    list_dev_evidence_keys,
 )
 
 # ── Storage: run-outcome accumulation, reset, migration ──────────────────
@@ -181,6 +183,7 @@ __all__ = [
     "get_dev_domain_signal",
     "get_dev_score_cost_stats",
     "get_dev_signal",
+    "get_dev_signal_for_keys",
     "get_dev_success_rate",
     "get_observed_cost_tiebreak_signal",
     "get_review_signal",
@@ -188,6 +191,7 @@ __all__ = [
     "_identity_from_unique_spec",
     "_identity_metadata",
     "_infer_identity_from_key",
+    "list_dev_evidence_keys",
     "load_profiles",
     "load_reset_history",
     "_matching_profile_entries",
