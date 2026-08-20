@@ -59,6 +59,10 @@ then [vision.md](vision.md) for the philosophy and reading order.
   — spike record for issue #2348: design, POC and the **defer** decision for a
   codebase-scoped structural-decay observer, with the data condition that
   reopens it.
+- [plans/1848-reviewer-finding-fate-spike.md](plans/1848-reviewer-finding-fate-spike.md)
+  — spike record for issue #1848: finding-fate derivation from structured
+  code-review records, the live Thursday, August 20, 2026 POC output, and the
+  **stay out** decision pending two missing structured events.
 - **[archive/](archive/)** — closed records with no living role:
   - [coordinator-refactor-plan.md](archive/coordinator-refactor-plan.md) —
     2026-03 plan for the coordinator split (since shipped).
