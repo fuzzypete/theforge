@@ -300,16 +300,27 @@ retry:
   # sound `land_core_defer_edges` recommendation and lost it.
   escalate_timeout_policy: apply_advice
 
-# Post-run knowledge capture. Generation only: a completed run emits an
-# evidence-backed summary to .forge/knowledge/summaries/{run_id}.yaml, and
-# nothing reads them yet. Turned on 2026-08-16 with v0.15.0rc0, the first
-# runtime carrying the schema — rc6 ignored this block silently.
+# Post-run knowledge capture. A completed run emits an evidence-backed summary
+# to .forge/knowledge/summaries/{run_id}.yaml. Turned on 2026-08-16 with
+# v0.15.0rc0, the first runtime carrying the schema — rc6 ignored this block
+# silently.
 #
-# `prior_run_context` (Layer 3 injection) stays off until a corpus exists to
-# read. Enabling both at once would have the first consuming run read an
-# almost-empty corpus.
+# `prior_run_context` (Layer 3 injection) turned on 2026-08-21 with v0.15.0rc11.
+# It was held back first for corpus size and then, once 29 summaries had
+# accumulated, for a mechanical reason that was easy to miss: nothing built the
+# derived .forge/knowledge/index.yaml the selector actually reads, so turning
+# this on would have injected nothing indefinitely while recording every run as
+# a control — biasing knowledge-report toward concluding the loop does not help
+# (#2654, #2655; #2607 had made the condition observable but deliberately did
+# not fix it). rc11 rebuilds the index on every summary write and repairs a
+# missing one on read, so the existing corpus is picked up with no backfill.
+#
+# `forge knowledge-report` is the read surface. Expect insufficient_data until
+# both cohorts fill: cohorts come from audit manifests, so runs recorded before
+# this line existed stay unclassified and never enter the comparison.
 knowledge:
   run_summaries: true
+  prior_run_context: true
 
 plan:
   enabled: true
