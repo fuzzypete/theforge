@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from theforge.task.prior_run_manifest import build_manifest
@@ -152,15 +153,13 @@ def test_manifest_note_reports_absence_when_nothing_is_indexed(tmp_path: Path) -
     selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
     manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
 
+    assert manifest["index_state"] == "ready"
     assert manifest["included"] == []
     assert manifest["dropped"] == []
-    assert manifest["note"] == (
-        "prior-run knowledge index is missing or was never built; "
-        "run `forge index` to build .forge/knowledge/index.yaml"
-    )
+    assert manifest["note"] == "no relevant prior knowledge exists (no indexed summaries)"
 
 
-def test_manifest_note_reports_unreadable_index_with_repair(tmp_path: Path) -> None:
+def test_manifest_note_repairs_unreadable_index_with_rebuild(tmp_path: Path) -> None:
     path = tmp_path / ".forge" / "knowledge" / "index.yaml"
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(": not: yaml:", encoding="utf-8")
@@ -168,13 +167,11 @@ def test_manifest_note_reports_unreadable_index_with_repair(tmp_path: Path) -> N
     selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
     manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
 
-    assert manifest["note"] == (
-        "prior-run knowledge index is unreadable; "
-        "run `forge index` to rebuild .forge/knowledge/index.yaml"
-    )
+    assert manifest["index_state"] == "ready"
+    assert manifest["note"] == "no relevant prior knowledge exists (no indexed summaries)"
 
 
-def test_manifest_note_reports_malformed_entries_as_unreadable(tmp_path: Path) -> None:
+def test_manifest_note_repairs_malformed_entries_with_rebuild(tmp_path: Path) -> None:
     _write_index(tmp_path, [])
     path = tmp_path / ".forge" / "knowledge" / "index.yaml"
     payload = yaml.safe_load(path.read_text(encoding="utf-8"))
@@ -184,22 +181,18 @@ def test_manifest_note_reports_malformed_entries_as_unreadable(tmp_path: Path) -
     selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
     manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
 
-    assert manifest["note"] == (
-        "prior-run knowledge index is unreadable; "
-        "run `forge index` to rebuild .forge/knowledge/index.yaml"
-    )
+    assert manifest["index_state"] == "ready"
+    assert manifest["note"] == "no relevant prior knowledge exists (no indexed summaries)"
 
 
-def test_manifest_note_reports_stale_schema_index_with_repair(tmp_path: Path) -> None:
+def test_manifest_note_repairs_stale_schema_index_with_rebuild(tmp_path: Path) -> None:
     _write_index(tmp_path, [], schema_version=1)
 
     selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
     manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
 
-    assert manifest["note"] == (
-        "prior-run knowledge index uses an unsupported schema version; "
-        "run `forge index` to rebuild .forge/knowledge/index.yaml"
-    )
+    assert manifest["index_state"] == "ready"
+    assert manifest["note"] == "no relevant prior knowledge exists (no indexed summaries)"
 
 
 def test_manifest_note_preserves_existing_empty_index_message(tmp_path: Path) -> None:
@@ -208,7 +201,60 @@ def test_manifest_note_preserves_existing_empty_index_message(tmp_path: Path) ->
     selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
     manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
 
+    assert manifest["index_state"] == "ready"
     assert manifest["note"] == "no relevant prior knowledge exists (no indexed summaries)"
+
+
+@pytest.mark.parametrize(
+    ("initial_state", "expected_state", "expected_note"),
+    [
+        pytest.param(
+            "missing",
+            "missing",
+            "prior-run knowledge index is missing or was never built; "
+            "run `forge index` to build .forge/knowledge/index.yaml",
+            id="missing",
+        ),
+        pytest.param(
+            "unreadable",
+            "unreadable",
+            "prior-run knowledge index is unreadable; "
+            "run `forge index` to rebuild .forge/knowledge/index.yaml",
+            id="unreadable",
+        ),
+        pytest.param(
+            "stale",
+            "stale_schema",
+            "prior-run knowledge index uses an unsupported schema version; "
+            "run `forge index` to rebuild .forge/knowledge/index.yaml",
+            id="stale",
+        ),
+    ],
+)
+def test_manifest_note_preserves_failed_closed_index_states_when_repair_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+    expected_state: str,
+    expected_note: str,
+) -> None:
+    monkeypatch.setattr(
+        "theforge.task.prior_run_selector.rebuild_knowledge_index",
+        lambda _project_root: (_ for _ in ()).throw(RuntimeError("rebuild failed")),
+    )
+
+    path = tmp_path / ".forge" / "knowledge" / "index.yaml"
+    if initial_state == "stale":
+        _write_index(tmp_path, [], schema_version=1)
+    elif initial_state == "unreadable":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(": not: yaml:", encoding="utf-8")
+
+    selection = select_prior_runs(tmp_path, phase="dev", story_text=_STORY, file_list=_FILES)
+    manifest = build_manifest(selection, included_run_ids=set(), phase="dev")
+
+    assert manifest["index_state"] == expected_state
+    assert manifest["note"] == expected_note
 
 
 def test_manifest_note_reports_unsupported_phase_ineligibility(tmp_path: Path) -> None:

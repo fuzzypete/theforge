@@ -28,6 +28,18 @@ class TestCohortClassification:
         """Enabled with an empty manifest is a genuine control, not unclassified."""
         assert classify_cohort(record("r", cohort="without")) == COHORT_WITHOUT
 
+    def test_failed_closed_index_state_is_not_counted_as_control(self) -> None:
+        entry = record("r", cohort="without")
+        entry["context_manifests"] = manifests("without", index_state="missing")
+
+        assert classify_cohort(entry) == COHORT_UNCLASSIFIED
+
+    def test_legacy_empty_manifest_without_index_state_stays_control(self) -> None:
+        entry = record("r", cohort="without")
+        entry["context_manifests"] = manifests("without", include_index_state=False)
+
+        assert classify_cohort(entry) == COHORT_WITHOUT
+
     def test_disabled_manifest_is_unclassified(self) -> None:
         assert classify_cohort(record("r", cohort="unclassified")) == COHORT_UNCLASSIFIED
 

@@ -463,6 +463,13 @@ class TestPerRunFileWrite:
         finally:
             conn.close()
 
+        initial_index = rebuild_knowledge_index(clone)
+        assert initial_index.payload["source_count"] == 1
+        assert initial_index.payload["indexed_count"] == 1
+        assert initial_index.payload["entries"][0]["summary_path"] == (
+            f".forge/knowledge/summaries/{run_id}.yaml"
+        )
+
         preserved_root = _move_dirty_story_run_artifacts_off_tree(
             clone,
             [run_file, summary_file],
@@ -500,9 +507,11 @@ class TestPerRunFileWrite:
         assert row is not None
         assert row["source_path"] == preserved_run_rel
 
-        result = rebuild_knowledge_index(clone)
-        assert result.payload["source_count"] == 1
-        assert result.payload["indexed_count"] == 1
-        entry = result.payload["entries"][0]
+        index_payload = yaml.safe_load(
+            (clone / ".forge" / "knowledge" / "index.yaml").read_text(encoding="utf-8")
+        )
+        assert index_payload["source_count"] == 1
+        assert index_payload["indexed_count"] == 1
+        entry = index_payload["entries"][0]
         assert entry["run_id"] == run_id
         assert entry["summary_path"] == preserved_summary_rel

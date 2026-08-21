@@ -120,7 +120,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 33
+CURRENT_RECORD_SCHEMA_VERSION = 34
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1874,6 +1874,51 @@ def _migrate_v32_to_v33(record: dict) -> dict:
     return {**record, "preflight": migrated}
 
 
+def _migrate_v33_to_v34(record: dict) -> dict:
+    """Backfill structured prior-run index state and summary index maintenance (#2654).
+
+    v34 persists two new facts that older records never wrote:
+
+    - ``context_manifests[*].prior_run_context.index_state`` carries the
+      selector's structured read state so analytics can distinguish
+      readable-empty from failed-closed maintenance.
+    - ``knowledge_summary.index_rebuild`` carries the post-write knowledge-index
+      maintenance result.
+
+    A v33 record predates both. For legacy prior-run manifests, absence means
+    "preserve the old classifier semantics": enabled manifests read as
+    ``ready``-equivalent controls rather than being retroactively reclassified
+    from their prose note, and disabled manifests record ``None`` because the
+    selector never ran. Summary maintenance is ``None`` because the run never
+    recorded it. The stored record is never rewritten (ADR-0002
+    refusal-to-forget).
+    """
+    migrated = dict(record)
+
+    manifests = record.get("context_manifests")
+    if isinstance(manifests, list):
+        new_manifests: list[object] = []
+        for entry in manifests:
+            if not isinstance(entry, dict):
+                new_manifests.append(entry)
+                continue
+            prior = entry.get("prior_run_context")
+            if not isinstance(prior, dict) or "index_state" in prior:
+                new_manifests.append(entry)
+                continue
+            updated_prior = dict(prior)
+            enabled = updated_prior.get("enabled")
+            updated_prior["index_state"] = "ready" if enabled is True else None
+            new_manifests.append({**entry, "prior_run_context": updated_prior})
+        migrated["context_manifests"] = new_manifests
+
+    knowledge_summary = record.get("knowledge_summary")
+    if isinstance(knowledge_summary, dict) and "index_rebuild" not in knowledge_summary:
+        migrated["knowledge_summary"] = {**knowledge_summary, "index_rebuild": None}
+
+    return migrated
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1915,6 +1960,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     30: _migrate_v30_to_v31,
     31: _migrate_v31_to_v32,
     32: _migrate_v32_to_v33,
+    33: _migrate_v33_to_v34,
 }
 
 

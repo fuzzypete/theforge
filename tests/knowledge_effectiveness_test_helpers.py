@@ -8,32 +8,46 @@ builder, not three copies of it.
 from __future__ import annotations
 
 
-def manifests(cohort: str, *, phase: str = "dev") -> list[dict]:
+def manifests(
+    cohort: str,
+    *,
+    phase: str = "dev",
+    index_state: str | None = "ready",
+    include_index_state: bool = True,
+) -> list[dict]:
     """Context manifests that put a run in the requested cohort."""
     if cohort == "unclassified":
+        prior_run_context = {
+            "enabled": False,
+            "included": [],
+            "dropped": [],
+            "index_state": None,
+            "note": "prior-run context disabled (knowledge.prior_run_context)",
+        }
+        if not include_index_state:
+            prior_run_context.pop("index_state")
         return [
             {
                 "phase": phase,
-                "prior_run_context": {
-                    "enabled": False,
-                    "included": [],
-                    "dropped": [],
-                    "note": "prior-run context disabled (knowledge.prior_run_context)",
-                },
+                "prior_run_context": prior_run_context,
             }
         ]
     included = (
         [{"run_id": "prior-1", "reason": "file_overlap", "score": 14}] if cohort == "with" else []
     )
+    prior_run_context = {
+        "enabled": True,
+        "included": included,
+        "dropped": [],
+        "index_state": index_state,
+        "note": "note",
+    }
+    if not include_index_state:
+        prior_run_context.pop("index_state")
     return [
         {
             "phase": phase,
-            "prior_run_context": {
-                "enabled": True,
-                "included": included,
-                "dropped": [],
-                "note": "note",
-            },
+            "prior_run_context": prior_run_context,
         }
     ]
 
