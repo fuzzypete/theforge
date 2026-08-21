@@ -1,0 +1,170 @@
+schema_version: 2
+run_id: 19fa9fca7498
+authoritative_run_record: .forge/audits/runs/19fa9fca7498.json
+generated_at: '2026-08-21T18:43:10.985222+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01450125
+story:
+  slug: issue-2509
+  name: A body whose sections contradict its declared type passes the shape gate,
+    so a bug re-typed as a feature spec enters a sprint unchallenged
+  github_issue: 2509
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/adr/0001-intake-readiness-workflow.md
+- src/theforge/admissibility.py
+- src/theforge/intake/groom_flow.py
+- src/theforge/intake/shape_render.py
+- src/theforge/shape_check/check.py
+- src/theforge/shape_check/heuristics.py
+- src/theforge/shape_check/parsing.py
+- src/theforge/shape_check/types.py
+- src/theforge/shape_check/verdict.py
+- src/theforge/sprint/shape_gate.py
+- tests/test_admissibility.py
+- tests/test_ready_queue.py
+- tests/test_shape_check.py
+- tests/test_shape_skip_report.py
+- tests/test_shape_verdict_diagnosis_split.py
+- tests/test_sprint_shape_gate.py
+what_changed:
+  description: The run split shape-gate outcomes into blocking type-shape contradictions
+    and non-blocking phrase-level advisories, and threaded that distinction through
+    intake, admissibility, sprint gating, rendering, and verdict output. It also added
+    refusal messaging that names the contradicting section and preserves machine-readable
+    differentiation between refusal and advice.
+  approach: The change derived contradiction checks from type/section shape rules,
+    then propagated separate refusal and advisory channels through the verdict and
+    sprint-intake pipeline rather than treating all heuristics as one severity.
+  files_modified: *id002
+what_was_learned:
+- claim: When introducing advisory and refusal tiers into an existing gate, future
+    runs should verify at every publication boundary that blocking reasons and advisory
+    notices remain disjoint; otherwise the same condition can be emitted simultaneously
+    as 'not blocking' advice and as a refusal.
+  evidence:
+  - type: review_finding
+    finding_id: 31d4b774ab5eeab4
+    description: This finding shows the sprint shape gate published an investigation-ready
+      bug both in skipped and advisories, proving that adding a second severity is
+      not enough unless each output path enforces exclusivity.
+  - type: review_finding
+    finding_id: 1f514504f47a57c0
+    description: This finding demonstrates the same reason code was surfaced as both
+      a refusal and a non-blocking advisory, showing the failure mode occurs at reason-code
+      publication, not just at prose rendering.
+  - type: review_finding
+    finding_id: fe5cd65c797adb16
+    description: This later finding shows that even after the first duplicate-publication
+      fix, phrase-level advice could still leak into blocking skipped reason codes,
+      demonstrating that the split must be checked end-to-end across downstream consumers.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 repeatedly requested changes because the new advisory plumbing
+      mislabeled refused issues as non-blocking, showing this was the central integration
+      risk introduced by the design.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 found a second variant of the same leakage after the initial
+      fix, showing future runs should expect multiple publication paths to need explicit
+      separation checks.
+- claim: When a gate selects one machine-readable verdict from several blocking conditions,
+    future runs should verify that precedence is applied consistently in both operator-facing
+    messages and persisted audit fields; otherwise routing and remediation records
+    can disagree about why an issue was refused.
+  evidence:
+  - type: review_finding
+    finding_id: ce06b1eb675aa3c6
+    description: This finding shows operator-visible output could select a diagnosis-oriented
+      typed verdict for a type-shape contradiction case, demonstrating that verdict
+      precedence can drift away from the actual dominant refusal reason.
+  - type: review_finding
+    finding_id: ba752c4dec11bac2
+    description: This finding shows the remediation outcome event stored the first
+      blocking reason code even when a later code supplied the selected verdict, proving
+      that persisted audit data must be checked separately from UI behavior.
+  - type: review_cycle
+    cycle: '4'
+    description: Cycle 4 notes that type_shape_contradiction was made to outrank needs_diagnosis,
+      showing that explicit precedence ordering was required to align machine-readable
+      verdict selection with the intended refusal semantics.
+- claim: When new typed verdict identifiers are introduced on a documented interface,
+    future runs should check the contract documentation and bounded verdict lists
+    in the same change; otherwise the code can expand the public surface without the
+    ADR or audit contract reflecting it.
+  evidence:
+  - type: review_finding
+    finding_id: 5ad3e5720dbf090b
+    description: This finding explicitly states that a new typed verdict was emitted
+      and written to the audit substrate while the ADR's bounded verdict list omitted
+      it, demonstrating a contract-drift risk whenever verdict vocabularies change.
+  - type: file
+    path: docs/adr/0001-intake-readiness-workflow.md
+    description: The ADR was touched in this run, and the review still reported an
+      omitted verdict identifier there, showing that interface-doc updates need explicit
+      verification rather than assuming nearby edits keep the contract complete.
+learned_patterns:
+- tiered-verdict-boundaries
+- verdict-precedence-sync
+- interface-contract-drift
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 31d4b774ab5eeab4
+    severity: P1
+    file: src/theforge/sprint/shape_gate.py
+    description: When an investigation-ready bug has an unknown confirmed cause, the
+      sprint shape gate records the issue in both skipped and advisories, so the advisory
+      warning says the issue is not blocking while the same issue is refused from
+      the sprint.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 1f514504f47a57c0
+    severity: P1
+    file: src/theforge/sprint/shape_gate.py
+    description: An issue that the gate refuses is also published as a non-blocking
+      advisory carrying the same reason code, so a bug whose Diagnosis asserts no
+      confirmed cause is reported both as blocked with verdict diagnosis_cause_unknown
+      and in the advisory banner as carrying diagnosis_cause_unknown "not blocking",
+      and two skip events are written for the same issue and code, one blocking and
+      one advisory.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: fe5cd65c797adb16
+    severity: P1
+    file: src/theforge/admissibility.py
+    description: When an investigation-ready bug also contains fix-location phrasing,
+      sprint intake refuses it for diagnosis_cause_unknown but puts bug_fix_location_prescription
+      in the skipped reason codes, so the phrase-level advisory is emitted downstream
+      as a blocking skip reason.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced boundary bugs where newly separated advisories
+    and refusals were recombined by downstream reporting and audit paths.
+  - Typed verdict selection needed explicit precedence and contract checks across
+    rendering, routing, and persisted events.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 19.76713905
+  dominant_difficulty: Propagating a new two-tier verdict model consistently across
+    multiple downstream consumers without letting refusal and advisory semantics drift
+    apart.
