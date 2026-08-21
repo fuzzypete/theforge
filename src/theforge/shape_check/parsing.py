@@ -10,6 +10,7 @@ _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
 # a bullet are indented to the item's content column, and the bullet-block
 # helpers below have always treated those as fences.
 _FENCE_RE = re.compile(r"^\s*(?P<marker>`{3,}|~{3,})(?P<info>.*?)\s*$")
+_BLOCKQUOTE_LINE_RE = re.compile(r"^\s{0,3}(?:>\s?)+(.*)$")
 _BULLET_RE = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+(?:\[[ xX]\]\s+)?(.+?)\s*$")
 _EXAMPLE_HEADING_RE = re.compile(
     r"^(?:"
@@ -108,6 +109,28 @@ def fenced_spans(body: str) -> list[tuple[int, int]]:
     if tracker.in_fence:
         spans.append((open_start, len(body)))
     return spans
+
+
+def blockquote_blocks(body: str) -> list[str]:
+    """Return contiguous blockquoted regions with quote markers stripped.
+
+    The returned blocks preserve the quoted Markdown content but remove the
+    leading ``>`` scaffolding so downstream readers can inspect whether a
+    structurally meaningful section exists only inside a quoted region.
+    """
+    blocks: list[str] = []
+    current: list[str] = []
+    for line in body.splitlines():
+        m = _BLOCKQUOTE_LINE_RE.match(line)
+        if m is None:
+            if current:
+                blocks.append("\n".join(current))
+                current = []
+            continue
+        current.append(m.group(1))
+    if current:
+        blocks.append("\n".join(current))
+    return blocks
 
 
 def iter_headings(body: str) -> list[re.Match[str]]:

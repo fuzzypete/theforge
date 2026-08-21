@@ -809,6 +809,7 @@ class TestFencedHeadingsAreNotStructure:
         reason = check_bug_missing_diagnosis("it exits 1", body, ["bug"])
         assert reason is not None
         assert reason.code == "needs_diagnosis"
+        assert "inside a fenced code block" in reason.detail
 
     def test_classifier_reads_the_real_diagnosis_not_the_quoted_one(self):
         body = textwrap.dedent(

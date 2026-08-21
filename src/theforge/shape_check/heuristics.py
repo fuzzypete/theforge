@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from theforge.shape_check.diagnosis_spec import (
     BUG_SHAPE_REFERENCE_PATH,
+    component_for_token,
     describe_missing,
     required_diagnosis_tokens,
 )
@@ -21,6 +22,7 @@ from theforge.shape_check.parsing import (
     BUG_REPRODUCTION_HEADING,
     BUG_SYMPTOM_HEADING,
     FenceTracker,
+    blockquote_blocks,
     extract_ac_section,
     extract_bullets,
     extract_section,
@@ -470,6 +472,68 @@ def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
     return True, []
 
 
+def _format_diagnosis_labels(tokens: Iterable[str]) -> str:
+    labels: list[str] = []
+    for token in tokens:
+        component = component_for_token(token)
+        if component is None:
+            labels.append(f'"{token}"')
+            continue
+        labels.append(f'"**{component.label}:**"')
+    return ", ".join(labels)
+
+
+def _diagnosis_unreadable_region_hint(body: str, missing: list[str]) -> str:
+    """Explain when a missing diagnosis section/component exists only unreadably."""
+    region_matches: list[tuple[str, tuple[str, ...]]] = []
+
+    for region_name, region_bodies in (
+        ("blockquoted region", blockquote_blocks(body)),
+        ("fenced code block", fenced_code_blocks(body)),
+    ):
+        matched_tokens: set[str] = set()
+        for region_body in region_bodies:
+            if missing == ["missing Diagnosis section"]:
+                if has_heading(region_body, DIAGNOSIS_HEADING_PATTERN):
+                    region_matches.append((region_name, ()))
+                    break
+                continue
+            section = extract_section(region_body, DIAGNOSIS_HEADING_PATTERN)
+            if section is None:
+                continue
+            section_lower = section.lower()
+            for token in missing:
+                if token != "missing Diagnosis section" and token in section_lower:
+                    matched_tokens.add(token)
+        if matched_tokens:
+            region_matches.append((region_name, tuple(sorted(matched_tokens))))
+
+    if not region_matches:
+        return ""
+
+    if missing == ["missing Diagnosis section"]:
+        regions = ", ".join(f"a {name}" for name, _tokens in region_matches)
+        return (
+            f" A `## Diagnosis` section already appears inside {regions}, which the gate "
+            "does not scan; restate it as ordinary top-level Markdown outside quoted "
+            "or fenced regions."
+        )
+
+    parts: list[str] = []
+    for region_name, tokens in region_matches:
+        if not tokens:
+            continue
+        parts.append(f"{_format_diagnosis_labels(tokens)} in a {region_name}")
+    if not parts:
+        return ""
+    joined = "; ".join(parts)
+    return (
+        " The gate also found "
+        f"{joined}, but only inside a region it does not scan; move those "
+        "bullets into the top-level `## Diagnosis` section."
+    )
+
+
 def derive_fix_ready(
     story_type: str | None, body: str, labels: Iterable[str] | None = None
 ) -> tuple[bool | None, bool, list[str]]:
@@ -644,6 +708,7 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
             )
         return None
     if missing == ["missing Diagnosis section"]:
+        unreadable_hint = _diagnosis_unreadable_region_hint(body, missing)
         return Reason(
             code="needs_diagnosis",
             severity=Severity.BLOCKING,
@@ -658,7 +723,7 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
                 "confirmed-cause value may be a specific claim or a non-assertion "
                 "phrase such as 'unknown', 'not yet identified', 'pending "
                 "investigation', or 'TBD' — investigation-ready bugs are admissible; "
-                "only symptom-only bodies are refused. "
+                f"only symptom-only bodies are refused.{unreadable_hint} "
                 f"Full shape reference: {BUG_SHAPE_REFERENCE_PATH}"
             ),
         )
@@ -676,7 +741,7 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
         severity=Severity.BLOCKING,
         detail=(
             "Bug Diagnosis section is incomplete — missing "
-            f"{describe_missing(missing)}. "
+            f"{describe_missing(missing)}.{_diagnosis_unreadable_region_hint(body, missing)} "
             f"Full shape reference: {BUG_SHAPE_REFERENCE_PATH}"
         ),
     )
