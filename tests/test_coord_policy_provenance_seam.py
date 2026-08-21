@@ -400,6 +400,43 @@ class TestRecordMigration:
 
         assert audit_storage._migrate_v32_to_v33(record) == record
 
+    def test_v33_record_reads_with_legacy_prior_run_defaults(self) -> None:
+        record = {
+            "context_manifests": [
+                {
+                    "phase": "dev",
+                    "prior_run_context": {
+                        "enabled": True,
+                        "included": [],
+                        "dropped": [],
+                        "note": "legacy",
+                    },
+                },
+                {
+                    "phase": "review",
+                    "prior_run_context": {
+                        "enabled": False,
+                        "included": [],
+                        "dropped": [],
+                        "note": "disabled",
+                    },
+                },
+            ],
+            "knowledge_summary": {
+                "status": "written",
+                "attempted": True,
+                "written": True,
+            },
+        }
+
+        migrated = audit_storage._migrate_v33_to_v34(record)
+
+        prior_dev = migrated["context_manifests"][0]["prior_run_context"]
+        prior_review = migrated["context_manifests"][1]["prior_run_context"]
+        assert prior_dev["index_state"] == "ready"
+        assert prior_review["index_state"] is None
+        assert migrated["knowledge_summary"]["index_rebuild"] is None
+
     def test_migration_is_registered_for_the_current_version(self) -> None:
-        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 33
-        assert audit_storage.MIGRATION_HELPERS[32] is audit_storage._migrate_v32_to_v33
+        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 34
+        assert audit_storage.MIGRATION_HELPERS[33] is audit_storage._migrate_v33_to_v34

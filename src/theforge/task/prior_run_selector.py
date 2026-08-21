@@ -39,7 +39,11 @@ from theforge.knowledge_admissibility import (
     KnowledgeSummaryVerdict,
     interpret_persisted_verdict,
 )
-from theforge.knowledge_index import KNOWLEDGE_INDEX_PATH, KNOWLEDGE_INDEX_SCHEMA_VERSION
+from theforge.knowledge_index import (
+    KNOWLEDGE_INDEX_PATH,
+    KNOWLEDGE_INDEX_SCHEMA_VERSION,
+    rebuild_knowledge_index,
+)
 
 #: ``ContextItem.kind`` for an injected prior-run summary. Budget accounting and
 #: the audit manifest both branch on this value.
@@ -307,6 +311,23 @@ def select_prior_runs(
 
 def _load_index_entries(project_root: Path) -> tuple[list[Mapping[str, Any]], str]:
     """Read the deterministic index, failing closed while reporting index health."""
+    entries, index_state = _read_index_entries(project_root)
+    if index_state == INDEX_STATE_READY:
+        return entries, index_state
+
+    try:
+        rebuild_knowledge_index(project_root)
+    except Exception:  # noqa: BLE001 - selector repair must degrade to the prior failure state
+        return [], index_state
+
+    repaired_entries, repaired_state = _read_index_entries(project_root)
+    if repaired_state == INDEX_STATE_READY:
+        return repaired_entries, repaired_state
+    return [], index_state
+
+
+def _read_index_entries(project_root: Path) -> tuple[list[Mapping[str, Any]], str]:
+    """Read the deterministic index once, without attempting repair."""
     path = project_root / KNOWLEDGE_INDEX_PATH
     try:
         raw = yaml.safe_load(path.read_text(encoding="utf-8"))

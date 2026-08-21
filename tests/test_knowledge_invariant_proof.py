@@ -39,7 +39,12 @@ def _manifest(
 ) -> dict:
     return {
         "phase": phase,
-        "prior_run_context": {"enabled": False, "included": [], "dropped": []},
+        "prior_run_context": {
+            "enabled": False,
+            "included": [],
+            "dropped": [],
+            "index_state": None,
+        },
         "invariant_context": {
             "enabled": enabled,
             "phase": phase,
