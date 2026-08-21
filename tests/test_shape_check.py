@@ -137,6 +137,25 @@ DIAGNOSED_BUG_WITH_TEST_REQUIREMENT = textwrap.dedent(
     """
 )
 
+DIAGNOSED_BUG_WITH_DESCRIPTIVE_TEST_NOTE = textwrap.dedent(
+    """\
+    ## What happened
+    Contract tests never run in CI.
+
+    ## What was expected
+    Provider argv drift is caught before release.
+
+    ## Diagnosis
+
+    - **Observed symptom.** Contract tests never run in CI.
+    - **Evidence.** The failing run needs the contract tests enabled before release.
+    - **Ruled out.** Missing test files; the suite is present locally.
+    - **Confirmed cause.** The sprint runner never invokes the contract target.
+    - **Affected code path.** sprint.runner dispatch setup.
+    - **Fix-success criterion.** CI runs the contract target before release.
+    """
+)
+
 
 # ----- per-reason unit tests -----------------------------------------------
 
@@ -336,6 +355,15 @@ class TestTypeShapeContradictions:
         reason = next(r for r in result.reasons if r.code == "bug_test_requirement")
         assert reason.severity is Severity.ADVISORY
         assert "test-requirement phrasing" in reason.detail
+
+    def test_bug_descriptive_test_prose_does_not_trigger_requirement_advisory(self):
+        result = check(
+            "Contract target missing",
+            DIAGNOSED_BUG_WITH_DESCRIPTIVE_TEST_NOTE,
+            ["bug"],
+        )
+        assert result.shape is Shape.RUNNABLE
+        assert all(r.code != "bug_test_requirement" for r in result.reasons)
 
     def test_custom_heading_alone_is_not_a_contradiction(self):
         body = DIAGNOSED_BUG_BODY + "\n## Context\n\nBackground only.\n"

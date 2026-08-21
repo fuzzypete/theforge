@@ -26,7 +26,11 @@ from theforge.shape_check.heuristics import (
     DIAGNOSIS_HEADING_PATTERN,
     diagnosis_completeness,
 )
-from theforge.shape_check.parsing import has_heading, section_span
+from theforge.shape_check.parsing import (
+    ACCEPTANCE_CRITERIA_HEADING_PATTERN,
+    has_heading,
+    section_span,
+)
 from theforge.shape_check.types import ShapeVerdict
 
 # Heading patterns for the two narrative sections a bug body carries alongside
@@ -36,9 +40,6 @@ from theforge.shape_check.types import ShapeVerdict
 # the producer/validator drift ``diagnosis_spec`` exists to eliminate).
 _OBSERVED_HEADING_PATTERN = r"\bobserved\b|what happened"
 _EXPECTED_HEADING_PATTERN = r"\bexpected\b"
-
-# The gate's own acceptance-criteria heading vocabulary (parsing.extract_ac_section).
-_AC_HEADING_PATTERN = r"acceptance criteria|done criteria|checklist"
 
 
 def restructure_body(proposal: ShapeProposal, current_body: str) -> str:
@@ -138,7 +139,7 @@ def _append_sections(body: str, parts: list[str]) -> str:
 
 
 def _restructure_enhancement(current_body: str) -> str:
-    if has_heading(current_body, _AC_HEADING_PATTERN):
+    if has_heading(current_body, ACCEPTANCE_CRITERIA_HEADING_PATTERN):
         return current_body
     suffix = "\n\n## Acceptance criteria\n\n- <state an observable, testable outcome>\n"
     return (current_body.rstrip() + suffix) if current_body.strip() else suffix.lstrip("\n")

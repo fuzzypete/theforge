@@ -29,7 +29,7 @@ from ..shape_check.heuristics import (
     diagnosis_completeness,
     is_bug_format_issue,
 )
-from ..shape_check.parsing import find_heading
+from ..shape_check.parsing import ACCEPTANCE_CRITERIA_HEADING_PATTERN, find_heading
 from ..shape_check.placeholders import PLACEHOLDER_MARKER
 from .diagnosis_staleness import StalenessReport, evaluate_staleness
 
@@ -282,7 +282,7 @@ def _restructure_feature_body(body: str) -> str:
     the gap into the issue; it does not erase it.
     """
     out = body or ""
-    if not find_heading(out, r"acceptance criteria|done criteria|checklist"):
+    if not find_heading(out, ACCEPTANCE_CRITERIA_HEADING_PATTERN):
         out = out.rstrip() + "\n" + _AC_STUB
     if not find_heading(
         out, r"examples?|target(?:\s+sketch|\s+output|\s+state)?|what it should look like"

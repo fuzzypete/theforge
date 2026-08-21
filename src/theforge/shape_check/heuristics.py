@@ -16,6 +16,7 @@ from theforge.shape_check.diagnosis_spec import (
     required_diagnosis_tokens,
 )
 from theforge.shape_check.parsing import (
+    ACCEPTANCE_CRITERIA_HEADING_PATTERN,
     BUG_EXPECTATION_HEADING,
     BUG_REPRODUCTION_HEADING,
     BUG_SYMPTOM_HEADING,
@@ -171,7 +172,6 @@ _OBSERVABLE_VERBS = (
     "reject",
 )
 
-_AC_HEADING_PATTERN = r"acceptance criteria|done criteria|checklist"
 _BUG_DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
 
 
@@ -701,7 +701,7 @@ def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str])
         return None
 
     if declared_type == "bug":
-        offending_heading = _heading_text_for_pattern(body, _AC_HEADING_PATTERN)
+        offending_heading = _heading_text_for_pattern(body, ACCEPTANCE_CRITERIA_HEADING_PATTERN)
         if offending_heading is None:
             return None
         return Reason(
@@ -766,7 +766,7 @@ def check_missing_acceptance_criteria(
     if is_bug_format_issue(body, labels):
         return None
     placeholder_only = False
-    if has_heading(body, r"acceptance criteria|done criteria|checklist"):
+    if has_heading(body, ACCEPTANCE_CRITERIA_HEADING_PATTERN):
         section = extract_ac_section(body) or ""
         # Placeholder bullets are shaped like criteria but assert nothing;
         # measure substance on what remains once they are stripped.
@@ -963,11 +963,14 @@ _BUG_FIX_LOCATION_PATTERNS: tuple[re.Pattern[str], ...] = (
 
 _BUG_TEST_REQUIREMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(
-        r"\b(?:add|write|include|require|needs?)\b[^\n.]{0,80}\b"
+        r"\b(?:add|write|include|require)\b[^\n.]{0,80}\b"
         r"(?:(?:regression|unit|integration|contract|end-to-end|e2e)\s+)?tests?\b",
         re.IGNORECASE,
     ),
-    re.compile(r"\bregression\s+tests?\b", re.IGNORECASE),
+    re.compile(
+        r"\btests?\s+(?:should|must|need(?:s)?\s+to|are\s+required\s+to)\b",
+        re.IGNORECASE,
+    ),
 )
 
 

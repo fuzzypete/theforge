@@ -22,6 +22,28 @@ from theforge.sprint.skip_report import (
 )
 
 
+def test_refused_issue_emits_only_blocking_skip_event(tmp_path: Path) -> None:
+    skipped = [
+        SkippedIssue(
+            issue_number=99,
+            reason_codes=("diagnosis_cause_unknown",),
+            source="local_check",
+        )
+    ]
+    emit_shape_skip_events(tmp_path, run_id="run-1", skipped=skipped, advisories=[])
+
+    conn = create_or_open(tmp_path)
+    try:
+        events = list(iter_shape_skip_events(conn, run_id="run-1"))
+    finally:
+        conn.close()
+
+    assert len(events) == 1
+    assert events[0]["issue_id"] == "99"
+    assert events[0]["reason_code"] == "diagnosis_cause_unknown"
+    assert events[0]["severity"] == "blocking"
+
+
 def test_emission_records_category_and_axis(tmp_path: Path) -> None:
     skipped = [
         SkippedIssue(

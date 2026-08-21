@@ -436,8 +436,6 @@ def apply_shape_gate(
             if adm.result is not None
             else None
         )
-        if local_advisory is not None:
-            advisories.append(local_advisory)
 
         if not adm.admissible and adm.source == "label":
             skipped.append(
@@ -514,6 +512,7 @@ def apply_shape_gate(
         issue_with_verdict = dict(issue)
         issue_with_verdict["shape_verdict"] = ShapeVerdict.RUNNABLE.value
         if local_advisory is not None:
+            advisories.append(local_advisory)
             issue_with_verdict["shape_advisories"] = list(local_advisory.reason_codes)
         runnable.append(issue_with_verdict)
         _safe_emit(

@@ -118,6 +118,7 @@ needs_diagnosis
 diagnosis_cause_unknown
 needs_grooming_missing_ac
 needs_grooming_missing_example
+needs_grooming_type_shape
 needs_grooming_scope_split
 needs_operator_action
 adr_candidate

@@ -100,6 +100,7 @@ def test_cause_unknown_lands_on_diagnosis_cause_unknown(tmp_path: Path) -> None:
     assert entry.verdict_description == VERDICT_DESCRIPTIONS[ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN]
     assert entry.verdict_description.strip() != ""
     assert "diagnosis_cause_unknown" in entry.reason_codes
+    assert result.advisories == []
 
 
 def test_complete_diagnosis_lands_on_runnable(tmp_path: Path) -> None:
