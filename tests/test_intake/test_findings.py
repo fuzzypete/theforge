@@ -6,6 +6,7 @@ from theforge.intake.findings import (
     FixType,
     IntakeFinding,
     IntakeSeverity,
+    RerunHint,
     findings_from_shape_result,
 )
 from theforge.shape_check.types import Reason, Severity, Shape, ShapeResult, SuggestedAction
@@ -31,6 +32,7 @@ def test_intake_finding_dataclass_fields():
     assert d["severity"] == "block"
     assert d["fix_type"] == "semantic"
     assert d["suggested_replacement"] is None
+    assert d["rerun_hint"] is None
 
 
 def test_findings_from_shape_result_lossless_mapping():
@@ -58,3 +60,22 @@ def test_findings_from_shape_result_lossless_mapping():
 
 def test_findings_from_empty_shape_result_yields_empty_list():
     assert findings_from_shape_result(_shape_result([])) == []
+
+
+def test_unreadable_region_diagnosis_maps_retry_hint():
+    result = _shape_result(
+        [
+            Reason(
+                code="needs_diagnosis",
+                severity=Severity.BLOCKING,
+                detail=(
+                    "Diagnosis covers Observed symptom, Evidence, Confirmed cause, "
+                    "Affected code path, but only inside a blockquoted region; "
+                    "move those bullets into top-level readable Markdown."
+                ),
+            )
+        ]
+    )
+    findings = findings_from_shape_result(result)
+    assert len(findings) == 1
+    assert findings[0].rerun_hint is RerunHint.UNREADABLE_REQUIRED_REGION

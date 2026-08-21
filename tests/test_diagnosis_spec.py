@@ -59,6 +59,26 @@ _LABEL_MISMATCH_BODY = textwrap.dedent(
     """
 )
 
+_BLOCKQUOTED_DIAGNOSIS_BODY = textwrap.dedent(
+    """\
+    ## What happened
+    Sprint entry dropped the story after remediation.
+
+    ## What was expected
+    The remediated story should pass the rerun gate.
+
+    ## Original
+
+    > ## Diagnosis
+    >
+    > - **Observed symptom.** Sprint entry dropped the story after remediation.
+    > - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+    > - **Confirmed cause.** The remediator wrote required bullets inside the quoted copy.
+    > - **Affected code path.** intake.agent_rewrite prompt guidance.
+    > - **Fix-success criterion.** The rerun gate reads the promoted top-level Diagnosis.
+    """
+)
+
 
 class TestSpecIsSingleSource:
     def test_validator_tokens_derive_from_spec(self) -> None:
@@ -112,6 +132,8 @@ class TestRemediationPromptEmbedsSpec:
             assert f"**{component.label}:**" in prompt
             assert component.example in prompt
         assert BUG_SHAPE_REFERENCE_PATH in prompt
+        assert "do not put required headings or bullets inside blockquotes" in prompt
+        assert "outside the quote as ordinary top-level Markdown" in prompt
 
     def test_prompt_omits_spec_when_no_diagnosis_finding(self) -> None:
         finding = IntakeFinding(
@@ -160,3 +182,10 @@ class TestFindingMessageQuotesLiteralLabel:
             assert f'"**{component.label}:**"' in reason.detail
             assert component.example in reason.detail
         assert BUG_SHAPE_REFERENCE_PATH in reason.detail
+
+    def test_no_section_message_distinguishes_blockquoted_diagnosis(self) -> None:
+        reason = check_bug_missing_diagnosis("T", _BLOCKQUOTED_DIAGNOSIS_BODY, ["bug"])
+        assert reason is not None
+        assert reason.code == "needs_diagnosis"
+        assert "already appears inside a blockquoted region" in reason.detail
+        assert "restate it as ordinary top-level Markdown" in reason.detail

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import textwrap
+
 from theforge.intake import (
     AgentRewriteResult,
     IntakeOutcomeKind,
@@ -33,6 +35,53 @@ _PASSING_BODY = (
     "- The download is available within 60 seconds for accounts with <1k users\n\n"
     "## Example\n\n"
     "```csv\nuser_id,email\n1,a@example.com\n```\n"
+)
+
+_QUOTED_DIAGNOSIS_FAILING_BODY = textwrap.dedent(
+    """\
+    ## Observed behavior
+    Sprint entry dropped the issue after remediation.
+
+    ## Expected behavior
+    The remediation rerun should pass once the missing Diagnosis bullets are top-level.
+
+    ## Diagnosis
+    - **Observed symptom.** Sprint entry dropped the issue after remediation.
+    - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+
+    ## Notes
+    > ## Diagnosis
+    >
+    > - **Observed symptom.** Sprint entry dropped the issue after remediation.
+    >
+    > - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+    >
+    > - **Ruled out.** Shape rerun itself is healthy; only quoted content is stripped.
+    >
+    > - **Confirmed cause.** The remediator wrote required bullets inside the quoted copy.
+    >
+    > - **Affected code path.** `theforge.intake.remediation._remediate_one`.
+    >
+    > - **Fix-success criterion.** Required Diagnosis bullets land as top-level Markdown.
+    """
+)
+
+_QUOTED_DIAGNOSIS_PASSING_BODY = textwrap.dedent(
+    """\
+    ## Observed behavior
+    Sprint entry dropped the issue after remediation.
+
+    ## Expected behavior
+    The remediation rerun should pass once the missing Diagnosis bullets are top-level.
+
+    ## Diagnosis
+    - **Observed symptom.** Sprint entry dropped the issue after remediation.
+    - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+    - **Ruled out.** Shape rerun itself is healthy; only quoted content is stripped.
+    - **Confirmed cause.** The remediator wrote required bullets inside the quoted copy.
+    - **Affected code path.** `theforge.intake.remediation._remediate_one`.
+    - **Fix-success criterion.** Required Diagnosis bullets land as top-level Markdown.
+    """
 )
 
 
@@ -304,6 +353,187 @@ def test_agent_called_at_most_once_per_story():
         edit_body=lambda *_: True,
     )
     assert sum(calls) == 1
+
+
+def test_unreadable_diagnosis_rerun_gets_one_bounded_retry():
+    task = _make_task()
+    post_comment, _ = _record_calls()
+    edit_body, edit_calls = _record_calls()
+    calls: list[tuple[str, list[str]]] = []
+
+    def agent(body, findings, comments=()):
+        calls.append((body, [finding.problem for finding in findings]))
+        if len(calls) == 1:
+            return AgentRewriteResult(
+                replacement=_QUOTED_DIAGNOSIS_FAILING_BODY,
+                detail="first rewrite stayed quoted",
+            )
+        return AgentRewriteResult(
+            replacement=_QUOTED_DIAGNOSIS_PASSING_BODY,
+            detail="second rewrite moved diagnosis top-level",
+        )
+
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch(
+            {
+                "title": "Bug: quoted diagnosis",
+                "body": _QUOTED_DIAGNOSIS_FAILING_BODY,
+                "labels": ["bug"],
+            }
+        ),
+        post_comment=post_comment,
+        edit_body=edit_body,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.REMEDIATED
+    assert out.proposed_replacement == _QUOTED_DIAGNOSIS_PASSING_BODY
+    assert len(calls) == 2
+    assert "in a blockquoted region" in calls[1][1][0]
+    assert len(edit_calls) == 1
+    assert out.audit["agent"]["cost_usd"] is None
+    assert len(out.audit["agent"]["attempts"]) == 2
+
+
+def test_unreadable_diagnosis_retry_aggregates_attempt_cost_in_audit():
+    task = _make_task()
+    call_count = 0
+
+    def agent(body, findings, comments=()):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AgentRewriteResult(
+                replacement=_QUOTED_DIAGNOSIS_FAILING_BODY,
+                detail="first rewrite stayed quoted",
+                attempted=True,
+                cost_usd=0.40,
+                profile_name="intake-fix",
+                model_used="claude-a",
+                transport_used="cli",
+            )
+        return AgentRewriteResult(
+            replacement=_QUOTED_DIAGNOSIS_PASSING_BODY,
+            detail="second rewrite moved diagnosis top-level",
+            attempted=True,
+            cost_usd=0.35,
+            profile_name="intake-fix",
+            model_used="claude-a",
+            transport_used="cli",
+        )
+
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch(
+            {
+                "title": "Bug: quoted diagnosis",
+                "body": _QUOTED_DIAGNOSIS_FAILING_BODY,
+                "labels": ["bug"],
+            }
+        ),
+        post_comment=lambda *_: True,
+        edit_body=lambda *_: True,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.REMEDIATED
+    assert out.audit["agent"]["cost_usd"] == 0.75
+    assert [attempt["cost_usd"] for attempt in out.audit["agent"]["attempts"]] == [0.40, 0.35]
+    assert out.audit["agent"]["detail"] == "second rewrite moved diagnosis top-level"
+
+
+def test_unreadable_diagnosis_retry_with_unknown_second_cost_keeps_story_cost_unknown():
+    task = _make_task()
+    call_count = 0
+
+    def agent(body, findings, comments=()):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return AgentRewriteResult(
+                replacement=_QUOTED_DIAGNOSIS_FAILING_BODY,
+                detail="first rewrite stayed quoted",
+                attempted=True,
+                cost_usd=0.40,
+            )
+        return AgentRewriteResult(
+            replacement=_QUOTED_DIAGNOSIS_PASSING_BODY,
+            detail="second rewrite moved diagnosis top-level",
+            attempted=True,
+            cost_usd=None,
+        )
+
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch(
+            {
+                "title": "Bug: quoted diagnosis",
+                "body": _QUOTED_DIAGNOSIS_FAILING_BODY,
+                "labels": ["bug"],
+            }
+        ),
+        post_comment=lambda *_: True,
+        edit_body=lambda *_: True,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.REMEDIATED
+    assert out.audit["agent"]["cost_usd"] is None
+    assert [attempt["cost_usd"] for attempt in out.audit["agent"]["attempts"]] == [0.40, None]
+
+
+def test_unreadable_diagnosis_retry_stays_bounded_when_second_call_also_fails(tmp_path):
+    task = _make_task()
+    calls: list[str] = []
+    post_comment, post_calls = _record_calls()
+    edit_body, edit_calls = _record_calls()
+
+    def agent(body, findings, comments=()):
+        calls.append(body)
+        return AgentRewriteResult(
+            replacement=_QUOTED_DIAGNOSIS_FAILING_BODY,
+            detail="rewrite still left diagnosis quoted",
+            attempted=True,
+            cost_usd=0.20,
+        )
+
+    outcomes = run_intake_remediation(
+        [task],
+        tmp_path,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch(
+            {
+                "title": "Bug: quoted diagnosis",
+                "body": _QUOTED_DIAGNOSIS_FAILING_BODY,
+                "labels": ["bug"],
+            }
+        ),
+        post_comment=post_comment,
+        edit_body=edit_body,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.DROPPED_AFTER_FIX
+    assert len(calls) == 2
+    assert len(post_calls) == 1
+    assert edit_calls == []
+    assert out.audit["agent"]["cost_usd"] == 0.40
+    assert len(out.audit["agent"]["attempts"]) == 2
 
 
 def test_file_based_story_short_circuits():

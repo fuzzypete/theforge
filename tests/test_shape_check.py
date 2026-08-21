@@ -809,6 +809,90 @@ class TestFencedHeadingsAreNotStructure:
         reason = check_bug_missing_diagnosis("it exits 1", body, ["bug"])
         assert reason is not None
         assert reason.code == "needs_diagnosis"
+        assert "inside a fenced code block" in reason.detail
+
+    def test_incomplete_top_level_diagnosis_points_to_missing_labels_in_quoted_copy(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+            Sprint entry drops the issue after remediation.
+
+            ## Expected behavior
+            The rerun should pass once the Diagnosis bullets are top-level.
+
+            ## Diagnosis
+            - **Observed symptom.** Sprint entry drops the issue after remediation.
+            - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+
+            ## Notes
+            > ## Diagnosis
+            >
+            > - **Observed symptom.** Sprint entry drops the issue after remediation.
+            >
+            > - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+            >
+            > - **Ruled out.** Shape rerun itself is healthy; only quoted content is stripped.
+            >
+            > - **Confirmed cause.** The remediator wrote required bullets inside the quoted copy.
+            >
+            ```markdown
+            ## Diagnosis
+
+            - **Affected code path.** `theforge.intake.remediation._remediate_one`.
+            - **Fix-success criterion.** Required Diagnosis bullets land as top-level Markdown.
+            ```
+            >
+            The quoted copy above is historical context only.
+            """
+        )
+        ok, missing = diagnosis_completeness(body)
+        assert not ok
+        assert missing == [
+            "confirmed cause",
+            "affected code path",
+            "fix-success criterion",
+        ]
+        reason = check_bug_missing_diagnosis("rerun drops quoted diagnosis", body, ["bug"])
+        assert reason is not None
+        assert reason.code == "needs_diagnosis"
+        assert '"**Affected code path:**"' in reason.detail
+        assert '"**Confirmed cause:**"' in reason.detail
+        assert '"**Fix-success criterion:**"' in reason.detail
+        assert "in a blockquoted region" in reason.detail
+        assert "in a fenced code block" in reason.detail
+
+    def test_blockquoted_blank_lines_preserve_one_diagnosis_region(self):
+        body = textwrap.dedent(
+            """\
+            ## Observed behavior
+            Sprint entry drops the issue after remediation.
+
+            ## Expected behavior
+            The rerun should pass once the Diagnosis bullets are top-level.
+
+            ## Notes
+            > ## Diagnosis
+            >
+            > - **Observed symptom.** Sprint entry drops the issue after remediation.
+
+            > - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+
+            > - **Ruled out.** Shape rerun itself is healthy; only quoted content is stripped.
+
+            > - **Confirmed cause.** The remediator wrote required bullets inside the quoted copy.
+
+            > - **Affected code path.** `theforge.intake.remediation._remediate_one`.
+
+            > - **Fix-success criterion.** Required Diagnosis bullets land as top-level Markdown.
+            """
+        )
+        ok, missing = diagnosis_completeness(body)
+        assert not ok
+        assert missing == ["missing Diagnosis section"]
+        reason = check_bug_missing_diagnosis("rerun drops quoted diagnosis", body, ["bug"])
+        assert reason is not None
+        assert reason.code == "needs_diagnosis"
+        assert "already appears inside a blockquoted region" in reason.detail
 
     def test_classifier_reads_the_real_diagnosis_not_the_quoted_one(self):
         body = textwrap.dedent(
