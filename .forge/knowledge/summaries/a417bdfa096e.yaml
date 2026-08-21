@@ -1,0 +1,81 @@
+schema_version: 2
+run_id: a417bdfa096e
+authoritative_run_record: .forge/audits/runs/a417bdfa096e.json
+generated_at: '2026-08-21T01:20:23.213203+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00721125
+story:
+  slug: issue-2621
+  name: The runtime half of budget enforcement is sequenced inside run_sprint, so
+    every budget change edits the 3,677-line function even though the decision policy
+    already lives in its own module
+  github_issue: 2621
+story_shape:
+  work_type: refactor
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- concurrency
+domains_provenance: *id001
+changed_files: &id002
+- docs/plans/2621-runner-decomposition.md
+- src/theforge/sprint/CONVENTIONS.md
+- src/theforge/sprint/budget_runtime.py
+- src/theforge/sprint/runner.py
+- tests/test_sprint_budget_enforcement.py
+- tests/test_sprint_budget_runtime.py
+- tests/test_sprint_runner.py
+- tests/test_unmeasured_cost_reporting.py
+what_changed:
+  description: This run moved runtime budget enforcement out of `run_sprint` into
+    a new `sprint/budget_runtime.py` owner and updated the runner to call into that
+    owner at its budget enforcement moments. It also shifted verification toward direct
+    budget-runtime tests while keeping existing budget-enforcement behavior checks
+    passing.
+  approach: 'The change followed the single-concern extraction pattern: budget runtime
+    state, checkpoints, publication, and cancellation logic were consolidated in a
+    dedicated module with no runner back-import, and the runner was reduced to integration
+    call sites while tests exercised the extracted concern directly.'
+  files_modified: *id002
+what_was_learned:
+- claim: After a concern extraction from `runner.py`, do a dead-import pass on runner
+    aliases before closing the change, because call-site reduction can leave compatibility
+    imports behind even when behavior and tests are otherwise correct.
+  evidence:
+  - type: review_finding
+    finding_id: 77d1220c49a7118d
+    description: Review identified two aliased imports in `runner.py` as unused after
+      the extraction, showing that this kind of refactor can complete functionally
+      while still leaving stale runner-level wiring that should be cleaned up explicitly.
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: The runner had a large net removal while retaining a small set of
+      budget-related edits, which is the exact shape of a refactor where obsolete
+      aliases can survive unless the remaining integration surface is checked separately.
+learned_patterns:
+- concern-extraction
+- direct-runtime-testing
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review approved the extraction and direct-test shape, with the only surfaced issue
+    being leftover unused runner import aliases after call-site slimming.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 15.240146000000001
+  dominant_difficulty: Separating a stateful runtime enforcement flow from a very
+    large orchestrator without changing externally observed budget behavior.
