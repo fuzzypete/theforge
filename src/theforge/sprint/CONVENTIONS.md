@@ -24,10 +24,18 @@ and sprint-level audit/display behavior.
   frozen `SprintRunContext` it holds. New sprint-wide state goes on one of the
   two — never back into `run_sprint`'s frame, and never into a `nonlocal`.
 - Cost and the stop condition each have exactly one owner. Spend is advanced
-  only through `SprintExecutionState.cost` (`SprintCostLedger`), and a sprint
-  is stopped only through `SprintExecutionState.stop` (`SprintStopCondition`,
-  which records the reason and any halt slug together). Do not reintroduce a
-  shared total or a bare `stopped_reason` variable alongside them.
+  only through `SprintExecutionState.cost` (`SprintCostLedger`, defined in
+  `budget_runtime.py`), and a sprint is stopped only through
+  `SprintExecutionState.stop` (`SprintStopCondition`, which records the reason
+  and any halt slug together). Do not reintroduce a shared total or a bare
+  `stopped_reason` variable alongside them.
+- The sprint's cap has three owners and no fourth. `budget.py` decides (pure
+  policy), `unmeasured.py` represents and accepts unmeasured spend, and
+  `budget_runtime.py` runs both: the ledger, startup carried-spend restoration
+  and disclosure, the pre-dispatch and in-flight enforcement moments, live
+  budget-status publication, and budget-triggered cancellation. A budget change
+  belongs in one of the three — reached through `SprintExecutionState.budget`,
+  never re-implemented in `run_sprint`.
 - Extracting anything out of `run_sprint` is a move, not a re-decision: the new
   home takes `SprintRunContext` and/or `SprintExecutionState` rather than a
   fresh set of threaded parameters. Passing *members* of the state is the same
@@ -46,7 +54,11 @@ and sprint-level audit/display behavior.
   relocation-with-a-dependency-left-behind fails a test. The cost of annotating
   the state without importing the runner is deliberate: the parameter is `Any`
   and documented, because the alternative is exactly the coupling the move
-  removed.
+  removed. `budget_runtime.py` (#2621) is the second move and keeps the same
+  rule, with `tests/test_sprint_budget_runtime.py` holding both the absent
+  import and the no-member-threading shape. Where a moved concern genuinely
+  needs a runner-owned side effect, it is injected as a callable
+  (`SprintBudgetRuntime.bind_story_hooks`), not imported back.
 
 ## Context
 
@@ -67,6 +79,11 @@ and sprint-level audit/display behavior.
   and a run that cannot prove a resource foreign does not treat it as foreign.
 - `display.py` and `audit.py` shape operator-facing visibility into sprint
   progress and outcomes.
+- `budget_runtime.py` owns the runtime half of the sprint's spending cap: the
+  ledger every dollar is advanced through, what the run carried in and what an
+  operator has accepted, the two enforcement moments, the live budget status,
+  and the cancellation that stops paid-for work when the cap is met. It consumes
+  `budget.py` and `unmeasured.py`; it never decides policy itself.
 - `audit_publish.py` owns the end of a run: it builds the terminal audit and
   summary inputs from the run's state, writes the audit/summary/RCA artifacts,
   and commits and pushes the canonical per-run audit JSON to the base branch.
