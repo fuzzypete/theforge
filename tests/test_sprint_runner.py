@@ -28,6 +28,7 @@ from theforge.config import (
 )
 from theforge.config.types import IntakeConfig
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
+from theforge.sprint.budget_runtime import SprintCostSnapshot
 from theforge.sprint.dag import (
     StoryDAG,
     _branch_adds_content_to_base,
@@ -39,8 +40,6 @@ from theforge.sprint.dag import (
 )
 from theforge.sprint.manifest import ResolvedSprint
 from theforge.sprint.runner import (
-    SprintCostLedger,
-    SprintCostSnapshot,
     SprintExecutionState,
     SprintRunContext,
     SprintStop,
@@ -1491,108 +1490,6 @@ class TestSprintExecutionStateConstructability:
 
         with pytest.raises(FrozenInstanceError):
             snapshot.accumulated = 99.0  # type: ignore[misc]
-
-
-class TestSprintCostLedgerOwnership:
-    """Cost accumulation has exactly one owner."""
-
-    def test_only_the_ledger_advances_the_total(self) -> None:
-        ledger = SprintCostLedger()
-
-        # Reading the figure out and reassigning the name is what the old
-        # ``nonlocal accumulated_cost`` allowed. Here it cannot reach the total.
-        accumulated_cost = ledger.accumulated
-        accumulated_cost += 12.5
-
-        assert ledger.accumulated == 0.0
-        assert ledger.add(2.5) == 2.5
-        assert ledger.accumulated == 2.5
-
-    def test_the_total_is_not_settable(self) -> None:
-        ledger = SprintCostLedger()
-        ledger.add(4.0)
-
-        with pytest.raises(AttributeError):
-            ledger.accumulated = 100.0  # type: ignore[misc]
-        with pytest.raises(AttributeError):
-            ledger.spent = 100.0  # type: ignore[misc]
-
-        assert ledger.accumulated == 4.0
-
-    def test_add_returns_the_accumulated_figure(self) -> None:
-        ledger = SprintCostLedger()
-
-        assert ledger.add(1.25) == 1.25
-        assert ledger.add(0.75) == 2.0
-        assert ledger.snapshot().accumulated == 2.0
-
-    def test_prior_spend_is_carried_but_kept_distinct(self) -> None:
-        ledger = SprintCostLedger()
-        ledger.set_prior(6.0)
-        ledger.add(1.5)
-
-        snapshot = ledger.snapshot()
-        assert snapshot.prior == 6.0
-        assert snapshot.accumulated == 1.5
-        assert snapshot.spent == 7.5
-        assert ledger.spent == 7.5
-
-    def test_unmeasured_story_cost_lands_with_its_flag(self) -> None:
-        """The total and the fact that it is a lower bound move together."""
-        ledger = SprintCostLedger()
-
-        ledger.record_story_cost("story-a", 3.0, measured=3.0)
-        assert ledger.measured is True
-
-        ledger.record_story_cost("story-b", 2.0, measured=None)
-        snapshot = ledger.snapshot()
-        assert snapshot.accumulated == 5.0
-        assert snapshot.measured is False
-        assert snapshot.unmeasured == ("story-b",)
-        assert snapshot.current_generation_unmeasured == frozenset({"story-b"})
-
-    def test_carried_unmeasured_is_not_this_generation(self) -> None:
-        """An inherited unknown must not be absorbed by a local acceptance."""
-        ledger = SprintCostLedger()
-        ledger.note_carried_unmeasured("carried:story-a")
-        ledger.flag_unmeasured_here("intake:story-b")
-
-        snapshot = ledger.snapshot()
-        assert snapshot.unmeasured == ("carried:story-a", "intake:story-b")
-        assert snapshot.current_generation_unmeasured == frozenset({"intake:story-b"})
-
-    def test_snapshot_does_not_track_later_writes(self) -> None:
-        ledger = SprintCostLedger()
-        ledger.record_story_cost("story-a", 1.0, measured=None)
-        snapshot = ledger.snapshot()
-
-        ledger.record_story_cost("story-b", 4.0, measured=None)
-
-        assert snapshot.accumulated == 1.0
-        assert snapshot.unmeasured == ("story-a",)
-        assert ledger.snapshot().accumulated == 5.0
-
-    def test_concurrent_workers_cannot_lose_spend(self) -> None:
-        """Workers land in parallel; the ledger serialises what they add."""
-        ledger = SprintCostLedger()
-        barrier = threading.Barrier(8)
-
-        def _land(index: int) -> None:
-            barrier.wait()
-            ledger.record_story_cost(f"story-{index}", 0.5, measured=None if index % 2 else 0.5)
-
-        threads = [threading.Thread(target=_land, args=(i,)) for i in range(8)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
-
-        snapshot = ledger.snapshot()
-        assert snapshot.accumulated == pytest.approx(4.0)
-        assert len(snapshot.unmeasured) == 4
-        assert snapshot.current_generation_unmeasured == frozenset(
-            f"story-{i}" for i in range(8) if i % 2
-        )
 
 
 class TestSprintStopConditionOwnership:
