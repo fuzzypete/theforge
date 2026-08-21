@@ -882,6 +882,7 @@ def test_generate_audit_log_includes_context_manifests(tmp_path: Path) -> None:
     # A pack built without prior-run knowledge still reports the gate as off,
     # so "nothing was injected" is an audited fact rather than a missing key.
     assert manifest["prior_run_context"]["enabled"] is False
+    assert manifest["prior_run_context"]["index_state"] is None
 
 
 def test_generate_audit_log_includes_prior_run_context_decisions(tmp_path: Path) -> None:
@@ -920,6 +921,7 @@ def test_generate_audit_log_includes_prior_run_context_decisions(tmp_path: Path)
         structural_index_git_sha=None,
         prior_run_context={
             "enabled": True,
+            "index_state": "ready",
             "included": [
                 {
                     "run_id": "4f2a91c",

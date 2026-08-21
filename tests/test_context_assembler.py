@@ -413,8 +413,8 @@ def test_enabled_run_without_any_prior_knowledge_proceeds_normally(tmp_path: Pat
     )
 
     assert pack.prior_run_context["enabled"] is True
+    assert pack.prior_run_context["index_state"] == "ready"
     assert pack.prior_run_context["included"] == []
     assert pack.prior_run_context["note"] == (
-        "prior-run knowledge index is missing or was never built; "
-        "run `forge index` to build .forge/knowledge/index.yaml"
+        "no relevant prior knowledge exists (no indexed summaries)"
     )

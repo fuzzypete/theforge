@@ -23,6 +23,7 @@ def disabled_manifest() -> dict:
         "enabled": False,
         "phase": "",
         "rendering_mode": "",
+        "index_state": None,
         "included": [],
         "dropped": [],
         "note": "prior-run context disabled (knowledge.prior_run_context)",
@@ -73,6 +74,7 @@ def build_manifest(
         "enabled": True,
         "phase": selection.phase or phase,
         "rendering_mode": selection.rendering_mode,
+        "index_state": selection.index_state,
         "included": included,
         "dropped": dropped,
         "note": _build_note(
