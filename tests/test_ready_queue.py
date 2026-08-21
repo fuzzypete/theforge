@@ -62,6 +62,15 @@ _UNDIAGNOSED_BUG_BODY = """## Observed behavior
 The listing agrees with the gate.
 """
 
+_ENHANCEMENT_WITH_BUG_SHAPE_BODY = """## What happened
+
+`forge status --ready` routes this enhancement through bug diagnosis.
+
+## What was expected
+
+Enhancements written in bug shape are refused as a type/body contradiction.
+"""
+
 
 def _issue(number: int, title: str, labels: list[str], body: str = _RUNNABLE_BODY) -> dict:
     return {
@@ -125,6 +134,23 @@ def test_build_marks_undiagnosed_bug_not_admissible(tmp_path: Path) -> None:
     assert entry.admissible is False
     assert entry.verdict == "needs_diagnosis"
     assert entry.detail
+
+
+def test_build_marks_enhancement_in_bug_shape_as_type_shape_contradiction(
+    tmp_path: Path,
+) -> None:
+    issues = [
+        _issue(
+            1984,
+            "queue/gate disagreement",
+            ["ready", "enhancement"],
+            _ENHANCEMENT_WITH_BUG_SHAPE_BODY,
+        )
+    ]
+    entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
+    assert entry.admissible is False
+    assert entry.verdict == "needs_grooming_type_shape"
+    assert entry.detail.startswith("enhancement body carries bug-report-shape sections")
 
 
 def test_build_marks_needs_grooming_labeled_issue_not_admissible(tmp_path: Path) -> None:

@@ -17,6 +17,7 @@ from theforge.admissibility import (
     blocking_codes,
     classify_admissibility,
     has_acceptance_criteria,
+    refusal_detail,
     resolve_classifier,
     skip_detail,
 )
@@ -39,8 +40,8 @@ Users need a way to bypass the gate.
 
 ## Acceptance Criteria
 
-- `forge sprint --force` runs every issue regardless of shape check
-- warnings still list every skipped issue's reason codes
+- `forge sprint --force` emits every issue regardless of shape check
+- the warning output reports every skipped issue's reason codes
 """
 
 # A bug filing with no `## Diagnosis` section — symptom-only, the shape the
@@ -71,6 +72,58 @@ The listing agrees with the gate.
 - **Confirmed cause:** unknown
 - **Affected code path:** `ready_queue.build_ready_queue`.
 - **Fix-success criterion:** the listing and sprint entry cannot disagree.
+"""
+
+_DIAGNOSED_BUG_WITH_FIX_NOTES = """## What happened
+
+Contract tests never run in CI.
+
+## What was expected
+
+Provider argv drift is caught before release.
+
+## Diagnosis
+
+- **Observed symptom:** Contract tests never run in CI.
+- **Evidence:** CI job logs show the contract target never executes.
+- **Ruled out:** Missing test files; the suite is present locally.
+- **Confirmed cause:** The sprint runner never invokes the contract target.
+- **Affected code path:** sprint.runner dispatch setup.
+- **Fix-success criterion:** CI runs the contract target before release.
+
+## Notes
+
+the fix belongs in `runners/api.py`
+"""
+
+_CAUSE_UNKNOWN_BUG_WITH_FIX_NOTES = """## Observed behavior
+
+`forge status --ready` lists issues the gate refuses.
+
+## Expected behavior
+
+The listing agrees with the gate.
+
+## Diagnosis
+
+- **Observed symptom:** the ready listing and the gate disagree.
+- **Evidence:** run id `1ff6b0bb7992` — five ready issues, five refusals.
+- **Confirmed cause:** unknown
+- **Affected code path:** `ready_queue.build_ready_queue`.
+- **Fix-success criterion:** the listing and sprint entry cannot disagree.
+
+## Notes
+
+the fix belongs in `ready_queue.py`
+"""
+
+_ENHANCEMENT_WITH_BUG_SHAPE_BODY = """## What happened
+
+`forge status --ready` routes this enhancement through bug diagnosis.
+
+## What was expected
+
+Enhancements written in bug shape are refused as a type/body contradiction.
 """
 
 _OPERATOR_ACTION_BODY = """## What
@@ -155,6 +208,22 @@ def test_skip_detail_uses_advisories_when_opted_in() -> None:
     assert detail == "advisory"
 
 
+def test_refusal_detail_prioritizes_reason_matching_selected_verdict() -> None:
+    result = ShapeResult(
+        shape=Shape.NEEDS_GROOMING,
+        reasons=(
+            Reason(code="needs_diagnosis", severity=Severity.BLOCKING, detail="diagnosis first"),
+            Reason(
+                code="type_shape_contradiction",
+                severity=Severity.BLOCKING,
+                detail="contradiction second",
+            ),
+        ),
+        verdict=ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE,
+    )
+    assert refusal_detail(result, "fallback") == "contradiction second; diagnosis first"
+
+
 # ── classify_admissibility: admissible ──────────────────────────────────────
 
 
@@ -172,6 +241,18 @@ def test_admissible_entry_carries_no_operator_action_flags() -> None:
     verdict = classify_admissibility("Add a flag", _RUNNABLE_BODY, ["enhancement"])
     assert verdict.operator_action_label is False
     assert verdict.deliberate_non_dispatch is False
+
+
+def test_admissible_bug_keeps_advisory_reasons_in_result() -> None:
+    verdict = classify_admissibility(
+        "Contract target missing", _DIAGNOSED_BUG_WITH_FIX_NOTES, ["bug"]
+    )
+
+    assert verdict.admissible is True
+    assert verdict.verdict == ShapeVerdict.RUNNABLE.value
+    assert verdict.reason_codes == ()
+    assert verdict.result is not None
+    assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: local-check refusals ────────────────────────────
@@ -195,6 +276,20 @@ def test_untyped_issue_is_refused_with_needs_type() -> None:
     assert verdict.verdict == ShapeVerdict.NEEDS_TYPE.value
 
 
+def test_enhancement_with_bug_shape_prefers_type_shape_verdict() -> None:
+    verdict = classify_admissibility(
+        "Queue/gate disagreement",
+        _ENHANCEMENT_WITH_BUG_SHAPE_BODY,
+        ["enhancement"],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.source == "local_check"
+    assert verdict.verdict == ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE.value
+    assert verdict.reason_codes == ("needs_diagnosis", "type_shape_contradiction")
+    assert verdict.detail.startswith("enhancement body carries bug-report-shape sections")
+
+
 def test_investigation_ready_bug_is_refused_as_cause_unknown() -> None:
     # Admissible as a *shape* but not implementation-runnable per ADR-0001:
     # the verdict is the routing signal, not map_shape's binary view.
@@ -204,6 +299,20 @@ def test_investigation_ready_bug_is_refused_as_cause_unknown() -> None:
     assert verdict.admissible is False
     assert verdict.verdict == ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value
     assert verdict.source == "local_check"
+
+
+def test_cause_unknown_refusal_keeps_phrase_advice_out_of_skip_codes() -> None:
+    verdict = classify_admissibility(
+        "Counter is wrong",
+        _CAUSE_UNKNOWN_BUG_WITH_FIX_NOTES,
+        ["bug"],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.reason_codes == ("diagnosis_cause_unknown",)
+    assert "fix location" not in verdict.detail
+    assert verdict.result is not None
+    assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: needs-grooming label ────────────────────────────

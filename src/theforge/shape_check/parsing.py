@@ -23,6 +23,8 @@ _EXAMPLE_HEADING_RE = re.compile(
     re.IGNORECASE,
 )
 
+ACCEPTANCE_CRITERIA_HEADING_PATTERN = r"acceptance criteria|done criteria|checklist"
+
 
 @dataclass(frozen=True)
 class ContextualBullet:
@@ -170,7 +172,7 @@ def extract_section(body: str, heading_pattern: str) -> str | None:
 
 
 def extract_ac_section(body: str) -> str | None:
-    return extract_section(body, r"acceptance criteria|done criteria|checklist")
+    return extract_section(body, ACCEPTANCE_CRITERIA_HEADING_PATTERN)
 
 
 # The bug-report shape is a symptom heading paired with an expectation heading.
