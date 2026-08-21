@@ -326,6 +326,7 @@ def _cmd_sprint(args: object) -> int:
         prior_outcomes=prior_outcomes,
         live_slugs=set(liveness.live_slugs),
         unresolved_slugs=set(liveness.unresolved_slugs),
+        registered_slugs=set(liveness.registered_slugs),
         canonical_refs_by_slug=canonical_refs_by_slug,
     )
     if launch_error is not None:
@@ -406,6 +407,7 @@ def _cmd_sprint(args: object) -> int:
                 force=force,
                 live_story_slugs=set(liveness.live_slugs),
                 unresolved_live_slugs=set(liveness.unresolved_slugs),
+                registered_live_slugs=set(liveness.registered_slugs),
                 accept_unmeasured_spend=accept_unmeasured_spend,
                 accept_unmeasured_reason=accept_unmeasured_reason,
             )
@@ -447,6 +449,7 @@ def _acquire_launch_locks(
     prior_outcomes: dict[str, str | dict] | None = None,
     live_slugs: set[str] | None = None,
     unresolved_slugs: set[str] | None = None,
+    registered_slugs: set[str] | None = None,
     canonical_refs_by_slug: dict[str, str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     return acquire_launch_story_locks(
@@ -458,6 +461,7 @@ def _acquire_launch_locks(
         prior_outcomes=prior_outcomes,
         live_slugs=live_slugs,
         unresolved_slugs=unresolved_slugs,
+        registered_slugs=registered_slugs,
         canonical_refs_by_slug=canonical_refs_by_slug,
     )
 
@@ -1274,6 +1278,7 @@ def _run_query_mode(
         prior_outcomes=prior_outcomes,
         live_slugs=set(liveness.live_slugs),
         unresolved_slugs=set(liveness.unresolved_slugs),
+        registered_slugs=set(liveness.registered_slugs),
         canonical_refs_by_slug=canonical_refs_by_slug,
     )
     if launch_error is not None:
@@ -1360,6 +1365,7 @@ def _run_query_mode(
                 force=force,
                 live_story_slugs=set(liveness.live_slugs),
                 unresolved_live_slugs=set(liveness.unresolved_slugs),
+                registered_live_slugs=set(liveness.registered_slugs),
                 accept_unmeasured_spend=accept_unmeasured_spend or [],
                 accept_unmeasured_reason=accept_unmeasured_reason,
             )

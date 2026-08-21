@@ -1,4 +1,4 @@
-"""Agent process groups this sprint inherited across a mid-run re-exec.
+"""Work this sprint still owns across a mid-run re-exec.
 
 A mid-run re-exec (``os.execv`` after ``workspace.pull_base_branch`` observes new
 source) replaces the process *image* but keeps the process *identity*: the pid is
@@ -20,8 +20,19 @@ triage path. Nothing else will ever pick it up — the sidecar's owner is this p
 so the moment this process exits, a later invocation's orphan reaper sees a dead
 owner and kills the group.
 
-Stdlib-only apart from :mod:`theforge.process_group` (itself stdlib-only), per
-convention 4.
+A surviving agent group is not the only way a story can be this run's own work,
+and treating it as the only way is what produced #2617. A story executing in pure
+Python at the instant of the exec — VALIDATE's post-gate bookkeeping, a phase
+transition, the commit after an approved review — has no subprocess to survive
+it, so a liveness model built solely on pgids reported "nothing is running" for a
+story that was. Ownership is therefore also *declared*, by the scheduler, in
+:mod:`theforge.sprint.story_executions`, and folded in here: liveness answers "is
+this slug this run's own in-flight work?", and either kind of evidence answers it.
+Which kind it was still matters to a caller — waiting for a process group is only
+meaningful when there is one — so :class:`LivenessResolution` reports it.
+
+Stdlib-only apart from :mod:`theforge.process_group` and
+:mod:`theforge.sprint.story_executions` (both stdlib-only), per convention 4.
 """
 
 from __future__ import annotations
@@ -63,14 +74,22 @@ class InheritedAgentGroup:
 class LivenessResolution:
     """What a liveness lookup established — including what it could not.
 
-    ``live_slugs`` are *confirmed* live: a sidecar owned by this pid names the
-    slug's worktree and its group answered "alive". ``unresolved_slugs`` are the
-    slugs the lookup could not answer for, because a sidecar was unreadable or
-    malformed, the agents directory could not be listed, or the liveness probe
-    itself failed. The distinction is the whole point of this type: an empty
-    ``live_slugs`` alone cannot tell a caller whether nothing is running or
-    whether nothing could be *asked*, and treating the second as the first is how
-    a sprint's own running story became a foreign worktree collision (#2079).
+    ``live_slugs`` are *confirmed* live: this run still owns the slug's
+    execution, either because a sidecar owned by this pid names its worktree and
+    that group answered "alive", or because the scheduler recorded the story as
+    dispatched and has not yet settled it. ``unresolved_slugs`` are the slugs the
+    lookup could not answer for, because a sidecar or ownership record was
+    unreadable or malformed, a registry directory could not be listed, or the
+    liveness probe itself failed. The distinction is the whole point of this
+    type: an empty ``live_slugs`` alone cannot tell a caller whether nothing is
+    running or whether nothing could be *asked*, and treating the second as the
+    first is how a sprint's own running story became a foreign worktree collision
+    (#2079).
+
+    ``registered_slugs`` names the subset of ``live_slugs`` vouched for *only* by
+    an ownership record — this run's in-flight work with no surviving agent
+    process group. A caller that is about to wait for a process, or to tell an
+    operator one is running, needs to know there is none (#2617).
 
     Unresolved is scoped to slugs whose worktree exists on disk: a slug with no
     worktree has nothing that could be live, so a scan failure says nothing about
@@ -80,6 +99,7 @@ class LivenessResolution:
     live_slugs: frozenset[str] = frozenset()
     unresolved_slugs: frozenset[str] = frozenset()
     failures: tuple[str, ...] = ()
+    registered_slugs: frozenset[str] = frozenset()
 
     @property
     def resolved(self) -> bool:
@@ -250,6 +270,36 @@ def _existing_worktree_slugs(worktree_to_slug: dict[Path, str]) -> set[str]:
     return present
 
 
+def _scan_story_executions(
+    wanted: set[str],
+    root: Path,
+    *,
+    owner_pid: int | None,
+) -> tuple[set[str], list[tuple[str | None, str]]]:
+    """Slugs this process declared it is executing, plus unresolved-ownership facts.
+
+    Local import: :mod:`theforge.sprint.story_executions` is stdlib-only, and
+    keeping the import here rather than at module scope means a caller that only
+    wants agent-group liveness never pays for the registry at all.
+    """
+    from theforge.sprint.story_executions import scan_story_executions  # noqa: PLC0415
+
+    scan = scan_story_executions(root, owner_pid=owner_pid)
+    failures: list[tuple[str | None, str]] = [(None, msg) for msg in scan.failures]
+    # A record whose identity could not be checked may be this run's own work and
+    # may be a dead run's leftover. That is exactly the "nobody could say" the
+    # unresolved bucket exists for — the slug is named, so the taint is precise.
+    failures.extend(
+        (
+            record.slug,
+            f"story execution record for {record.slug} carries no comparable process identity",
+        )
+        for record in scan.unverifiable
+        if record.slug in wanted
+    )
+    return {record.slug for record in scan.owned if record.slug in wanted}, failures
+
+
 def resolve_liveness(
     slugs: Iterable[str],
     *,
@@ -257,14 +307,28 @@ def resolve_liveness(
     path_pattern: str,
     owner_pid: int | None = None,
     is_group_alive: Callable[[int], bool] = group_has_running_members,
+    include_executions: bool = True,
 ) -> LivenessResolution:
-    """Establish, per slug, whether this process still has an agent running for it.
+    """Establish, per slug, whether this process still has that story in flight.
+
+    Two independent kinds of evidence, because neither covers the other's blind
+    spot. An **agent process group** this pid spawned and that is still alive
+    proves a subprocess is writing to the worktree right now. An **execution
+    record** the scheduler wrote before dispatch proves the story is this run's
+    responsibility whether or not any subprocess exists — which is the only thing
+    that can vouch for a story executing in-process at the instant of a re-exec
+    (#2617).
 
     Fail-closed: any part of the lookup that could not be completed leaves the
     affected slugs *unresolved* rather than silently absent from ``live_slugs``.
     A launch guard must be able to tell "this story is definitely not running"
     from "nobody could say", because only the first justifies reconciling the
     story's worktree as foreign state.
+
+    ``include_executions=False`` restricts the answer to agent process groups.
+    Its one caller is :func:`await_inherited_agents`, which is asking a narrower
+    question — "is a subprocess still writing here?" — and would otherwise wait
+    out its whole timeout on a record that describes itself (#2617).
     """
     wanted = [s for s in slugs if s]
     try:
@@ -277,16 +341,24 @@ def resolve_liveness(
             only_live=True,
             is_group_alive=is_group_alive,
         )
+        registered: set[str] = set()
+        if include_executions:
+            registered, registry_failures = _scan_story_executions(
+                set(wanted), root, owner_pid=owner_pid
+            )
+            failures = [*failures, *registry_failures]
     except Exception as exc:  # noqa: BLE001 - a broken scan resolves nothing
         return unresolved_liveness(wanted, reason=f"liveness scan failed: {exc}")
 
-    live = {group.slug for group in groups}
+    live = {group.slug for group in groups} | registered
+    registry_only = frozenset(registered - {group.slug for group in groups})
     if not failures:
-        return LivenessResolution(live_slugs=frozenset(live))
+        return LivenessResolution(live_slugs=frozenset(live), registered_slugs=registry_only)
 
     if any(slug is None for slug, _msg in failures):
         # An unattributable failure could concern any worktree that exists.
         tainted = _existing_worktree_slugs(worktree_to_slug)
+        tainted |= {slug for slug, _msg in failures if slug}
     else:
         tainted = {slug for slug, _msg in failures if slug}
     unresolved = (tainted & set(wanted)) - live
@@ -294,6 +366,7 @@ def resolve_liveness(
         live_slugs=frozenset(live),
         unresolved_slugs=frozenset(unresolved),
         failures=tuple(msg for _slug, msg in failures),
+        registered_slugs=registry_only,
     )
 
 
@@ -378,6 +451,13 @@ def await_inherited_agents(
 
     Their sidecar records are dropped once the groups are gone, so the pgids
     cannot be revisited by a later reaper.
+
+    Deliberately asks only about *agent process groups*
+    (``include_executions=False``). The scheduler's own ownership record for this
+    slug is what put this call here in the first place; counting it as something
+    to wait for would make the story wait out its entire quiesce timeout for
+    itself, and a story with no surviving agent would reach triage that much later
+    for no reason (#2617).
     """
     deadline = time.monotonic() + max(0.0, float(timeout))
     waited = False
@@ -388,6 +468,7 @@ def await_inherited_agents(
             path_pattern=path_pattern,
             owner_pid=owner_pid,
             is_group_alive=is_group_alive,
+            include_executions=False,
         )
         if slug not in resolution.deferred_slugs:
             settled = resolve_inherited_agents(
