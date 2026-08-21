@@ -99,6 +99,7 @@ def _init_repo(tmp_path: Path) -> tuple[ForgeConfig, ResolvedSprint, str]:
     _git(tmp_path, "init", "-b", "main")
     _git(tmp_path, "config", "user.name", "Test User")
     _git(tmp_path, "config", "user.email", "test@example.com")
+    (tmp_path / ".gitignore").write_text("generated/\n", encoding="utf-8")
     (tmp_path / "baseline.txt").write_text("BASELINE\n", encoding="utf-8")
     base_commit = _commit_all(tmp_path, "base")
     _git(tmp_path, "checkout", "-b", "feat/test")
@@ -154,7 +155,11 @@ def test_baseline_gate_records_gate_time_worktree_state(tmp_path: Path) -> None:
         config,
         workspace=replace(
             config.workspace,
-            setup_command="mkdir -p build && printf residue > build/cache.txt",
+            setup_command=(
+                "mkdir -p build generated "
+                "&& printf residue > build/cache.txt "
+                "&& printf ignored > generated/cache.txt"
+            ),
         ),
     )
 
@@ -163,7 +168,7 @@ def test_baseline_gate_records_gate_time_worktree_state(tmp_path: Path) -> None:
     assert baseline["passed"] is True
     assert baseline["worktree_state"] == {
         "untracked": ["build/cache.txt"],
-        "ignored": [],
+        "ignored": ["generated/"],
     }
 
 
