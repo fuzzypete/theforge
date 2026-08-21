@@ -16,6 +16,7 @@ from unittest.mock import patch
 from coord_test_helpers import (
     _PREFLIGHT_RESULT,
     APPROVE_REVIEW,
+    _as_detailed,
     _gate_side_effect,
     _make_agent_result,
     _make_config,
@@ -113,6 +114,37 @@ class TestProfilesAcrossThePhaseBoundary:
         assert result.state.gate_decisions == ["PASS"]
         assert has_merge_authority_result(result.state.validation_runs)
 
+    def test_the_recorded_verdict_carries_gate_time_worktree_state(self, tmp_path: Path) -> None:
+        config = _config_with_profiles(tmp_path)
+        task = _make_task(tmp_path)
+        workspace = tmp_path / task.slug
+        workspace.mkdir(exist_ok=True)
+        gate = _gate_side_effect(workspace, "PASS")
+
+        def shell(cmd, cwd, **kwargs):
+            if cmd == "git status --porcelain=v1 --ignored=matching --untracked-files=all":
+                return (True, "?? scratch.txt\n!! build/cache.json\n")
+            return gate(cmd, cwd, **kwargs)
+
+        with (
+            patch_gate_shell(side_effect=_as_detailed(shell)),
+            patch("theforge.coordinator.dev_phase.run_agent", return_value=_make_agent_result()),
+            patch("theforge.coordinator.preflight_flow.run_agent", return_value=_PREFLIGHT_RESULT),
+            patch(
+                "theforge.coordinator.review_pool.run_agent_pool",
+                return_value=[
+                    _make_agent_result(success=True, output=APPROVE_REVIEW, profile_name="review")
+                ],
+            ),
+        ):
+            result = run_task(config, task)
+
+        (record,) = [r for r in result.state.validation_runs if not r["skipped"]]
+        assert record["worktree_state"] == {
+            "untracked": ["scratch.txt"],
+            "ignored": ["build/cache.json"],
+        }
+
     def test_a_passing_override_widens_to_the_merge_authority_profile(
         self, tmp_path: Path
     ) -> None:
@@ -208,6 +240,7 @@ class TestProvenanceSurvivesResumeAndAudit:
                 "command": "make gate",
                 "result": "PASS",
                 "commit": "abc123",
+                "worktree_state": {"untracked": ["scratch.txt"], "ignored": []},
                 "skipped": False,
                 "declared": True,
                 "widened": False,

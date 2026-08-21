@@ -1304,11 +1304,13 @@ def _run_baseline_gate(
         # ``run_gate_full``'s own trace (written into that worktree) cannot be the
         # durable record. The full output is taken out by value instead.
         gate_full_output: list[str] = []
+        gate_worktree_state: list[dict[str, object]] = []
         decision, error, output_tail, resolved_gate_cmd, gate_exit_code = run_gate_full(
             config,
             baseline_worktree,
             full_output=gate_full_output,
             process_teardowns=gate_teardowns,
+            worktree_state_out=gate_worktree_state,
             label=GateLabel(
                 purpose=BASELINE_GATE_PURPOSE,
                 target="merge base",
@@ -1333,6 +1335,7 @@ def _run_baseline_gate(
                 "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "decision": decision,
                 "output_tail": output_tail,
+                "worktree_state": gate_worktree_state[0] if gate_worktree_state else None,
                 # Nothing failed, so nothing needed confirming; the keys are
                 # present on every executed-gate record so a reader never has to
                 # ask whether this is one of the kinds that says.
@@ -1359,6 +1362,7 @@ def _run_baseline_gate(
             "exit_code": exit_code,
             "output_tail": output_tail,
             "duration_seconds": round(duration, 2),
+            "worktree_state": gate_worktree_state[0] if gate_worktree_state else None,
         }
         if on_confirmation_start is not None:
             on_confirmation_start()
@@ -1367,6 +1371,7 @@ def _run_baseline_gate(
             "gate once to confirm the failure reproduces before refusing the sprint"
         )
         confirm_full_output: list[str] = []
+        confirm_worktree_state: list[dict[str, object]] = []
         (
             confirm_decision,
             confirm_error,
@@ -1378,6 +1383,7 @@ def _run_baseline_gate(
             baseline_worktree,
             full_output=confirm_full_output,
             process_teardowns=gate_teardowns,
+            worktree_state_out=confirm_worktree_state,
             label=GateLabel(
                 purpose=BASELINE_GATE_CONFIRM_PURPOSE,
                 target="merge base",
@@ -1396,6 +1402,7 @@ def _run_baseline_gate(
             "error": confirm_error,
             "exit_code": confirm_exit_code,
             "output_tail": confirm_tail,
+            "worktree_state": confirm_worktree_state[0] if confirm_worktree_state else None,
         }
         if confirmation_passed:
             # The first run's output is still the only record of what failed, and
@@ -1441,6 +1448,7 @@ def _run_baseline_gate(
                 "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
                 "decision": confirm_decision,
                 "output_tail": confirm_tail,
+                "worktree_state": confirm_worktree_state[0] if confirm_worktree_state else None,
                 "confirmation_attempted": True,
                 "failure_reproduced": False,
                 "initial_result": initial_result,
@@ -1525,6 +1533,7 @@ def _run_baseline_gate(
             "process_teardowns": [t.to_audit_dict() for t in gate_teardowns],
             "decision": decision,
             "output_tail": output_tail,
+            "worktree_state": confirm_worktree_state[0] if confirm_worktree_state else None,
             "confirmation_attempted": True,
             "failure_reproduced": True,
             "initial_result": initial_result,
