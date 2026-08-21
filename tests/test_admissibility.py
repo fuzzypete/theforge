@@ -17,6 +17,7 @@ from theforge.admissibility import (
     blocking_codes,
     classify_admissibility,
     has_acceptance_criteria,
+    refusal_detail,
     resolve_classifier,
     skip_detail,
 )
@@ -116,6 +117,15 @@ The listing agrees with the gate.
 the fix belongs in `ready_queue.py`
 """
 
+_ENHANCEMENT_WITH_BUG_SHAPE_BODY = """## What happened
+
+`forge status --ready` routes this enhancement through bug diagnosis.
+
+## What was expected
+
+Enhancements written in bug shape are refused as a type/body contradiction.
+"""
+
 _OPERATOR_ACTION_BODY = """## What
 
 Rotate the production API token.
@@ -198,6 +208,22 @@ def test_skip_detail_uses_advisories_when_opted_in() -> None:
     assert detail == "advisory"
 
 
+def test_refusal_detail_prioritizes_reason_matching_selected_verdict() -> None:
+    result = ShapeResult(
+        shape=Shape.NEEDS_GROOMING,
+        reasons=(
+            Reason(code="needs_diagnosis", severity=Severity.BLOCKING, detail="diagnosis first"),
+            Reason(
+                code="type_shape_contradiction",
+                severity=Severity.BLOCKING,
+                detail="contradiction second",
+            ),
+        ),
+        verdict=ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE,
+    )
+    assert refusal_detail(result, "fallback") == "contradiction second; diagnosis first"
+
+
 # ── classify_admissibility: admissible ──────────────────────────────────────
 
 
@@ -248,6 +274,20 @@ def test_untyped_issue_is_refused_with_needs_type() -> None:
 
     assert verdict.admissible is False
     assert verdict.verdict == ShapeVerdict.NEEDS_TYPE.value
+
+
+def test_enhancement_with_bug_shape_prefers_type_shape_verdict() -> None:
+    verdict = classify_admissibility(
+        "Queue/gate disagreement",
+        _ENHANCEMENT_WITH_BUG_SHAPE_BODY,
+        ["enhancement"],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.source == "local_check"
+    assert verdict.verdict == ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE.value
+    assert verdict.reason_codes == ("needs_diagnosis", "type_shape_contradiction")
+    assert verdict.detail.startswith("enhancement body carries bug-report-shape sections")
 
 
 def test_investigation_ready_bug_is_refused_as_cause_unknown() -> None:

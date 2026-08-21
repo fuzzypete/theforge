@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from .shape_check import Shape, ShapeResult, ShapeVerdict, check
 from .shape_check.parsing import extract_ac_section, extract_bullets
 from .shape_check.types import VERDICT_DESCRIPTIONS, Severity
+from .shape_check.verdict import derive_verdict
 
 NEEDS_GROOMING_LABEL = "needs-grooming"
 
@@ -168,7 +169,21 @@ def refusal_detail(result: ShapeResult, fallback: str) -> str:
             fallback,
             codes=frozenset({ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value}),
         )
-    return skip_detail(result, fallback)
+
+    preferred_details: list[str] = []
+    other_blocking_details: list[str] = []
+    for reason in result.reasons:
+        detail = reason.detail.strip()
+        if reason.severity is not Severity.BLOCKING or not detail:
+            continue
+        if derive_verdict((reason,)) is result.verdict:
+            preferred_details.append(detail)
+        else:
+            other_blocking_details.append(detail)
+
+    if preferred_details or other_blocking_details:
+        return "; ".join(preferred_details + other_blocking_details)
+    return fallback
 
 
 def _classify_operator_action(body: str, labels: list[str]) -> Admissibility:
