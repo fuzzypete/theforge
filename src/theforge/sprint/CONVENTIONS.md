@@ -57,6 +57,14 @@ and sprint-level audit/display behavior.
   discovered and represented.
 - `launch_guard.py`, `collision.py`, `lock.py`, and `ci_checks.py` are the main
   safety rails for concurrent or repeated execution.
+- `live_stories.py` and `story_executions.py` answer one question between them:
+  is this worktree the asking run's own in-flight work, or someone else's?
+  `story_executions.py` holds the ownership records the scheduler writes before
+  dispatch and clears only after settling a story; `live_stories.py` folds those
+  together with surviving agent process groups into the liveness resolution the
+  launch guard consults. Contention detection is answered by establishing whose
+  work a resource is — a resource owned by the asking run is never contention,
+  and a run that cannot prove a resource foreign does not treat it as foreign.
 - `display.py` and `audit.py` shape operator-facing visibility into sprint
   progress and outcomes.
 - `audit_publish.py` owns the end of a run: it builds the terminal audit and
