@@ -100,6 +100,27 @@ Provider argv drift is caught before release.
 the fix belongs in `runners/api.py`
 """
 
+_CAUSE_UNKNOWN_BUG_WITH_FIX_NOTES = """## Observed behavior
+
+`forge status --ready` lists issues the gate refuses.
+
+## Expected behavior
+
+The listing agrees with the gate.
+
+## Diagnosis
+
+- **Observed symptom:** the ready listing and the gate disagree.
+- **Evidence:** run id `1ff6b0bb7992` — five ready issues, five refusals.
+- **Confirmed cause:** unknown
+- **Affected code path:** `ready_queue.build_ready_queue`.
+- **Fix-success criterion:** the listing and sprint entry cannot disagree.
+
+## Notes
+
+the fix belongs in `ready_queue.py`
+"""
+
 
 def _fake_detail(body: str, labels: list[str], title: str = "Some issue"):
     def _fetch(_number, _project_root):
@@ -344,6 +365,30 @@ def test_runnable_bug_surfaces_local_advisories_without_changing_verdict(
     entry = result.advisories[0]
     assert entry.reason_codes == ("bug_fix_location_prescription",)
     assert "fix location" in entry.detail
+
+
+def test_cause_unknown_refusal_does_not_promote_phrase_advice_to_skipped_codes(
+    tmp_path: Path,
+) -> None:
+    issues = [{"number": 2511, "title": "Ready queue disagreement"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(
+            _CAUSE_UNKNOWN_BUG_WITH_FIX_NOTES,
+            ["bug"],
+            "Ready queue disagreement",
+        ),
+    )
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    entry = result.skipped[0]
+    assert entry.verdict == "diagnosis_cause_unknown"
+    assert entry.reason_codes == ("diagnosis_cause_unknown",)
+    assert "fix location" not in entry.detail
+    assert result.advisories == []
 
 
 def test_reopened_issue_with_stale_body_is_advisory_not_blocking(tmp_path: Path) -> None:

@@ -172,7 +172,7 @@ _OBSERVABLE_VERBS = (
     "reject",
 )
 
-_BUG_DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
+DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
 
 
 @dataclass(frozen=True)
@@ -280,7 +280,7 @@ def _bug_report_section_headings(body: str) -> list[str]:
         heading = _heading_text_for_pattern(body, pattern)
         if heading is not None and heading not in headings:
             headings.append(heading)
-    diagnosis = _heading_text_for_pattern(body, _BUG_DIAGNOSIS_HEADING_PATTERN)
+    diagnosis = _heading_text_for_pattern(body, DIAGNOSIS_HEADING_PATTERN)
     if diagnosis is not None and diagnosis not in headings:
         headings.append(diagnosis)
     return headings
@@ -296,8 +296,6 @@ def _format_heading_list(headings: list[str]) -> str:
         return f"{quoted[0]} and {quoted[1]}"
     return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
 
-
-DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
 
 # Derived from the single declarative spec (diagnosis_spec.py) — this module
 # must not carry its own independent list of required components. Kept as a
@@ -708,8 +706,8 @@ def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str])
             code="type_shape_contradiction",
             severity=Severity.BLOCKING,
             detail=(
-                "bug body carries an "
-                f"{offending_heading.strip().lower().replace(' ', '-')} section; "
+                f"bug body carries an {rule.contradicted_section_slug} section"
+                f" ({offending_heading!r}); "
                 f"{rule.type_rule_text} (see authoring guide). "
                 f"{rule.remediation_hint.capitalize()}."
             ),
@@ -725,7 +723,7 @@ def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str])
         code="type_shape_contradiction",
         severity=Severity.BLOCKING,
         detail=(
-            f"{declared_type} body carries bug-report section"
+            f"{declared_type} body carries {rule.contradicted_section_slug} section"
             f"{'s' if len(offending_headings) != 1 else ''} "
             f"{_format_heading_list(offending_headings)}; "
             f"{rule.type_rule_text} (see authoring guide). "

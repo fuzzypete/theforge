@@ -95,6 +95,27 @@ Provider argv drift is caught before release.
 the fix belongs in `runners/api.py`
 """
 
+_CAUSE_UNKNOWN_BUG_WITH_FIX_NOTES = """## Observed behavior
+
+`forge status --ready` lists issues the gate refuses.
+
+## Expected behavior
+
+The listing agrees with the gate.
+
+## Diagnosis
+
+- **Observed symptom:** the ready listing and the gate disagree.
+- **Evidence:** run id `1ff6b0bb7992` — five ready issues, five refusals.
+- **Confirmed cause:** unknown
+- **Affected code path:** `ready_queue.build_ready_queue`.
+- **Fix-success criterion:** the listing and sprint entry cannot disagree.
+
+## Notes
+
+the fix belongs in `ready_queue.py`
+"""
+
 _OPERATOR_ACTION_BODY = """## What
 
 Rotate the production API token.
@@ -238,6 +259,20 @@ def test_investigation_ready_bug_is_refused_as_cause_unknown() -> None:
     assert verdict.admissible is False
     assert verdict.verdict == ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value
     assert verdict.source == "local_check"
+
+
+def test_cause_unknown_refusal_keeps_phrase_advice_out_of_skip_codes() -> None:
+    verdict = classify_admissibility(
+        "Counter is wrong",
+        _CAUSE_UNKNOWN_BUG_WITH_FIX_NOTES,
+        ["bug"],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.reason_codes == ("diagnosis_cause_unknown",)
+    assert "fix location" not in verdict.detail
+    assert verdict.result is not None
+    assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: needs-grooming label ────────────────────────────

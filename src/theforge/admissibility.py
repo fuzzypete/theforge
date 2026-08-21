@@ -97,6 +97,21 @@ def blocking_codes(result: ShapeResult) -> list[str]:
     return [r.code for r in result.reasons if r.severity is Severity.BLOCKING]
 
 
+def _reason_codes(result: ShapeResult, codes: frozenset[str]) -> list[str]:
+    return [r.code for r in result.reasons if r.code in codes]
+
+
+def _reason_detail(result: ShapeResult, fallback: str, *, codes: frozenset[str]) -> str:
+    details = [
+        reason.detail.strip()
+        for reason in result.reasons
+        if reason.code in codes and reason.detail.strip()
+    ]
+    if details:
+        return "; ".join(details)
+    return fallback
+
+
 def advisory_reasons(result: ShapeResult) -> list[tuple[str, str]]:
     return [
         (r.code, r.detail.strip())
@@ -127,6 +142,33 @@ def skip_detail(
             return "; ".join(reason_details)
 
     return fallback
+
+
+def refusal_reason_codes(result: ShapeResult) -> list[str]:
+    """Return only the codes that justify a refused sprint-entry decision.
+
+    Refused issues must keep blocking routes and advisory notes structurally
+    separate. ``diagnosis_cause_unknown`` is the one refusal driven by an
+    advisory-severity local reason, so its typed verdict code is the only
+    advisory reason that belongs in the skip channel.
+    """
+    if result.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN:
+        codes = _reason_codes(
+            result,
+            frozenset({ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value}),
+        )
+        return codes or [ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value]
+    return blocking_codes(result)
+
+
+def refusal_detail(result: ShapeResult, fallback: str) -> str:
+    if result.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN:
+        return _reason_detail(
+            result,
+            fallback,
+            codes=frozenset({ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value}),
+        )
+    return skip_detail(result, fallback)
 
 
 def _classify_operator_action(body: str, labels: list[str]) -> Admissibility:
@@ -211,7 +253,7 @@ def classify_admissibility(
     )
 
     if NEEDS_GROOMING_LABEL in labels and not trust_local_over_grooming_label:
-        codes = blocking_codes(local) or [NEEDS_GROOMING_LABEL_CODE]
+        codes = refusal_reason_codes(local) or [NEEDS_GROOMING_LABEL_CODE]
         verdict = (
             local.verdict
             if local.verdict is not ShapeVerdict.RUNNABLE
@@ -223,7 +265,7 @@ def classify_admissibility(
             verdict=verdict.value,
             verdict_description=VERDICT_DESCRIPTIONS[verdict],
             reason_codes=tuple(codes),
-            detail=skip_detail(
+            detail=refusal_detail(
                 local,
                 fallback=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
             ),
@@ -231,23 +273,22 @@ def classify_admissibility(
         )
 
     if local.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN:
-        codes = [r.code for r in local.reasons] or [ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value]
+        codes = refusal_reason_codes(local)
         return Admissibility(
             admissible=False,
             source="local_check",
             verdict=ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value,
             verdict_description=VERDICT_DESCRIPTIONS[ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN],
             reason_codes=tuple(codes),
-            detail=skip_detail(
+            detail=refusal_detail(
                 local,
                 fallback="bug investigation-ready; confirmed cause not yet identified",
-                include_advisory_when_no_blocking=True,
             ),
             result=local,
         )
 
     if local.shape is not Shape.RUNNABLE:
-        codes = blocking_codes(local) or [r.code for r in local.reasons]
+        codes = refusal_reason_codes(local) or [r.code for r in local.reasons]
         verdict = (
             local.verdict
             if local.verdict is not ShapeVerdict.RUNNABLE
@@ -259,10 +300,9 @@ def classify_admissibility(
             verdict=verdict.value,
             verdict_description=VERDICT_DESCRIPTIONS[verdict],
             reason_codes=tuple(codes),
-            detail=skip_detail(
+            detail=refusal_detail(
                 local,
                 fallback=f"local shape check: {local.suggested_action.value}",
-                include_advisory_when_no_blocking=True,
             ),
             result=local,
         )
