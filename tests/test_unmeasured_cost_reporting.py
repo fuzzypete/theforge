@@ -1649,7 +1649,7 @@ class TestAcceptancePersistenceIsReportedHonestly:
 
         config, manifest_path = TestUnmeasuredResolutionSeam._arrange(tmp_path)
         with patch(
-            "theforge.sprint.runner.persist_accepted_unmeasured_spend",
+            "theforge.sprint.budget_runtime.persist_accepted_unmeasured_spend",
             return_value=False,
         ):
             result, mock_run = TestUnmeasuredResolutionSeam._run(
