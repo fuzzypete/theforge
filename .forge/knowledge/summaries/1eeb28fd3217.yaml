@@ -1,0 +1,124 @@
+schema_version: 2
+run_id: 1eeb28fd3217
+authoritative_run_record: .forge/audits/runs/1eeb28fd3217.json
+generated_at: '2026-08-21T00:13:48.779308+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.011875
+story:
+  slug: issue-2617
+  name: A sprint that re-execs to load newly landed code drops its own in-flight story
+    as a foreign worktree collision, discarding a gate-green, review-approved change
+  github_issue: 2617
+story_shape:
+  work_type: bug
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- concurrency
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/sprint.py
+- src/theforge/sprint/CONVENTIONS.md
+- src/theforge/sprint/launch_guard.py
+- src/theforge/sprint/live_stories.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/story_executions.py
+- tests/test_sprint_owned_execution_registry.py
+what_changed:
+  description: The run changed sprint re-exec handling so a restarted sprint can recognize
+    and continue its own in-flight story executions instead of treating their existing
+    worktrees as foreign collisions and dropping them.
+  approach: It introduced persistent ownership tracking for live story executions
+    across generations, wired that identity through sprint launch and runner flows,
+    and used it to distinguish same-run resources from genuine concurrent contention
+    during re-exec.
+  files_modified: *id002
+what_was_learned:
+- claim: When a long-running workflow can restart itself mid-execution, contention
+    checks must be keyed by durable execution ownership rather than by the mere presence
+    of leftover resources, or the restart path will misclassify its own in-flight
+    work as foreign interference.
+  evidence:
+  - type: file
+    path: src/theforge/sprint/launch_guard.py
+    description: This file is part of the collision gate, and its changes show the
+      guard was made to consult story ownership during launch decisions; that demonstrates
+      the failure mode was caused by presence-based collision detection being insufficient
+      across re-exec boundaries.
+  - type: file
+    path: src/theforge/sprint/live_stories.py
+    description: This file's changes show live story state is now tracked with enough
+      identity to survive generation changes, which demonstrates that restart-safe
+      coordination required preserving ownership metadata rather than rediscovering
+      state from worktree existence alone.
+  - type: file
+    path: src/theforge/sprint/story_executions.py
+    description: The introduction of dedicated story execution tracking shows the
+      run treated execution identity as a first-class concept, supporting the lesson
+      that restartable workflows need durable ownership records to resolve contention
+      correctly.
+  - type: review_cycle
+    cycle: '1'
+    description: The approval explicitly states the implementation preserves same-run
+      in-flight work across re-exec, confirming that the central correctness condition
+      for this bug was ownership continuity over restart rather than generic workspace
+      cleanup.
+  - type: diff
+    ref: 768817f6e0bb5e33ed0221441ae3eb6be6a01354
+    description: This diff captures the ownership-registry based change set, demonstrating
+      that the fix addressed misclassification by adding run-owned execution identity
+      across restart paths instead of changing story evaluation outcomes.
+- claim: For sprint-level concurrency controls, ambiguous ownership should be resolved
+    by preserving in-progress execution state until ownership can be established,
+    because launch-time lifecycle events are not evidence that the underlying story
+    work has become invalid.
+  evidence:
+  - type: file
+    path: src/theforge/sprint/runner.py
+    description: Changes in the sprint runner show preserved execution state is carried
+      forward through restart handling, demonstrating that the run treated re-exec
+      as a continuation point and not as a reason to discard already-advanced story
+      work.
+  - type: file
+    path: src/theforge/cli/sprint.py
+    description: CLI-layer changes show the restart path was explicitly taught to
+      participate in preserving owned executions, which demonstrates that safe behavior
+      under ambiguous ownership had to be enforced at process relaunch boundaries.
+  - type: file
+    path: src/theforge/sprint/CONVENTIONS.md
+    description: The conventions update documents the operational rule around owned
+      executions across generations, showing that preserving in-progress state under
+      self-restart is a reusable behavioral invariant, not a one-off special case.
+  - type: diff
+    ref: e44a236fa75109097762b91d118d9bcbcf37e9db
+    description: This diff shows the runner and launch flow were altered to carry
+      forward prior-generation work instead of dropping it at startup, demonstrating
+      the lesson that restart-time ambiguity should default to continuity of owned
+      work.
+learned_patterns:
+- durable-execution-ownership
+- reexec-safe-contention-checks
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review centered on whether same-run in-flight stories remain attributable across
+    re-exec and accepted the change once that ownership continuity was preserved.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 15.719730399999996
+  dominant_difficulty: Maintaining correct story ownership across process re-exec
+    while concurrent sprint coordination still blocks genuinely foreign worktrees.
