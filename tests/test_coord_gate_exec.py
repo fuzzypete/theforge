@@ -120,6 +120,38 @@ class TestParseDirtyFiles:
         assert _parse_dirty_files("") == []
 
 
+class TestSnapshotGateWorktreeState:
+    """Unit tests for gate-time worktree residue capture."""
+
+    def test_records_untracked_and_ignored_paths(self, tmp_path):
+        from theforge.coordinator.gate import _snapshot_gate_worktree_state
+
+        with patch_gate_shell(
+            return_value=(
+                True,
+                "?? scratch.txt\n!! build/cache.json\n M tracked.py\n",
+                0,
+                False,
+            )
+        ):
+            state = _snapshot_gate_worktree_state(tmp_path)
+
+        assert state == {
+            "untracked": ["scratch.txt"],
+            "ignored": ["build/cache.json"],
+        }
+
+    def test_records_capture_error_without_blocking(self, tmp_path):
+        from theforge.coordinator.gate import _snapshot_gate_worktree_state
+
+        with patch_gate_shell(return_value=(False, "fatal: not a git repository", 128, False)):
+            state = _snapshot_gate_worktree_state(tmp_path)
+
+        assert state["untracked"] == []
+        assert state["ignored"] == []
+        assert state["capture_error"] == "fatal: not a git repository"
+
+
 # ── Stale handoff tests ──────────────────────────────────────────────
 
 

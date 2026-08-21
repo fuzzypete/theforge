@@ -198,6 +198,7 @@ def validation_run_record(
     result: str | None,
     commit: str | None = None,
     skipped: bool = False,
+    worktree_state: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the record of one validation run: what ran, and what it is worth.
 
@@ -218,6 +219,7 @@ def validation_run_record(
             "command": None,
             "result": result,
             "commit": commit,
+            "worktree_state": worktree_state,
             "skipped": True,
             "declared": False,
             "widened": False,
@@ -229,6 +231,7 @@ def validation_run_record(
             "command": None,
             "result": result,
             "commit": commit,
+            "worktree_state": worktree_state,
             "skipped": False,
             "declared": False,
             "widened": False,
@@ -239,6 +242,7 @@ def validation_run_record(
         "command": selection.command,
         "result": result,
         "commit": commit,
+        "worktree_state": worktree_state,
         "skipped": skipped,
         "declared": selection.declared,
         "widened": selection.widened,

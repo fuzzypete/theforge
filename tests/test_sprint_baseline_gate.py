@@ -148,6 +148,25 @@ def test_baseline_gate_preserves_actual_gate_exit_code(tmp_path: Path) -> None:
     assert "boom" in str(baseline.get("output_tail", ""))
 
 
+def test_baseline_gate_records_gate_time_worktree_state(tmp_path: Path) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        workspace=replace(
+            config.workspace,
+            setup_command="mkdir -p build && printf residue > build/cache.txt",
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["worktree_state"] == {
+        "untracked": ["build/cache.txt"],
+        "ignored": [],
+    }
+
+
 def _evidence_files(project_root: Path, sprint_name: str = "Test Sprint") -> list[Path]:
     log_dir = project_root / ".forge" / "logs" / sprint_name
     return sorted(log_dir.glob("*baseline-gate*.txt")) if log_dir.exists() else []
