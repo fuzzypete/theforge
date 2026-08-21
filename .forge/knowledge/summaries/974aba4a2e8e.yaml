@@ -1,0 +1,173 @@
+schema_version: 2
+run_id: 974aba4a2e8e
+authoritative_run_record: .forge/audits/runs/974aba4a2e8e.json
+generated_at: '2026-08-21T19:49:17.675718+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01622875
+story:
+  slug: issue-2524
+  name: Intake remediation writes required content into a region the shape gate strips,
+    so its own rerun can never pass
+  github_issue: 2524
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- parsing
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/intake/agent_rewrite.py
+- src/theforge/intake/findings.py
+- src/theforge/intake/remediation.py
+- src/theforge/shape_check/heuristics.py
+- src/theforge/shape_check/parsing.py
+- tests/test_diagnosis_spec.py
+- tests/test_intake/test_findings.py
+- tests/test_intake/test_remediation.py
+- tests/test_shape_check.py
+what_changed:
+  description: The run addressed intake remediation for diagnosis-shape failures when
+    the only diagnosis content is inside stripped regions such as blockquotes, and
+    improved rerun reporting so unreadable-region cases can be distinguished from
+    genuinely missing content. It also adjusted remediation retry/audit handling around
+    that failure mode.
+  approach: The change traced the failure across shape parsing, diagnosis heuristics,
+    findings/reporting, and intake remediation, then threaded unreadable-region detection
+    into both operator-facing findings and the remediation rewrite flow so retries
+    could target readable document regions instead of reproducing content inside quotes.
+  files_modified: *id002
+what_was_learned:
+- claim: When a validator ignores document regions such as blockquotes, remediation
+    cannot rely on inserting required content into the user's existing local section
+    structure; it must reason about validator-readable regions explicitly, or it can
+    generate substantively correct content that the rerun will still treat as absent.
+  evidence:
+  - type: review_finding
+    finding_id: c2812238072649f7
+    description: Review identified that the rewrite path depended only on prompt wording
+      to keep content out of stripped regions, and that placing the rewrite back into
+      a quote reproduces the same drop, demonstrating that remediation needs an explicit
+      readable-region constraint rather than assuming local placement is safe.
+  - type: file
+    path: src/theforge/intake/remediation.py
+    description: This file was part of the remediation control path inspected and
+      changed for rerun handling, which is where the run had to incorporate unreadable-region
+      awareness to avoid repeating a validator-invisible rewrite.
+  - type: file
+    path: src/theforge/shape_check/parsing.py
+    description: This parser file is the source of what the gate can and cannot read;
+      its involvement shows the failure was rooted in parser-visible regions, not
+      in the substance of the generated diagnosis bullets.
+- claim: Operator-facing failure reports and automation decisions need a distinct
+    signal for 'content exists only in an unreadable region' versus 'content is missing',
+    because the same missing-token list can arise from two different causes that require
+    different handling.
+  evidence:
+  - type: review_finding
+    finding_id: 822500593957475e
+    description: Review called out that the production incident flowed through the
+      token-list branch rather than a missing-section branch, showing that unreadable-region
+      detection must survive even when the surface symptom is just a list of missing
+      bullets.
+  - type: review_finding
+    finding_id: 3dcc0d50bae6aa7a
+    description: Review found that remediation's second-call decision was driven by
+      matching fixed English phrases in operator prose, demonstrating that distinguishing
+      unreadable-region failures is operationally important and should not be left
+      implicit in generic missing-content messaging.
+  - type: file
+    path: src/theforge/intake/findings.py
+    description: This findings/reporting file was changed because the run needed the
+      failure classification to be carried into operator-visible output rather than
+      leaving unreadable-region cases indistinguishable from ordinary missing-content
+      failures.
+- claim: Quoted-region detection is sensitive to markdown block segmentation details,
+    especially blank lines, so verification for unreadable-region logic must include
+    non-contiguous and separated quote layouts rather than only clean uninterrupted
+    blockquotes.
+  evidence:
+  - type: review_finding
+    finding_id: ad74638370c16966
+    description: Review found that blank lines without quote markers split a quoted
+      diagnosis heading from its bullets into different blocks, which caused the unreadable-region
+      hint to disappear and revert to a plain missing-bullet report.
+  - type: review_finding
+    finding_id: d1178c49c97eb153
+    description: A later review finding reported that merging distinct quoted regions
+      across blank lines could incorrectly associate an unrelated heading and bullets,
+      showing the same parsing area can fail in both over-splitting and over-merging
+      directions.
+  - type: file
+    path: src/theforge/shape_check/parsing.py
+    description: The parsing layer is where quote-block boundaries are recognized,
+      and its repeated review findings show that markdown block formation details
+      directly control whether unreadable-region diagnosis is reliable.
+- claim: When remediation can make multiple agent calls for one story, cost and audit
+    aggregation must be per-attempt rather than last-write-wins, or rerun/retry paths
+    underreport spend and lose execution history.
+  evidence:
+  - type: review_finding
+    finding_id: b0c43240c4cc812f
+    description: Review showed that after a second remediation call the audit block
+      retained only the second agent record, causing a 0.40 plus 0.35 sequence to
+      be reported as 0.35 and sometimes losing known cost entirely, which demonstrates
+      the need for cumulative per-attempt accounting on retrying paths.
+  - type: file
+    path: src/theforge/intake/remediation.py
+    description: This remediation orchestration file owned the multi-attempt flow
+      and therefore the place where per-attempt cost/history had to be preserved instead
+      of overwritten.
+learned_patterns:
+- validator-readable-region-targeting
+- unreadable-region-vs-missing-content
+- blockquote-boundary-edge-cases
+- multi-attempt-audit-aggregation
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 822500593957475e
+    severity: P1
+    file: src/theforge/shape_check/heuristics.py
+    description: The incident this fix was filed against reported four named missing
+      Diagnosis bullets rather than a missing Diagnosis section, which routes through
+      the token-list branch of the unreadable-region hint, and that branch - including
+      its label formatting and multi-region joining - is exercised by no test in the
+      change, while both added tests cover only the missing-section branch.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: b0c43240c4cc812f
+    severity: P1
+    file: src/theforge/intake/remediation.py
+    description: When a story's intake remediation makes a second agent call after
+      an unreadable-region rerun failure, the audit block keeps only the second call's
+      agent record, so a run that spent 0.40 and then 0.35 reports 0.35 to the sprint
+      cost rollup, and when the second call's transport reports no cost the whole
+      story becomes cost-unknown even though the first call had a measured price.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced that unreadable-region handling had to be
+    carried consistently across parsing, findings text, remediation control flow,
+    and retry accounting, because partial fixes in one layer recreated the same operator-visible
+    failure elsewhere.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 7.57734885
+  dominant_difficulty: The bug spanned a boundary between markdown parsing semantics
+    and remediation orchestration, so the hard part was preserving one consistent
+    notion of 'validator-readable content' across detection, messaging, retries, and
+    audit state.
