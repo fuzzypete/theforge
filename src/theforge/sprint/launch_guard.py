@@ -24,6 +24,7 @@ from theforge.sprint.prior_landing import (
     as_prior_record,
     reconcilable_prior_success,
 )
+from theforge.sprint.story_executions import sweep_story_executions
 
 # Reason codes used as the value in the ``dropped_slugs`` mapping.  These are
 # consumed by the sprint runner for audit visibility and by tests.
@@ -39,10 +40,14 @@ REASON_LOCK_HELD = "story-lock-held-by-other-process"
 REASON_RECONCILE_PRIOR_DONE = "reconciled-prior-generation-done"
 REASON_STRANDED_WORKTREE = "stranded-prior-generation-worktree"
 # Not a drop reason: the deferral marker for a story of *this* sprint generation
-# whose agent process group is still running across the re-exec boundary (the pid
-# survives ``os.execv``). Its worktree is this run's own live work, not a foreign
-# collision. The runner surfaces this string on the story's live status while it
-# waits for the inherited agent to finish, then resumes the story.
+# that is still this run's own in-flight work across the re-exec boundary (the pid
+# survives ``os.execv``). The evidence is either an agent process group this pid
+# spawned and that is still alive, or an ownership record the scheduler wrote
+# before dispatching the story and has not yet settled — a story executing
+# in-process at the instant of the exec has the second and never the first
+# (#2617). Its worktree is this run's own live work, not a foreign collision. The
+# runner surfaces this string on the story's live status while it waits for any
+# inherited agent to finish, then resumes the story.
 REASON_IN_FLIGHT = "in-flight-current-sprint"
 # Not a drop reason either: the deferral marker for a story whose liveness could
 # not be established (an unreadable/absent agent sidecar) but whose worktree is
@@ -72,6 +77,7 @@ def acquire_launch_story_locks(
     prior_outcomes: dict[str, str | dict] | None = None,
     live_slugs: set[str] | None = None,
     unresolved_slugs: set[str] | None = None,
+    registered_slugs: set[str] | None = None,
     canonical_refs_by_slug: Mapping[str, str] | None = None,
 ) -> tuple[list, int | None, dict[str, str]]:
     """Acquire launch-time story locks after checking for active worktrees.
@@ -98,9 +104,21 @@ def acquire_launch_story_locks(
     a re-exec boundary (see :mod:`theforge.sprint.live_stories`). They are
     excluded from every reconciliation that would treat their worktree as foreign
     (escalation scan, collision classification, lock sweeping) but remain
-    schedulable and keep their launch lock: the runner defers each one until its
+    schedulable and keep their launch lock: the runner defers each one until any
     inherited agent exits and then resumes it. Dropping them instead would strand
-    the story, since no other process can adopt an agent group this pid owns.
+    the story — no other process can adopt an agent group this pid owns, and no
+    other process is responsible for a story this run declared itself executing.
+
+    ``registered_slugs`` names the subset of ``live_slugs`` vouched for only by an
+    ownership record — this run's work with no surviving agent process group. The
+    distinction changes exactly one decision here: an ownership record can outlive
+    the story it describes by the width of the window between the scheduler
+    writing a story's terminal outcome and clearing the record, so where such a
+    record collides with a prior generation's *reconcilable* success, the
+    recorded landing wins and the story is reconciled rather than re-dispatched
+    (#2189's finished work must not be paid for twice). A live agent group is not
+    subject to that: a process that is running now outranks any record of a past
+    outcome.
 
     ``unresolved_slugs`` names the stories whose liveness could *not* be
     established (see :class:`theforge.sprint.live_stories.LivenessResolution`).
@@ -135,17 +153,40 @@ def acquire_launch_story_locks(
     # A story whose liveness could not be resolved is held to the same rule: the
     # lookup failing is not evidence that its agent is gone, so it is deferred
     # rather than reconciled against a worktree that may be under active write.
-    confirmed_live = [s for s in slugs if s in (live_slugs or set())]
+    prior_outcomes = prior_outcomes or {}
+    # Precedence, decided before anything reads these sets: an ownership record
+    # is cleared *after* the scheduler settles a story, so a crash or a re-exec
+    # inside that window leaves a record describing work that already finished
+    # and landed. Where the prior generation recorded exactly that, its landing
+    # is the better evidence and the record is disregarded — otherwise finished,
+    # paid-for work would be re-dispatched and #2189's reconciliation bypassed.
+    _superseded = {
+        s for s in (registered_slugs or set()) if reconcilable_prior_success(prior_outcomes.get(s))
+    }
+    confirmed_live = [s for s in slugs if s in (live_slugs or set()) and s not in _superseded]
     unresolved_live = [
-        s for s in slugs if s in (unresolved_slugs or set()) and s not in confirmed_live
+        s
+        for s in slugs
+        if s in (unresolved_slugs or set()) and s not in confirmed_live and s not in _superseded
     ]
     in_flight_slugs = confirmed_live + unresolved_live
+    registered_only = [s for s in confirmed_live if s in (registered_slugs or set())]
+    with_agents = [s for s in confirmed_live if s not in (registered_slugs or set())]
     dropped: dict[str, str] = {}
-    if confirmed_live:
+    if with_agents:
         print(
-            f"[forge] IN-FLIGHT {', '.join(confirmed_live)}: agent process group "
+            f"[forge] IN-FLIGHT {', '.join(with_agents)}: agent process group "
             "from this sprint survived the re-exec; preserving the live worktree and "
             "deferring the story until its agent finishes.",
+            file=sys.stderr,
+            flush=True,
+        )
+    if registered_only:
+        print(
+            f"[forge] IN-FLIGHT {', '.join(registered_only)}: this sprint dispatched "
+            "the story and has not settled it, so the worktree is this run's own "
+            "unfinished work rather than a collision; preserving it and resuming the "
+            "story.",
             file=sys.stderr,
             flush=True,
         )
@@ -192,6 +233,17 @@ def acquire_launch_story_locks(
             flush=True,
         )
 
+    # Ownership records left by runs that are gone. Swept *after* the liveness
+    # resolution that produced ``live_slugs`` has already read them, and never
+    # for a story this launch is deferring: a record only describes work nothing
+    # is doing once its owning process is provably not this one and not alive.
+    try:
+        sweep_story_executions(config.project_root, exclude_slugs=set(in_flight_slugs))
+    except OSError:
+        # A sweep that could not run leaves stale records, which cost a later
+        # launch a deferral it can reconcile — never a reason to fail this one.
+        pass
+
     if not allow_drop:
         # Initial-launch path: escalated stories are silently excluded from
         # scheduling, active worktree collisions still abort, and story-lock
@@ -231,7 +283,6 @@ def acquire_launch_story_locks(
     # being flattened into a launch collision. A succeeded outcome whose landing
     # was owed and never completed is NOT a completed story: it is reported as
     # stranded, so a later generation can resume it to actual landing (#2189).
-    prior_outcomes = prior_outcomes or {}
     active_worktrees = check_active_worktrees(
         [s for s in schedulable if s not in in_flight_slugs],
         config.workspace.path_pattern,

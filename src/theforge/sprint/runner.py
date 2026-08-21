@@ -1544,6 +1544,7 @@ def _continuation_evidence(
     reexec: bool,
     live_story_slugs: "AbstractSet[str]",
     unresolved_slugs: "AbstractSet[str] | None" = None,
+    registered_slugs: "AbstractSet[str] | None" = None,
 ) -> str | None:
     """Describe why this launch is a continuation of in-flight work, or None.
 
@@ -1551,9 +1552,16 @@ def _continuation_evidence(
     change can be observed by the sprint's *own* first pull, before any story has
     started, and such a launch is still a genuine start. What distinguishes a
     continuation is observed live work — agent process groups this same pid
-    spawned before the re-exec and that are still running. Startup-only checks
-    are skipped on exactly that evidence, never on the re-exec flag alone, so a
-    launch that has not started anything keeps its full startup sequence.
+    spawned before the re-exec and that are still running, or stories the prior
+    image had dispatched and never settled. Startup-only checks are skipped on
+    exactly that evidence, never on the re-exec flag alone, so a launch that has
+    not started anything keeps its full startup sequence.
+
+    The two kinds of evidence are named apart because they claim different
+    things. A process group is a process; an ownership record is a
+    responsibility, and a story executing in-process when the exec fired has only
+    the second (#2617). Reporting the second as the first would tell an operator
+    a process is running when none is.
 
     Deliberately narrow: prior *recorded* outcomes are not used as evidence,
     because a sprint id is stable across separate invocations of the same sprint
@@ -1566,11 +1574,18 @@ def _continuation_evidence(
     """
     if not reexec:
         return None
+    registered = frozenset(registered_slugs or ()) & frozenset(live_story_slugs)
+    with_agents = frozenset(live_story_slugs) - registered
     parts: list[str] = []
-    if live_story_slugs:
+    if with_agents:
         parts.append(
             "agent process groups still running for "
-            f"{', '.join(sorted(live_story_slugs))} after the re-exec"
+            f"{', '.join(sorted(with_agents))} after the re-exec"
+        )
+    if registered:
+        parts.append(
+            "stories this sprint had dispatched and not settled when the re-exec "
+            f"fired: {', '.join(sorted(registered))}"
         )
     if unresolved_slugs:
         parts.append(
@@ -3799,6 +3814,13 @@ class SprintRunContext:
     entry_intake_outcomes: "dict[int, IntakeOutcome] | None" = None
     live_story_slugs: frozenset[str] = frozenset()
     unresolved_live_slugs: frozenset[str] = frozenset()
+    # The subset of ``live_story_slugs`` whose only evidence is this run's own
+    # ownership record — in-flight work with no surviving agent process group
+    # (#2617). Carried so operator-facing text can say which it is: "an agent is
+    # still running" and "this sprint dispatched it and has not settled it" call
+    # for different reading, and only one of them is true of a story that was
+    # executing in-process when the re-exec fired.
+    registered_live_slugs: frozenset[str] = frozenset()
     # Operator acceptance of unmeasured spend. Consulted by the budget guard and
     # never written by the run, so it belongs here beside ``force`` rather than
     # on the execution state (#2399).
@@ -3822,6 +3844,11 @@ class SprintRunContext:
             self,
             "unresolved_live_slugs",
             frozenset(s for s in (self.unresolved_live_slugs or ()) if s and s not in confirmed),
+        )
+        object.__setattr__(
+            self,
+            "registered_live_slugs",
+            frozenset(s for s in (self.registered_live_slugs or ()) if s in confirmed),
         )
         object.__setattr__(
             self,
@@ -3855,11 +3882,13 @@ class SprintRunContext:
             resolved = sprint
         live = options.pop("live_story_slugs", None) or ()
         unresolved = options.pop("unresolved_live_slugs", None) or ()
+        registered = options.pop("registered_live_slugs", None) or ()
         return cls(
             config=config,
             resolved=resolved,
             live_story_slugs=frozenset(live),  # type: ignore[arg-type]
             unresolved_live_slugs=frozenset(unresolved),  # type: ignore[arg-type]
+            registered_live_slugs=frozenset(registered),  # type: ignore[arg-type]
             **options,  # type: ignore[arg-type]
         )
 
@@ -4003,6 +4032,13 @@ class SprintExecutionState:
     # Stories this generation actually put through a coordinator run — and
     # therefore the ones whose seeded prior cost was overwritten.
     ran_this_generation: set[str] = field(default_factory=set)
+    # Slugs with a live ownership record on disk (#2617). A story is added the
+    # moment this sprint takes responsibility for it — before ``pool.submit``,
+    # so no work is ever spent unowned — and removed only once the scheduler has
+    # settled its terminal outcome. The set mirrors what is in
+    # ``.forge/runs/stories``; the files are the durable half, this is what lets
+    # the scheduler find them without re-listing the directory.
+    owned_story_executions: set[str] = field(default_factory=set)
 
     @classmethod
     def for_run(cls, context: SprintRunContext) -> "SprintExecutionState":
@@ -4022,6 +4058,66 @@ class SprintExecutionState:
 # execution state and their own per-call inputs, and nothing else: the state
 # is the parameter, not a list of the values it holds, which is what makes the
 # next extraction a move rather than a re-decision.
+
+
+def _claim_story_execution(state: SprintExecutionState, slug: str) -> None:
+    """Record on disk that this sprint owns *slug*'s execution.
+
+    Called before the story is submitted to the pool, because the record is what
+    a re-exec of this same process reads to tell its own unfinished work from a
+    competing run's leftovers (#2617). A story executing in pure Python at the
+    instant of an ``os.execv`` leaves no process group behind; without this
+    record its worktree surfaces on the far side as an ``active-worktree-collision``
+    and the story is dropped, however far it had got and however much it cost.
+
+    Raises on failure, and the caller must not dispatch. Launching a story whose
+    ownership could not be written is launching spend that the next re-exec is
+    entitled to throw away — the asymmetry the story is about.
+    """
+    from .story_executions import register_story_execution  # noqa: PLC0415
+
+    config = state.context.config
+    try:
+        worktree = config.project_root / config.workspace.path_pattern.format(slug=slug)
+    except (KeyError, IndexError, ValueError):
+        worktree = None
+    register_story_execution(
+        slug,
+        project_root=config.project_root,
+        worktree=worktree,
+        run_id=state.sprint_run_id or state.context.run_id,
+    )
+    state.owned_story_executions.add(slug)
+
+
+def _release_story_execution(state: SprintExecutionState, slug: str) -> None:
+    """Drop the ownership record for a story the scheduler has settled."""
+    from .story_executions import clear_story_execution  # noqa: PLC0415
+
+    state.owned_story_executions.discard(slug)
+    clear_story_execution(slug, project_root=state.context.config.project_root)
+
+
+def _release_settled_story_executions(state: SprintExecutionState) -> None:
+    """Clear ownership for every story whose terminal outcome is now recorded.
+
+    Deliberately *not* done in the worker's ``finally``. The worker returning is
+    not the end of the story: the scheduler still has to record the outcome,
+    attempt integration, and write the live state. A re-exec inside that window
+    would find no ownership record and no prior-generation outcome either — the
+    precise hole this registry closes — so the record is held until both halves
+    are on disk, and a redundant deferral is accepted as the cheap side.
+
+    Once the outcome *is* recorded, the ordinary prior-generation reconciliation
+    can speak for the story, and it speaks more precisely than the record does.
+    """
+    for slug in sorted(state.owned_story_executions):
+        if slug in state.active:
+            continue
+        entry = state.stories.get(slug)
+        if entry is None or not entry.outcome.is_terminal:
+            continue
+        _release_story_execution(state, slug)
 
 
 def _set_outcome(
@@ -5090,6 +5186,20 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     _ctx = replace(_ctx, sprint_id=_sprint_id)
     _sprint_state = SprintExecutionState.for_run(_ctx)
 
+    # Ownership records the pre-exec image left behind. Adopted rather than
+    # ignored: this is the same process, so they are this run's own claims, and
+    # whichever of them the launch guard did not turn into scheduled work (a
+    # reconciled prior landing, a story dropped for another reason) must still be
+    # released when the run ends rather than outliving it (#2617).
+    try:
+        from .story_executions import scan_story_executions as _scan_executions  # noqa: PLC0415
+
+        _sprint_state.owned_story_executions.update(
+            record.slug for record in _scan_executions(_ctx.config.project_root).owned
+        )
+    except Exception as exc:  # noqa: BLE001 - adoption is hygiene, never a launch blocker
+        _log(f"WARN could not read this sprint's story ownership records: {exc}")
+
     # Sprint-level structured logger
     _sprint_state.sprint_run_id = _generate_run_id()
     _sprint_logger = StructuredLogger(
@@ -5209,6 +5319,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
         reexec=_ctx.reexec,
         live_story_slugs=_ctx.live_story_slugs,
         unresolved_slugs=_ctx.unresolved_live_slugs,
+        registered_slugs=_ctx.registered_live_slugs,
     )
     if _continuation_reason is not None:
         baseline_gate = _skipped_baseline_gate(_ctx.config, _continuation_reason)
@@ -6895,10 +7006,12 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _status = "skipped"
                 _detail = {"final_outcome": "SKIPPED"}
             elif _slug in _inflight_slugs:
-                # Still running from before the re-exec — or not resolvable as
-                # finished, which this run treats the same way. Either way it
-                # waits for the agent and then resumes the story: not a drop, and
-                # not something an operator should read as idle.
+                # Still this run's own unfinished work from before the re-exec —
+                # an agent group that survived it, a story the prior image had
+                # dispatched and not settled, or liveness that could not be
+                # resolved, which this run treats the same way. In every case it
+                # waits for any inherited agent and then resumes the story: not a
+                # drop, and not something an operator should read as idle.
                 _in_flight_reason = (
                     REASON_IN_FLIGHT_UNRESOLVED
                     if _slug in _ctx.unresolved_live_slugs
@@ -6906,7 +7019,17 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 )
                 _status = "waiting"
                 _blocked_by = [f"in flight: {_in_flight_reason}"]
-                _detail = {"in_flight": True, "in_flight_reason": _in_flight_reason}
+                _detail = {
+                    "in_flight": True,
+                    "in_flight_reason": _in_flight_reason,
+                    # Names what actually vouches for the story, so a reader is
+                    # never told a process group is running when none is (#2617).
+                    "in_flight_evidence": (
+                        "sprint-owned-execution"
+                        if _slug in _ctx.registered_live_slugs
+                        else "agent-process-group"
+                    ),
+                }
             elif _blocked_by:
                 _status = "blocked"
                 _detail = {}
@@ -7125,8 +7248,87 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
 
     _sprint_state.publish_gate_hold = _make_gate_hold_publisher(_sprint_state.state_writer)
 
+    def _claim_or_fail(slugs_to_claim: list[str]) -> bool:
+        """Take durable ownership of every slug, or fail them all and dispatch none.
+
+        Fail-closed on purpose (#2617). Ownership is what makes this sprint's own
+        re-exec recognise the worktree as its own unfinished work; a story
+        dispatched without it is spend the next re-exec may legitimately discard.
+        An unwritable registry is an infrastructure fault of this run, and it is
+        recorded as one — not as a judgment on the story, which nothing has
+        judged.
+        """
+        claimed: list[str] = []
+        try:
+            for _slug in slugs_to_claim:
+                _claim_story_execution(_sprint_state, _slug)
+                claimed.append(_slug)
+        except Exception as exc:
+            for _slug in claimed:
+                _release_story_execution(_sprint_state, _slug)
+            _failed_at = datetime.datetime.now(datetime.timezone.utc)
+            _claim_error = (
+                f"Could not record this sprint's ownership of the story before "
+                f"dispatching it: {type(exc).__name__}: {exc}"
+            )
+            for _slug in slugs_to_claim:
+                _log(f"ERROR {_slug}: {_claim_error} — not dispatching")
+                _claim_result = _abnormal_story_result(
+                    _slug,
+                    config=_ctx.config,
+                    sprint_name=_ctx.resolved.name,
+                    started_at=_failed_at,
+                    error=_claim_error,
+                    error_type=type(exc).__name__,
+                    message=(
+                        "Story was not dispatched: its execution-ownership record "
+                        "could not be written, and running it unowned risks a "
+                        "mid-run re-exec discarding the work as a foreign collision"
+                    ),
+                )
+                _claim_cause = build_abnormal_cause(
+                    kind=ABNORMAL_SHARED_INFRASTRUCTURE,
+                    cause=_claim_error,
+                    error_type=type(exc).__name__,
+                    run_id=_claim_result.state.run_id,
+                    source="sprint.runner:story-execution-registry",
+                )
+                _claim_result.state.abnormal_termination = _claim_cause
+                _claim_result.infrastructure_failure = True
+                _sprint_state.story_times[_slug] = (_failed_at, _failed_at)
+                _sprint_state.results.append((slug_to_spec[_slug], _claim_result))
+                _write_story_audit(
+                    _ctx.config,
+                    _ctx.slug_to_context[_slug][0],
+                    _claim_result,
+                    sprint_id=_ctx.sprint_id,
+                )
+                _set_outcome(
+                    _sprint_state,
+                    _slug,
+                    StoryOutcome.FAILED,
+                    phase="ESCALATE",
+                    failure_cause=_claim_cause,
+                )
+                _persist_current_story_result(
+                    _sprint_state,
+                    _slug,
+                    _claim_result,
+                    started_at=_failed_at,
+                    finished_at=_failed_at,
+                )
+                _sprint_state.dag.mark_skipped(_slug)
+            return False
+        return True
+
     with ThreadPoolExecutor(max_workers=max_parallel) as pool:
         while not _sprint_state.dag.is_done():
+            # Ownership records for stories this scheduler has finished settling.
+            # Swept here, at the top of a pass, so every exit from the result loop
+            # below — including the ones that ``continue`` the outer loop — passes
+            # through it, and so a record is never dropped while its story is
+            # still being reconciled (#2617).
+            _release_settled_story_executions(_sprint_state)
             _log(
                 f"[debug] loop: active={list(_sprint_state.active.keys())} "
                 f"fin={_sprint_state.dag._finished}"
@@ -7303,6 +7505,10 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                     elif task.slug != _dispatchable[0]:
                         # Wait for the leader; it dispatches the whole group.
                         continue
+                    elif not _claim_or_fail(list(_dispatchable)):
+                        # Every member is now recorded as an infrastructure
+                        # failure and marked skipped; nothing was submitted.
+                        continue
                     else:
                         _batch_tasks = [_ready_by_slug[m] for m in _dispatchable]
                         _leader_task = _make_batch_leader(_batch_tasks, _batch_gid)
@@ -7395,6 +7601,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                             _sprint_state.active[_member_slug] = _batch_fut
                             story_deadlines[_member_slug] = _batch_deadline
                         continue
+
+                # Ownership before anything that spends (#2617). An inherited
+                # story already has a record from the generation that dispatched
+                # it; rewriting it here is harmless and keeps the one rule —
+                # nothing reaches the pool unowned — free of exceptions.
+                if not _claim_or_fail([task.slug]):
+                    continue
 
                 _sprint_state.batch_assignments[task.slug] = _sprint_state.batch_number
                 _submission_counter[0] += 1
@@ -8253,6 +8466,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
     # is still live; leaving one registered would let a later sprint's worker
     # inherit a stale ceiling through the shared slug registry.
     worker_budget.clear_worker_budgets()
+    # For the same reason, nothing this run declared itself executing is still in
+    # flight. The scheduler clears each record as it settles the story; this
+    # covers whatever the work loop exited around (a stop, a deadlock sweep, a
+    # queued PR resolved at wrap-up) so no ownership claim outlives the run that
+    # made it.
+    for _owned_slug in sorted(_sprint_state.owned_story_executions):
+        _release_story_execution(_sprint_state, _owned_slug)
     duration = (finished_at - started_at).total_seconds()
 
     # ── Terminalize live state ────────────────────────────────────────
