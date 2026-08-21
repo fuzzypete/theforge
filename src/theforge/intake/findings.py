@@ -37,11 +37,24 @@ class FixType(str, Enum):
     SEMANTIC = "semantic"
 
 
+class RerunHint(str, Enum):
+    """Optional coordinator hint for a specific post-rewrite rerun outcome."""
+
+    UNREADABLE_REQUIRED_REGION = "unreadable_required_region"
+
+
 # Codes emitted by the existing shape_check heuristics that can be patched
 # without an LLM. Anything not in this set is treated as semantic.
 _MECHANICAL_SHAPE_CODES: frozenset[str] = frozenset(
     {
         "missing_type",
+    }
+)
+_UNREADABLE_REGION_MARKERS: frozenset[str] = frozenset(
+    {
+        "inside a blockquoted region",
+        "inside a fenced code block",
+        "inside a region it does not scan",
     }
 )
 
@@ -61,6 +74,8 @@ class IntakeFinding:
         suggested_replacement: proposed replacement text for the affected
             section, or ``None`` for structural findings with no obvious patch.
         fix_type: ``mechanical`` (no LLM needed) or ``semantic`` (agent pass).
+        rerun_hint: machine-readable coordinator hint for bounded follow-up
+            handling after a rerun, or ``None`` when no special handling applies.
     """
 
     code: str
@@ -69,6 +84,7 @@ class IntakeFinding:
     problem: str
     suggested_replacement: str | None = None
     fix_type: FixType = FixType.SEMANTIC
+    rerun_hint: RerunHint | None = None
 
     def as_dict(self) -> dict:
         return {
@@ -78,6 +94,7 @@ class IntakeFinding:
             "problem": self.problem,
             "suggested_replacement": self.suggested_replacement,
             "fix_type": self.fix_type.value,
+            "rerun_hint": self.rerun_hint.value if self.rerun_hint is not None else None,
         }
 
 
@@ -104,6 +121,15 @@ def _location_for_code(code: str) -> str:
     return "body"
 
 
+def _rerun_hint_for_reason(reason: Reason) -> RerunHint | None:
+    if reason.code != "needs_diagnosis":
+        return None
+    detail = reason.detail.lower()
+    if any(marker in detail for marker in _UNREADABLE_REGION_MARKERS):
+        return RerunHint.UNREADABLE_REQUIRED_REGION
+    return None
+
+
 def findings_from_shape_result(result: ShapeResult) -> list[IntakeFinding]:
     """Map a ``ShapeResult`` to a list of ``IntakeFinding``.
 
@@ -128,4 +154,5 @@ def _finding_from_reason(reason: Reason) -> IntakeFinding:
         problem=reason.detail,
         suggested_replacement=None,
         fix_type=_classify_fix_type(reason.code),
+        rerun_hint=_rerun_hint_for_reason(reason),
     )

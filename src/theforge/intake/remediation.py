@@ -3,8 +3,9 @@
 Runs once per sprint at the runner injection point. For every task with a
 GitHub issue, fetches the current body+labels, runs the grooming check,
 applies any mechanical patches, and — when ``intake.auto_fix: true`` —
-hands semantic findings to a one-pass agent rewrite. The gate is rerun at
-most once per story; no retry loop.
+hands semantic findings to an agent rewrite. The gate is rerun once per
+story, with one bounded follow-up rewrite only for unreadable required
+Diagnosis content.
 
 This module owns GitHub I/O via injectable callables so the orchestration
 remains testable without network. Production wires real ``gh`` invocations.
@@ -24,18 +25,19 @@ from pathlib import Path
 from ..shape_check import check as shape_check
 from ..task import TaskStory
 from .agent_rewrite import AgentRewriteResult
-from .findings import FixType, IntakeFinding, IntakeSeverity, findings_from_shape_result
+from .findings import (
+    FixType,
+    IntakeFinding,
+    IntakeSeverity,
+    RerunHint,
+    findings_from_shape_result,
+)
 from .groom import groom_check
 from .mechanical import apply_mechanical_fixes
 
 _log = logging.getLogger("theforge.intake")
 
 _UNREADABLE_DIAGNOSIS_FINDING = "needs_diagnosis"
-_UNREADABLE_REGION_MARKERS: tuple[str, ...] = (
-    "inside a blockquoted region",
-    "inside a fenced code block",
-    "inside a region it does not scan",
-)
 
 
 # Shape-gate skip reasons whose remediation is a body edit. The shape gate's
@@ -273,23 +275,37 @@ def _build_audit(
     *,
     consumed: list[IntakeFinding],
     semantic_remaining: list[IntakeFinding],
-    agent: AgentRewriteResult | None = None,
+    agent_attempts: list[AgentRewriteResult] | None = None,
     remediation_source: str = "none",
     issue_updated: bool = False,
     comment_posted: bool = False,
     candidate_artifact_path: str | None = None,
 ) -> dict[str, object]:
+    agent_attempts = list(agent_attempts or [])
+    latest_agent = agent_attempts[-1] if agent_attempts else None
+    aggregate_cost = _sum_attempt_costs(agent_attempts)
     return {
         "remediation_source": remediation_source,
         "mechanical_findings": [f.as_dict() for f in consumed],
         "semantic_findings": [f.as_dict() for f in semantic_remaining],
         "agent": {
-            "attempted": bool(agent.attempted) if agent is not None else False,
-            "detail": agent.detail if agent is not None else "",
-            "profile_name": agent.profile_name if agent is not None else None,
-            "model_used": agent.model_used if agent is not None else None,
-            "cost_usd": agent.cost_usd if agent is not None else None,
-            "transport_used": agent.transport_used if agent is not None else None,
+            "attempted": any(agent.attempted for agent in agent_attempts),
+            "detail": latest_agent.detail if latest_agent is not None else "",
+            "profile_name": latest_agent.profile_name if latest_agent is not None else None,
+            "model_used": latest_agent.model_used if latest_agent is not None else None,
+            "cost_usd": aggregate_cost,
+            "transport_used": latest_agent.transport_used if latest_agent is not None else None,
+            "attempts": [
+                {
+                    "attempted": agent.attempted,
+                    "detail": agent.detail,
+                    "profile_name": agent.profile_name,
+                    "model_used": agent.model_used,
+                    "cost_usd": agent.cost_usd,
+                    "transport_used": agent.transport_used,
+                }
+                for agent in agent_attempts
+            ],
         },
         "issue_updated": issue_updated,
         "comment_posted": comment_posted,
@@ -345,10 +361,21 @@ def _can_retry_unreadable_diagnosis(findings: list[IntakeFinding]) -> bool:
     for finding in findings:
         if finding.code != _UNREADABLE_DIAGNOSIS_FINDING:
             return False
-        detail = finding.problem.lower()
-        if not any(marker in detail for marker in _UNREADABLE_REGION_MARKERS):
+        if finding.rerun_hint is not RerunHint.UNREADABLE_REQUIRED_REGION:
             return False
     return True
+
+
+def _sum_attempt_costs(agent_attempts: list[AgentRewriteResult]) -> float | None:
+    """Aggregate attempt cost with cost-unknown poisoning semantics."""
+    if not agent_attempts:
+        return None
+    total = 0.0
+    for agent in agent_attempts:
+        if agent.cost_usd is None:
+            return None
+        total += agent.cost_usd
+    return total
 
 
 def _remediate_one(
@@ -399,6 +426,7 @@ def _remediate_one(
     # to verify. If no semantic findings remain, skip the agent call.
     proposed_body = patched_body
     agent_result: AgentRewriteResult | None = None
+    agent_attempts: list[AgentRewriteResult] = []
     if semantic_remaining:
         if agent_caller is None:
             return IntakeOutcome(
@@ -413,6 +441,7 @@ def _remediate_one(
                 ),
             )
         agent_result = agent_caller(patched_body, semantic_remaining, comments)
+        agent_attempts.append(agent_result)
         if not agent_result.replacement:
             return IntakeOutcome(
                 slug=slug,
@@ -423,7 +452,7 @@ def _remediate_one(
                 audit=_build_audit(
                     consumed=_consumed,
                     semantic_remaining=semantic_remaining,
-                    agent=agent_result,
+                    agent_attempts=agent_attempts,
                     remediation_source="agent_no_output",
                 ),
             )
@@ -443,6 +472,7 @@ def _remediate_one(
         and _can_retry_unreadable_diagnosis(rerun_blocking)
     ):
         retry_agent_result = agent_caller(retry_source_body, rerun_blocking, comments)
+        agent_attempts.append(retry_agent_result)
         if retry_agent_result.replacement:
             agent_result = retry_agent_result
             proposed_body = retry_agent_result.replacement
@@ -509,7 +539,7 @@ def _remediate_one(
                 audit=_build_audit(
                     consumed=_consumed,
                     semantic_remaining=semantic_remaining,
-                    agent=agent_result,
+                    agent_attempts=agent_attempts,
                     remediation_source=("agent" if agent_result is not None else "mechanical"),
                     comment_posted=posted,
                     candidate_artifact_path=artifact_path,
@@ -525,7 +555,7 @@ def _remediate_one(
                 audit=_build_audit(
                     consumed=_consumed,
                     semantic_remaining=semantic_remaining,
-                    agent=agent_result,
+                    agent_attempts=agent_attempts,
                     remediation_source=("agent" if agent_result is not None else "mechanical"),
                 ),
             )
@@ -538,7 +568,7 @@ def _remediate_one(
             audit=_build_audit(
                 consumed=_consumed,
                 semantic_remaining=semantic_remaining,
-                agent=agent_result,
+                agent_attempts=agent_attempts,
                 remediation_source=("agent" if agent_result is not None else "mechanical"),
                 issue_updated=True,
             ),
@@ -572,7 +602,7 @@ def _remediate_one(
             audit=_build_audit(
                 consumed=_consumed,
                 semantic_remaining=semantic_remaining,
-                agent=agent_result,
+                agent_attempts=agent_attempts,
                 remediation_source=("agent" if agent_result is not None else "mechanical"),
                 comment_posted=posted,
                 candidate_artifact_path=artifact_path,
@@ -587,7 +617,7 @@ def _remediate_one(
         audit=_build_audit(
             consumed=_consumed,
             semantic_remaining=semantic_remaining,
-            agent=agent_result,
+            agent_attempts=agent_attempts,
             remediation_source=("agent" if agent_result is not None else "mechanical"),
             comment_posted=posted,
         ),
