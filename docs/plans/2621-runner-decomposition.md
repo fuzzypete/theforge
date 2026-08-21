@@ -56,7 +56,7 @@ change-reason before filing — if the re-measure after a landing shows a differ
 changing for its own reasons, the sequence is revised, not defended. The ordering
 constraint that is real: later slices consume interfaces earlier ones establish.
 
-### 1. Budget runtime enforcement — filed as #2621
+### 1. Budget runtime enforcement — landed as `sprint/budget_runtime.py` (#2621)
 
 The runtime half of budget enforcement: spend ledger, carried-spend restoration and
 startup disclosure, pre-dispatch and in-flight enforcement moments, live budget-status
@@ -71,6 +71,12 @@ lines over five iterations). Behavioural coverage exists in
 
 First because worker execution exposes budget checkpoints: slice 5 should consume the
 interface this slice establishes rather than invent one.
+
+Landed. The concern is `SprintBudgetRuntime`, reached through
+`SprintExecutionState.budget`; the two runner-owned side effects a budget refusal causes
+(recording a canonical outcome, writing the accumulated story entry) are injected through
+`bind_story_hooks` rather than imported back. The next slice's re-measure runs against that
+shape.
 
 ### 2. Prior-generation reconciliation
 
