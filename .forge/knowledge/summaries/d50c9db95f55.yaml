@@ -1,0 +1,125 @@
+schema_version: 2
+run_id: d50c9db95f55
+authoritative_run_record: .forge/audits/runs/d50c9db95f55.json
+generated_at: '2026-08-21T07:17:27.241570+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0109825
+story:
+  slug: issue-2654
+  name: Persisted run summaries are unreadable by the feature built to consume them,
+    because the derived index it reads is produced only by an operator command nothing
+    runs
+  github_issue: 2654
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/shared.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/knowledge_summary_flow.py
+- src/theforge/knowledge_effectiveness_signals.py
+- src/theforge/task/prior_run_manifest.py
+- src/theforge/task/prior_run_selector.py
+- tests/fixtures/audit_record_schema_v34.json
+- tests/knowledge_effectiveness_test_helpers.py
+- tests/test_cli_audit_per_run.py
+- tests/test_context_assembler.py
+- tests/test_coord_knowledge_summary.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_generate_audit_log.py
+- tests/test_knowledge_effectiveness_signals.py
+- tests/test_knowledge_invariant_proof.py
+- tests/test_prior_run_manifest.py
+- tests/test_prior_run_selector.py
+what_changed:
+  description: The run wired knowledge-index maintenance into the runtime paths that
+    persist or relocate run summaries, and it changed prior-run consumption and reporting
+    so an unusable index remains distinguishable from a genuinely empty corpus.
+  approach: The change attached index repair/rebuild work to summary-producing and
+    artifact-relocation flows, then carried explicit index-state information through
+    selector, manifest, and effectiveness classification paths so downstream consumers
+    treat missing or unreadable derived state as a maintenance condition rather than
+    as empty knowledge.
+  files_modified: *id002
+what_was_learned:
+- claim: When a feature consumes a derived artifact, every runtime path that creates,
+    moves, or removes the source artifacts has to maintain that derived view; fixing
+    only the main write path leaves stale references behind.
+  evidence:
+  - type: review_finding
+    finding_id: 390a7504e77c0854
+    description: Review found that rebuilding the knowledge index only when the summary
+      was first written was insufficient, because a later publish-failure relocation
+      moved that summary out of the indexed tree and left a dead summary_path behind;
+      this demonstrates that all lifecycle transitions of the source artifacts must
+      participate in derived-view maintenance.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review approved only after the publish-failure relocation
+      path also rebuilt the index, showing that completeness of derived-artifact maintenance
+      across non-happy-path transitions was the deciding condition for correctness.
+  - type: file
+    path: src/theforge/cli/shared.py
+    description: This file was part of the publish-failure artifact handling path
+      implicated by review, evidencing that source-artifact relocation outside the
+      main summary writer affected index validity and had to be included in maintenance.
+- claim: Downstream telemetry and cohorting need an explicit failure state for unreadable
+    derived inputs; otherwise maintenance failures are silently reclassified as legitimate
+    empty-data cases.
+  evidence:
+  - type: file
+    path: src/theforge/task/prior_run_selector.py
+    description: Changes in the selector path show index readability/state is surfaced
+      as structured output rather than collapsed into an empty selection, which is
+      the mechanism required to preserve the distinction between 'no readable input'
+      and 'readable but empty corpus.'
+  - type: file
+    path: src/theforge/task/prior_run_manifest.py
+    description: Manifest changes carry the selector's index state forward, demonstrating
+      that the maintenance condition must remain machine-readable past selection time
+      so later consumers can classify runs correctly.
+  - type: file
+    path: src/theforge/knowledge_effectiveness_signals.py
+    description: Classifier changes show cohort assignment now depends on the surfaced
+      index condition, which directly demonstrates the lesson that observability logic
+      must not infer 'control' solely from an empty included list.
+  - type: review_cycle
+    cycle: '1'
+    description: First-cycle approval specifically called out failed-closed index
+      states staying audit-visible and out of the control cohort, confirming that
+      preserving this distinction was a core behavioral requirement rather than incidental
+      implementation detail.
+learned_patterns:
+- derived-artifact-lifecycle-ownership
+- empty-vs-unreadable-state-separation
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review surfaced that index maintenance had to cover post-write artifact relocation,
+    not just initial summary persistence.
+  - Review consistently focused on keeping failed-closed index states visible to manifests
+    and effectiveness reporting instead of letting them collapse into empty selections.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 8.6740606
+  dominant_difficulty: Keeping the knowledge index consistent across multiple runtime
+    artifact lifecycle paths while preserving a distinct failure state through selection
+    and reporting.
