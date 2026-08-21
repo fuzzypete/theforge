@@ -120,14 +120,20 @@ def blockquote_blocks(body: str) -> list[str]:
     """
     blocks: list[str] = []
     current: list[str] = []
+    in_blockquote = False
     for line in body.splitlines():
         m = _BLOCKQUOTE_LINE_RE.match(line)
         if m is None:
+            if in_blockquote and not line.strip():
+                current.append("")
+                continue
             if current:
                 blocks.append("\n".join(current))
                 current = []
+            in_blockquote = False
             continue
         current.append(m.group(1))
+        in_blockquote = True
     if current:
         blocks.append("\n".join(current))
     return blocks

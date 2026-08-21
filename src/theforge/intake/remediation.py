@@ -30,6 +30,13 @@ from .mechanical import apply_mechanical_fixes
 
 _log = logging.getLogger("theforge.intake")
 
+_UNREADABLE_DIAGNOSIS_FINDING = "needs_diagnosis"
+_UNREADABLE_REGION_MARKERS: tuple[str, ...] = (
+    "inside a blockquoted region",
+    "inside a fenced code block",
+    "inside a region it does not scan",
+)
+
 
 # Shape-gate skip reasons whose remediation is a body edit. The shape gate's
 # own failure-message hint must literally describe a body change for inclusion
@@ -331,6 +338,19 @@ def _write_candidate_artifact(
     return str(artifact_path)
 
 
+def _can_retry_unreadable_diagnosis(findings: list[IntakeFinding]) -> bool:
+    """True when the rerun only fails because required Diagnosis content is unreadable."""
+    if not findings:
+        return False
+    for finding in findings:
+        if finding.code != _UNREADABLE_DIAGNOSIS_FINDING:
+            return False
+        detail = finding.problem.lower()
+        if not any(marker in detail for marker in _UNREADABLE_REGION_MARKERS):
+            return False
+    return True
+
+
 def _remediate_one(
     *,
     slug: str,
@@ -408,12 +428,30 @@ def _remediate_one(
                 ),
             )
         proposed_body = agent_result.replacement
+        retry_source_body = proposed_body
 
     # Re-run shape + grooming once on the proposed body to verify resolution.
     rerun_findings = _gather_findings(
         title, proposed_body, patched_labels, grooming_enabled=grooming_enabled
     )
     rerun_blocking = _blocking(rerun_findings)
+
+    if (
+        rerun_blocking
+        and semantic_remaining
+        and agent_caller is not None
+        and _can_retry_unreadable_diagnosis(rerun_blocking)
+    ):
+        retry_agent_result = agent_caller(retry_source_body, rerun_blocking, comments)
+        if retry_agent_result.replacement:
+            agent_result = retry_agent_result
+            proposed_body = retry_agent_result.replacement
+            rerun_findings = _gather_findings(
+                title, proposed_body, patched_labels, grooming_enabled=grooming_enabled
+            )
+            rerun_blocking = _blocking(rerun_findings)
+        else:
+            agent_result = retry_agent_result
 
     if auto_fix_mode == "edit":
         if rerun_blocking:

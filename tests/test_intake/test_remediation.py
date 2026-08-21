@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import textwrap
+
 from theforge.intake import (
     AgentRewriteResult,
     IntakeOutcomeKind,
@@ -33,6 +35,53 @@ _PASSING_BODY = (
     "- The download is available within 60 seconds for accounts with <1k users\n\n"
     "## Example\n\n"
     "```csv\nuser_id,email\n1,a@example.com\n```\n"
+)
+
+_QUOTED_DIAGNOSIS_FAILING_BODY = textwrap.dedent(
+    """\
+    ## Observed behavior
+    Sprint entry dropped the issue after remediation.
+
+    ## Expected behavior
+    The remediation rerun should pass once the missing Diagnosis bullets are top-level.
+
+    ## Diagnosis
+    - **Observed symptom.** Sprint entry dropped the issue after remediation.
+    - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+
+    ## Notes
+    > ## Diagnosis
+    >
+    > - **Observed symptom.** Sprint entry dropped the issue after remediation.
+    >
+    > - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+    >
+    > - **Ruled out.** Shape rerun itself is healthy; only quoted content is stripped.
+    >
+    > - **Confirmed cause.** The remediator wrote required bullets inside the quoted copy.
+    >
+    > - **Affected code path.** `theforge.intake.remediation._remediate_one`.
+    >
+    > - **Fix-success criterion.** Required Diagnosis bullets land as top-level Markdown.
+    """
+)
+
+_QUOTED_DIAGNOSIS_PASSING_BODY = textwrap.dedent(
+    """\
+    ## Observed behavior
+    Sprint entry dropped the issue after remediation.
+
+    ## Expected behavior
+    The remediation rerun should pass once the missing Diagnosis bullets are top-level.
+
+    ## Diagnosis
+    - **Observed symptom.** Sprint entry dropped the issue after remediation.
+    - **Evidence.** Candidate artifact shows the rewritten diagnosis stayed quoted.
+    - **Ruled out.** Shape rerun itself is healthy; only quoted content is stripped.
+    - **Confirmed cause.** The remediator wrote required bullets inside the quoted copy.
+    - **Affected code path.** `theforge.intake.remediation._remediate_one`.
+    - **Fix-success criterion.** Required Diagnosis bullets land as top-level Markdown.
+    """
 )
 
 
@@ -304,6 +353,49 @@ def test_agent_called_at_most_once_per_story():
         edit_body=lambda *_: True,
     )
     assert sum(calls) == 1
+
+
+def test_unreadable_diagnosis_rerun_gets_one_bounded_retry():
+    task = _make_task()
+    post_comment, _ = _record_calls()
+    edit_body, edit_calls = _record_calls()
+    calls: list[tuple[str, list[str]]] = []
+
+    def agent(body, findings, comments=()):
+        calls.append((body, [finding.problem for finding in findings]))
+        if len(calls) == 1:
+            return AgentRewriteResult(
+                replacement=_QUOTED_DIAGNOSIS_FAILING_BODY,
+                detail="first rewrite stayed quoted",
+            )
+        return AgentRewriteResult(
+            replacement=_QUOTED_DIAGNOSIS_PASSING_BODY,
+            detail="second rewrite moved diagnosis top-level",
+        )
+
+    outcomes = run_intake_remediation(
+        [task],
+        None,
+        grooming_enabled=True,
+        auto_fix_enabled=True,
+        auto_fix_mode="edit",
+        agent_caller=agent,
+        fetch_detail=_make_fetch(
+            {
+                "title": "Bug: quoted diagnosis",
+                "body": _QUOTED_DIAGNOSIS_FAILING_BODY,
+                "labels": ["bug"],
+            }
+        ),
+        post_comment=post_comment,
+        edit_body=edit_body,
+    )
+    out = outcomes[task.slug]
+    assert out.kind is IntakeOutcomeKind.REMEDIATED
+    assert out.proposed_replacement == _QUOTED_DIAGNOSIS_PASSING_BODY
+    assert len(calls) == 2
+    assert "in a blockquoted region" in calls[1][1][0]
+    assert len(edit_calls) == 1
 
 
 def test_file_based_story_short_circuits():
