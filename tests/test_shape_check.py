@@ -68,6 +68,75 @@ DIAGNOSED_BUG_BODY = textwrap.dedent(
     """
 )
 
+BUG_WITH_FEATURE_AC_BODY = textwrap.dedent(
+    """\
+    ## What happened
+    Contract tests never run in CI.
+
+    ## What was expected
+    Provider argv drift is caught before release.
+
+    ## Diagnosis
+
+    - **Observed symptom.** Contract tests never run in CI.
+    - **Evidence.** CI job logs show the contract target never executes.
+    - **Ruled out.** Missing test files; the suite is present locally.
+    - **Confirmed cause.** The sprint runner never invokes the contract target.
+    - **Affected code path.** sprint.runner dispatch setup.
+    - **Fix-success criterion.** CI runs the contract target before release.
+
+    ## Acceptance criteria
+
+    - A `make test-contract` target exists and runs in CI.
+    """
+)
+
+DIAGNOSED_BUG_WITH_FIX_NOTES = textwrap.dedent(
+    """\
+    ## What happened
+    Contract tests never run in CI.
+
+    ## What was expected
+    Provider argv drift is caught before release.
+
+    ## Diagnosis
+
+    - **Observed symptom.** Contract tests never run in CI.
+    - **Evidence.** CI job logs show the contract target never executes.
+    - **Ruled out.** Missing test files; the suite is present locally.
+    - **Confirmed cause.** The sprint runner never invokes the contract target.
+    - **Affected code path.** sprint.runner dispatch setup.
+    - **Fix-success criterion.** CI runs the contract target before release.
+
+    ## Notes
+
+    the fix belongs in `runners/api.py`
+    """
+)
+
+DIAGNOSED_BUG_WITH_TEST_REQUIREMENT = textwrap.dedent(
+    """\
+    ## What happened
+    Contract tests never run in CI.
+
+    ## What was expected
+    Provider argv drift is caught before release.
+
+    ## Diagnosis
+
+    - **Observed symptom.** Contract tests never run in CI.
+    - **Evidence.** CI job logs show the contract target never executes.
+    - **Ruled out.** Missing test files; the suite is present locally.
+    - **Confirmed cause.** The sprint runner never invokes the contract target.
+    - **Affected code path.** sprint.runner dispatch setup.
+    - **Fix-success criterion.** CI runs the contract target before release.
+
+    ## Notes
+
+    Add a regression test for the missing contract target.
+    """
+)
+
 
 # ----- per-reason unit tests -----------------------------------------------
 
@@ -240,6 +309,38 @@ class TestSuperseded:
 
     def test_benign(self):
         assert check_superseded("T", "body", []) is None
+
+
+class TestTypeShapeContradictions:
+    def test_bug_body_with_acceptance_criteria_is_blocking(self):
+        result = check("Contract target missing", BUG_WITH_FEATURE_AC_BODY, ["bug"])
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.verdict is ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE
+        reason = next(r for r in result.reasons if r.code == "type_shape_contradiction")
+        assert reason.severity is Severity.BLOCKING
+        assert "acceptance-criteria section" in reason.detail
+        assert "bugs use observed/expected plus diagnosis" in reason.detail
+
+    def test_bug_fix_location_phrase_is_advisory_only(self):
+        result = check("Contract target missing", DIAGNOSED_BUG_WITH_FIX_NOTES, ["bug"])
+        assert result.shape is Shape.RUNNABLE
+        assert result.verdict is ShapeVerdict.RUNNABLE
+        reason = next(r for r in result.reasons if r.code == "bug_fix_location_prescription")
+        assert reason.severity is Severity.ADVISORY
+        assert "fix location" in reason.detail
+
+    def test_bug_test_requirement_phrase_is_advisory_only(self):
+        result = check("Contract target missing", DIAGNOSED_BUG_WITH_TEST_REQUIREMENT, ["bug"])
+        assert result.shape is Shape.RUNNABLE
+        assert result.verdict is ShapeVerdict.RUNNABLE
+        reason = next(r for r in result.reasons if r.code == "bug_test_requirement")
+        assert reason.severity is Severity.ADVISORY
+        assert "test-requirement phrasing" in reason.detail
+
+    def test_custom_heading_alone_is_not_a_contradiction(self):
+        body = DIAGNOSED_BUG_BODY + "\n## Context\n\nBackground only.\n"
+        result = check("Contract target missing", body, ["bug"])
+        assert all(r.code != "type_shape_contradiction" for r in result.reasons)
 
 
 class TestUntriagedFinding:

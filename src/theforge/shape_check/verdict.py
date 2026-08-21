@@ -20,6 +20,7 @@ _PRECEDENCE: tuple[tuple[str, ShapeVerdict], ...] = (
     ("criterion_needs_live_evidence", ShapeVerdict.NEEDS_OPERATOR_ACTION),
     ("missing_type", ShapeVerdict.NEEDS_TYPE),
     ("needs_diagnosis", ShapeVerdict.NEEDS_DIAGNOSIS),
+    ("type_shape_contradiction", ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE),
     ("diagnosis_cause_unknown", ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),
     ("too_many_behavioral_clusters", ShapeVerdict.NEEDS_GROOMING_SCOPE_SPLIT),
     ("missing_acceptance_criteria", ShapeVerdict.NEEDS_GROOMING_MISSING_AC),
@@ -27,6 +28,8 @@ _PRECEDENCE: tuple[tuple[str, ShapeVerdict], ...] = (
     ("missing_example", ShapeVerdict.NEEDS_GROOMING_MISSING_EXAMPLE),
     ("implementation_plan_in_body", ShapeVerdict.ADR_CANDIDATE),
     ("implementation_design_dump", ShapeVerdict.ADR_CANDIDATE),
+    ("bug_fix_location_prescription", ShapeVerdict.RUNNABLE),
+    ("bug_test_requirement", ShapeVerdict.RUNNABLE),
 )
 
 

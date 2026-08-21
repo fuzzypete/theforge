@@ -34,7 +34,7 @@ class Reason:
 
 
 class ShapeVerdict(str, Enum):
-    """Bounded ten-item verdict taxonomy emitted by the shape gate.
+    """Bounded verdict taxonomy emitted by the shape gate.
 
     Stable string identifiers — used in audit YAML, sprint summary, and
     operator-facing status surfaces. Per ADR-0001, verdicts are vocabulary
@@ -44,6 +44,7 @@ class ShapeVerdict(str, Enum):
     RUNNABLE = "runnable"
     NEEDS_TYPE = "needs_type"
     NEEDS_DIAGNOSIS = "needs_diagnosis"
+    NEEDS_GROOMING_TYPE_SHAPE = "needs_grooming_type_shape"
     DIAGNOSIS_CAUSE_UNKNOWN = "diagnosis_cause_unknown"
     NEEDS_GROOMING_MISSING_AC = "needs_grooming_missing_ac"
     NEEDS_GROOMING_MISSING_EXAMPLE = "needs_grooming_missing_example"
@@ -60,6 +61,9 @@ VERDICT_DESCRIPTIONS: dict[ShapeVerdict, str] = {
     ),
     ShapeVerdict.NEEDS_DIAGNOSIS: (
         "bug filing has no diagnosis section; run forge diagnose to investigate"
+    ),
+    ShapeVerdict.NEEDS_GROOMING_TYPE_SHAPE: (
+        "declared issue type contradicts the body's section shape; relabel it or rewrite the body"
     ),
     ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN: (
         "investigation-ready; further diagnosis or operator-driven RCA needed"

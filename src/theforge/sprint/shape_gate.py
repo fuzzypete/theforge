@@ -33,6 +33,7 @@ from ..admissibility import (
     OPERATOR_ACTION_LABEL,
     OPERATOR_ACTION_LABEL_CONFLICT_CODE,
     OPERATOR_ACTION_MISSING_AC_CODE,
+    advisory_reasons,
     classify_admissibility,
     has_acceptance_criteria,
     resolve_classifier,
@@ -301,6 +302,26 @@ def _noop_emit_verdict(_event: dict) -> None:
     return None
 
 
+def _local_advisory_entry(
+    issue_number: int,
+    title: str,
+    reason_pairs: list[tuple[str, str]],
+) -> SkippedIssue | None:
+    if not reason_pairs:
+        return None
+    codes = tuple(code for code, _detail in reason_pairs)
+    detail = "; ".join(detail for _code, detail in reason_pairs if detail)
+    return SkippedIssue(
+        issue_number=issue_number,
+        reason_codes=codes,
+        source="local_check",
+        title=title,
+        detail=detail,
+        verdict="",
+        verdict_description="",
+    )
+
+
 def apply_shape_gate(
     issues: list[dict],
     project_root: Path | None,
@@ -410,6 +431,13 @@ def apply_shape_gate(
             continue
 
         reopen_state = analyze_reopen_contract(detail, detail.get("timeline") or [])
+        local_advisory = (
+            _local_advisory_entry(number, title_short, advisory_reasons(adm.result))
+            if adm.result is not None
+            else None
+        )
+        if local_advisory is not None:
+            advisories.append(local_advisory)
 
         if not adm.admissible and adm.source == "label":
             skipped.append(
@@ -485,6 +513,8 @@ def apply_shape_gate(
         # can render it (instrumentation per CONVENTIONS rule 6).
         issue_with_verdict = dict(issue)
         issue_with_verdict["shape_verdict"] = ShapeVerdict.RUNNABLE.value
+        if local_advisory is not None:
+            issue_with_verdict["shape_advisories"] = list(local_advisory.reason_codes)
         runnable.append(issue_with_verdict)
         _safe_emit(
             {

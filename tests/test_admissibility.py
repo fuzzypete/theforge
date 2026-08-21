@@ -39,8 +39,8 @@ Users need a way to bypass the gate.
 
 ## Acceptance Criteria
 
-- `forge sprint --force` runs every issue regardless of shape check
-- warnings still list every skipped issue's reason codes
+- `forge sprint --force` emits every issue regardless of shape check
+- the warning output reports every skipped issue's reason codes
 """
 
 # A bug filing with no `## Diagnosis` section — symptom-only, the shape the
@@ -71,6 +71,28 @@ The listing agrees with the gate.
 - **Confirmed cause:** unknown
 - **Affected code path:** `ready_queue.build_ready_queue`.
 - **Fix-success criterion:** the listing and sprint entry cannot disagree.
+"""
+
+_DIAGNOSED_BUG_WITH_FIX_NOTES = """## What happened
+
+Contract tests never run in CI.
+
+## What was expected
+
+Provider argv drift is caught before release.
+
+## Diagnosis
+
+- **Observed symptom:** Contract tests never run in CI.
+- **Evidence:** CI job logs show the contract target never executes.
+- **Ruled out:** Missing test files; the suite is present locally.
+- **Confirmed cause:** The sprint runner never invokes the contract target.
+- **Affected code path:** sprint.runner dispatch setup.
+- **Fix-success criterion:** CI runs the contract target before release.
+
+## Notes
+
+the fix belongs in `runners/api.py`
 """
 
 _OPERATOR_ACTION_BODY = """## What
@@ -172,6 +194,18 @@ def test_admissible_entry_carries_no_operator_action_flags() -> None:
     verdict = classify_admissibility("Add a flag", _RUNNABLE_BODY, ["enhancement"])
     assert verdict.operator_action_label is False
     assert verdict.deliberate_non_dispatch is False
+
+
+def test_admissible_bug_keeps_advisory_reasons_in_result() -> None:
+    verdict = classify_admissibility(
+        "Contract target missing", _DIAGNOSED_BUG_WITH_FIX_NOTES, ["bug"]
+    )
+
+    assert verdict.admissible is True
+    assert verdict.verdict == ShapeVerdict.RUNNABLE.value
+    assert verdict.reason_codes == ()
+    assert verdict.result is not None
+    assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: local-check refusals ────────────────────────────

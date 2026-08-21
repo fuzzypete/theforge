@@ -27,10 +27,17 @@ Add a CLI flag.
 
 Users need a way to bypass the gate.
 
+## Example
+
+```text
+$ forge sprint --force
+[forge] 2 issue(s) flagged by shape gate
+```
+
 ## Acceptance Criteria
 
-- `forge sprint --force` runs every issue regardless of shape check
-- warnings still list every skipped issue's reason codes
+- `forge sprint --force` emits every issue regardless of shape check
+- the warning output reports every skipped issue's reason codes
 """
 
 _BAD_BODY = "just a one-liner, no acceptance criteria, no structure"
@@ -47,6 +54,50 @@ Enrich the diagnose prompt with environment context.
 - The briefing is templated from project structure, not hardcoded.
 - A diagnose run on a sparse-body issue produces a complete artifact within
   budget on a representative landing-failure bug.
+"""
+
+_BUG_WITH_FEATURE_AC_BODY = """## What happened
+
+Contract tests never run in CI.
+
+## What was expected
+
+Provider argv drift is caught before release.
+
+## Diagnosis
+
+- **Observed symptom:** Contract tests never run in CI.
+- **Evidence:** CI job logs show the contract target never executes.
+- **Ruled out:** Missing test files; the suite is present locally.
+- **Confirmed cause:** The sprint runner never invokes the contract target.
+- **Affected code path:** sprint.runner dispatch setup.
+- **Fix-success criterion:** CI runs the contract target before release.
+
+## Acceptance criteria
+
+- A `make test-contract` target exists and runs in CI.
+"""
+
+_DIAGNOSED_BUG_WITH_FIX_NOTES = """## What happened
+
+Contract tests never run in CI.
+
+## What was expected
+
+Provider argv drift is caught before release.
+
+## Diagnosis
+
+- **Observed symptom:** Contract tests never run in CI.
+- **Evidence:** CI job logs show the contract target never executes.
+- **Ruled out:** Missing test files; the suite is present locally.
+- **Confirmed cause:** The sprint runner never invokes the contract target.
+- **Affected code path:** sprint.runner dispatch setup.
+- **Fix-success criterion:** CI runs the contract target before release.
+
+## Notes
+
+the fix belongs in `runners/api.py`
 """
 
 
@@ -247,6 +298,52 @@ def test_local_check_allows_runnable_issue(tmp_path: Path) -> None:
     assert result.runnable[0]["number"] == 99
     assert result.runnable[0]["shape_verdict"] == "runnable"
     assert result.skipped == []
+
+
+def test_bug_body_with_feature_section_is_refused_with_type_shape_verdict(
+    tmp_path: Path,
+) -> None:
+    issues = [{"number": 2509, "title": "Contract target missing"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(_BUG_WITH_FEATURE_AC_BODY, ["bug"], "Contract target missing"),
+    )
+
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    entry = result.skipped[0]
+    assert entry.source == "local_check"
+    assert entry.verdict == "needs_grooming_type_shape"
+    assert entry.reason_codes == ("type_shape_contradiction",)
+    assert "acceptance-criteria section" in entry.detail
+    assert "bugs use observed/expected plus diagnosis" in entry.detail
+
+
+def test_runnable_bug_surfaces_local_advisories_without_changing_verdict(
+    tmp_path: Path,
+) -> None:
+    issues = [{"number": 2510, "title": "Contract target missing"}]
+
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fake_detail(
+            _DIAGNOSED_BUG_WITH_FIX_NOTES,
+            ["bug"],
+            "Contract target missing",
+        ),
+    )
+
+    assert [r["number"] for r in result.runnable] == [2510]
+    assert result.runnable[0]["shape_verdict"] == "runnable"
+    assert result.runnable[0]["shape_advisories"] == ["bug_fix_location_prescription"]
+    assert result.skipped == []
+    assert len(result.advisories) == 1
+    entry = result.advisories[0]
+    assert entry.reason_codes == ("bug_fix_location_prescription",)
+    assert "fix location" in entry.detail
 
 
 def test_reopened_issue_with_stale_body_is_advisory_not_blocking(tmp_path: Path) -> None:

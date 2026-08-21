@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass
 
 from theforge.shape_check.diagnosis_spec import (
     BUG_SHAPE_REFERENCE_PATH,
@@ -15,6 +16,9 @@ from theforge.shape_check.diagnosis_spec import (
     required_diagnosis_tokens,
 )
 from theforge.shape_check.parsing import (
+    BUG_EXPECTATION_HEADING,
+    BUG_REPRODUCTION_HEADING,
+    BUG_SYMPTOM_HEADING,
     FenceTracker,
     extract_ac_section,
     extract_bullets,
@@ -23,6 +27,7 @@ from theforge.shape_check.parsing import (
     fenced_code_blocks,
     has_bug_body_headings,
     has_heading,
+    iter_headings,
 )
 from theforge.shape_check.placeholders import is_placeholder_only, strip_placeholder_content
 from theforge.shape_check.types import Reason, Severity
@@ -166,6 +171,42 @@ _OBSERVABLE_VERBS = (
     "reject",
 )
 
+_AC_HEADING_PATTERN = r"acceptance criteria|done criteria|checklist"
+_BUG_DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
+
+
+@dataclass(frozen=True)
+class TypeShapeRule:
+    contradicted_section_slug: str
+    type_rule_text: str
+    remediation_hint: str
+
+
+_TYPE_SHAPE_RULES: dict[str, TypeShapeRule] = {
+    "bug": TypeShapeRule(
+        contradicted_section_slug="acceptance-criteria",
+        type_rule_text="bugs use observed/expected plus diagnosis",
+        remediation_hint="remove the feature-style checklist or relabel the issue",
+    ),
+    "enhancement": TypeShapeRule(
+        contradicted_section_slug="bug-report-shape",
+        type_rule_text=(
+            "enhancement issues use why/acceptance criteria/example, not bug-report sections"
+        ),
+        remediation_hint="relabel the issue as a bug or rewrite the body to the feature shape",
+    ),
+    "task": TypeShapeRule(
+        contradicted_section_slug="bug-report-shape",
+        type_rule_text="task issues use why/acceptance criteria/example, not bug-report sections",
+        remediation_hint="relabel the issue as a bug or rewrite the body to the task shape",
+    ),
+    "epic": TypeShapeRule(
+        contradicted_section_slug="bug-report-shape",
+        type_rule_text="epic issues are tracking entries, not bug-report sections",
+        remediation_hint="relabel the issue as a bug or file runnable child work instead",
+    ),
+}
+
 
 def _lower_labels(labels: Iterable[str]) -> set[str]:
     return {str(label).strip().lower() for label in labels}
@@ -215,6 +256,45 @@ def _find_tracking_body_declaration(body: str) -> tuple[str, str] | None:
             if phrase is not None:
                 return phrase, _tracking_context_line(raw_line)
     return None
+
+
+def _declared_story_type(labels: Iterable[str]) -> str | None:
+    matches = _lower_labels(labels) & _RECOGNIZED_TYPE_LABELS
+    if len(matches) != 1:
+        return None
+    return next(iter(matches))
+
+
+def _heading_text_for_pattern(body: str, pattern: str) -> str | None:
+    regex = re.compile(pattern, re.IGNORECASE)
+    for match in iter_headings(body):
+        heading = match.group(2).strip()
+        if regex.search(heading):
+            return heading
+    return None
+
+
+def _bug_report_section_headings(body: str) -> list[str]:
+    headings: list[str] = []
+    for pattern in (BUG_SYMPTOM_HEADING, BUG_EXPECTATION_HEADING, BUG_REPRODUCTION_HEADING):
+        heading = _heading_text_for_pattern(body, pattern)
+        if heading is not None and heading not in headings:
+            headings.append(heading)
+    diagnosis = _heading_text_for_pattern(body, _BUG_DIAGNOSIS_HEADING_PATTERN)
+    if diagnosis is not None and diagnosis not in headings:
+        headings.append(diagnosis)
+    return headings
+
+
+def _format_heading_list(headings: list[str]) -> str:
+    if not headings:
+        return ""
+    quoted = [f"{heading!r}" for heading in headings]
+    if len(quoted) == 1:
+        return quoted[0]
+    if len(quoted) == 2:
+        return f"{quoted[0]} and {quoted[1]}"
+    return ", ".join(quoted[:-1]) + f", and {quoted[-1]}"
 
 
 DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
@@ -604,6 +684,56 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
     )
 
 
+def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    """Flag bodies whose top-level sections contradict their declared type.
+
+    Mirrors the authoring guide's reserved-shape rules, not an ad-hoc private
+    list: today that means bug-typed issues may not carry a feature-style
+    acceptance-criteria section, and non-bug typed issues may not use the bug
+    report section shape.
+    """
+    declared_type = _declared_story_type(labels)
+    if declared_type is None:
+        return None
+
+    rule = _TYPE_SHAPE_RULES.get(declared_type)
+    if rule is None:
+        return None
+
+    if declared_type == "bug":
+        offending_heading = _heading_text_for_pattern(body, _AC_HEADING_PATTERN)
+        if offending_heading is None:
+            return None
+        return Reason(
+            code="type_shape_contradiction",
+            severity=Severity.BLOCKING,
+            detail=(
+                "bug body carries an "
+                f"{offending_heading.strip().lower().replace(' ', '-')} section; "
+                f"{rule.type_rule_text} (see authoring guide). "
+                f"{rule.remediation_hint.capitalize()}."
+            ),
+        )
+
+    if not has_bug_body_headings(body):
+        return None
+
+    offending_headings = _bug_report_section_headings(body)
+    if not offending_headings:
+        return None
+    return Reason(
+        code="type_shape_contradiction",
+        severity=Severity.BLOCKING,
+        detail=(
+            f"{declared_type} body carries bug-report section"
+            f"{'s' if len(offending_headings) != 1 else ''} "
+            f"{_format_heading_list(offending_headings)}; "
+            f"{rule.type_rule_text} (see authoring guide). "
+            f"{rule.remediation_hint.capitalize()}."
+        ),
+    )
+
+
 def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reason | None:
     lset = _lower_labels(labels)
     title_l = title.strip().lower()
@@ -823,6 +953,71 @@ def _strip_fenced_blocks(body: str) -> str:
     """
     tracker = FenceTracker()
     return "\n".join(line for line in body.splitlines() if tracker.feed(line) == "outside")
+
+
+_BUG_FIX_LOCATION_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bfix\s+belongs\s+in\b", re.IGNORECASE),
+    re.compile(r"\bfix\s+should\s+(?:go|live|land|be)\s+(?:in|under)\b", re.IGNORECASE),
+    re.compile(r"\bpatch\s+should\s+(?:go|live|land|be)\s+(?:in|under)\b", re.IGNORECASE),
+)
+
+_BUG_TEST_REQUIREMENT_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(
+        r"\b(?:add|write|include|require|needs?)\b[^\n.]{0,80}\b"
+        r"(?:(?:regression|unit|integration|contract|end-to-end|e2e)\s+)?tests?\b",
+        re.IGNORECASE,
+    ),
+    re.compile(r"\bregression\s+tests?\b", re.IGNORECASE),
+)
+
+
+def _matching_bug_phrase_line(
+    body: str, patterns: tuple[re.Pattern[str], ...]
+) -> tuple[str, str] | None:
+    for raw_line in _strip_fenced_blocks(body).splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        for pattern in patterns:
+            if pattern.search(line):
+                return pattern.pattern, _tracking_context_line(raw_line)
+    return None
+
+
+def check_bug_fix_location_prescription(
+    title: str, body: str, labels: Iterable[str]
+) -> Reason | None:
+    if not is_bug_format_issue(body, labels):
+        return None
+    match = _matching_bug_phrase_line(body, _BUG_FIX_LOCATION_PATTERNS)
+    if match is None:
+        return None
+    _pattern, context = match
+    return Reason(
+        code="bug_fix_location_prescription",
+        severity=Severity.ADVISORY,
+        detail=(
+            f"Bug body prescribes a fix location in line: {context!r}. "
+            "Keep bug bodies on observed/expected/diagnosis and leave file placement to planning."
+        ),
+    )
+
+
+def check_bug_test_requirement(title: str, body: str, labels: Iterable[str]) -> Reason | None:
+    if not is_bug_format_issue(body, labels):
+        return None
+    match = _matching_bug_phrase_line(body, _BUG_TEST_REQUIREMENT_PATTERNS)
+    if match is None:
+        return None
+    _pattern, context = match
+    return Reason(
+        code="bug_test_requirement",
+        severity=Severity.ADVISORY,
+        detail=(
+            f"Bug body contains test-requirement phrasing in line: {context!r}. "
+            "Bug reports should describe expected behavior, not prescribe tests."
+        ),
+    )
 
 
 _EXAMPLE_HEADING_RE = re.compile(

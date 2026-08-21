@@ -97,6 +97,14 @@ def blocking_codes(result: ShapeResult) -> list[str]:
     return [r.code for r in result.reasons if r.severity is Severity.BLOCKING]
 
 
+def advisory_reasons(result: ShapeResult) -> list[tuple[str, str]]:
+    return [
+        (r.code, r.detail.strip())
+        for r in result.reasons
+        if r.severity is Severity.ADVISORY and r.detail.strip()
+    ]
+
+
 def skip_detail(
     result: ShapeResult,
     fallback: str,
