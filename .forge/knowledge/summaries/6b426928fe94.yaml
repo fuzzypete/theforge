@@ -1,0 +1,100 @@
+schema_version: 2
+run_id: 6b426928fe94
+authoritative_run_record: .forge/audits/runs/6b426928fe94.json
+generated_at: '2026-08-21T00:45:16.813845+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00982125
+story:
+  slug: issue-2618
+  name: A story gate returned PASS for a commit that fails the identical gate on the
+    merge base it produced
+  github_issue: 2618
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- ci
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/audit.py
+- src/theforge/coordinator/gate.py
+- src/theforge/coordinator/validate_phase.py
+- src/theforge/sprint/runner.py
+- src/theforge/validation_profiles.py
+- tests/test_cli_audit.py
+- tests/test_coord_gate_exec.py
+- tests/test_coord_workspace_merge.py
+- tests/test_sprint_baseline_gate.py
+- tests/test_validation_profile_seam.py
+what_changed:
+  description: The run made gate verdicts carry more execution context by recording
+    the worktree residue present when story and baseline gates ran, and by surfacing
+    that context in audit output. It also tightened the gate/profile seam and baseline-gate
+    handling around the reproduced broken-baseline scenario.
+  approach: The change was shaped as instrumentation around existing gate execution
+    and validation recording paths, with focused CLI and coordinator updates plus
+    seam-oriented tests that exercised both persisted gate metadata and baseline-gate
+    behavior.
+  files_modified: *id002
+what_was_learned:
+- claim: When a bug depends on repository residue such as ignored files, verification
+    needs at least one real-git path; stubbed status output alone can miss the behavior
+    of the actual command invocation.
+  evidence:
+  - type: review_finding
+    finding_id: 34924f91e3eb60df
+    description: Review identified that ignored-path assertions were only checked
+      against stubbed git-status text while the real-repository test covered only
+      untracked files, showing that residue-sensitive behavior can appear covered
+      while the actual ignored-file command path remains unexecuted.
+  - type: file
+    path: tests/test_sprint_baseline_gate.py
+    description: This test file is where baseline residue behavior was exercised,
+      and the review issue tied specifically to how its real-repo versus stubbed assertions
+      split the coverage, demonstrating the need for a real-git check for ignored-file
+      cases.
+- claim: For gate verdicts to be reusable by later runs, operator-visible audit views
+    must expose any gate-time worktree state that could change the verdict; recording
+    metadata without rendering it leaves the original ambiguity intact for humans
+    consuming the PASS.
+  evidence:
+  - type: review_finding
+    finding_id: d6b983bfad9145bd
+    description: Review noted that audit output still omitted the recorded worktree_state,
+      which means a PASS could still be read without the residue context needed to
+      interpret whether it was environment-dependent.
+  - type: file
+    path: src/theforge/cli/audit.py
+    description: The audit renderer is the operator-facing surface for recorded validations,
+      so its involvement directly shows that verdict transparency depends not just
+      on persistence but on making that context visible at read time.
+learned_patterns:
+- real-git-over-stubbed-residue-checks
+- gate-verdicts-need-operator-visible-context
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly focused on whether gate-context evidence was both captured in
+    the system and visible in the operator-facing audit path, and whether residue
+    behavior was exercised through real repository interactions rather than only stubs.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 6.0188475
+  dominant_difficulty: Making a supposedly identical gate verdict explainable across
+    runs required tracing and exposing hidden execution context from both the gate
+    runner and the audit surfaces.

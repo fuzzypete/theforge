@@ -99,6 +99,7 @@ def _init_repo(tmp_path: Path) -> tuple[ForgeConfig, ResolvedSprint, str]:
     _git(tmp_path, "init", "-b", "main")
     _git(tmp_path, "config", "user.name", "Test User")
     _git(tmp_path, "config", "user.email", "test@example.com")
+    (tmp_path / ".gitignore").write_text("generated/\n", encoding="utf-8")
     (tmp_path / "baseline.txt").write_text("BASELINE\n", encoding="utf-8")
     base_commit = _commit_all(tmp_path, "base")
     _git(tmp_path, "checkout", "-b", "feat/test")
@@ -146,6 +147,29 @@ def test_baseline_gate_preserves_actual_gate_exit_code(tmp_path: Path) -> None:
     assert baseline["merge_base"] == base_commit
     assert baseline["exit_code"] == 2
     assert "boom" in str(baseline.get("output_tail", ""))
+
+
+def test_baseline_gate_records_gate_time_worktree_state(tmp_path: Path) -> None:
+    config, resolved, _base_commit = _init_repo(tmp_path)
+    config = replace(
+        config,
+        workspace=replace(
+            config.workspace,
+            setup_command=(
+                "mkdir -p build generated "
+                "&& printf residue > build/cache.txt "
+                "&& printf ignored > generated/cache.txt"
+            ),
+        ),
+    )
+
+    baseline = _run_baseline_gate(config, resolved)
+
+    assert baseline["passed"] is True
+    assert baseline["worktree_state"] == {
+        "untracked": ["build/cache.txt"],
+        "ignored": ["generated/"],
+    }
 
 
 def _evidence_files(project_root: Path, sprint_name: str = "Test Sprint") -> list[Path]:

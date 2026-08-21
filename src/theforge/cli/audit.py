@@ -24,6 +24,33 @@ def _cost_str(value: object, *, width: int = 0) -> str:
     return f"{_UNKNOWN_COST:>{width + 1}}" if width else _UNKNOWN_COST
 
 
+def _format_worktree_state(value: object) -> str | None:
+    """Render recorded gate-time residue for operators reading an audit."""
+    if not isinstance(value, dict):
+        return None
+    untracked = value.get("untracked")
+    ignored = value.get("ignored")
+    capture_error = value.get("capture_error")
+    parts: list[str] = []
+
+    if isinstance(capture_error, str) and capture_error.strip():
+        parts.append(f"capture_error={capture_error.strip()}")
+
+    for label, paths in (("untracked", untracked), ("ignored", ignored)):
+        if not isinstance(paths, list):
+            continue
+        clean_paths = [str(path) for path in paths if isinstance(path, str) and path]
+        if not clean_paths:
+            parts.append(f"{label}=0")
+            continue
+        if len(clean_paths) <= 3:
+            parts.append(f"{label}={len(clean_paths)} ({', '.join(clean_paths)})")
+        else:
+            parts.append(f"{label}={len(clean_paths)}")
+
+    return "; ".join(parts) if parts else None
+
+
 def _cmd_audit_ideate(audit: dict) -> int:
     """Print a human-readable summary of an ideation audit record."""
     sep = "=" * 60
@@ -164,6 +191,9 @@ def cmd_audit(args: object) -> int:
         )
         if entry.get("command"):
             print(f"                command: {entry['command']}")
+        residue = _format_worktree_state(entry.get("worktree_state"))
+        if residue:
+            print(f"                worktree_state: {residue}")
 
     # Cost summary
     print()
