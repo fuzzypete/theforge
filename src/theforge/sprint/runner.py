@@ -97,12 +97,8 @@ from .budget_runtime import (
     SprintBudgetRuntime,
     SprintCostLedger,
     SprintCostObservation,
-)
-from .budget_runtime import (
-    checkpoint_cost as _budget_checkpoint_cost,
-)
-from .budget_runtime import (
-    optional_cost as _optional_cost,
+    checkpoint_cost,
+    optional_cost,
 )
 from .carry import (
     previous_run_marker_present as _previous_run_marker_present,
@@ -2617,7 +2613,7 @@ def _run_batch_group(
                 "spec": member.slug,
                 "coordinator_state": member_result.state,
             }
-            measured_cost = _optional_cost(
+            measured_cost = optional_cost(
                 getattr(member_result.state, "total_cost_measured", None)
             )
             if measured_cost is not None:
@@ -2798,7 +2794,7 @@ def _make_worker_phase_fn(
         if stop_event is not None and stop_event.is_set():
             return
         phase = updates.get("phase", "")
-        _checkpoint_cost: SprintCostObservation | None = None
+        _observed_cost: SprintCostObservation | None = None
         # A mirrored cost belongs to another slug's run (a batch group's shared
         # dev pass). It is displayed on this row and charged on that one.
         _cost_mirrored = bool(updates.pop("cost_mirrored", False))
@@ -2814,15 +2810,15 @@ def _make_worker_phase_fn(
                 "cost_measured_lower_bound_usd" in _detail
             )
             if "cost_usd" in updates or "coordinator_state" in updates or _has_lower_bound_detail:
-                _checkpoint_cost = _budget_checkpoint_cost(updates)
+                _observed_cost = checkpoint_cost(updates)
                 if budget_checkpoint is not None:
-                    budget_checkpoint(slug, _checkpoint_cost)
+                    budget_checkpoint(slug, _observed_cost)
         with phase_lock:
             phase_changed = bool(phase) and worker_phases.get(slug) != phase
             if phase:
                 worker_phases[slug] = phase
-            if live_cost_updates is not None and _checkpoint_cost is not None:
-                live_cost_updates[slug] = _checkpoint_cost
+            if live_cost_updates is not None and _observed_cost is not None:
+                live_cost_updates[slug] = _observed_cost
             if state_writer is not None:
                 incoming_detail = updates.get("detail")
                 detail_updates: dict[str, object] = (
@@ -5234,7 +5230,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 _prior_slug,
                 _prior.get("path", _prior_slug),
                 outcome=_mapped_outcome,
-                cost_usd=_optional_cost(_prior.get("cost_usd")),
+                cost_usd=optional_cost(_prior.get("cost_usd")),
                 canonical_ref=_prior.get("canonical_ref"),
                 detail=_prior_detail,
             )
@@ -6275,7 +6271,7 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 "outcome": entry_outcome.name,
                 "outcome_source": entry_outcome_source,
                 "verdict": prior_entry.get("verdict"),
-                "cost_usd": _optional_cost(prior_entry.get("cost_usd")),
+                "cost_usd": optional_cost(prior_entry.get("cost_usd")),
                 "story_run_id": prior_entry.get("story_run_id", _ctx.run_id),
                 "preflight": prior_entry.get("preflight"),
                 "preflight_original_verdict": prior_entry.get("preflight_original_verdict"),
