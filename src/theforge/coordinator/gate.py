@@ -54,6 +54,49 @@ def _parse_dirty_files(raw_output: str) -> list[str]:
     return dirty
 
 
+def _snapshot_gate_worktree_state(workspace_path: Path) -> dict[str, object]:
+    """Capture untracked/ignored paths visible at gate start for auditability.
+
+    A gate verdict is a claim about the checked-out commit. When that verdict
+    depends on worktree residue rather than tracked content, the record needs to
+    say so explicitly. This capture is best-effort and never blocks the gate:
+    failure to inspect the worktree is itself recorded rather than converted
+    into a synthetic gate failure.
+    """
+    ok, output, _exit_code, _timed_out = _cu._run_shell_detailed(
+        "git status --porcelain=v1 --ignored=matching --untracked-files=all",
+        workspace_path,
+    )
+    state: dict[str, object] = {"untracked": [], "ignored": []}
+    if not ok:
+        state["capture_error"] = output.strip() or "git status failed"
+        return state
+
+    untracked: list[str] = []
+    ignored: list[str] = []
+    for line in output.splitlines():
+        if len(line) < 4:
+            continue
+        if line[2] == " ":
+            xy, rest = line[:2], line[3:]
+        elif line[1] == " ":
+            xy, rest = " " + line[0], line[2:]
+        else:
+            continue
+        path = rest.split(" -> ", 1)[1] if " -> " in rest else rest
+        path = path.strip()
+        if path.startswith(".forge/"):
+            continue
+        if xy == "??":
+            untracked.append(path)
+        elif xy == "!!":
+            ignored.append(path)
+
+    state["untracked"] = untracked
+    state["ignored"] = ignored
+    return state
+
+
 def _auto_commit_side_effects(workspace_path: Path, files: list[str]) -> bool:
     """Stage and commit out-of-scope files as fmt side-effects.
 
@@ -96,6 +139,7 @@ def run_gate_full(
     process_teardowns: list[ProcessTeardown] | None = None,
     label: GateLabel | None = None,
     selection_out: list[SelectedValidation] | None = None,
+    worktree_state_out: list[dict[str, object]] | None = None,
     ignore_gate_override: bool = False,
 ) -> tuple[str | None, str | None, str, str, int | None]:
     """Run the gate command and determine pass/fail from exit code.
@@ -148,6 +192,13 @@ def run_gate_full(
     records a verdict needs it, because a verdict is only a verdict if the
     profile behind it carries merge authority (#2358).
 
+    ``worktree_state_out``, when given, receives a dict naming the untracked
+    and ignored paths visible in the worktree immediately before the gate
+    command runs. This is audit provenance, not verdict logic: a gate that
+    passes or fails because of local residue still keeps its exit-code result,
+    but the record now says what residue was present when that result was
+    produced.
+
     ``ignore_gate_override`` runs the configured profile even when the story
     carries a ``gate_override``. It exists for one caller: VALIDATE widening a
     passing *advisory* override to the merge-authority profile, so a story
@@ -182,6 +233,9 @@ def run_gate_full(
         # gate" line, whose shape names the gate's purpose and target (#2014).
         _cu._log_verbose(f"  validation profile: {selection.describe()}")
     gate_timeout = config.validation.gate_timeout or 600
+    gate_worktree_state = _snapshot_gate_worktree_state(workspace_path)
+    if worktree_state_out is not None:
+        worktree_state_out.append(gate_worktree_state)
     # Passed only when the caller asked for it: an out-parameter nobody supplied
     # is a no-op, and not sending it keeps this call compatible with the stubs
     # that stand in for the shell across the suite.

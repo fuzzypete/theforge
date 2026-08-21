@@ -229,6 +229,7 @@ def _record_validation_run(
     decision: str | None,
     commit: str | None,
     skipped: bool = False,
+    worktree_state: dict[str, object] | None = None,
 ) -> None:
     """Append the provenance of one validation run (#2358).
 
@@ -239,7 +240,13 @@ def _record_validation_run(
     gate), which is recorded as a skipped advisory run rather than a pass.
     """
     state.validation_runs.append(
-        validation_run_record(selection, result=decision, commit=commit, skipped=skipped)
+        validation_run_record(
+            selection,
+            result=decision,
+            commit=commit,
+            skipped=skipped,
+            worktree_state=worktree_state,
+        )
     )
 
 
@@ -250,6 +257,7 @@ def _record_gate_commit(
     *,
     selection: SelectedValidation | None = None,
     skipped: bool = False,
+    worktree_state: dict[str, object] | None = None,
 ) -> None:
     """Record which commit the gate just judged, and what it decided (#2052).
 
@@ -279,7 +287,12 @@ def _record_gate_commit(
         state.last_gate_decision = decision
         state.last_gate_commit = sha or None
     _record_validation_run(
-        state, selection=selection, decision=decision, commit=sha or None, skipped=skipped
+        state,
+        selection=selection,
+        decision=decision,
+        commit=sha or None,
+        skipped=skipped,
+        worktree_state=worktree_state,
     )
     _persist_trajectory(state, workspace_path, "gate-commit provenance")
 
@@ -334,6 +347,7 @@ def _record_gate_run(
     decision: str | None = None,
     *,
     selection: SelectedValidation | None = None,
+    worktree_state: dict[str, object] | None = None,
 ) -> None:
     """Count one gate execution and persist the count for ``--resume``.
 
@@ -347,7 +361,13 @@ def _record_gate_run(
     state.gate_runs += 1
     if decision is not None:
         # Writes the whole sidecar, incremented gate_runs included.
-        _record_gate_commit(state, workspace_path, decision, selection=selection)
+        _record_gate_commit(
+            state,
+            workspace_path,
+            decision,
+            selection=selection,
+            worktree_state=worktree_state,
+        )
     else:
         _persist_trajectory(state, workspace_path, "gate-run count")
 
@@ -801,6 +821,7 @@ def _run_validate_phase(
     # VALIDATE always asks for the merge-authority profile; the selection comes
     # back so the recorded result can say what it is worth (#2358).
     _gate_selection: list[SelectedValidation] = []
+    _gate_worktree_state: list[dict[str, object]] = []
     if _is_gate_skip(gate_override):
         _log_phase(state.phase, "skipped (gate: none)")
         _log("  Gate: none (story override)")
@@ -825,6 +846,7 @@ def _run_validate_phase(
                 output_digest=_gate_digest,
                 process_teardowns=_gate_teardowns,
                 selection_out=_gate_selection,
+                worktree_state_out=_gate_worktree_state,
             )
         )
         # The gate command ran. Count it here — before decision/error routing —
@@ -835,6 +857,7 @@ def _run_validate_phase(
             workspace_path,
             decision=gate_decision or "ERROR",
             selection=_gate_selection[0] if _gate_selection else None,
+            worktree_state=_gate_worktree_state[0] if _gate_worktree_state else None,
         )
         # After the counter, so a leak from the first gate is tagged gate_run 1
         # like every other run-gated telemetry rather than 0 (#2309).
@@ -869,6 +892,7 @@ def _run_validate_phase(
             # verdict, not the advisory run that preceded it.
             _gate_selection.clear()
             _gate_digest.clear()
+            _gate_worktree_state.clear()
             gate_decision, gate_err, gate_output_tail, resolved_gate_cmd, gate_exit_code = (
                 run_gate_full(
                     config,
@@ -878,6 +902,7 @@ def _run_validate_phase(
                     output_digest=_gate_digest,
                     process_teardowns=_gate_teardowns,
                     selection_out=_gate_selection,
+                    worktree_state_out=_gate_worktree_state,
                     ignore_gate_override=True,
                 )
             )
@@ -886,6 +911,7 @@ def _run_validate_phase(
                 workspace_path,
                 decision=gate_decision or "ERROR",
                 selection=_gate_selection[0] if _gate_selection else None,
+                worktree_state=_gate_worktree_state[0] if _gate_worktree_state else None,
             )
             _record_gate_teardowns(state, _gate_teardowns)
         gate_result_for_telemetry = gate_decision or "ERROR"
