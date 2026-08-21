@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import yaml
 
 from theforge.task.prior_run_selector import (
@@ -289,27 +290,94 @@ def test_phase_specific_rendering_changes_by_phase(tmp_path: Path) -> None:
     ) in review_content
 
 
-def test_missing_index_yields_no_candidates(tmp_path: Path) -> None:
+def test_missing_index_repairs_to_a_readable_empty_corpus(tmp_path: Path) -> None:
     selection = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
 
     assert selection.candidates == ()
     assert selection.excluded == ()
     assert selection.entry_count == 0
-    assert selection.index_state == INDEX_STATE_MISSING
+    assert selection.index_state == INDEX_STATE_READY
     assert selection.phase == "plan"
     assert selection.rendering_mode == "phase_summary"
+    assert (tmp_path / ".forge" / "knowledge" / "index.yaml").exists()
 
 
-def test_unreadable_or_wrong_schema_index_yields_no_candidates(tmp_path: Path) -> None:
-    _write_index(tmp_path, [_entry("4f2a91c")], schema_version=1)
-    stale = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
-    assert stale.entry_count == 0
-    assert stale.index_state == INDEX_STATE_STALE_SCHEMA
+@pytest.mark.parametrize(
+    "initial_state",
+    [
+        pytest.param("missing", id="missing"),
+        pytest.param("stale", id="stale"),
+        pytest.param("unreadable", id="unreadable"),
+    ],
+)
+def test_selector_repairs_index_states_before_scoring(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+) -> None:
+    calls = 0
 
-    (tmp_path / ".forge" / "knowledge" / "index.yaml").write_text(": not: yaml:", encoding="utf-8")
-    unreadable = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
-    assert unreadable.entry_count == 0
-    assert unreadable.index_state == INDEX_STATE_UNREADABLE
+    def _rebuild(_project_root: Path) -> object:
+        nonlocal calls
+        calls += 1
+        _write_index(tmp_path, [_entry("4f2a91c")])
+        _write_summary(tmp_path, "4f2a91c")
+        return object()
+
+    monkeypatch.setattr("theforge.task.prior_run_selector.rebuild_knowledge_index", _rebuild)
+
+    path = tmp_path / ".forge" / "knowledge" / "index.yaml"
+    if initial_state == "stale":
+        _write_index(tmp_path, [], schema_version=1)
+    elif initial_state == "unreadable":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(": not: yaml:", encoding="utf-8")
+
+    selection = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
+
+    assert calls == 1
+    assert selection.index_state == INDEX_STATE_READY
+    assert [candidate.run_id for candidate in selection.candidates] == ["4f2a91c"]
+    assert selection.entry_count == 1
+
+
+@pytest.mark.parametrize(
+    ("initial_state", "expected_state"),
+    [
+        pytest.param("missing", INDEX_STATE_MISSING, id="missing"),
+        pytest.param("stale", INDEX_STATE_STALE_SCHEMA, id="stale"),
+        pytest.param("unreadable", INDEX_STATE_UNREADABLE, id="unreadable"),
+    ],
+)
+def test_selector_preserves_failed_closed_index_state_when_repair_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    initial_state: str,
+    expected_state: str,
+) -> None:
+    calls = 0
+
+    def _boom(_project_root: Path) -> object:
+        nonlocal calls
+        calls += 1
+        raise RuntimeError("rebuild failed")
+
+    monkeypatch.setattr("theforge.task.prior_run_selector.rebuild_knowledge_index", _boom)
+
+    path = tmp_path / ".forge" / "knowledge" / "index.yaml"
+    if initial_state == "stale":
+        _write_index(tmp_path, [], schema_version=1)
+    elif initial_state == "unreadable":
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(": not: yaml:", encoding="utf-8")
+
+    selection = select_prior_runs(tmp_path, phase="plan", story_text=_STORY, file_list=_FILES)
+
+    assert calls == 1
+    assert selection.candidates == ()
+    assert selection.excluded == ()
+    assert selection.entry_count == 0
+    assert selection.index_state == expected_state
 
 
 def test_valid_empty_index_still_reports_ready_state(tmp_path: Path) -> None:

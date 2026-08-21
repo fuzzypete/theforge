@@ -234,8 +234,12 @@ class TestGeneration:
         assert artifact["changed_files"] == ["src/client.py"]
         assert artifact["generation"]["cost_usd"] == 0.12
         assert artifact["story_shape"]["provenance"]["founded"] is True
+        assert (tmp_path / ".forge" / "knowledge" / "index.yaml").exists()
+        assert outcome.index_rebuild is not None
+        assert outcome.index_rebuild.status == "rebuilt"
         assert audit["knowledge_summary"]["status"] == "written"
         assert audit["knowledge_summary"]["written"] is True
+        assert audit["knowledge_summary"]["index_rebuild"]["status"] == "rebuilt"
         assert len(calls) == 1
 
     def test_a_degraded_preflight_run_marks_summary_provenance(
@@ -801,6 +805,29 @@ class TestNonLoadBearing:
         )
         assert outcome.status == "failed"
         assert outcome.reason == "read-only file system"
+
+    def test_a_failed_index_rebuild_does_not_flip_a_written_summary(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, calls: list[dict]
+    ) -> None:
+        def _boom(_project_root: Path) -> object:
+            raise RuntimeError("index rebuild exploded")
+
+        monkeypatch.setattr(knowledge_summary_flow, "rebuild_knowledge_index", _boom)
+
+        audit = _audit()
+        outcome = knowledge_summary_flow.maybe_generate_run_summary(
+            _make_config(tmp_path), _done_result(), audit
+        )
+
+        assert outcome.status == "written"
+        assert outcome.written is True
+        assert outcome.index_rebuild is not None
+        assert outcome.index_rebuild.status == "failed"
+        assert outcome.index_rebuild.reason == "index rebuild exploded"
+        assert summary_path(tmp_path, RUN_ID).exists()
+        assert audit["knowledge_summary"]["index_rebuild"]["status"] == "failed"
+        assert audit["knowledge_summary"]["index_rebuild"]["reason"] == "index rebuild exploded"
+        assert len(calls) == 1
 
 
 class TestTerminalWriterSeams:

@@ -13,9 +13,10 @@ Two rules hold throughout:
 - **Cohorts come from the manifest, not from configuration.** A run is
   ``with_prior_summary`` only when an eligible phase's manifest says prior-run
   context was enabled *and* something was actually included. Enabled with
-  nothing included is ``without_prior_summary`` — a genuine control. Disabled or
-  absent is ``unclassified``, because a run from before the feature existed is
-  not evidence about the feature.
+  nothing included is ``without_prior_summary`` only when the manifest records
+  a readable index state; failed-closed index maintenance is ``unclassified``.
+  Disabled or absent is also ``unclassified``, because a run from before the
+  feature existed is not evidence about the feature.
 - **Absent telemetry is unavailable, never zero.** Every metric input is
   ``None``-able, so "this record predates the telemetry" can never be read
   downstream as "this record recorded a zero".
@@ -26,7 +27,13 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from theforge.task.invariant_selector import ELIGIBLE_PHASES as INVARIANT_ELIGIBLE_PHASES
-from theforge.task.prior_run_selector import ELIGIBLE_PHASES
+from theforge.task.prior_run_selector import (
+    ELIGIBLE_PHASES,
+    INDEX_STATE_MISSING,
+    INDEX_STATE_READY,
+    INDEX_STATE_STALE_SCHEMA,
+    INDEX_STATE_UNREADABLE,
+)
 
 # ── Cohorts ──────────────────────────────────────────────────────────────────
 
@@ -47,6 +54,10 @@ _COMPLEXITY_BANDS = {
     "low": "LOW",
     "high": "HIGH",
 }
+
+_FAILED_CLOSED_INDEX_STATES = frozenset(
+    {INDEX_STATE_MISSING, INDEX_STATE_UNREADABLE, INDEX_STATE_STALE_SCHEMA}
+)
 
 
 @dataclass(frozen=True)
@@ -112,13 +123,16 @@ def classify_cohort(record: dict) -> str:
     Only prose-eligible plan/dev/review manifests classify cohorts. Preflight's
     signal-only manifest is advisory visibility, not treatment/control evidence,
     so preflight-only records stay ``unclassified`` rather than inflating the
-    control cohort.
+    control cohort. An enabled manifest whose selector failed closed on index
+    maintenance is also ``unclassified``: unreadable input is not evidence that
+    the readable corpus was empty.
     """
     manifests = record.get("context_manifests")
     if not isinstance(manifests, list):
         return COHORT_UNCLASSIFIED
 
     enabled_somewhere = False
+    failed_closed_somewhere = False
     for entry in manifests:
         manifest = _mapping(entry)
         phase = (_text(manifest.get("phase")) or "").lower()
@@ -131,6 +145,11 @@ def classify_cohort(record: dict) -> str:
         included = prior.get("included")
         if isinstance(included, list) and included:
             return COHORT_WITH
+        index_state = _text(prior.get("index_state")) or INDEX_STATE_READY
+        if index_state in _FAILED_CLOSED_INDEX_STATES:
+            failed_closed_somewhere = True
+    if failed_closed_somewhere:
+        return COHORT_UNCLASSIFIED
     return COHORT_WITHOUT if enabled_somewhere else COHORT_UNCLASSIFIED
 
 

@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 from theforge.config.auth import check_agent_auth
 from theforge.config.model_identity import DEFAULT_PHASE_ELIGIBILITY, PHASE_KNOWLEDGE_SUMMARY
+from theforge.knowledge_index import rebuild_knowledge_index
 from theforge.knowledge_summary import (
     SummaryValidationError,
     build_summary_artifact,
@@ -61,6 +62,43 @@ run_agent = None
 
 
 @dataclass(frozen=True)
+class KnowledgeIndexMaintenanceOutcome:
+    """Outcome of rebuilding the derived knowledge index after a summary write."""
+
+    status: str
+    reason: str | None = None
+    path: "Path | None" = None
+
+    def to_audit_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {"status": self.status}
+        if self.reason:
+            payload["reason"] = self.reason
+        if self.path is not None:
+            payload["path"] = str(self.path)
+        return payload
+
+    @classmethod
+    def from_audit_dict(cls, payload: object) -> "KnowledgeIndexMaintenanceOutcome | None":
+        if not isinstance(payload, dict):
+            return None
+
+        status = payload.get("status")
+        if not isinstance(status, str):
+            return None
+
+        reason = payload.get("reason")
+        if reason is not None and not isinstance(reason, str):
+            reason = None
+
+        path_value = payload.get("path")
+        path = path_value if isinstance(path_value, Path) else None
+        if isinstance(path_value, str) and path_value:
+            path = Path(path_value)
+
+        return cls(status=status, reason=reason, path=path)
+
+
+@dataclass(frozen=True)
 class RunSummaryOutcome:
     """Outcome of post-DONE knowledge summary generation for one run."""
 
@@ -69,6 +107,7 @@ class RunSummaryOutcome:
     written: bool
     reason: str | None = None
     path: "Path | None" = None
+    index_rebuild: KnowledgeIndexMaintenanceOutcome | None = None
 
     def to_audit_dict(self) -> dict:
         payload: dict[str, object] = {
@@ -80,6 +119,8 @@ class RunSummaryOutcome:
             payload["reason"] = self.reason
         if self.path is not None:
             payload["path"] = str(self.path)
+        if self.index_rebuild is not None:
+            payload["index_rebuild"] = self.index_rebuild.to_audit_dict()
         return payload
 
     @classmethod
@@ -105,12 +146,17 @@ class RunSummaryOutcome:
         if isinstance(path_value, str) and path_value:
             path = Path(path_value)
 
+        index_rebuild = KnowledgeIndexMaintenanceOutcome.from_audit_dict(
+            payload.get("index_rebuild")
+        )
+
         return cls(
             status=status,
             attempted=attempted,
             written=written,
             reason=reason,
             path=path,
+            index_rebuild=index_rebuild,
         )
 
 
@@ -289,6 +335,15 @@ def _should_generate(config: "ForgeConfig", result: "CoordinatorResult", run_id:
     return not summary_exists(config.project_root, run_id)
 
 
+def _refresh_knowledge_index(project_root: Path) -> KnowledgeIndexMaintenanceOutcome:
+    """Rebuild the derived knowledge index after summary persistence."""
+    try:
+        result = rebuild_knowledge_index(project_root)
+    except Exception as exc:  # noqa: BLE001 - post-write maintenance must not flip the run outcome
+        return KnowledgeIndexMaintenanceOutcome(status="failed", reason=str(exc))
+    return KnowledgeIndexMaintenanceOutcome(status="rebuilt", path=result.path)
+
+
 def maybe_generate_run_summary(
     config: "ForgeConfig",
     result: "CoordinatorResult",
@@ -403,10 +458,19 @@ def maybe_generate_run_summary(
             },
         )
         path = write_summary(config.project_root, run_id, artifact)
+        index_rebuild = _refresh_knowledge_index(config.project_root)
+        if index_rebuild.status == "failed":
+            _log(f"  ⚠ knowledge index rebuild failed: {index_rebuild.reason}")
         _log(f"  ✓ knowledge summary written: {path}")
         return _record_summary_outcome(
             audit,
-            RunSummaryOutcome(status="written", attempted=True, written=True, path=path),
+            RunSummaryOutcome(
+                status="written",
+                attempted=True,
+                written=True,
+                path=path,
+                index_rebuild=index_rebuild,
+            ),
         )
     except SummaryValidationError as exc:
         _log(f"  ⚠ knowledge summary rejected: {exc}")

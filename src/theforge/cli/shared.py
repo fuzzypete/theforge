@@ -30,6 +30,7 @@ from theforge.coordinator.redact import redact
 from theforge.coordinator.review_context import hard_convention_review_kwargs
 from theforge.coordinator.state import CoordinatorResult
 from theforge.coordinator.workspace import _base_branch_lands_locally
+from theforge.knowledge_index import rebuild_knowledge_index
 from theforge.knowledge_summary import summary_path
 from theforge.log_util import _log_line
 from theforge.sprint.audit_publish import (
@@ -457,10 +458,12 @@ def _move_dirty_story_run_artifacts_off_tree(
     if not artifact_paths:
         return None
 
+    summaries_rel = Path(".forge") / "knowledge" / "summaries"
     preserved_root = (
         project_root / _UNPUBLISHED_STORY_RUN_ARTIFACTS_DIR / (run_id or "unknown-run")
     )
     preserved_any = False
+    preserved_summary = False
     preserved_relpaths: dict[Path, Path] = {}
 
     for path in artifact_paths:
@@ -476,14 +479,32 @@ def _move_dirty_story_run_artifacts_off_tree(
             shutil.copy2(path, dest)
             preserved_relpaths[rel] = dest.relative_to(project_root)
             _repoint_preserved_story_run_artifact_in_substrate(project_root, rel, dest)
+            try:
+                rel.relative_to(summaries_rel)
+                preserved_summary = True
+            except ValueError:
+                pass
             preserved_any = True
         _clear_pending_git_path(project_root, rel)
 
     _rewrite_preserved_summary_authoritative_records(project_root, preserved_relpaths)
+    if preserved_summary:
+        _refresh_knowledge_index_after_preserving_summary(project_root)
 
     if preserved_any:
         return preserved_root
     return None
+
+
+def _refresh_knowledge_index_after_preserving_summary(project_root: Path) -> None:
+    """Refresh derived summary lookup data after preserving summaries off-tree."""
+    try:
+        rebuild_knowledge_index(project_root)
+    except Exception as exc:  # noqa: BLE001 - publish failure handling stays best-effort
+        _log(
+            "warning: failed to refresh knowledge index after preserving "
+            f"unpublished story run artifacts: {exc}"
+        )
 
 
 def _rewrite_preserved_summary_authoritative_records(
