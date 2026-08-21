@@ -1,0 +1,85 @@
+schema_version: 2
+run_id: f5c4d025d9a6
+authoritative_run_record: .forge/audits/runs/f5c4d025d9a6.json
+generated_at: '2026-08-21T07:22:23.680979+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0079875
+story:
+  slug: issue-2655
+  name: A run whose knowledge delivery failed outright is counted as a control observation,
+    so the report evaluating the knowledge loop treats a broken mechanism as evidence
+    the mechanism does not help
+  github_issue: 2655
+story_shape:
+  work_type: bug
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains: []
+domains_provenance: *id001
+changed_files: &id002 []
+what_changed:
+  description: The run identified that knowledge-effectiveness cohorting treated failed
+    prior-run knowledge delivery the same as a legitimate empty selection, causing
+    broken delivery to be counted as control observations.
+  approach: It traced the assignment path from selector state through manifest generation
+    into reporting, comparing the structured data preserved at each step with the
+    semantics required for valid control-versus-treatment measurement.
+  files_modified: *id002
+what_was_learned:
+- claim: When evaluating whether a delivery mechanism helps, runs where delivery could
+    not be attempted because prerequisite input was unreadable must be excluded from
+    cohort comparison rather than counted as control.
+  evidence:
+  - type: diff
+    ref: e3b17701f795a69adc789d6620227463ac76845f
+    description: The diff captures the run's analysis that identical empty-manifest
+      outputs arise both from legitimate 'nothing relevant found' cases and from selector
+      failure states, showing that counting all empty selections as control conflates
+      non-treatment with failed treatment eligibility and would mislead future evaluation
+      work.
+- claim: If a downstream measurement depends on a distinction already computed upstream,
+    that distinction must survive as structured data rather than only as operator-facing
+    prose.
+  evidence:
+  - type: diff
+    ref: e3b17701f795a69adc789d6620227463ac76845f
+    description: The diff records that index_state was available during selection
+      and was rendered into a human-readable note, yet not exposed as structured manifest
+      data for cohorting; this demonstrates the reusable design lesson that prose-only
+      recording discards machine-actionable causality needed by later consumers.
+- claim: For experiment assignment around delivery outcomes, unknown or unreported
+    failure modes should default to exclusion from analysis rather than silent inclusion
+    in a cohort.
+  evidence:
+  - type: diff
+    ref: e3b17701f795a69adc789d6620227463ac76845f
+    description: The diff's reasoning generalizes from current missing/unreadable/stale-schema
+      cases to future delivery failures, showing that exclusion preserves visible
+      sample-size loss while mistaken inclusion silently biases conclusions, which
+      is the stronger planning rule for future instrumentation work.
+learned_patterns:
+- structured-outcome-over-prose
+- exclude-undelivered-runs
+- cohort-by-eligibility
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations: []
+complexity_signal:
+  actual_iterations: 0
+  review_cycles: 0
+  plan_regenerations: null
+  cost_usd: 0.35422279999999995
+  dominant_difficulty: 'The hard part was semantic classification: distinguishing
+    ''no applicable knowledge existed'' from ''knowledge delivery never operated''
+    despite both collapsing to the same observable empty manifest.'
