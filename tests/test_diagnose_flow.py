@@ -391,6 +391,8 @@ class TestPromptBuilder:
         assert "confirmed_cause_verification" in prompt
         assert "evidence_provenance" in prompt
         assert "confirmed_cause_support_provenance" in prompt
+        assert "src/theforge/example.py" not in prompt
+        assert "src/theforge/routing.py" not in prompt
 
     def test_scope_coverage_example_stays_stack_neutral(self):
         prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")

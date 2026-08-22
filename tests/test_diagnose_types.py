@@ -487,7 +487,7 @@ class TestRenderArtifactMarkdown:
                     ),
                     claim_verification=ClaimVerification(
                         "source",
-                        "checked in src/theforge/example.py",
+                        "checked in the inspected repository file",
                     ),
                 ),
             ),

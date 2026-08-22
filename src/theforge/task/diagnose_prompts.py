@@ -168,7 +168,7 @@ hypotheses:
     evidence: "What you observed that ruled this out / confirmed it"
     claim_verification:
       verification_type: source
-      detail: "Checked directly against src/theforge/example.py."
+      detail: "Checked directly against the inspected repository file."
     evidence_provenance:
       source_type: observed
       detail: "Reproduced at HEAD in a failing test run."
@@ -190,7 +190,7 @@ confirmed_cause_support: |
   material that already states the cause, say that plainly as a restatement.
 confirmed_cause_verification:
   verification_type: source_and_attached_evidence
-  detail: "Confirmed by reading src/theforge/routing.py and the attached run log."
+  detail: "Confirmed by reading the inspected repository file and the attached run log."
 confirmed_cause_support_provenance:
   source_type: observed    # or: prior_assertion | mixed | unknown
   detail: "Short source note: what was observed directly, or where the prior assertion lived."

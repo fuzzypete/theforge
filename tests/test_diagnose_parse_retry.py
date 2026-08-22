@@ -270,6 +270,8 @@ class TestReformatPrompt:
             "symptom_scope_coverage",
         ):
             assert key in prompt
+        assert "src/theforge/example.py" not in prompt
+        assert "src/theforge/routing.py" not in prompt
 
 
 # ── Flow seam: recovery ───────────────────────────────────────────────
