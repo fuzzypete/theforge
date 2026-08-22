@@ -50,6 +50,12 @@ def _round_cost(value: float | None) -> float | None:
     return _util_round_cost(value, 6)
 
 
+def _effective_audit_config(config: ForgeConfig, result: CoordinatorResult) -> ForgeConfig:
+    """Return the config the coordinator actually executed under for this result."""
+    runtime_config = getattr(result, "runtime_config", None)
+    return runtime_config if isinstance(runtime_config, ForgeConfig) else config
+
+
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
     """Return True if branch exists and has commits ahead of base.
 
@@ -630,6 +636,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
 
     This is the orchestrator's own handoff — a complete record of what happened.
     """
+    config = _effective_audit_config(config, result)
     state = result.state
 
     # Compute overall timing
@@ -1272,7 +1279,10 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
     load-time identity plus ``finish_read_error``, so an absent digest is never
     mistaken for an unchanged one.
     """
-    config = config_provenance.refresh_provenance(config)
+    try:
+        config = config_provenance.refresh_provenance(config)
+    except Exception:  # pragma: no cover - audit emission must degrade, not abort
+        pass
     provenance = getattr(config, "provenance", None)
     source_path = getattr(provenance, "source_path", None)
     source_sha256 = getattr(provenance, "source_sha256", None)

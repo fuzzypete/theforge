@@ -399,6 +399,19 @@ def test_audit_refreshes_stale_runtime_value_snapshots_before_serializing(tmp_pa
     assert entry["source"] == VALUE_SOURCE_DERIVED
 
 
+def test_audit_configuration_block_degrades_when_runtime_refresh_fails(tmp_path: Path) -> None:
+    config = _load(_write_config(tmp_path / "proj"))
+
+    with patch(
+        "theforge.coordinator.audit.config_provenance.refresh_provenance",
+        side_effect=RuntimeError("boom"),
+    ):
+        block = _audit_for(config, tmp_path)["configuration"]
+
+    assert block["resolved_sha256"] == config.provenance.resolved_sha256
+    assert block["recorded_values"]["entries"]["validation.gate_command"]["value"] == "make gate"
+
+
 def test_preflight_runtime_config_changes_reach_recorded_values(tmp_path: Path) -> None:
     config = _load(
         _write_config(

@@ -325,8 +325,10 @@ def _write_audit(
     auto_merge: bool = False,
 ) -> Path:
     """Write the canonical audit log and preserve minimal worktree state on ESCALATE."""
-    audit = generate_audit_log(config, task, result)
-    audits_dir = config.project_root / ".forge" / "audits"
+    runtime_config = getattr(result, "runtime_config", None)
+    audit_config = runtime_config if isinstance(runtime_config, ForgeConfig) else config
+    audit = generate_audit_log(audit_config, task, result)
+    audits_dir = audit_config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
     audit_path = audits_dir / "forge_audit.yaml"
 
@@ -354,7 +356,7 @@ def _write_audit(
     # Post-DONE knowledge summary (#1859). Runs after the authoritative record
     # exists and never raises — the audit write path above is what this run's
     # outcome depends on, not this.
-    maybe_generate_run_summary(config, result, audit)
+    maybe_generate_run_summary(audit_config, result, audit)
     _write_yaml_copy(audit_path)
     if (
         final_phase == "ESCALATE"
@@ -373,14 +375,14 @@ def _write_audit(
         except Exception:
             pass  # best-effort
     # Write per-run JSON record (Phase A dual-write).
-    _write_per_run_record(result, config, audit, audits_dir)
+    _write_per_run_record(result, audit_config, audit, audits_dir)
     unpublished_artifact_copy = _preserve_unpublished_story_run_artifacts_on_failure(
-        config, result, audit
+        audit_config, result, audit
     )
     try:
         publish_story_run_artifacts_for_config(
-            config,
-            lands_locally=_base_branch_lands_locally(config, auto_merge=auto_merge),
+            audit_config,
+            lands_locally=_base_branch_lands_locally(audit_config, auto_merge=auto_merge),
         )
     except StoryRunAuditPublishError as exc:
         preserved_path = unpublished_artifact_copy(exc)
