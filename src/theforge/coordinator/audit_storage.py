@@ -120,7 +120,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 35
+CURRENT_RECORD_SCHEMA_VERSION = 36
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1942,6 +1942,18 @@ def _migrate_v34_to_v35(record: dict) -> dict:
     }
 
 
+def _migrate_v35_to_v36(record: dict) -> dict:
+    """Advance v35 records to v36 without rewriting recorded config entries.
+
+    v36 adds optional ``path_tokens`` metadata on ambiguous recorded-config
+    entries so the reader can classify keys containing ``.`` or ``[]`` inside
+    a mapping segment. Older records did not persist those tokens; the v36
+    reader falls back to the legacy display-path split for them, so migration is
+    intentionally a no-op.
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1985,6 +1997,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     32: _migrate_v32_to_v33,
     33: _migrate_v33_to_v34,
     34: _migrate_v34_to_v35,
+    35: _migrate_v35_to_v36,
 }
 
 

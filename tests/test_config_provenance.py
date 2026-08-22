@@ -382,6 +382,22 @@ def test_cli_override_value_is_recorded_with_cli_override_source(tmp_path: Path)
     assert entry["source"] == VALUE_SOURCE_CLI_OVERRIDE
 
 
+def test_ambiguous_recorded_config_keys_persist_lossless_path_tokens(tmp_path: Path) -> None:
+    config = _load(_write_config(tmp_path / "proj"))
+    path_tokens = config.provenance.resolved_value_path_tokens
+    ambiguous_key = next(
+        path
+        for path, tokens in path_tokens.items()
+        if path.startswith("model_registry.") and path.endswith(".provider") and len(tokens) >= 3
+    )
+
+    block = _audit_for(config, tmp_path)["configuration"]["recorded_values"]
+    entry = block["entries"][ambiguous_key]
+
+    assert entry["path_tokens"] == list(path_tokens[ambiguous_key])
+    assert "path_tokens" not in block["entries"]["project"]
+
+
 # ── Step 3: schema version + migration ────────────────────────────────────────
 
 
@@ -414,6 +430,24 @@ def test_v34_records_migrate_to_absent_recorded_config_values() -> None:
     )
 
     assert migrated["configuration"]["recorded_values"] is None
+
+
+def test_v35_records_migrate_to_v36_without_rewriting_recorded_config_entries() -> None:
+    record = {
+        "configuration": {
+            "recorded_values": {
+                "format_version": 1,
+                "entries": {
+                    "model_registry.google/gemini-2.5-pro/api.provider": {
+                        "value": "google",
+                        "source": "default",
+                    }
+                },
+            }
+        }
+    }
+
+    assert audit_substrate._migrate_v35_to_v36(record) is record
 
 
 def test_configuration_block_round_trips_through_the_substrate(tmp_path: Path) -> None:
@@ -480,6 +514,25 @@ def test_lookup_reports_current_schema_indexed_list_paths_as_resolved(tmp_path: 
     ):
         lookup = audit_substrate.lookup_recorded_configuration_value(record, key)
         assert lookup["status"] == "resolved"
+
+
+def test_lookup_uses_recorded_path_tokens_for_ambiguous_current_schema_keys(
+    tmp_path: Path,
+) -> None:
+    record = _audit_for(_load(_write_config(tmp_path / "proj")), tmp_path)
+    entries = record["configuration"]["recorded_values"]["entries"]
+    ambiguous_key = next(
+        path
+        for path, entry in entries.items()
+        if path.startswith("model_registry.")
+        and path.endswith(".provider")
+        and "path_tokens" in entry
+    )
+
+    lookup = audit_substrate.lookup_recorded_configuration_value(record, ambiguous_key)
+
+    assert lookup["status"] == "resolved"
+    assert lookup["value"] == entries[ambiguous_key]["value"]
 
 
 def test_lookup_reports_absent_for_digest_only_records() -> None:

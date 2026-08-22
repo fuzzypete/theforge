@@ -74,7 +74,7 @@ VALUE_SOURCE_DEFAULT = "default"
 VALUE_SOURCE_DERIVED = "derived"
 VALUE_SOURCE_CLI_OVERRIDE = "cli override"
 VALUE_SOURCE_ENVIRONMENT = "environment"
-RESOLVED_CONFIG_RECORD_FORMAT_VERSION = 1
+RESOLVED_CONFIG_RECORD_FORMAT_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -92,6 +92,7 @@ class ConfigProvenance:
     resolved_sha256: str | None = None
     resolved_values: dict[str, Any] = field(default_factory=dict)
     resolved_value_sources: dict[str, str] = field(default_factory=dict)
+    resolved_value_path_tokens: dict[str, tuple[str | int, ...]] = field(default_factory=dict)
 
 
 def file_sha256(path: Path) -> str:
@@ -228,6 +229,53 @@ def _flatten_payload(value: Any, *, path: str = "") -> dict[str, Any]:
     return flat
 
 
+def _flatten_payload_paths(
+    value: Any,
+    *,
+    path: str = "",
+    tokens: tuple[str | int, ...] = (),
+) -> dict[str, tuple[str | int, ...]]:
+    """Flatten a canonical payload into ``{dotted_path: path_tokens}`` entries."""
+    flat: dict[str, tuple[str | int, ...]] = {}
+    if isinstance(value, dict):
+        if not value and path:
+            flat[path] = tokens
+            return flat
+        for key, child in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}" if path else key_text
+            flat.update(
+                _flatten_payload_paths(
+                    child,
+                    path=child_path,
+                    tokens=(*tokens, key_text),
+                )
+            )
+        return flat
+    if isinstance(value, list):
+        if not value and path:
+            flat[path] = tokens
+            return flat
+        for idx, child in enumerate(value):
+            child_path = f"{path}[{idx}]"
+            flat.update(
+                _flatten_payload_paths(
+                    child,
+                    path=child_path,
+                    tokens=(*tokens, idx),
+                )
+            )
+        return flat
+    if path:
+        flat[path] = tokens
+    return flat
+
+
+def _needs_path_tokens(tokens: tuple[str | int, ...]) -> bool:
+    """Return True when the flattened display path is not self-delimiting."""
+    return any(isinstance(token, str) and any(ch in token for ch in ".[]") for token in tokens)
+
+
 def _path_matches_prefix(path: str, prefix: str) -> bool:
     return path == prefix or path.startswith(f"{prefix}.") or path.startswith(f"{prefix}[")
 
@@ -251,6 +299,15 @@ def resolved_config_payload(config: Any) -> dict[str, Any]:
 def resolved_config_values(config: Any) -> dict[str, Any]:
     """Return the flattened, redacted resolved configuration."""
     return _flatten_payload(resolved_config_payload(config))
+
+
+def resolved_config_value_path_tokens(config: Any) -> dict[str, tuple[str | int, ...]]:
+    """Return lossless path tokens for flattened keys that need them."""
+    return {
+        path: tokens
+        for path, tokens in _flatten_payload_paths(resolved_config_payload(config)).items()
+        if _needs_path_tokens(tokens)
+    }
 
 
 def _resolved_value_sources(
@@ -319,6 +376,7 @@ def build_provenance(
         except OSError:
             source_digest = None
     values = resolved_config_values(config)
+    path_tokens = resolved_config_value_path_tokens(config)
     return ConfigProvenance(
         source_path=str(resolved_path) if resolved_path is not None else None,
         source_sha256=source_digest,
@@ -330,6 +388,7 @@ def build_provenance(
             environment_sources=dict(environment_sources or {}),
             derived_path_prefixes=tuple(derived_path_prefixes),
         ),
+        resolved_value_path_tokens=path_tokens,
     )
 
 
@@ -351,6 +410,7 @@ def refresh_provenance(
     if provenance is None:
         provenance = ConfigProvenance()
     values = resolved_config_values(config)
+    path_tokens = resolved_config_value_path_tokens(config)
     sources = dict(provenance.resolved_value_sources)
     for path in values:
         sources.setdefault(path, VALUE_SOURCE_DERIVED)
@@ -361,5 +421,6 @@ def refresh_provenance(
         resolved_sha256=resolved_config_sha256(config),
         resolved_values=values,
         resolved_value_sources=sources,
+        resolved_value_path_tokens=path_tokens,
     )
     return dataclasses.replace(config, provenance=refreshed)

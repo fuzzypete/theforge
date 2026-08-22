@@ -396,6 +396,22 @@ def _split_config_path(path: str) -> tuple[object, ...]:
     return tuple(tokens)
 
 
+def _recorded_path_tokens(entry: dict, *, fallback_key: str) -> tuple[object, ...]:
+    raw_tokens = entry.get("path_tokens")
+    if isinstance(raw_tokens, list) and raw_tokens:
+        tokens: list[object] = []
+        for token in raw_tokens:
+            if type(token) is int:
+                tokens.append(_INDEX_TOKEN)
+                continue
+            if isinstance(token, str) and token:
+                tokens.append(token)
+                continue
+            return _split_config_path(fallback_key)
+        return tuple(tokens)
+    return _split_config_path(fallback_key)
+
+
 def _unwrap_type(annotation: Any) -> Any:
     origin = get_origin(annotation)
     if origin not in {Union, types.UnionType}:
@@ -454,8 +470,7 @@ def _next_annotation(annotation: Any, token: object) -> Any | None:
     return None
 
 
-def _config_path_is_interpretable(path: str) -> bool:
-    tokens = _split_config_path(path)
+def _config_tokens_are_interpretable(tokens: tuple[object, ...]) -> bool:
     if not tokens:
         return False
     annotation: Any | None = ForgeConfig
@@ -467,6 +482,10 @@ def _config_path_is_interpretable(path: str) -> bool:
         if annotation is None:
             return False
     return True
+
+
+def _config_path_is_interpretable(path: str) -> bool:
+    return _config_tokens_are_interpretable(_split_config_path(path))
 
 
 def lookup_recorded_configuration_value(record: dict, key: str) -> dict:
@@ -484,7 +503,11 @@ def lookup_recorded_configuration_value(record: dict, key: str) -> dict:
     entry = entries.get(key)
     if not isinstance(entry, dict):
         return {"status": "missing", "forge_version": forge_version, "key": key}
-    status = "resolved" if _config_path_is_interpretable(key) else "uninterpreted"
+    status = (
+        "resolved"
+        if _config_tokens_are_interpretable(_recorded_path_tokens(entry, fallback_key=key))
+        else "uninterpreted"
+    )
     return {
         "status": status,
         "forge_version": forge_version,
