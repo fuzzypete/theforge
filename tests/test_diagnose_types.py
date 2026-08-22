@@ -12,6 +12,7 @@ import pytest
 from theforge.diagnose_types import (
     DIAGNOSE_OUTPUT_DESTINATIONS,
     AbsentPremise,
+    ClaimVerification,
     DiagnosePartialReason,
     DiagnosePhase,
     DiagnoseResult,
@@ -23,6 +24,7 @@ from theforge.diagnose_types import (
     ScopeCoverageLocation,
     SupportProvenance,
     SymptomScopeCoverage,
+    UncheckedPremise,
     render_already_resolved_markdown,
     render_artifact_markdown,
     upsert_diagnosis_section,
@@ -197,16 +199,23 @@ class TestHypothesis:
             status="confirmed",
             evidence="e",
             evidence_provenance=SupportProvenance("observed", "reproduced locally"),
+            claim_verification=ClaimVerification("source", "checked in source"),
         )
         assert h.statement == "x"
         assert h.status == "confirmed"
         assert h.evidence == "e"
+        assert h.claim_verification.verification_type == "source"
         assert h.evidence_provenance.source_type == "observed"
 
     def test_evidence_defaults_to_empty(self):
         h = Hypothesis(statement="x", status="inconclusive")
         assert h.evidence == ""
+        assert h.claim_verification == ClaimVerification()
         assert h.evidence_provenance == SupportProvenance()
+
+    def test_unrecognized_status_normalizes_to_inconclusive(self):
+        h = Hypothesis(statement="x", status="maybe")
+        assert h.status == "inconclusive"
 
 
 class TestSupportProvenance:
@@ -217,6 +226,16 @@ class TestSupportProvenance:
         provenance = SupportProvenance(source_type="commit_message", detail="already asserted")
         assert provenance.source_type == "unknown"
         assert provenance.detail == "already asserted"
+
+
+class TestClaimVerification:
+    def test_unknown_default(self):
+        assert ClaimVerification() == ClaimVerification("unknown", "")
+
+    def test_unknown_normalizes_unrecognized_type(self):
+        verification = ClaimVerification("filesystem", "checked somewhere")
+        assert verification.verification_type == "unknown"
+        assert verification.detail == "checked somewhere"
 
 
 class TestSymptomScopeCoverage:
@@ -462,7 +481,14 @@ class TestRenderArtifactMarkdown:
                     "the hypothesis",
                     "confirmed",
                     "the evidence",
-                    SupportProvenance("observed", "reproduced in a failing test"),
+                    evidence_provenance=SupportProvenance(
+                        "observed",
+                        "reproduced in a failing test",
+                    ),
+                    claim_verification=ClaimVerification(
+                        "source",
+                        "checked in src/theforge/example.py",
+                    ),
                 ),
             ),
             confirmed_cause="c",
@@ -475,6 +501,7 @@ class TestRenderArtifactMarkdown:
         assert "Evidence: the evidence" in md
         assert "Evidence provenance: observed" in md
         assert "reproduced in a failing test" in md
+        assert "Claim verification:" not in md
 
     def test_prior_assertion_support_renders_as_restatement_not_corroboration(self):
         artifact = DiagnosisArtifact(
@@ -489,9 +516,13 @@ class TestRenderArtifactMarkdown:
                         "independently confirmed by commit 858ec73a whose message states "
                         "the identical mechanism"
                     ),
-                    SupportProvenance(
+                    evidence_provenance=SupportProvenance(
                         "prior_assertion",
                         "Commit 858ec73a already states the same mechanism.",
+                    ),
+                    claim_verification=ClaimVerification(
+                        "attached_evidence",
+                        "Only the attached commit message was available.",
                     ),
                 ),
             ),
@@ -499,6 +530,10 @@ class TestRenderArtifactMarkdown:
             confirmed_cause_support=(
                 "The same commit message already states the cause and the diagnosis "
                 "described it as an independent fix."
+            ),
+            confirmed_cause_verification=ClaimVerification(
+                "source_and_attached_evidence",
+                "Confirmed in source and the attached report.",
             ),
             confirmed_cause_support_provenance=SupportProvenance(
                 "prior_assertion",
@@ -508,6 +543,8 @@ class TestRenderArtifactMarkdown:
             fix_success_criterion="Prior assertions render as restatements, not corroboration.",
         )
         md = render_artifact_markdown(artifact)
+        assert "Claim verification: rests only on attached evidence." in md
+        assert "Claim verification: verified against source and attached evidence." in md
         assert "Support provenance: prior_assertion" in md
         assert "restatement, not independent corroboration" in md
         assert "Evidence provenance: prior_assertion" in md
@@ -577,7 +614,11 @@ class TestRenderArtifactMarkdown:
                     "the hypothesis",
                     "confirmed",
                     "independently confirmed by the latest test run",
-                    SupportProvenance("observed", "test_red.py failed at HEAD"),
+                    evidence_provenance=SupportProvenance(
+                        "observed",
+                        "test_red.py failed at HEAD",
+                    ),
+                    claim_verification=ClaimVerification("source", "checked at HEAD"),
                 ),
             ),
             confirmed_cause="c",
@@ -586,6 +627,53 @@ class TestRenderArtifactMarkdown:
         )
         md = render_artifact_markdown(artifact)
         assert "Verify the cited material is a second source rather than a prior assertion." in md
+
+    def test_unverifiable_hypothesis_renders_distinct_from_ruled_out(self):
+        artifact = DiagnosisArtifact(
+            issue_number=2672,
+            observed_symptom="missing intake artifact looked like a negative result",
+            reproduction_or_evidence="attached packet omitted intake candidate artifacts",
+            hypotheses=(
+                Hypothesis(
+                    "the intake candidate was malformed at creation",
+                    "unverifiable",
+                    "intake candidate artifacts absent from bundle; not checked",
+                    claim_verification=ClaimVerification(
+                        "attached_evidence",
+                        "No source copy of the artifact was available.",
+                    ),
+                ),
+            ),
+            confirmed_cause="",
+            affected_code_path="src/theforge/diagnose_types.py",
+            fix_success_criterion="missing artifacts render as unverifiable",
+        )
+        md = render_artifact_markdown(artifact)
+        assert "[unverifiable]" in md
+        assert "[ruled out]" not in md
+        assert "attached evidence" in md
+
+    def test_unchecked_premises_render_in_dedicated_section(self):
+        artifact = DiagnosisArtifact(
+            issue_number=2672,
+            observed_symptom="premise check failed open silently",
+            reproduction_or_evidence="baseline SHA unavailable",
+            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            confirmed_cause="c",
+            affected_code_path="p",
+            fix_success_criterion="f",
+            unchecked_premises=(
+                UncheckedPremise(
+                    file="src/mod.py",
+                    pattern="def buggy_func",
+                    reason="baseline SHA unavailable; premise not checked",
+                ),
+            ),
+        )
+        md = render_artifact_markdown(artifact)
+        assert "### Premise verification" in md
+        assert "unable to check" in md
+        assert "baseline SHA unavailable" in md
 
     def test_partial_artifact_renders_warning_block(self):
         artifact = DiagnosisArtifact(

@@ -21,6 +21,7 @@ import yaml
 from coord_test_helpers import _make_config
 
 from theforge.diagnose_types import (
+    ClaimVerification,
     DiagnosePartialReason,
     DiagnosePhase,
     DiagnoseState,
@@ -28,6 +29,7 @@ from theforge.diagnose_types import (
     Hypothesis,
     SupportProvenance,
     SymptomScopeCoverage,
+    UncheckedPremise,
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
@@ -384,6 +386,9 @@ class TestPromptBuilder:
         assert "issue comments" in lower
         assert "memory files" in lower
         assert "not independent corroboration" in lower
+        assert "status: unverifiable" in prompt
+        assert "claim_verification" in prompt
+        assert "confirmed_cause_verification" in prompt
         assert "evidence_provenance" in prompt
         assert "confirmed_cause_support_provenance" in prompt
 
@@ -762,10 +767,18 @@ class TestDiagnoseFlow:
                         "prior_assertion",
                         "Earlier fix branch already asserted it.",
                     ),
+                    ClaimVerification(
+                        "attached_evidence",
+                        "Only the attached commit message was available.",
+                    ),
                 ),
             ),
             confirmed_cause="root cause",
             confirmed_cause_support="Earlier diagnosis already states the same cause",
+            confirmed_cause_verification=ClaimVerification(
+                "source_and_attached_evidence",
+                "Confirmed in source and attached packet.",
+            ),
             confirmed_cause_support_provenance=SupportProvenance(
                 "prior_assertion",
                 "Diagnosis hdp#342 already asserted the cause.",
@@ -779,9 +792,17 @@ class TestDiagnoseFlow:
             "source_type": "prior_assertion",
             "detail": "Earlier fix branch already asserted it.",
         }
+        assert payload["hypotheses"][0]["claim_verification"] == {
+            "verification_type": "attached_evidence",
+            "detail": "Only the attached commit message was available.",
+        }
         assert payload["confirmed_cause_support"] == (
             "Earlier diagnosis already states the same cause"
         )
+        assert payload["confirmed_cause_verification"] == {
+            "verification_type": "source_and_attached_evidence",
+            "detail": "Confirmed in source and attached packet.",
+        }
         assert payload["confirmed_cause_support_provenance"] == {
             "source_type": "prior_assertion",
             "detail": "Diagnosis hdp#342 already asserted the cause.",
@@ -2177,6 +2198,18 @@ class TestPremiseVerification:
         )
         verdict = verify_premise(artifact, "", Path("/nonexistent"))
         assert verdict.resolved is False
+        assert verdict.unable_to_check == (
+            UncheckedPremise(
+                file="src/anything.py",
+                pattern="def x",
+                reason="baseline SHA unavailable; premise not checked",
+            ),
+            UncheckedPremise(
+                file="src/anything.py",
+                pattern="",
+                reason="baseline SHA unavailable; affected code path not checked",
+            ),
+        )
 
     def test_verify_premise_fails_open_when_pattern_never_existed(self, tmp_path):
         """A pattern that has no removal history yields no removing commit, so the
@@ -2201,6 +2234,13 @@ class TestPremiseVerification:
         )
         verdict = verify_premise(artifact, head, tmp_path)
         assert verdict.resolved is False
+        assert verdict.unable_to_check == (
+            UncheckedPremise(
+                file="src/mod.py",
+                pattern="never_here",
+                reason="pattern absent at baseline but no removing commit could be identified",
+            ),
+        )
 
 
 class TestParsePremiseAnchors:
@@ -2289,11 +2329,17 @@ class TestParseSupportProvenance:
             "observed_symptom: s\nreproduction_or_evidence: r\n"
             "hypotheses:\n"
             "  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "    claim_verification:\n"
+            "      verification_type: attached_evidence\n"
+            "      detail: Missing local artifact.\n"
             "    evidence_provenance:\n"
             "      source_type: prior_assertion\n"
             "      detail: Earlier diagnosis already stated it.\n"
             "confirmed_cause: c\n"
             "confirmed_cause_support: commit message already states the same cause\n"
+            "confirmed_cause_verification:\n"
+            "  verification_type: source\n"
+            "  detail: Checked in source.\n"
             "confirmed_cause_support_provenance:\n"
             "  source_type: mixed\n"
             "  detail: Mix of reproduced failure and operator note.\n"
@@ -2301,11 +2347,15 @@ class TestParseSupportProvenance:
         )
         artifact = parse_diagnose_output(payload, issue_number=1)
         assert artifact is not None
+        assert artifact.hypotheses[0].claim_verification.verification_type == "attached_evidence"
+        assert artifact.hypotheses[0].claim_verification.detail == "Missing local artifact."
         assert artifact.hypotheses[0].evidence_provenance.source_type == "prior_assertion"
         assert artifact.hypotheses[0].evidence_provenance.detail == (
             "Earlier diagnosis already stated it."
         )
         assert artifact.confirmed_cause_support == "commit message already states the same cause"
+        assert artifact.confirmed_cause_verification.verification_type == "source"
+        assert artifact.confirmed_cause_verification.detail == "Checked in source."
         assert artifact.confirmed_cause_support_provenance.source_type == "mixed"
         assert artifact.confirmed_cause_support_provenance.detail == (
             "Mix of reproduced failure and operator note."
@@ -2314,8 +2364,10 @@ class TestParseSupportProvenance:
     def test_missing_support_provenance_defaults_to_unknown(self):
         artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
         assert artifact is not None
+        assert artifact.hypotheses[0].claim_verification == ClaimVerification()
         assert artifact.hypotheses[0].evidence_provenance == SupportProvenance()
         assert artifact.confirmed_cause_support == ""
+        assert artifact.confirmed_cause_verification == ClaimVerification()
         assert artifact.confirmed_cause_support_provenance == SupportProvenance()
 
     def test_null_or_empty_provenance_detail_does_not_stringify_none(self):
@@ -2323,10 +2375,16 @@ class TestParseSupportProvenance:
             "observed_symptom: s\nreproduction_or_evidence: r\n"
             "hypotheses:\n"
             "  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "    claim_verification:\n"
+            "      verification_type:\n"
+            "      detail:\n"
             "    evidence_provenance:\n"
             "      source_type:\n"
             "      detail:\n"
             "confirmed_cause: c\n"
+            "confirmed_cause_verification:\n"
+            "  verification_type:\n"
+            "  detail:\n"
             "confirmed_cause_support_provenance:\n"
             "  source_type:\n"
             "  detail:\n"
@@ -2334,7 +2392,9 @@ class TestParseSupportProvenance:
         )
         artifact = parse_diagnose_output(payload, issue_number=1)
         assert artifact is not None
+        assert artifact.hypotheses[0].claim_verification == ClaimVerification()
         assert artifact.hypotheses[0].evidence_provenance == SupportProvenance()
+        assert artifact.confirmed_cause_verification == ClaimVerification()
         assert artifact.confirmed_cause_support_provenance == SupportProvenance()
 
 

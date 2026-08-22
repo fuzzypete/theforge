@@ -44,6 +44,12 @@ DIAGNOSE_OUTPUT_DESTINATIONS: frozenset[str] = frozenset({"comment", "body_secti
 DIAGNOSE_SUPPORT_SOURCE_TYPES: frozenset[str] = frozenset(
     {"observed", "prior_assertion", "mixed", "unknown"}
 )
+DIAGNOSE_CLAIM_VERIFICATION_TYPES: frozenset[str] = frozenset(
+    {"source", "attached_evidence", "source_and_attached_evidence", "unknown"}
+)
+DIAGNOSE_HYPOTHESIS_STATUSES: frozenset[str] = frozenset(
+    {"ruled_out", "confirmed", "inconclusive", "unverifiable"}
+)
 _INDEPENDENCE_VOCAB_RE = re.compile(
     r"\b(independent(?:ly)?|corroborat\w*|converg\w*|second source)\b",
     re.IGNORECASE,
@@ -55,6 +61,20 @@ def _normalize_support_source_type(source_type: str) -> str:
     if normalized in DIAGNOSE_SUPPORT_SOURCE_TYPES:
         return normalized
     return "unknown"
+
+
+def _normalize_claim_verification_type(verification_type: str) -> str:
+    normalized = verification_type.strip().lower()
+    if normalized in DIAGNOSE_CLAIM_VERIFICATION_TYPES:
+        return normalized
+    return "unknown"
+
+
+def _normalize_hypothesis_status(status: str) -> str:
+    normalized = status.strip().lower()
+    if normalized in DIAGNOSE_HYPOTHESIS_STATUSES:
+        return normalized
+    return "inconclusive"
 
 
 @dataclass(frozen=True)
@@ -73,13 +93,36 @@ class SupportProvenance:
 
 
 @dataclass(frozen=True)
+class ClaimVerification:
+    """Whether a diagnosis claim was checked against source or attached evidence."""
+
+    verification_type: str = "unknown"
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "verification_type",
+            _normalize_claim_verification_type(self.verification_type),
+        )
+        object.__setattr__(self, "detail", self.detail.strip())
+
+    def is_meaningful(self) -> bool:
+        return self.verification_type != "unknown" or bool(self.detail)
+
+
+@dataclass(frozen=True)
 class Hypothesis:
     """A hypothesis tested during diagnosis."""
 
     statement: str
-    status: str  # "ruled_out" | "confirmed" | "inconclusive"
+    status: str  # "ruled_out" | "confirmed" | "inconclusive" | "unverifiable"
     evidence: str = ""
     evidence_provenance: SupportProvenance = field(default_factory=SupportProvenance)
+    claim_verification: ClaimVerification = field(default_factory=ClaimVerification)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "status", _normalize_hypothesis_status(self.status))
 
 
 @dataclass(frozen=True)
@@ -215,6 +258,16 @@ class PremiseVerdict:
 
     resolved: bool
     absent: tuple[AbsentPremise, ...] = ()
+    unable_to_check: tuple["UncheckedPremise", ...] = ()
+
+
+@dataclass(frozen=True)
+class UncheckedPremise:
+    """A premise the coordinator could not verify against baseline."""
+
+    file: str
+    pattern: str
+    reason: str
 
 
 @dataclass(frozen=True)
@@ -257,6 +310,9 @@ class DiagnosisArtifact:
     confirmed_cause_support_provenance: SupportProvenance = field(
         default_factory=SupportProvenance
     )
+    confirmed_cause_verification: ClaimVerification = field(default_factory=ClaimVerification)
+    # Coordinator-populated report of premise anchors it could not verify.
+    unchecked_premises: tuple[UncheckedPremise, ...] = ()
 
     def missing_required_fields(
         self, *, issue_requires_categorical_scope: bool = False
@@ -350,6 +406,8 @@ class DiagnoseState:
     already_resolved: bool = False
     absent_premises: tuple[AbsentPremise, ...] = ()
     # Set when the premise check finds the cited code was removed from baseline.
+    unchecked_premises: tuple[UncheckedPremise, ...] = ()
+    # Set when premise verification could not check cited anchors/patterns.
     starting_evidence_labels: list[str] = field(default_factory=list)
     # Short labels for each excerpt auto-loaded from issue-body references and
     # injected into the prompt as STARTING EVIDENCE. Empty when the body cited
@@ -503,6 +561,19 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             return f"{text} {provenance.detail}"
         return text
 
+    def render_claim_verification_text(verification: ClaimVerification) -> str:
+        if verification.verification_type == "source":
+            text = "verified against the target repository source."
+        elif verification.verification_type == "attached_evidence":
+            text = "rests only on attached evidence."
+        elif verification.verification_type == "source_and_attached_evidence":
+            text = "verified against source and attached evidence."
+        else:
+            text = "the diagnosis did not record whether this claim was checked against source."
+        if verification.detail:
+            return f"{text} {verification.detail}"
+        return text
+
     def render_independence_note(
         text: str, provenance: SupportProvenance, *, indent: str = ""
     ) -> list[str]:
@@ -519,6 +590,24 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
                 "material is a second source rather than a prior assertion."
             )
         return [f"{indent}Independence note: {note}"]
+
+    claim_verifications = [
+        h.claim_verification
+        for h in artifact.hypotheses
+        if h.statement.strip() or h.evidence.strip() or h.claim_verification.is_meaningful()
+    ]
+    if (
+        artifact.confirmed_cause.strip()
+        or artifact.confirmed_cause_support.strip()
+        or artifact.confirmed_cause_verification.is_meaningful()
+    ):
+        claim_verifications.append(artifact.confirmed_cause_verification)
+    meaningful_claim_types = {
+        verification.verification_type
+        for verification in claim_verifications
+        if verification.verification_type != "unknown"
+    }
+    show_claim_verification = bool(meaningful_claim_types) and meaningful_claim_types != {"source"}
 
     lines.extend(
         [
@@ -542,11 +631,21 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             lines.append(f"- **[{display_status}]** {h.statement.strip()}")
             if h.evidence.strip():
                 lines.append(f"  - Evidence: {h.evidence.strip()}")
+                if show_claim_verification:
+                    lines.append(
+                        "  - Claim verification: "
+                        f"{render_claim_verification_text(h.claim_verification)}"
+                    )
                 lines.append(
                     f"  - Evidence provenance: {render_provenance_text(h.evidence_provenance)}"
                 )
                 lines.extend(
                     render_independence_note(h.evidence, h.evidence_provenance, indent="  - ")
+                )
+            elif show_claim_verification and h.claim_verification.is_meaningful():
+                lines.append(
+                    "  - Claim verification: "
+                    f"{render_claim_verification_text(h.claim_verification)}"
                 )
     else:
         lines.append("_(none recorded)_")
@@ -569,8 +668,14 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
     if (
         artifact.confirmed_cause_support.strip()
         or artifact.confirmed_cause_support_provenance.is_meaningful()
+        or (show_claim_verification and artifact.confirmed_cause_verification.is_meaningful())
         or _INDEPENDENCE_VOCAB_RE.search(artifact.confirmed_cause or "")
     ):
+        if show_claim_verification and artifact.confirmed_cause_verification.is_meaningful():
+            lines.append(
+                "Claim verification: "
+                f"{render_claim_verification_text(artifact.confirmed_cause_verification)}"
+            )
         lines.append(f"Support: {artifact.confirmed_cause_support.strip() or '_(none recorded)_'}")
         lines.append(
             "Support provenance: "
@@ -584,6 +689,22 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
             artifact.confirmed_cause_support_provenance,
         )
         lines.extend(dict.fromkeys(independence_notes))
+        lines.append("")
+    if artifact.unchecked_premises:
+        lines.extend(
+            [
+                "### Premise verification",
+                "",
+                (
+                    "> The coordinator could not verify the following cited "
+                    "premises against the baseline."
+                ),
+                "",
+            ]
+        )
+        for premise in artifact.unchecked_premises:
+            target = premise.file + (f":{premise.pattern}" if premise.pattern else "")
+            lines.append(f"- `{target}` — unable to check: {premise.reason}")
         lines.append("")
     lines.extend(
         [

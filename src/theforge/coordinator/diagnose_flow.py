@@ -49,6 +49,7 @@ from theforge.diagnose_types import (
     DiagnosisArtifact,
     InspectedFile,
     PremiseVerdict,
+    UncheckedPremise,
     render_already_resolved_markdown,
     render_artifact_markdown,
     upsert_diagnosis_section,
@@ -295,8 +296,28 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
     removing commit — this must never turn a live diagnosis into a false
     "already resolved".
     """
+    unable_to_check: list[UncheckedPremise] = []
     if not sha:
-        return PremiseVerdict(resolved=False)
+        for anchor in artifact.premise_anchors:
+            path = anchor.file.strip()
+            pattern = anchor.pattern.strip()
+            if path:
+                unable_to_check.append(
+                    UncheckedPremise(
+                        file=path,
+                        pattern=pattern,
+                        reason="baseline SHA unavailable; premise not checked",
+                    )
+                )
+        for path, symbol in _extract_affected_refs(artifact.affected_code_path):
+            unable_to_check.append(
+                UncheckedPremise(
+                    file=path,
+                    pattern=symbol,
+                    reason="baseline SHA unavailable; affected code path not checked",
+                )
+            )
+        return PremiseVerdict(resolved=False, unable_to_check=tuple(unable_to_check))
 
     absent: list[AbsentPremise] = []
     covered: set[str] = set()
@@ -318,6 +339,16 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                     )
                 )
                 covered.add(path)
+            else:
+                unable_to_check.append(
+                    UncheckedPremise(
+                        file=path,
+                        pattern="",
+                        reason=(
+                            "file absent at baseline but no removing commit could be identified"
+                        ),
+                    )
+                )
             continue
         if pattern and _pattern_present_at_sha(path, pattern, sha, project_root) is False:
             commit = _find_pattern_removing_commit(path, pattern, sha, project_root)
@@ -328,6 +359,16 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                         pattern=pattern,
                         removing_commit=commit[0],
                         removing_summary=commit[1],
+                    )
+                )
+            else:
+                unable_to_check.append(
+                    UncheckedPremise(
+                        file=path,
+                        pattern=pattern,
+                        reason=(
+                            "pattern absent at baseline but no removing commit could be identified"
+                        ),
                     )
                 )
 
@@ -351,6 +392,16 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                     )
                 )
                 covered.add(path)
+            else:
+                unable_to_check.append(
+                    UncheckedPremise(
+                        file=path,
+                        pattern="",
+                        reason=(
+                            "file absent at baseline but no removing commit could be identified"
+                        ),
+                    )
+                )
             continue
         # File is present; if the citation named a symbol that has since been
         # removed from it, the described bug can no longer reproduce there.
@@ -365,8 +416,30 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
                         removing_summary=commit[1],
                     )
                 )
+            else:
+                unable_to_check.append(
+                    UncheckedPremise(
+                        file=path,
+                        pattern=symbol,
+                        reason=(
+                            "symbol absent at baseline but no removing commit could be identified"
+                        ),
+                    )
+                )
 
-    return PremiseVerdict(resolved=bool(absent), absent=tuple(absent))
+    deduped_unchecked: list[UncheckedPremise] = []
+    seen_unchecked: set[tuple[str, str, str]] = set()
+    for premise in unable_to_check:
+        key = (premise.file, premise.pattern, premise.reason)
+        if key in seen_unchecked:
+            continue
+        seen_unchecked.add(key)
+        deduped_unchecked.append(premise)
+    return PremiseVerdict(
+        resolved=bool(absent),
+        absent=tuple(absent),
+        unable_to_check=tuple(deduped_unchecked),
+    )
 
 
 def _gh_fetch_issue(number: int, project_root: Path) -> dict:
@@ -673,6 +746,14 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             }
             for a in state.absent_premises
         ],
+        "unchecked_premises": [
+            {
+                "file": a.file,
+                "pattern": a.pattern,
+                "reason": a.reason,
+            }
+            for a in state.unchecked_premises
+        ],
         "error": state.error,
     }
     if state.artifact is not None:
@@ -691,6 +772,10 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
                 "statement": h.statement,
                 "status": h.status,
                 "evidence": h.evidence,
+                "claim_verification": {
+                    "verification_type": h.claim_verification.verification_type,
+                    "detail": h.claim_verification.detail,
+                },
                 "evidence_provenance": {
                     "source_type": h.evidence_provenance.source_type,
                     "detail": h.evidence_provenance.detail,
@@ -700,6 +785,10 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
         ],
         "confirmed_cause": artifact.confirmed_cause,
         "confirmed_cause_support": artifact.confirmed_cause_support,
+        "confirmed_cause_verification": {
+            "verification_type": artifact.confirmed_cause_verification.verification_type,
+            "detail": artifact.confirmed_cause_verification.detail,
+        },
         "confirmed_cause_support_provenance": {
             "source_type": artifact.confirmed_cause_support_provenance.source_type,
             "detail": artifact.confirmed_cause_support_provenance.detail,
@@ -732,6 +821,14 @@ def _artifact_to_dict(artifact: DiagnosisArtifact) -> dict:
                 for location in artifact.symptom_scope_coverage.examined_locations
             ],
         },
+        "unchecked_premises": [
+            {
+                "file": premise.file,
+                "pattern": premise.pattern,
+                "reason": premise.reason,
+            }
+            for premise in artifact.unchecked_premises
+        ],
     }
 
 
@@ -1529,6 +1626,10 @@ def _run_diagnose_flow_body(
         if attached.is_present
         else verify_premise(artifact, state.baseline_sha, project_root)
     )
+    if verdict.unable_to_check:
+        state.unchecked_premises = verdict.unable_to_check
+        artifact = dataclasses.replace(artifact, unchecked_premises=verdict.unable_to_check)
+        state.artifact = artifact
     if verdict.resolved:
         state.already_resolved = True
         state.absent_premises = verdict.absent
