@@ -54,7 +54,7 @@ from .profiles import (
     _parse_transport_fallbacks,
     override_constrains_model,
 )
-from .provenance import build_provenance
+from .provenance import build_provenance, collect_leaf_paths
 from .role_derivation import derive_roles
 from .sandbox_capabilities import get_preset
 from .secrets import _parse_notifications
@@ -97,6 +97,45 @@ from .types import (
 )
 
 log = logging.getLogger("theforge.config")
+
+_MODEL_REF_SOURCE_FIELDS = {
+    "cli": "cli",
+    "provider": "provider",
+    "model": "model",
+    "budget_usd": "budget_usd",
+    "timeout": "timeout_seconds",
+    "timeout_medium": "timeout_medium_seconds",
+    "timeout_large": "timeout_large_seconds",
+    "fallback_models": "fallback_models",
+    "reasoning_effort": "reasoning_effort",
+    "thinking_budget": "thinking_budget",
+    "base_url": "base_url",
+    "max_iterations": "max_iterations",
+    "max_tool_output_bytes": "max_tool_output_bytes",
+}
+
+
+def _resolved_yaml_leaf_paths(raw_leaf_paths: tuple[str, ...]) -> tuple[str, ...]:
+    """Map raw YAML leaf paths to the resolved config paths they directly feed."""
+    resolved = set(raw_leaf_paths)
+    for path in raw_leaf_paths:
+        if path.startswith("plan."):
+            suffix = path.removeprefix("plan.")
+            head = suffix.split(".", 1)[0]
+            mapped = _MODEL_REF_SOURCE_FIELDS.get(head)
+            if mapped is not None:
+                tail = suffix[len(head) :]
+                resolved.add(f"plan.ref.{mapped}{tail}")
+        if path.startswith("plan_agent_review."):
+            suffix = path.removeprefix("plan_agent_review.")
+            head = suffix.split(".", 1)[0]
+            mapped = _MODEL_REF_SOURCE_FIELDS.get(head)
+            if mapped is not None:
+                tail = suffix[len(head) :]
+                resolved.add(f"plan_agent_review.ref.{mapped}{tail}")
+    return tuple(sorted(resolved))
+
+
 _VALID_DEV_P2_POLICIES = frozenset({"in_scope", "all", "p1_only"})
 _VALID_SANDBOX_KEYS = frozenset({"capability_profile", "write_roots", "mach_services"})
 # Keys that would let a project *weaken* containment rather than enumerate a
@@ -1083,6 +1122,12 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     with open(config_path, encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f) or {}
+    yaml_leaf_paths = _resolved_yaml_leaf_paths(collect_leaf_paths(raw))
+    derived_path_prefixes: set[str] = {
+        "review_pool_is_default",
+        "plan_model_is_default",
+        "dev_profile_is_default",
+    }
 
     try:
         _validate_v0_8_schema(raw)
@@ -1240,6 +1285,16 @@ def load_config(config_path: Path) -> ForgeConfig:
         _derived_plan_profile = _bridge["plan_profile"]
         _derived_plan_validate_spec = _bridge["plan_validate_spec"]
         _derived_par_profile = _bridge.get("plan_agent_review_profile")
+        derived_path_prefixes.update(
+            {
+                "dev_profile",
+                "preflight_profile",
+                "review_pool",
+                "synthesis_profile",
+                "agents",
+                "models_budget_usd",
+            }
+        )
 
         # Apply explicit profile overrides (partial override supported)
         if "dev" in overrides:
@@ -1280,6 +1335,7 @@ def load_config(config_path: Path) -> ForgeConfig:
                 registry=model_registry,
             )
             transport_fallbacks = {**auto_transport_fallbacks, **transport_fallbacks}
+            derived_path_prefixes.add("transport_fallbacks")
         # Track which roles were auto-derived vs explicitly overridden. Complexity-aware
         # adaptation (preflight._apply_complexity_adaptation) only rewrites auto-derived
         # roles so explicit overrides bypass routing. A dev override that only tunes
@@ -1371,7 +1427,9 @@ def load_config(config_path: Path) -> ForgeConfig:
         p2_cleanup_max_iterations=int(retry_data.get("p2_cleanup_max_iterations", 0)),
     )
 
-    notifications = _parse_notifications(raw.get("notifications", {}), secrets)
+    notifications, notification_environment_sources = _parse_notifications(
+        raw.get("notifications", {}), secrets
+    )
     dev_cfg = _parse_dev_config(raw.get("dev"))
     sandbox_cfg = _parse_sandbox_config(raw.get("sandbox"))
 
@@ -1393,6 +1451,7 @@ def load_config(config_path: Path) -> ForgeConfig:
     # role so adaptive routing actually reaches the PLAN phase. Otherwise fall
     # back to the legacy defaults (cli=claude, model=sonnet).
     if _derived_plan_profile is not None and _plan_model_is_default:
+        derived_path_prefixes.add("plan")
         _plan_default_cli: str | None = _derived_plan_profile.cli
         _plan_default_model: str = _derived_plan_profile.model
         _plan_default_provider: str | None = _derived_plan_profile.provider
@@ -1469,6 +1528,7 @@ def load_config(config_path: Path) -> ForgeConfig:
 
     _raw_par = raw.get("plan_agent_review", {})
     if not _raw_par and _derived_par_profile is not None:
+        derived_path_prefixes.add("plan_agent_review")
         # v0.8: plan_agent_review was configured via overrides.plan_agent_review;
         # the bridge lowered it to a ModelProfile. Wrap it in PlanAgentReviewConfig.
         plan_agent_review_cfg = PlanAgentReviewConfig(enabled=True, pool=[_derived_par_profile])
@@ -2048,7 +2108,16 @@ def load_config(config_path: Path) -> ForgeConfig:
     # Configuration identity is derived here, once, from the fully-resolved
     # config (#2056) — consumers record what the run executed under instead of
     # each re-deriving it (or, as before, recording nothing at all).
-    config = dataclasses.replace(config, provenance=build_provenance(config, config_path))
+    config = dataclasses.replace(
+        config,
+        provenance=build_provenance(
+            config,
+            config_path,
+            yaml_leaf_paths=yaml_leaf_paths,
+            environment_sources=notification_environment_sources,
+            derived_path_prefixes=tuple(sorted(derived_path_prefixes)),
+        ),
+    )
     # Pricing is resolved ONCE, here, from the same merged registry routing reads
     # its figures from, into a process-level registry every accounting site
     # consults by the identity that actually dispatched (#2335). Installed only

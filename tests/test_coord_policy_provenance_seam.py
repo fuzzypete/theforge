@@ -438,5 +438,5 @@ class TestRecordMigration:
         assert migrated["knowledge_summary"]["index_rebuild"] is None
 
     def test_migration_is_registered_for_the_current_version(self) -> None:
-        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 34
-        assert audit_storage.MIGRATION_HELPERS[33] is audit_storage._migrate_v33_to_v34
+        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 36
+        assert audit_storage.MIGRATION_HELPERS[35] is audit_storage._migrate_v35_to_v36

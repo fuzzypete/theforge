@@ -50,6 +50,12 @@ def _round_cost(value: float | None) -> float | None:
     return _util_round_cost(value, 6)
 
 
+def _effective_audit_config(config: ForgeConfig, result: CoordinatorResult) -> ForgeConfig:
+    """Return the config the coordinator actually executed under for this result."""
+    runtime_config = getattr(result, "runtime_config", None)
+    return runtime_config if isinstance(runtime_config, ForgeConfig) else config
+
+
 def _branch_has_unmerged_commits(project_root: Path, branch: str, base: str) -> bool:
     """Return True if branch exists and has commits ahead of base.
 
@@ -630,6 +636,7 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
 
     This is the orchestrator's own handoff — a complete record of what happened.
     """
+    config = _effective_audit_config(config, result)
     state = result.state
 
     # Compute overall timing
@@ -1272,9 +1279,16 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
     load-time identity plus ``finish_read_error``, so an absent digest is never
     mistaken for an unchanged one.
     """
+    try:
+        config = config_provenance.refresh_provenance(config)
+    except Exception:  # pragma: no cover - audit emission must degrade, not abort
+        pass
     provenance = getattr(config, "provenance", None)
     source_path = getattr(provenance, "source_path", None)
     source_sha256 = getattr(provenance, "source_sha256", None)
+    resolved_values = getattr(provenance, "resolved_values", None)
+    resolved_value_sources = getattr(provenance, "resolved_value_sources", None)
+    resolved_value_path_tokens = getattr(provenance, "resolved_value_path_tokens", None)
 
     # Digested from the config object the coordinator actually held, not from the
     # load-time value cached on the provenance: CLI overrides (--dev-model,
@@ -1300,6 +1314,28 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
     if source_sha256 is not None and finish_sha256 is not None:
         changed_during_run = finish_sha256 != source_sha256
 
+    recorded_values: dict[str, object] | None = None
+
+    def _recorded_value_entry(path: str, value: object) -> dict[str, object]:
+        entry: dict[str, object] = {
+            "value": value,
+            "source": resolved_value_sources.get(path, config_provenance.VALUE_SOURCE_DERIVED),
+        }
+        if isinstance(resolved_value_path_tokens, dict):
+            tokens = resolved_value_path_tokens.get(path)
+            if isinstance(tokens, tuple):
+                entry["path_tokens"] = list(tokens)
+        return entry
+
+    if isinstance(resolved_values, dict) and isinstance(resolved_value_sources, dict):
+        recorded_values = {
+            "format_version": config_provenance.RESOLVED_CONFIG_RECORD_FORMAT_VERSION,
+            "entries": {
+                path: _recorded_value_entry(path, value)
+                for path, value in sorted(resolved_values.items())
+            },
+        }
+
     return {
         "source_path": source_path,
         "source_sha256": source_sha256,
@@ -1307,6 +1343,7 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
         "source_sha256_at_finish": finish_sha256,
         "changed_during_run": changed_during_run,
         "finish_read_error": finish_read_error,
+        "recorded_values": recorded_values,
     }
 
 

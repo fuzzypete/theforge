@@ -351,6 +351,27 @@ def _pool_by_name(role_block: dict) -> dict[str, dict]:
 # ── AC1: adaptive planner when plan config is default ─────────────────
 
 
+def test_persisted_run_uses_the_final_runtime_config_not_the_entry_config(tmp_path):
+    """The production audit writer must persist the config the coordinator used."""
+    config = _runtime_config(tmp_path)
+    entry_dev_model = config.dev_profile.model
+
+    result, captured = _run_story(config, tmp_path)
+    record = _persist_run(result, config, tmp_path)
+
+    assert captured["dev"][0] != entry_dev_model
+    assert result.runtime_config is not None
+    assert result.runtime_config.dev_profile.model == captured["dev"][0]
+    assert (
+        record["configuration"]["recorded_values"]["entries"]["dev_profile.model"]["value"]
+        == captured["dev"][0]
+    )
+    assert (
+        record["configuration"]["recorded_values"]["entries"]["dev_profile.model"]["value"]
+        != entry_dev_model
+    )
+
+
 def test_run_task_uses_adaptive_planner_when_plan_config_is_default(tmp_path):
     """The PLAN phase invokes the adaptive planner, not the default plan model."""
     config = _runtime_config(tmp_path)

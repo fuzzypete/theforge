@@ -23,6 +23,7 @@ from theforge.config import (
 )
 from theforge.config.auth import check_agent_auth
 from theforge.config.profiles import iter_config_profiles
+from theforge.config.provenance import VALUE_SOURCE_CLI_OVERRIDE, refresh_provenance
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.knowledge_summary_flow import maybe_generate_run_summary
@@ -324,8 +325,10 @@ def _write_audit(
     auto_merge: bool = False,
 ) -> Path:
     """Write the canonical audit log and preserve minimal worktree state on ESCALATE."""
-    audit = generate_audit_log(config, task, result)
-    audits_dir = config.project_root / ".forge" / "audits"
+    runtime_config = getattr(result, "runtime_config", None)
+    audit_config = runtime_config if isinstance(runtime_config, ForgeConfig) else config
+    audit = generate_audit_log(audit_config, task, result)
+    audits_dir = audit_config.project_root / ".forge" / "audits"
     audits_dir.mkdir(parents=True, exist_ok=True)
     audit_path = audits_dir / "forge_audit.yaml"
 
@@ -353,7 +356,7 @@ def _write_audit(
     # Post-DONE knowledge summary (#1859). Runs after the authoritative record
     # exists and never raises — the audit write path above is what this run's
     # outcome depends on, not this.
-    maybe_generate_run_summary(config, result, audit)
+    maybe_generate_run_summary(audit_config, result, audit)
     _write_yaml_copy(audit_path)
     if (
         final_phase == "ESCALATE"
@@ -372,14 +375,14 @@ def _write_audit(
         except Exception:
             pass  # best-effort
     # Write per-run JSON record (Phase A dual-write).
-    _write_per_run_record(result, config, audit, audits_dir)
+    _write_per_run_record(result, audit_config, audit, audits_dir)
     unpublished_artifact_copy = _preserve_unpublished_story_run_artifacts_on_failure(
-        config, result, audit
+        audit_config, result, audit
     )
     try:
         publish_story_run_artifacts_for_config(
-            config,
-            lands_locally=_base_branch_lands_locally(config, auto_merge=auto_merge),
+            audit_config,
+            lands_locally=_base_branch_lands_locally(audit_config, auto_merge=auto_merge),
         )
     except StoryRunAuditPublishError as exc:
         preserved_path = unpublished_artifact_copy(exc)
@@ -820,7 +823,19 @@ def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig"
         # claude CLI) would persist and dispatch would still go CLI.
         transport=None,
     )
-    return replace(config, dev_profile=new_dev)
+    updated = replace(config, dev_profile=new_dev)
+    return refresh_provenance(
+        updated,
+        source_updates={
+            "dev_profile.cli": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.provider": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.model": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.base_url": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.transport.kind": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.transport.runner": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.transport.executable": VALUE_SOURCE_CLI_OVERRIDE,
+        },
+    )
 
 
 def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig":
@@ -845,4 +860,16 @@ def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig
     else:
         new_plan = replace(config.plan, ref=replace(config.plan.ref, model=spec))
 
-    return replace(config, plan=new_plan, plan_model_is_default=False)
+    updated = replace(config, plan=new_plan, plan_model_is_default=False)
+    return refresh_provenance(
+        updated,
+        source_updates={
+            "plan.ref.cli": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.provider": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.model": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.transport.kind": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.transport.runner": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.transport.executable": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan_model_is_default": VALUE_SOURCE_CLI_OVERRIDE,
+        },
+    )

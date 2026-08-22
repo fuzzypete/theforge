@@ -231,6 +231,12 @@ def _run_end_outcome(result: CoordinatorResult) -> str:
     return "escalate"
 
 
+def _attach_runtime_config(result: CoordinatorResult, config: ForgeConfig) -> CoordinatorResult:
+    """Attach the final runtime config to a result before it leaves the coordinator."""
+    result.runtime_config = config
+    return result
+
+
 def _cancelled_result(
     task: TaskStory,
     state: CoordinatorState,
@@ -1132,22 +1138,28 @@ def run_task(
             if not plan_path.is_file():
                 msg = f"--plan path does not exist or is not a file: {plan_path}"
                 _log(f"✗ {msg}")
-                return CoordinatorResult(
-                    success=False,
-                    phase=Phase.INIT,
-                    state=state,
-                    message=msg,
+                return _attach_runtime_config(
+                    CoordinatorResult(
+                        success=False,
+                        phase=Phase.INIT,
+                        state=state,
+                        message=msg,
+                    ),
+                    config,
                 )
             try:
                 plan_path.read_text(encoding="utf-8")
             except (OSError, UnicodeDecodeError) as exc:
                 msg = f"--plan path is not readable: {plan_path}: {exc}"
                 _log(f"✗ {msg}")
-                return CoordinatorResult(
-                    success=False,
-                    phase=Phase.INIT,
-                    state=state,
-                    message=msg,
+                return _attach_runtime_config(
+                    CoordinatorResult(
+                        success=False,
+                        phase=Phase.INIT,
+                        state=state,
+                        message=msg,
+                    ),
+                    config,
                 )
 
         # ── PRE_RUN hook ──────────────────────────────────────────────
@@ -1171,11 +1183,14 @@ def run_task(
                 logger._safe_emit(
                     "run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0
                 )
-                return CoordinatorResult(
-                    success=False,
-                    phase=state.phase,
-                    state=state,
-                    message=state.error,
+                return _attach_runtime_config(
+                    CoordinatorResult(
+                        success=False,
+                        phase=state.phase,
+                        state=state,
+                        message=state.error,
+                    ),
+                    config,
                 )
 
         # ── WORKSPACE ─────────────────────────────────────────────────
@@ -1202,11 +1217,14 @@ def run_task(
                 "run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0
             )
             _escalate_notify(task, state, notify, config)
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                message=_landing_block,
+            return _attach_runtime_config(
+                CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    message=_landing_block,
+                ),
+                config,
             )
 
         _setup_teardowns: list[ProcessTeardown] = []
@@ -1235,16 +1253,21 @@ def run_task(
                 "run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0
             )
             _escalate_notify(task, state, notify, config)
-            return CoordinatorResult(
-                success=False,
-                phase=state.phase,
-                state=state,
-                # A classified condition already says what happened and what to
-                # do about it; wrapping it in "Workspace creation failed" would
-                # re-frame it as a mechanism failure (#1993).
-                message=(
-                    err if is_drift_classification(err) else f"Workspace creation failed: {err}"
+            return _attach_runtime_config(
+                CoordinatorResult(
+                    success=False,
+                    phase=state.phase,
+                    state=state,
+                    # A classified condition already says what happened and what to
+                    # do about it; wrapping it in "Workspace creation failed" would
+                    # re-frame it as a mechanism failure (#1993).
+                    message=(
+                        err
+                        if is_drift_classification(err)
+                        else f"Workspace creation failed: {err}"
+                    ),
                 ),
+                config,
             )
 
         assert workspace_path is not None
@@ -1316,7 +1339,8 @@ def run_task(
                     stop_event=stop_event,
                 )
             except StoryCancelled:
-                return _cancelled_result(task, state, stop_event)
+                return _attach_runtime_config(_cancelled_result(task, state, stop_event), config)
+            result = _attach_runtime_config(result, config)
             _total_elapsed = time.monotonic() - _task_start
             _fire_post_run_hook(config, state, task, result, _run_id, _total_elapsed, logger)
             logger._safe_emit(
@@ -1406,6 +1430,7 @@ def run_task(
                 stop_phase=stop_phase,
             )
         if _pf_result is not None:
+            _pf_result = _attach_runtime_config(_pf_result, config)
             _total_elapsed = time.monotonic() - _task_start
             _fire_post_run_hook(config, state, task, _pf_result, _run_id, _total_elapsed, logger)
             return _pf_result
@@ -1427,7 +1452,8 @@ def run_task(
                     stop_event=stop_event,
                 )
             except StoryCancelled:
-                return _cancelled_result(task, state, stop_event)
+                return _attach_runtime_config(_cancelled_result(task, state, stop_event), config)
+            result = _attach_runtime_config(result, config)
             logger._safe_emit(
                 "run_end",
                 outcome=_run_end_outcome(result),
@@ -1455,7 +1481,7 @@ def run_task(
             state_update_fn=state_update_fn,
         )
         if _plan_result is not None:
-            return _plan_result
+            return _attach_runtime_config(_plan_result, config)
 
         # ── Post-plan dev-tier checkpoint apply (#1387) ───────────────
         # plan_flow re-evaluated ONLY the dev tier after a clean plan-review and
@@ -1480,11 +1506,14 @@ def run_task(
 
         # ── stop_phase gate: stop before entering DEV ─────────────────
         if stop_phase is not None and stop_phase.value <= Phase.PLAN_REVIEW.value:
-            return CoordinatorResult(
-                success=True,
-                phase=state.phase,
-                state=state,
-                message=f"Stopped at --until {stop_phase.name.lower()}",
+            return _attach_runtime_config(
+                CoordinatorResult(
+                    success=True,
+                    phase=state.phase,
+                    state=state,
+                    message=f"Stopped at --until {stop_phase.name.lower()}",
+                ),
+                config,
             )
 
         # ── DEV→VALIDATE→REVIEW loop ─────────────────────────────────
@@ -1504,7 +1533,8 @@ def run_task(
                 stop_event=stop_event,
             )
         except StoryCancelled:
-            return _cancelled_result(task, state, stop_event)
+            return _attach_runtime_config(_cancelled_result(task, state, stop_event), config)
+        result = _attach_runtime_config(result, config)
 
         # ── Landing (single-story path) ───────────────────────────────
         # _finalize_approve defers all git operations and sets landing_status
@@ -1691,7 +1721,7 @@ def _run_resume_coordinator(
         reentry_mode=reentry_mode,
     )
     if isinstance(setup, CoordinatorResult):
-        return setup
+        return _attach_runtime_config(setup, config)
     state, logger, branch_name, story_content, _task_start = setup
 
     # Same landing precondition run_task enforces, at the resume entry point:
@@ -1707,11 +1737,14 @@ def _run_resume_coordinator(
         logger._safe_emit("escalate", reason=_landing_block, phase="INIT")
         logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
         _escalate_notify(task, state, notify, config)
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=_landing_block,
+        return _attach_runtime_config(
+            CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=_landing_block,
+            ),
+            config,
         )
 
     state.log_dir = _make_story_log_dir(config, task.slug, sprint_name=sprint_name)
@@ -1775,6 +1808,7 @@ def _run_resume_coordinator(
                 task_start=_task_start,
             )
             if _pf_result is not None:
+                _pf_result = _attach_runtime_config(_pf_result, config)
                 _total_elapsed = time.monotonic() - _task_start
                 _fire_post_run_hook(
                     config, state, task, _pf_result, logger._run_id, _total_elapsed, logger
@@ -1804,7 +1838,7 @@ def _run_resume_coordinator(
                 stop_phase=None,
             )
             if _pf_result is not None:
-                return _pf_result
+                return _attach_runtime_config(_pf_result, config)
             if _pf_already_done_loop:
                 skip_dev_first_iter = True
     else:
@@ -1840,11 +1874,14 @@ def _run_resume_coordinator(
             state.error = state.escalate_reason
             logger._safe_emit("escalate", reason=state.escalate_reason, phase="RESUME_REBASE")
             _escalate_notify(task, state, notify, config)
-            return CoordinatorResult(
-                success=False,
-                phase=Phase.ESCALATE,
-                state=state,
-                message=state.escalate_reason,
+            return _attach_runtime_config(
+                CoordinatorResult(
+                    success=False,
+                    phase=Phase.ESCALATE,
+                    state=state,
+                    message=state.escalate_reason,
+                ),
+                config,
             )
         logger._safe_emit("rebase", phase="RESUME_REBASE", base_branch=base_branch, outcome="ok")
         try:
@@ -1863,7 +1900,8 @@ def _run_resume_coordinator(
                 stop_event=stop_event,
             )
         except StoryCancelled:
-            return _cancelled_result(task, state, stop_event)
+            return _attach_runtime_config(_cancelled_result(task, state, stop_event), config)
+        result = _attach_runtime_config(result, config)
 
         # ── Landing (single-story resume path) ───────────────────────
         # Skip when defer_landing=True (sprint worker): scheduler handles it.
@@ -2111,11 +2149,14 @@ def run_review_only(
         logger._safe_emit("escalate", reason=state.error, phase="INIT")
         logger._safe_emit("run_end", outcome="escalate", total_cost_usd=0.0, total_duration_s=0.0)
         _escalate_notify(task, state, notify, config)
-        return CoordinatorResult(
-            success=False,
-            phase=state.phase,
-            state=state,
-            message=state.error,
+        return _attach_runtime_config(
+            CoordinatorResult(
+                success=False,
+                phase=state.phase,
+                state=state,
+                message=state.error,
+            ),
+            config,
         )
 
     state.workspace_path = workspace_path
@@ -2125,17 +2166,20 @@ def run_review_only(
     story_content = task.story_text if task.story_text is not None else load_story(task.story_path)
     state.story_content = story_content
 
-    return _run_review_only_phase(
-        state,
+    return _attach_runtime_config(
+        _run_review_only_phase(
+            state,
+            config,
+            task,
+            story_content,
+            workspace_path,
+            _branch_name,
+            notify=notify,
+            logger=logger,
+            task_start=_ro_task_start,
+            batch_context=batch_context,
+        ),
         config,
-        task,
-        story_content,
-        workspace_path,
-        _branch_name,
-        notify=notify,
-        logger=logger,
-        task_start=_ro_task_start,
-        batch_context=batch_context,
     )
 
 

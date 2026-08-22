@@ -230,7 +230,7 @@ class TestNotificationTimeoutParity:
         These drifted (600 vs 14400): anyone reading the typed default saw a
         10-minute HITL window while live gates actually waited 4 hours.
         """
-        loaded = _parse_notifications({}, {})
+        loaded, _sources = _parse_notifications({}, {})
         assert (
             NotificationConfig().human_review_timeout_seconds
             == loaded.human_review_timeout_seconds

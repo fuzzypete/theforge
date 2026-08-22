@@ -26,10 +26,16 @@ makes a new analytical query and a new record migration independent changes.
 
 from __future__ import annotations
 
+import importlib
 import json
+import re
 import sqlite3
+import types
+from functools import lru_cache
 from pathlib import Path
-from typing import Iterable
+from typing import Any, Iterable, Union, get_args, get_origin, get_type_hints
+
+from theforge.config import ForgeConfig
 
 from .agent_identity import (
     dev_identity_ledger,
@@ -370,6 +376,146 @@ def latest_record_for(
     else:
         raw, ver = row[0], row[1]
     return _load_migrated(raw, ver)
+
+
+_INDEX_TOKEN = object()
+
+
+def _split_config_path(path: str) -> tuple[object, ...]:
+    tokens: list[object] = []
+    if not path:
+        return ()
+    for part in path.split("."):
+        if not part:
+            return ()
+        head = re.match(r"^[^\[]+", part)
+        if head is not None:
+            tokens.append(head.group(0))
+        for match in re.finditer(r"\[(\d+)\]", part):
+            tokens.append(_INDEX_TOKEN)
+    return tuple(tokens)
+
+
+def _recorded_path_tokens(entry: dict, *, fallback_key: str) -> tuple[object, ...]:
+    raw_tokens = entry.get("path_tokens")
+    if isinstance(raw_tokens, list) and raw_tokens:
+        tokens: list[object] = []
+        for token in raw_tokens:
+            if type(token) is int:
+                tokens.append(_INDEX_TOKEN)
+                continue
+            if isinstance(token, str) and token:
+                tokens.append(token)
+                continue
+            return _split_config_path(fallback_key)
+        return tuple(tokens)
+    return _split_config_path(fallback_key)
+
+
+def _unwrap_type(annotation: Any) -> Any:
+    origin = get_origin(annotation)
+    if origin not in {Union, types.UnionType}:
+        return annotation
+    raw_args = get_args(annotation)
+    args = tuple(arg for arg in raw_args if arg is not type(None))
+    if len(args) == 1 and len(args) != len(raw_args):
+        return _unwrap_type(args[0])
+    return annotation
+
+
+@lru_cache(maxsize=1)
+def _config_type_globals() -> dict[str, Any]:
+    types_mod = importlib.import_module("theforge.config.types")
+    model_identity_mod = importlib.import_module("theforge.config.model_identity")
+    model_duplicates_mod = importlib.import_module("theforge.config.model_duplicates")
+    models_mod = importlib.import_module("theforge.config.models")
+    globalns = dict(vars(types_mod))
+    globalns.update(vars(model_identity_mod))
+    globalns.update(vars(model_duplicates_mod))
+    globalns.update(vars(models_mod))
+    return globalns
+
+
+@lru_cache(maxsize=None)
+def _type_hints(cls: type) -> dict[str, Any]:
+    globalns = _config_type_globals()
+    return get_type_hints(cls, globalns=globalns, localns=globalns)
+
+
+@lru_cache(maxsize=1)
+def _forge_config_type_hints() -> dict[str, Any]:
+    return _type_hints(ForgeConfig)
+
+
+def _next_annotation(annotation: Any, token: object) -> Any | None:
+    annotation = _unwrap_type(annotation)
+    if annotation in {Any, object}:
+        return annotation
+    if token is _INDEX_TOKEN:
+        origin = get_origin(annotation)
+        args = get_args(annotation)
+        if origin in {list, tuple, set, frozenset} and args:
+            return _unwrap_type(args[0])
+        return None
+    if isinstance(annotation, str):
+        return None
+    if hasattr(annotation, "__dataclass_fields__"):
+        hints = _type_hints(annotation)
+        field_annotation = hints.get(str(token))
+        return _unwrap_type(field_annotation) if field_annotation is not None else None
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is dict and len(args) == 2:
+        return _unwrap_type(args[1])
+    return None
+
+
+def _config_tokens_are_interpretable(tokens: tuple[object, ...]) -> bool:
+    if not tokens:
+        return False
+    annotation: Any | None = ForgeConfig
+    for token in tokens:
+        if annotation is ForgeConfig and token is not _INDEX_TOKEN:
+            annotation = _forge_config_type_hints().get(str(token))
+        else:
+            annotation = _next_annotation(annotation, token)
+        if annotation is None:
+            return False
+    return True
+
+
+def _config_path_is_interpretable(path: str) -> bool:
+    return _config_tokens_are_interpretable(_split_config_path(path))
+
+
+def lookup_recorded_configuration_value(record: dict, key: str) -> dict:
+    """Return a recorded config value lookup without consulting local config."""
+    forge_version = record.get("forge_version")
+    configuration = record.get("configuration")
+    if not isinstance(configuration, dict):
+        return {"status": "absent", "forge_version": forge_version}
+    recorded_values = configuration.get("recorded_values")
+    if not isinstance(recorded_values, dict):
+        return {"status": "absent", "forge_version": forge_version}
+    entries = recorded_values.get("entries")
+    if not isinstance(entries, dict):
+        return {"status": "absent", "forge_version": forge_version}
+    entry = entries.get(key)
+    if not isinstance(entry, dict):
+        return {"status": "missing", "forge_version": forge_version, "key": key}
+    status = (
+        "resolved"
+        if _config_tokens_are_interpretable(_recorded_path_tokens(entry, fallback_key=key))
+        else "uninterpreted"
+    )
+    return {
+        "status": status,
+        "forge_version": forge_version,
+        "key": key,
+        "value": entry.get("value"),
+        "source": entry.get("source"),
+        "format_version": recorded_values.get("format_version"),
+    }
 
 
 # ── Alias-resolution drift ───────────────────────────────────────────────

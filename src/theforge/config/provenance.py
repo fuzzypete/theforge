@@ -26,7 +26,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +69,13 @@ _REDACTED = "<redacted>"
 # at any length.
 _MIN_SUBSTRING_SECRET_LEN = 8
 
+VALUE_SOURCE_FORGE_YAML = "forge.yaml"
+VALUE_SOURCE_DEFAULT = "default"
+VALUE_SOURCE_DERIVED = "derived"
+VALUE_SOURCE_CLI_OVERRIDE = "cli override"
+VALUE_SOURCE_ENVIRONMENT = "environment"
+RESOLVED_CONFIG_RECORD_FORMAT_VERSION = 2
+
 
 @dataclass(frozen=True)
 class ConfigProvenance:
@@ -83,6 +90,9 @@ class ConfigProvenance:
     source_path: str | None = None
     source_sha256: str | None = None
     resolved_sha256: str | None = None
+    resolved_values: dict[str, Any] = field(default_factory=dict)
+    resolved_value_sources: dict[str, str] = field(default_factory=dict)
+    resolved_value_path_tokens: dict[str, tuple[str | int, ...]] = field(default_factory=dict)
 
 
 def file_sha256(path: Path) -> str:
@@ -168,6 +178,108 @@ def canonical_payload(
     return str(value)
 
 
+def collect_leaf_paths(value: Any, *, path: str = "") -> tuple[str, ...]:
+    """Return the dotted/indexed leaf paths present in ``value``.
+
+    This is used on the raw YAML mapping, where only exact leaf presence counts
+    as ``forge.yaml`` attribution: a resolved field derived from some *other*
+    raw key must not be mislabeled as file-sourced.
+    """
+    leaves: list[str] = []
+    if isinstance(value, dict):
+        if not value and path:
+            leaves.append(path)
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            leaves.extend(collect_leaf_paths(child, path=child_path))
+        return tuple(leaves)
+    if isinstance(value, list):
+        if not value and path:
+            leaves.append(path)
+        for idx, child in enumerate(value):
+            child_path = f"{path}[{idx}]"
+            leaves.extend(collect_leaf_paths(child, path=child_path))
+        return tuple(leaves)
+    if path:
+        leaves.append(path)
+    return tuple(leaves)
+
+
+def _flatten_payload(value: Any, *, path: str = "") -> dict[str, Any]:
+    """Flatten a canonical payload into ``{dotted_path: value}`` entries."""
+    flat: dict[str, Any] = {}
+    if isinstance(value, dict):
+        if not value and path:
+            flat[path] = {}
+            return flat
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            flat.update(_flatten_payload(child, path=child_path))
+        return flat
+    if isinstance(value, list):
+        if not value and path:
+            flat[path] = []
+            return flat
+        for idx, child in enumerate(value):
+            child_path = f"{path}[{idx}]"
+            flat.update(_flatten_payload(child, path=child_path))
+        return flat
+    if path:
+        flat[path] = value
+    return flat
+
+
+def _flatten_payload_paths(
+    value: Any,
+    *,
+    path: str = "",
+    tokens: tuple[str | int, ...] = (),
+) -> dict[str, tuple[str | int, ...]]:
+    """Flatten a canonical payload into ``{dotted_path: path_tokens}`` entries."""
+    flat: dict[str, tuple[str | int, ...]] = {}
+    if isinstance(value, dict):
+        if not value and path:
+            flat[path] = tokens
+            return flat
+        for key, child in value.items():
+            key_text = str(key)
+            child_path = f"{path}.{key_text}" if path else key_text
+            flat.update(
+                _flatten_payload_paths(
+                    child,
+                    path=child_path,
+                    tokens=(*tokens, key_text),
+                )
+            )
+        return flat
+    if isinstance(value, list):
+        if not value and path:
+            flat[path] = tokens
+            return flat
+        for idx, child in enumerate(value):
+            child_path = f"{path}[{idx}]"
+            flat.update(
+                _flatten_payload_paths(
+                    child,
+                    path=child_path,
+                    tokens=(*tokens, idx),
+                )
+            )
+        return flat
+    if path:
+        flat[path] = tokens
+    return flat
+
+
+def _needs_path_tokens(tokens: tuple[str | int, ...]) -> bool:
+    """Return True when the flattened display path is not self-delimiting."""
+    return any(isinstance(token, str) and any(ch in token for ch in ".[]") for token in tokens)
+
+
+def _path_matches_prefix(path: str, prefix: str) -> bool:
+    return path == prefix or path.startswith(f"{prefix}.") or path.startswith(f"{prefix}[")
+
+
 def resolved_config_payload(config: Any) -> dict[str, Any]:
     """Return the canonical payload of a resolved config, minus excluded fields.
 
@@ -182,6 +294,42 @@ def resolved_config_payload(config: Any) -> dict[str, Any]:
         for field in sorted(dataclasses.fields(config), key=lambda f: f.name)
         if field.name not in _DIGEST_EXCLUDED_FIELDS
     }
+
+
+def resolved_config_values(config: Any) -> dict[str, Any]:
+    """Return the flattened, redacted resolved configuration."""
+    return _flatten_payload(resolved_config_payload(config))
+
+
+def resolved_config_value_path_tokens(config: Any) -> dict[str, tuple[str | int, ...]]:
+    """Return lossless path tokens for flattened keys that need them."""
+    return {
+        path: tokens
+        for path, tokens in _flatten_payload_paths(resolved_config_payload(config)).items()
+        if _needs_path_tokens(tokens)
+    }
+
+
+def _resolved_value_sources(
+    values: dict[str, Any],
+    *,
+    yaml_leaf_paths: frozenset[str],
+    environment_sources: dict[str, str],
+    derived_path_prefixes: tuple[str, ...],
+) -> dict[str, str]:
+    sources: dict[str, str] = {}
+    for path in values:
+        if path in environment_sources:
+            sources[path] = environment_sources[path]
+            continue
+        if path in yaml_leaf_paths:
+            sources[path] = VALUE_SOURCE_FORGE_YAML
+            continue
+        if any(_path_matches_prefix(path, prefix) for prefix in derived_path_prefixes):
+            sources[path] = VALUE_SOURCE_DERIVED
+            continue
+        sources[path] = VALUE_SOURCE_DEFAULT
+    return sources
 
 
 def resolved_config_sha256(config: Any) -> str:
@@ -200,7 +348,14 @@ def resolved_config_sha256(config: Any) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
-def build_provenance(config: Any, source_path: Path | None) -> ConfigProvenance:
+def build_provenance(
+    config: Any,
+    source_path: Path | None,
+    *,
+    yaml_leaf_paths: tuple[str, ...] = (),
+    environment_sources: dict[str, str] | None = None,
+    derived_path_prefixes: tuple[str, ...] = (),
+) -> ConfigProvenance:
     """Derive the :class:`ConfigProvenance` for a freshly-loaded config.
 
     An unreadable source file yields a ``None`` ``source_sha256`` rather than an
@@ -220,8 +375,83 @@ def build_provenance(config: Any, source_path: Path | None) -> ConfigProvenance:
             source_digest = file_sha256(resolved_path)
         except OSError:
             source_digest = None
+    values = resolved_config_values(config)
+    path_tokens = resolved_config_value_path_tokens(config)
     return ConfigProvenance(
         source_path=str(resolved_path) if resolved_path is not None else None,
         source_sha256=source_digest,
         resolved_sha256=resolved_config_sha256(config),
+        resolved_values=values,
+        resolved_value_sources=_resolved_value_sources(
+            values,
+            yaml_leaf_paths=frozenset(yaml_leaf_paths),
+            environment_sources=dict(environment_sources or {}),
+            derived_path_prefixes=tuple(derived_path_prefixes),
+        ),
+        resolved_value_path_tokens=path_tokens,
     )
+
+
+def refresh_provenance(
+    config: Any,
+    *,
+    source_updates: dict[str, str] | None = None,
+) -> Any:
+    """Return ``config`` with its value snapshot/source map refreshed.
+
+    Runtime overrides rebuild the config object after ``load_config``. The audit
+    record must name the values the run actually used, not the ones captured at
+    load time, while preserving the earlier file/env/default attribution for
+    every unaffected path.
+    """
+    if not dataclasses.is_dataclass(config) or isinstance(config, type):
+        return config
+    provenance = getattr(config, "provenance", None)
+    if provenance is None:
+        provenance = ConfigProvenance()
+    values = resolved_config_values(config)
+    path_tokens = resolved_config_value_path_tokens(config)
+    previous_values = (
+        dict(provenance.resolved_values)
+        if isinstance(getattr(provenance, "resolved_values", None), dict)
+        else {}
+    )
+    previous_sources = (
+        dict(provenance.resolved_value_sources)
+        if isinstance(getattr(provenance, "resolved_value_sources", None), dict)
+        else {}
+    )
+    explicit_updates = dict(source_updates or {})
+    _missing = object()
+    sources: dict[str, str] = {
+        path: source for path, source in previous_sources.items() if path not in values
+    }
+    for path, value in values.items():
+        if path in explicit_updates:
+            sources[path] = explicit_updates[path]
+            continue
+        previous_value = previous_values.get(path, _missing)
+        if previous_value is not _missing and previous_value == value:
+            source = previous_sources.get(path)
+            if source is not None:
+                sources[path] = source
+                continue
+        sources[path] = VALUE_SOURCE_DERIVED
+    for path, source in explicit_updates.items():
+        sources.setdefault(path, source)
+    current_digest = resolved_config_sha256(config)
+    if (
+        current_digest == getattr(provenance, "resolved_sha256", None)
+        and values == previous_values
+        and sources == previous_sources
+        and path_tokens == getattr(provenance, "resolved_value_path_tokens", None)
+    ):
+        return config
+    refreshed = dataclasses.replace(
+        provenance,
+        resolved_sha256=current_digest,
+        resolved_values=values,
+        resolved_value_sources=sources,
+        resolved_value_path_tokens=path_tokens,
+    )
+    return dataclasses.replace(config, provenance=refreshed)

@@ -18,10 +18,19 @@ from unittest.mock import patch
 import yaml
 
 from theforge.cli import explain
+from theforge.cli.shared import _apply_dev_model_override
 from theforge.config import load_config
-from theforge.config.provenance import resolved_config_payload, resolved_config_sha256
+from theforge.config.provenance import (
+    VALUE_SOURCE_CLI_OVERRIDE,
+    VALUE_SOURCE_DERIVED,
+    VALUE_SOURCE_ENVIRONMENT,
+    build_provenance,
+    resolved_config_payload,
+    resolved_config_sha256,
+)
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.preflight import _apply_preflight_config
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint.rca import build_sprint_rca
 from theforge.task import TaskStory
@@ -100,6 +109,22 @@ def test_resolved_digest_is_stable_across_repeated_computation(tmp_path: Path) -
     assert resolved_config_sha256(config) == resolved_config_sha256(config)
 
 
+def test_source_attribution_does_not_change_the_resolved_digest(tmp_path: Path) -> None:
+    """Config-source metadata lives off-digest inside ConfigProvenance."""
+    config_path = _write_config(tmp_path / "a")
+    config = _load(config_path)
+
+    attributed = build_provenance(
+        config,
+        config_path,
+        yaml_leaf_paths=("knowledge.prior_run_context",),
+        environment_sources={"notifications.ntfy.url": VALUE_SOURCE_ENVIRONMENT},
+        derived_path_prefixes=("plan",),
+    )
+
+    assert attributed.resolved_sha256 == config.provenance.resolved_sha256
+
+
 # ── Secret-derived values must not reach the digest ───────────────────────────
 
 _NTFY_YAML = _BASE_YAML + "\nnotifications:\n  backend: ntfy\n"
@@ -166,6 +191,31 @@ def test_enabling_a_notification_backend_is_still_a_configuration_change(
     with_ntfy = _load_with_env_secret(tmp_path / "b", "https://ntfy.sh/topic-alpha-9f2")
 
     assert without.provenance.resolved_sha256 != with_ntfy.provenance.resolved_sha256
+
+
+def test_environment_sourced_notification_value_records_redacted_environment_source(
+    tmp_path: Path,
+) -> None:
+    config = _load_with_env_secret(tmp_path / "a", "https://ntfy.sh/topic-alpha-9f2")
+
+    assert config.provenance is not None
+    assert (
+        config.provenance.resolved_value_sources["notifications.ntfy.url"]
+        == VALUE_SOURCE_ENVIRONMENT
+    )
+    assert config.provenance.resolved_values["notifications.ntfy.url"] == "<redacted>"
+    assert (
+        config.provenance.resolved_value_sources["notifications.backends[0].url"]
+        == VALUE_SOURCE_ENVIRONMENT
+    )
+
+
+def test_derived_plan_model_is_labeled_derived(tmp_path: Path) -> None:
+    """A plan profile derived from `models:` is not a forge.yaml leaf."""
+    config = _load(_write_config(tmp_path / "proj"))
+
+    assert config.provenance is not None
+    assert config.provenance.resolved_value_sources["plan.ref.model"] == VALUE_SOURCE_DERIVED
 
 
 def test_a_secret_landing_in_any_field_is_scrubbed(tmp_path: Path) -> None:
@@ -322,6 +372,90 @@ def test_resolved_digest_reflects_run_time_overrides(tmp_path: Path) -> None:
     assert after["changed_during_run"] is False
 
 
+def test_cli_override_value_is_recorded_with_cli_override_source(tmp_path: Path) -> None:
+    loaded = _load(_write_config(tmp_path / "proj"))
+    overridden = _apply_dev_model_override(loaded, "anthropic/claude-opus-4-6")
+
+    block = _audit_for(overridden, tmp_path)["configuration"]["recorded_values"]
+    entry = block["entries"]["dev_profile.model"]
+
+    assert entry["value"] == "claude-opus-4-6"
+    assert entry["source"] == VALUE_SOURCE_CLI_OVERRIDE
+
+
+def test_audit_refreshes_stale_runtime_value_snapshots_before_serializing(tmp_path: Path) -> None:
+    loaded = _load(_write_config(tmp_path / "proj"))
+    overridden = dataclasses.replace(
+        loaded,
+        validation=dataclasses.replace(loaded.validation, gate_command="make other-gate"),
+    )
+
+    assert loaded.provenance.resolved_values["validation.gate_command"] == "make gate"
+
+    block = _audit_for(overridden, tmp_path)["configuration"]["recorded_values"]
+    entry = block["entries"]["validation.gate_command"]
+
+    assert entry["value"] == "make other-gate"
+    assert entry["source"] == VALUE_SOURCE_DERIVED
+
+
+def test_audit_configuration_block_degrades_when_runtime_refresh_fails(tmp_path: Path) -> None:
+    config = _load(_write_config(tmp_path / "proj"))
+
+    with patch(
+        "theforge.coordinator.audit.config_provenance.refresh_provenance",
+        side_effect=RuntimeError("boom"),
+    ):
+        block = _audit_for(config, tmp_path)["configuration"]
+
+    assert block["resolved_sha256"] == config.provenance.resolved_sha256
+    assert block["recorded_values"]["entries"]["validation.gate_command"]["value"] == "make gate"
+
+
+def test_preflight_runtime_config_changes_reach_recorded_values(tmp_path: Path) -> None:
+    config = _load(
+        _write_config(
+            tmp_path / "proj",
+            """
+project: provenance-test
+models:
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
+  - openai/gpt-5.4/cli
+""",
+        )
+    )
+    state = CoordinatorState()
+    state.preflight_complexity = "large"
+    state.preflight_complexity_score = 9
+
+    updated = _apply_preflight_config(config, state)
+    assert config.provenance.resolved_values["dev_profile.model"] == "sonnet"
+    assert updated.dev_profile.model == "opus"
+
+    block = _audit_for(updated, tmp_path)["configuration"]["recorded_values"]
+    entry = block["entries"]["dev_profile.model"]
+
+    assert entry["value"] == "opus"
+    assert entry["source"] == VALUE_SOURCE_DERIVED
+
+
+def test_ambiguous_recorded_config_keys_persist_lossless_path_tokens(tmp_path: Path) -> None:
+    config = _load(_write_config(tmp_path / "proj"))
+    path_tokens = config.provenance.resolved_value_path_tokens
+    ambiguous_key = next(
+        path
+        for path, tokens in path_tokens.items()
+        if path.startswith("model_registry.") and path.endswith(".provider") and len(tokens) >= 3
+    )
+
+    block = _audit_for(config, tmp_path)["configuration"]["recorded_values"]
+    entry = block["entries"][ambiguous_key]
+
+    assert entry["path_tokens"] == list(path_tokens[ambiguous_key])
+    assert "path_tokens" not in block["entries"]["project"]
+
+
 # ── Step 3: schema version + migration ────────────────────────────────────────
 
 
@@ -348,6 +482,32 @@ def test_v15_to_v16_does_not_clobber_a_present_block() -> None:
     assert migrated["configuration"] is existing
 
 
+def test_v34_records_migrate_to_absent_recorded_config_values() -> None:
+    migrated = audit_substrate._migrate_v34_to_v35(
+        {"configuration": {"resolved_sha256": "abc", "source_sha256": "def"}}
+    )
+
+    assert migrated["configuration"]["recorded_values"] is None
+
+
+def test_v35_records_migrate_to_v36_without_rewriting_recorded_config_entries() -> None:
+    record = {
+        "configuration": {
+            "recorded_values": {
+                "format_version": 1,
+                "entries": {
+                    "model_registry.google/gemini-2.5-pro/api.provider": {
+                        "value": "google",
+                        "source": "default",
+                    }
+                },
+            }
+        }
+    }
+
+    assert audit_substrate._migrate_v35_to_v36(record) is record
+
+
 def test_configuration_block_round_trips_through_the_substrate(tmp_path: Path) -> None:
     """Seam check: the block survives write → index → read."""
     project = tmp_path / "proj"
@@ -363,6 +523,105 @@ def test_configuration_block_round_trips_through_the_substrate(tmp_path: Path) -
 
     assert stored is not None
     assert stored["configuration"]["resolved_sha256"] == config.provenance.resolved_sha256
+    assert (
+        stored["configuration"]["recorded_values"]["entries"]["project"]["source"] == "forge.yaml"
+    )
+
+
+def test_recorded_config_lookup_reads_only_the_stored_record(tmp_path: Path) -> None:
+    project = tmp_path / "proj"
+    config = _load(
+        _write_config(project, _BASE_YAML + "\nknowledge:\n  prior_run_context: true\n")
+    )
+    record = _audit_for(config, tmp_path)
+
+    audit_substrate.seed_records(project, [record])
+    conn = audit_substrate.create_or_open(project)
+    try:
+        stored = audit_substrate.latest_record_for(conn, run_id=record["run_id"])
+    finally:
+        conn.close()
+
+    lookup = audit_substrate.lookup_recorded_configuration_value(
+        stored,
+        "knowledge.prior_run_context",
+    )
+
+    assert lookup["status"] == "resolved"
+    assert lookup["value"] is True
+    assert lookup["source"] == "forge.yaml"
+
+
+def test_lookup_reports_current_schema_indexed_list_paths_as_resolved(tmp_path: Path) -> None:
+    record = _audit_for(_load(_write_config(tmp_path / "proj")), tmp_path)
+    entries = record["configuration"]["recorded_values"]["entries"]
+    entries.update(
+        {
+            "review_pool[0].model": {"value": "claude-opus-4-6", "source": "forge.yaml"},
+            "agents[0].model": {"value": "claude-sonnet-4-5", "source": "forge.yaml"},
+            "conventions_soft[0]": {"value": "Prefer focused modules.", "source": "forge.yaml"},
+            "notifications.backends[0].url": {"value": "<redacted>", "source": "environment"},
+        }
+    )
+
+    for key in (
+        "review_pool[0].model",
+        "agents[0].model",
+        "conventions_soft[0]",
+        "notifications.backends[0].url",
+    ):
+        lookup = audit_substrate.lookup_recorded_configuration_value(record, key)
+        assert lookup["status"] == "resolved"
+
+
+def test_lookup_uses_recorded_path_tokens_for_ambiguous_current_schema_keys(
+    tmp_path: Path,
+) -> None:
+    record = _audit_for(_load(_write_config(tmp_path / "proj")), tmp_path)
+    entries = record["configuration"]["recorded_values"]["entries"]
+    ambiguous_key = next(
+        path
+        for path, entry in entries.items()
+        if path.startswith("model_registry.")
+        and path.endswith(".provider")
+        and "path_tokens" in entry
+    )
+
+    lookup = audit_substrate.lookup_recorded_configuration_value(record, ambiguous_key)
+
+    assert lookup["status"] == "resolved"
+    assert lookup["value"] == entries[ambiguous_key]["value"]
+
+
+def test_lookup_reports_absent_for_digest_only_records() -> None:
+    record = audit_substrate._migrate_record(
+        {
+            "schema_version": 34,
+            "forge_version": "0.14.2",
+            "configuration": {"resolved_sha256": "abc"},
+        },
+        from_version=34,
+    )
+
+    lookup = audit_substrate.lookup_recorded_configuration_value(
+        record, "knowledge.prior_run_context"
+    )
+
+    assert lookup["status"] == "absent"
+
+
+def test_lookup_reports_future_paths_as_uninterpreted(tmp_path: Path) -> None:
+    config = _load(_write_config(tmp_path / "proj"))
+    record = _audit_for(config, tmp_path)
+    record["configuration"]["recorded_values"]["entries"]["future.config.flag"] = {
+        "value": True,
+        "source": "forge.yaml",
+    }
+
+    lookup = audit_substrate.lookup_recorded_configuration_value(record, "future.config.flag")
+
+    assert lookup["status"] == "uninterpreted"
+    assert lookup["value"] is True
 
 
 # ── Step 4: RCA stops calling a configuration change a merge failure ──────────

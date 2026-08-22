@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING, Any, Literal
 
 if TYPE_CHECKING:
     from theforge.agent_types import AgentResult
+    from theforge.config import ForgeConfig
     from theforge.review import ReviewResult
     from theforge.story_validator import StoryValidationResult
     from theforge.task import PlanData
@@ -1453,3 +1454,7 @@ class CoordinatorResult:
     # before any actual development attempt began, so engine.py should release
     # the just-consumed RetryBudget slot.
     unused_dev_iteration: bool = False
+    # The final runtime config the coordinator actually executed under. This is
+    # authoritative for audit emission when preflight or resume recovery rewrites
+    # the in-memory config after the CLI loaded forge.yaml.
+    runtime_config: ForgeConfig | None = None
