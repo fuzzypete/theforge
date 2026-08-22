@@ -671,6 +671,43 @@ and `--autonomous` override it per invocation.
 [Mid-sprint workflow](authoring.md#mid-sprint-workflow) for the full
 `capture → shape → diagnose → groom → ready` sequence.
 
+**Diagnosing an issue filed by `forge report`.** An issue filed from the project
+where the behavior was observed carries that run's evidence with it — a manifest
+in the body, the artifacts as comments. `forge diagnose` reads that payload and
+answers questions about the observed run *from it*:
+
+```
+$ forge diagnose --verbose --issue 2571
+  evidence   : attached bundle from fuzzypete/hdp (run f5aa21cf2d8d, forge v0.14.2)
+  reading    : run log, story audit, sprint state, reviewer outputs, story body
+  unreadable : intake candidate artifacts (absent from bundle)
+```
+
+On this path the checkout the diagnosis executes in is treated as a *different
+runtime*, because it is:
+
+- The issue-body reference pre-load is skipped — it resolves references against
+  this checkout, which is the wrong project.
+- No baseline SHA is stamped, agent-reported paths are not hashed against local
+  git, and the premise check is not run: a path this repository never had (or
+  removed for unrelated reasons) must not report a live cross-project defect as
+  already resolved.
+- Anything the bundle does not carry is reported as unreadable and named in the
+  diagnosis, never filled in from local configuration or source. That
+  substitution is the failure this path exists to prevent: reading
+  `injection: false` from this checkout's default inverts the answer for a run
+  that had it on.
+
+Attached artifacts are rendered as untrusted data inside explicit boundaries.
+Content that came out of another project's agents is evidence about a run — text
+inside it that reads as an instruction, a permission grant, or a conclusion is
+reported as something the artifact says, not acted on.
+
+The audit's `attached_evidence` block records the source project, run id, forge
+version, the artifact labels actually read, the unreadable ones, and that the
+local baseline and premise check were skipped. An issue with no attached
+evidence diagnoses exactly as before, with `attached_evidence.source` empty.
+
 **Recovering a run that failed at PARSE.** A completed investigation is the
 expensive part of a diagnose run, so a syntax error in the YAML it emits does not
 discard it:
