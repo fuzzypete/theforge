@@ -889,10 +889,22 @@ comment, and is only rewritten to `complete` once every one has landed. If a
 comment fails to post, the body is corrected to mark those items `NOT ATTACHED`
 and the command exits non-zero.
 
-Before filing, the body is evaluated against the shape gate and the verdict is
-printed with the forge version that produced it — the gate lives in *this*
-checkout, and the target repository may run a different release. A body whose
-gate state cannot be determined at all is never filed.
+Before filing, the body is evaluated against **the target repository's own
+shape gate**, not this checkout's. The command resolves that repo's default
+branch, pins its head commit, downloads `src/theforge/shape_check/` at that
+sha, and runs it in an isolated subprocess:
+
+```
+shape gate    : diagnosis_cause_unknown (target gate fuzzypete/theforge@1a2b3c4d5e6f (main))
+  - [advisory] diagnosis_cause_unknown: no confirmed cause is asserted
+```
+
+The verdict names the revision that produced it, so it is the state the target
+actually holds — the observing project routinely runs an older release than the
+repo it reports into, and a locally computed verdict would name a gate state
+that repository does not have. There is no fallback to the local gate: if the
+target's gate cannot be resolved, downloaded, executed, or read, the body has
+no known gate state and nothing is filed.
 
 Useful flags: `--title`, `--description-file`, `--symptom`, `--cause`,
 `--code-path`, `--fix-criterion` (a report filed the moment a defect is seen

@@ -7,10 +7,13 @@ creates the issue in the target repository with the payload attached as
 comments. Nothing is copied between checkouts by hand, and nothing the report
 asserts about the run is answered from the reader's own configuration.
 
-The gate verdict is reported with the forge version that produced it: the gate
-that judged the body lives in this checkout, and a target repository running a
-different release may judge it differently. The command refuses to file when it
-cannot place the body in a known gate state at all.
+The gate the body is placed against is the **target repository's** — resolved
+and executed from that repo's own default-branch revision by
+:mod:`theforge.reporting.target_gate`, never the observing checkout's installed
+release. The observing project routinely runs an older release than the repo it
+reports into, so a local verdict would name a gate state the target does not
+hold. When the target-owned gate cannot be resolved, executed, or read, the
+body has no known gate state and the command refuses to file it.
 """
 
 from __future__ import annotations
@@ -22,7 +25,6 @@ import sys
 import tempfile
 from pathlib import Path
 
-from theforge import __version__ as forge_version
 from theforge.cli.shared import _find_config
 from theforge.reporting.evidence import EvidenceError, RunEvidence, collect_run_evidence
 from theforge.reporting.render import (
@@ -36,8 +38,11 @@ from theforge.reporting.render import (
     dropped_as_missing,
     render_issue_body,
 )
-from theforge.shape_check.check import check as shape_check
-from theforge.shape_check.types import ShapeVerdict
+from theforge.reporting.target_gate import (
+    TargetGateError,
+    TargetGateVerdict,
+    evaluate_target_gate,
+)
 
 GH_TIMEOUT_SECONDS = 60
 _REPO_RE = re.compile(r"^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$")
@@ -94,26 +99,21 @@ def _build_diagnosis(args: argparse.Namespace, description: str) -> Diagnosis:
     return Diagnosis(**kwargs)
 
 
-def _evaluate_gate(title: str, body: str, labels: list[str]) -> ShapeVerdict | None:
-    """Return the body's shape verdict, or ``None`` when it cannot be placed.
+def _evaluate_gate(
+    *, target: str, title: str, body: str, labels: list[str]
+) -> TargetGateVerdict | None:
+    """Return the *target repository's* verdict, or ``None`` when unobtainable.
 
     ``None`` is not a soft failure — the caller refuses to file rather than
-    create an issue whose gate state nobody can name.
+    create an issue whose gate state nobody can name. There is deliberately no
+    fallback to this checkout's own gate: a local verdict would name a state
+    the target repository does not hold.
     """
     try:
-        result = shape_check(title, body, labels)
-    except Exception as exc:  # noqa: BLE001 — an unevaluable gate must fail closed
-        print(f"shape gate could not be evaluated: {exc}", file=sys.stderr)
+        return evaluate_target_gate(repo=target, title=title, body=body, labels=labels)
+    except TargetGateError as exc:
+        print(f"{target}'s shape gate could not be evaluated: {exc}", file=sys.stderr)
         return None
-    verdict = getattr(result, "verdict", None)
-    if not isinstance(verdict, ShapeVerdict):
-        print(
-            f"shape gate returned an unrecognized verdict {verdict!r}; "
-            "refusing to file a report in an unknown gate state",
-            file=sys.stderr,
-        )
-        return None
-    return verdict
 
 
 def _write_temp(text: str) -> Path:
@@ -183,6 +183,14 @@ def _update_body(*, target: str, issue: str, body: str, cwd: Path) -> bool:
     return True
 
 
+def _print_gate(verdict: TargetGateVerdict) -> None:
+    """Print the verdict and its reasons, naming the gate revision that ruled."""
+    print(f"shape gate    : {verdict.verdict} (target gate {verdict.source})")
+    for reason in verdict.reasons:
+        severity = f"[{reason.severity}] " if reason.severity else ""
+        print(f"  - {severity}{reason.code}: {reason.detail or ''}".rstrip())
+
+
 def _print_summary(evidence: RunEvidence, chunks: tuple[EvidenceChunk, ...]) -> None:
     print(f"run           : {evidence.run_id} ({evidence.run_kind} run)")
     print(f"observed in   : {evidence.observed_project or 'unrecorded (no git origin)'}")
@@ -238,15 +246,13 @@ def cmd_report(args: argparse.Namespace) -> int:
         evidence, description=description, diagnosis=diagnosis, publication=publication
     )
 
-    verdict = _evaluate_gate(title, body, labels)
+    verdict = _evaluate_gate(target=target, title=title, body=body, labels=labels)
     if verdict is None:
-        print("refusing to file: the report body is in an unknown shape-gate state.")
+        print(
+            f"refusing to file: the report body cannot be placed in {target}'s shape-gate state."
+        )
         return 1
-    print(
-        f"shape gate    : {verdict.value} "
-        f"(evaluated by TheForge {forge_version} in the observing checkout; "
-        f"the {target} gate may run a different release)"
-    )
+    _print_gate(verdict)
     _print_summary(evidence, chunks)
 
     if args.dry_run:

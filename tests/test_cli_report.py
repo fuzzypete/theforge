@@ -7,13 +7,42 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 import yaml
 
 from theforge.cli.main import build_parser
 from theforge.cli.report import cmd_report
 from theforge.reporting.render import DEFAULT_MAX_CHUNKS
+from theforge.reporting.target_gate import GateReason, TargetGateError, TargetGateVerdict
 
 ISSUE_URL = "https://github.com/fuzzypete/theforge/issues/4242"
+
+TARGET_VERDICT = TargetGateVerdict(
+    repo="fuzzypete/theforge",
+    ref="main",
+    sha="1a2b3c4d5e6f7788",
+    verdict="diagnosis_cause_unknown",
+    shape="runnable",
+    reasons=(
+        GateReason(
+            code="diagnosis_cause_unknown",
+            severity="advisory",
+            detail="no confirmed cause is asserted",
+        ),
+    ),
+)
+
+
+@pytest.fixture(autouse=True)
+def stub_target_gate():
+    """Every CLI test runs against a stubbed target gate.
+
+    The real one shells out to ``gh`` and executes the target repository's own
+    gate revision; tests that care about that path live in
+    ``test_reporting_target_gate.py``.
+    """
+    with patch("theforge.cli.report.evaluate_target_gate", return_value=TARGET_VERDICT) as stub:
+        yield stub
 
 
 def _write(path: Path, text: str) -> Path:
@@ -178,41 +207,74 @@ def test_report_names_missing_evidence_on_the_face_of_the_issue(mock_run, tmp_pa
 
 
 @patch("theforge.cli.report.subprocess.run")
-def test_unknown_gate_state_prevents_issue_creation(mock_run, tmp_path, capsys):
+def test_unresolvable_target_gate_prevents_issue_creation(mock_run, tmp_path, capsys):
     root = _observing_project(tmp_path, configuration={"resolved_sha256": "abc"})
     mock_run.side_effect = _gh_success
 
-    with patch("theforge.cli.report.shape_check", return_value=MagicMock(verdict="???")):
+    with patch(
+        "theforge.cli.report.evaluate_target_gate",
+        side_effect=TargetGateError("cannot resolve fuzzypete/theforge's default branch"),
+    ):
         rc = cmd_report(_args(root))
 
     assert rc == 1
     assert not mock_run.called
-    assert "unknown shape-gate state" in capsys.readouterr().out
+    captured = capsys.readouterr()
+    assert "cannot be placed in fuzzypete/theforge's shape-gate state" in captured.out
+    assert "cannot resolve fuzzypete/theforge's default branch" in captured.err
 
 
 @patch("theforge.cli.report.subprocess.run")
-def test_gate_that_cannot_be_evaluated_prevents_issue_creation(mock_run, tmp_path, capsys):
+def test_target_gate_that_cannot_be_executed_prevents_issue_creation(mock_run, tmp_path, capsys):
     root = _observing_project(tmp_path, configuration={"resolved_sha256": "abc"})
     mock_run.side_effect = _gh_success
 
-    with patch("theforge.cli.report.shape_check", side_effect=RuntimeError("gate exploded")):
+    with patch(
+        "theforge.cli.report.evaluate_target_gate",
+        side_effect=TargetGateError("the target repository's gate could not be executed"),
+    ):
         rc = cmd_report(_args(root))
 
     assert rc == 1
     assert not mock_run.called
-    assert "gate exploded" in capsys.readouterr().err
+    assert "could not be executed" in capsys.readouterr().err
 
 
 @patch("theforge.cli.report.subprocess.run")
-def test_gate_verdict_names_the_forge_version_that_produced_it(mock_run, tmp_path, capsys):
+def test_gate_is_evaluated_against_the_target_repositorys_own_revision(
+    mock_run, tmp_path, capsys, stub_target_gate
+):
     root = _observing_project(tmp_path, configuration={"resolved_sha256": "abc"})
     mock_run.side_effect = _gh_success
 
     assert cmd_report(_args(root, dry_run=True)) == 0
+
+    kwargs = stub_target_gate.call_args.kwargs
+    assert kwargs["repo"] == "fuzzypete/theforge"
+    assert kwargs["labels"] == ["bug"]
+    assert "## Diagnosis" in kwargs["body"]
     out = capsys.readouterr().out
-    assert "observing checkout" in out
-    assert "fuzzypete/theforge gate may run a different release" in out
+    assert "shape gate    : diagnosis_cause_unknown" in out
+    assert "target gate fuzzypete/theforge@1a2b3c4d5e6f (main)" in out
+    assert "[advisory] diagnosis_cause_unknown" in out
     assert not mock_run.called
+
+
+@patch("theforge.cli.report.subprocess.run")
+def test_gated_body_is_the_body_that_gets_filed(mock_run, tmp_path, stub_target_gate):
+    root = _observing_project(tmp_path, configuration={"resolved_sha256": "abc"})
+    created: list[str] = []
+
+    def capture(*call_args, **_kwargs):
+        command = call_args[0]
+        if command[1:3] == ["issue", "create"]:
+            created.append(Path(command[command.index("--body-file") + 1]).read_text())
+        return _gh_success(*call_args)
+
+    mock_run.side_effect = capture
+
+    assert cmd_report(_args(root)) == 0
+    assert created[0] == stub_target_gate.call_args.kwargs["body"]
 
 
 @patch("theforge.cli.report.subprocess.run")
