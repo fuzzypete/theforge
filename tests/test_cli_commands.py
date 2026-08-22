@@ -18,6 +18,7 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.config.provenance import VALUE_SOURCE_DERIVED
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.runners import AgentResult
 
@@ -607,6 +608,60 @@ class TestCmdSprintQueryMode:
 
         assert rc == 0
         assert mock_build.call_args.kwargs["max_parallel"] == 1
+
+    def test_query_mode_default_parallel_marks_runtime_source_as_derived(self, tmp_path):
+        from theforge.cli.sprint import _run_query_mode
+
+        config = _make_forge_config(tmp_path)
+        args = argparse.Namespace(
+            name=None,
+            no_notify=True,
+            fg=True,
+            detach=False,
+        )
+        resolved = MagicMock()
+        task = MagicMock()
+        task.slug = "issue-42"
+        resolved.stories = [(task, MagicMock(), "issue:42")]
+
+        with (
+            patch(
+                "theforge.sprint.query.fetch_issues_for_milestone",
+                return_value=[{"number": 42, "title": "Story"}],
+            ),
+            patch("theforge.sprint.query.build_resolved_sprint", return_value=resolved),
+            patch("theforge.cli.sprint.release_story_locks"),
+            patch(
+                "theforge.cli.sprint.run_sprint",
+                return_value=MagicMock(specs_failed=0),
+            ) as mock_run_sprint,
+        ):
+            rc = _run_query_mode(
+                args=args,
+                config=config,
+                config_path=tmp_path / "forge.yaml",
+                milestone="v1.0",
+                label=None,
+                budget_str="5",
+                dry_run=False,
+                max_parallel=None,
+                auto_merge=False,
+                interactive=False,
+                resume=False,
+                no_pull=False,
+                _daemon=MagicMock(),
+                _detach=MagicMock(),
+                _generate_run_id=MagicMock(return_value="run-123"),
+            )
+
+        assert rc == 0
+        context = mock_run_sprint.call_args.args[0]
+        assert context.config.sprint.max_parallel == 1
+        assert context.config.provenance.resolved_values["sprint.max_parallel"] == 1
+        assert (
+            context.config.provenance.resolved_value_sources["sprint.max_parallel"]
+            == VALUE_SOURCE_DERIVED
+        )
 
     def test_query_mode_parallel_updates_runtime_config_snapshot(self, tmp_path):
         from theforge.cli.sprint import _run_query_mode

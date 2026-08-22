@@ -460,6 +460,28 @@ def test_recorded_config_lookup_reads_only_the_stored_record(tmp_path: Path) -> 
     assert lookup["source"] == "forge.yaml"
 
 
+def test_lookup_reports_current_schema_indexed_list_paths_as_resolved(tmp_path: Path) -> None:
+    record = _audit_for(_load(_write_config(tmp_path / "proj")), tmp_path)
+    entries = record["configuration"]["recorded_values"]["entries"]
+    entries.update(
+        {
+            "review_pool[0].model": {"value": "claude-opus-4-6", "source": "forge.yaml"},
+            "agents[0].model": {"value": "claude-sonnet-4-5", "source": "forge.yaml"},
+            "conventions_soft[0]": {"value": "Prefer focused modules.", "source": "forge.yaml"},
+            "notifications.backends[0].url": {"value": "<redacted>", "source": "environment"},
+        }
+    )
+
+    for key in (
+        "review_pool[0].model",
+        "agents[0].model",
+        "conventions_soft[0]",
+        "notifications.backends[0].url",
+    ):
+        lookup = audit_substrate.lookup_recorded_configuration_value(record, key)
+        assert lookup["status"] == "resolved"
+
+
 def test_lookup_reports_absent_for_digest_only_records() -> None:
     record = audit_substrate._migrate_record(
         {

@@ -30,9 +30,10 @@ import importlib
 import json
 import re
 import sqlite3
+import types
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Iterable, get_args, get_origin, get_type_hints
+from typing import Any, Iterable, Union, get_args, get_origin, get_type_hints
 
 from theforge.config import ForgeConfig
 
@@ -397,10 +398,11 @@ def _split_config_path(path: str) -> tuple[object, ...]:
 
 def _unwrap_type(annotation: Any) -> Any:
     origin = get_origin(annotation)
-    if origin is None:
+    if origin not in {Union, types.UnionType}:
         return annotation
-    args = tuple(arg for arg in get_args(annotation) if arg is not type(None))
-    if len(args) == 1:
+    raw_args = get_args(annotation)
+    args = tuple(arg for arg in raw_args if arg is not type(None))
+    if len(args) == 1 and len(args) != len(raw_args):
         return _unwrap_type(args[0])
     return annotation
 
