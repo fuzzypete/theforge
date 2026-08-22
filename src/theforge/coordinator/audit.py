@@ -1272,6 +1272,7 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
     load-time identity plus ``finish_read_error``, so an absent digest is never
     mistaken for an unchanged one.
     """
+    config = config_provenance.refresh_provenance(config)
     provenance = getattr(config, "provenance", None)
     source_path = getattr(provenance, "source_path", None)
     source_sha256 = getattr(provenance, "source_sha256", None)

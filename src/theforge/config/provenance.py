@@ -411,14 +411,45 @@ def refresh_provenance(
         provenance = ConfigProvenance()
     values = resolved_config_values(config)
     path_tokens = resolved_config_value_path_tokens(config)
-    sources = dict(provenance.resolved_value_sources)
-    for path in values:
-        sources.setdefault(path, VALUE_SOURCE_DERIVED)
-    if source_updates:
-        sources.update(source_updates)
+    previous_values = (
+        dict(provenance.resolved_values)
+        if isinstance(getattr(provenance, "resolved_values", None), dict)
+        else {}
+    )
+    previous_sources = (
+        dict(provenance.resolved_value_sources)
+        if isinstance(getattr(provenance, "resolved_value_sources", None), dict)
+        else {}
+    )
+    explicit_updates = dict(source_updates or {})
+    _missing = object()
+    sources: dict[str, str] = {
+        path: source for path, source in previous_sources.items() if path not in values
+    }
+    for path, value in values.items():
+        if path in explicit_updates:
+            sources[path] = explicit_updates[path]
+            continue
+        previous_value = previous_values.get(path, _missing)
+        if previous_value is not _missing and previous_value == value:
+            source = previous_sources.get(path)
+            if source is not None:
+                sources[path] = source
+                continue
+        sources[path] = VALUE_SOURCE_DERIVED
+    for path, source in explicit_updates.items():
+        sources.setdefault(path, source)
+    current_digest = resolved_config_sha256(config)
+    if (
+        current_digest == getattr(provenance, "resolved_sha256", None)
+        and values == previous_values
+        and sources == previous_sources
+        and path_tokens == getattr(provenance, "resolved_value_path_tokens", None)
+    ):
+        return config
     refreshed = dataclasses.replace(
         provenance,
-        resolved_sha256=resolved_config_sha256(config),
+        resolved_sha256=current_digest,
         resolved_values=values,
         resolved_value_sources=sources,
         resolved_value_path_tokens=path_tokens,

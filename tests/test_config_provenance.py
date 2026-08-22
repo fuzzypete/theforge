@@ -30,6 +30,7 @@ from theforge.config.provenance import (
 )
 from theforge.coordinator import audit_substrate
 from theforge.coordinator.audit import generate_audit_log
+from theforge.coordinator.preflight import _apply_preflight_config
 from theforge.coordinator.state import CoordinatorResult, CoordinatorState, Phase
 from theforge.sprint.rca import build_sprint_rca
 from theforge.task import TaskStory
@@ -380,6 +381,50 @@ def test_cli_override_value_is_recorded_with_cli_override_source(tmp_path: Path)
 
     assert entry["value"] == "claude-opus-4-6"
     assert entry["source"] == VALUE_SOURCE_CLI_OVERRIDE
+
+
+def test_audit_refreshes_stale_runtime_value_snapshots_before_serializing(tmp_path: Path) -> None:
+    loaded = _load(_write_config(tmp_path / "proj"))
+    overridden = dataclasses.replace(
+        loaded,
+        validation=dataclasses.replace(loaded.validation, gate_command="make other-gate"),
+    )
+
+    assert loaded.provenance.resolved_values["validation.gate_command"] == "make gate"
+
+    block = _audit_for(overridden, tmp_path)["configuration"]["recorded_values"]
+    entry = block["entries"]["validation.gate_command"]
+
+    assert entry["value"] == "make other-gate"
+    assert entry["source"] == VALUE_SOURCE_DERIVED
+
+
+def test_preflight_runtime_config_changes_reach_recorded_values(tmp_path: Path) -> None:
+    config = _load(
+        _write_config(
+            tmp_path / "proj",
+            """
+project: provenance-test
+models:
+  - anthropic/sonnet/cli
+  - anthropic/opus/cli
+  - openai/gpt-5.4/cli
+""",
+        )
+    )
+    state = CoordinatorState()
+    state.preflight_complexity = "large"
+    state.preflight_complexity_score = 9
+
+    updated = _apply_preflight_config(config, state)
+    assert config.provenance.resolved_values["dev_profile.model"] == "sonnet"
+    assert updated.dev_profile.model == "opus"
+
+    block = _audit_for(updated, tmp_path)["configuration"]["recorded_values"]
+    entry = block["entries"]["dev_profile.model"]
+
+    assert entry["value"] == "opus"
+    assert entry["source"] == VALUE_SOURCE_DERIVED
 
 
 def test_ambiguous_recorded_config_keys_persist_lossless_path_tokens(tmp_path: Path) -> None:
