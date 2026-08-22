@@ -19,11 +19,14 @@ Two rules make a proposal reviewable rather than a guess:
   milestone, ``fix_later`` a named milestone or the standing ``Hygiene`` pool,
   ``punt`` a reason code from :data:`PUNT_REASON_CODES`, and
   ``needs_verification`` carries no target at all. Anything else is rejected.
-* **Grounding.** Every proposal must cite ``evidence_refs`` — IDs of evidence
-  entries that are actually *in* the packet it was given. A claim resting on
-  something the packet does not contain is rejected exactly like schema-invalid
-  output, because an unsupported disposition is the failure mode the whole
-  stage exists to prevent.
+* **Grounding.** Every proposal must cite ``evidence`` as ``{ref, quote}``
+  pairs: an ID that is actually *in* the packet, plus that entry's **own words,
+  verbatim**. Citing an ID alone would let a proposal assert anything it liked
+  beside a real reference — the id would check out while the claim next to it
+  came from nowhere. Requiring the quote means the validator can confirm the
+  packet contains the words the disposition rests on. Anything the proposer
+  wants to say in its own voice goes in ``rationale``, which is rendered as
+  reasoning and carries no evidentiary weight.
 
 Proposals are advisory. Nothing here applies anything, and nothing here writes
 to a tracker.
@@ -113,6 +116,11 @@ _FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 # Cap free-text fields so a runaway agent cannot balloon the packet/proposal.
 _FIELD_MAX_LEN = 2000
 
+# Shortest quote that can carry a citation. Below this a "quote" is a fragment
+# that appears in almost any text, so matching it would prove nothing about
+# what the packet says.
+MIN_QUOTE_WORDS = 3
+
 
 # ── Evidence packet ───────────────────────────────────────────────────────────
 
@@ -133,6 +141,15 @@ class PacketEvidence:
     summary: str
     checkable: bool = True
     detail: str = ""
+
+    def citable_text(self) -> str:
+        """The text a proposal may quote when citing this entry.
+
+        Exactly the summary and the detail — the entry's own words. A quote is
+        checked against this and nothing else, so citing entry ``A`` cannot be
+        satisfied by wording that appears somewhere else in the packet.
+        """
+        return f"{self.summary} {self.detail}".strip()
 
     def to_dict(self) -> dict:
         return {
@@ -214,19 +231,45 @@ class FindingPacket:
 
 
 @dataclass(frozen=True)
+class EvidenceCitation:
+    """One citation: a packet evidence id plus the entry's own words.
+
+    ``quote`` is not the proposer's summary of the entry — it is a span *of* the
+    entry, verified verbatim by :func:`_verify_quote`. That is what makes a
+    citation checkable: an id alone says only that the proposer knows an id
+    exists, while a quote says which words it is resting on, and the validator
+    can confirm the packet actually contains them.
+    """
+
+    ref: str
+    quote: str
+
+    def to_dict(self) -> dict:
+        return {"ref": self.ref, "quote": self.quote}
+
+
+@dataclass(frozen=True)
 class TriageProposal:
     """One parsed, validated disposition proposal for one finding.
 
     ``parse_errors`` is non-empty when the raw agent output failed validation;
     such a proposal is unusable and the caller must not act on its
     ``disposition`` field.
+
+    ``citations`` carries the evidence. ``rationale`` is the proposer's own
+    prose and carries no evidentiary weight — it is rendered as reasoning and is
+    never validated as a claim about the packet, because unvalidated prose
+    presented next to verified evidence is how an unsupported claim gets read as
+    a supported one.
     """
 
     finding_id: str
     issue_ref: str
     disposition: str
-    evidence: str = ""
-    evidence_refs: tuple[str, ...] = ()
+    citations: tuple[EvidenceCitation, ...] = ()
+    # Coordinator-authored, deterministic statement of what this proposal rests
+    # on. Set only by :func:`needs_verification_proposal`; never agent text.
+    coordinator_basis: str = ""
     rationale: str = ""
     target_milestone: str | None = None
     punt_reason_code: str | None = None
@@ -236,6 +279,24 @@ class TriageProposal:
     @property
     def ok(self) -> bool:
         return not self.parse_errors
+
+    @property
+    def evidence_refs(self) -> tuple[str, ...]:
+        """The packet evidence ids this proposal rests on."""
+        return tuple(citation.ref for citation in self.citations)
+
+    @property
+    def evidence(self) -> str:
+        """What this proposal rests on, for display.
+
+        Derived from the verified quotes rather than stored separately: there is
+        no free-text evidence field a proposer could fill with something the
+        packet does not say. Falls back to the coordinator-authored basis, which
+        is the only other thing allowed on this line.
+        """
+        if self.citations:
+            return "; ".join(citation.quote for citation in self.citations)
+        return self.coordinator_basis
 
     def target_display(self) -> str:
         """The payload rendered the way the operator reads it."""
@@ -253,6 +314,7 @@ class TriageProposal:
             "disposition_label": DISPOSITION_LABELS.get(self.disposition, self.disposition),
             "evidence": self.evidence,
             "evidence_refs": list(self.evidence_refs),
+            "citations": [c.to_dict() for c in self.citations],
             "rationale": self.rationale,
             "target_milestone": self.target_milestone,
             "punt_reason_code": self.punt_reason_code,
@@ -326,26 +388,23 @@ class ProposalRunSummary:
         }
 
 
-def needs_verification_proposal(
-    packet: FindingPacket,
-    *,
-    evidence: str,
-    evidence_refs: tuple[str, ...] = (),
-    rationale: str = "",
-) -> TriageProposal:
+def needs_verification_proposal(packet: FindingPacket, *, basis: str) -> TriageProposal:
     """Build the deterministic ``needs_verification`` proposal for a packet.
 
     The single constructor for every path that resolves to
     ``needs_verification`` without the agent having proposed it, so no caller
     can accidentally synthesise a *different* disposition when it cannot decide.
+
+    It carries no citations — there is no verified quote to carry — and states
+    its ``basis`` instead. That basis is coordinator-authored and true by
+    construction ("this packet holds nothing checkable"), which is why it may
+    occupy the evidence line while agent prose may not.
     """
     return TriageProposal(
         finding_id=packet.finding_id,
         issue_ref=packet.issue_ref,
         disposition=DISPOSITION_NEEDS_VERIFICATION,
-        evidence=evidence,
-        evidence_refs=evidence_refs,
-        rationale=rationale,
+        coordinator_basis=basis,
     )
 
 
@@ -385,14 +444,77 @@ def _error_proposal(
     )
 
 
-def _coerce_refs(raw: object) -> list[str]:
+_NON_WORD_RE = re.compile(r"[^a-z0-9]+")
+
+
+def _normalize_for_quote(text: str) -> str:
+    """Lowercase, strip punctuation, collapse whitespace — for quote matching.
+
+    Comparison is on words, not on characters, so a proposer is not rejected for
+    re-casing a sentence or dropping a trailing period. It *is* rejected for
+    changing which words it claims the packet contains, which is the whole
+    point.
+    """
+    return _NON_WORD_RE.sub(" ", str(text).lower()).strip()
+
+
+def _verify_quote(quote: str, entry: PacketEvidence) -> str:
+    """Return an error when ``quote`` is not a usable span of ``entry``, else "".
+
+    Two conditions, both mechanical:
+
+    * the quote's normalized form must appear inside the entry's normalized
+      text — a paraphrase, an inference, or an unrelated assertion will not,
+    * it must be at least :data:`MIN_QUOTE_WORDS` words, so a proposal cannot
+      satisfy grounding by quoting an article and then asserting whatever it
+      likes around it.
+    """
+    normalized = _normalize_for_quote(quote)
+    if not normalized:
+        return f"citation of {entry.evidence_id!r} has an empty quote"
+    words = normalized.split()
+    if len(words) < MIN_QUOTE_WORDS:
+        return (
+            f"citation of {entry.evidence_id!r} quotes only {len(words)} word(s); "
+            f"quote at least {MIN_QUOTE_WORDS} consecutive words from the entry"
+        )
+    if normalized not in _normalize_for_quote(entry.citable_text()):
+        return (
+            f"citation of {entry.evidence_id!r} quotes text that is not in that "
+            f"entry: {quote!r}. Quote the entry verbatim; do not paraphrase it "
+            f"or add a claim it does not make."
+        )
+    return ""
+
+
+def _coerce_citations(raw: object) -> tuple[list[dict], list[str]]:
+    """Normalize the ``evidence`` block into ``{ref, quote}`` mappings.
+
+    Returns the entries plus shape errors. A bare list of ids — the shape a
+    proposer trained on "cite your sources" reaches for — is rejected here with
+    a message naming what is missing, rather than being silently accepted as an
+    unquoted citation.
+    """
     if raw is None:
-        return []
-    if isinstance(raw, str):
-        return [piece.strip() for piece in raw.split(",") if piece.strip()]
-    if isinstance(raw, (list, tuple)):
-        return [str(item).strip() for item in raw if str(item).strip()]
-    return []
+        return [], []
+    if not isinstance(raw, (list, tuple)):
+        return [], ["evidence must be a list of {ref, quote} mappings"]
+    entries: list[dict] = []
+    errors: list[str] = []
+    for index, item in enumerate(raw):
+        if not isinstance(item, dict):
+            errors.append(
+                f"evidence[{index}] must be a mapping with 'ref' and 'quote', "
+                f"got {type(item).__name__}"
+            )
+            continue
+        entries.append(
+            {
+                "ref": str(item.get("ref") or item.get("id") or "").strip(),
+                "quote": _truncate(item.get("quote")),
+            }
+        )
+    return entries, errors
 
 
 def _validate_payload(
@@ -442,25 +564,46 @@ def _validate_payload(
     return errors
 
 
-def _validate_grounding(packet: FindingPacket, refs: list[str], evidence: str) -> list[str]:
-    """Check the proposal cites evidence that is actually in the packet."""
+def _validate_grounding(
+    packet: FindingPacket, entries: list[dict]
+) -> tuple[list[EvidenceCitation], list[str]]:
+    """Check every citation names a packet entry AND quotes that entry verbatim.
+
+    An id-only check answers "does this id exist?", which a proposal can satisfy
+    while asserting something the entry never said. Requiring the entry's own
+    words means the claim on the evidence line is one the packet demonstrably
+    contains — the proposer selects evidence, it does not author it.
+    """
     errors: list[str] = []
-    if not evidence:
-        errors.append("proposal missing evidence")
-    known = set(packet.evidence_ids())
-    if not refs:
-        if known:
+    by_id = {item.evidence_id: item for item in packet.evidence}
+    if not entries:
+        if by_id:
             errors.append(
-                f"proposal must cite evidence_refs from the packet — available: {sorted(known)}"
+                "proposal must cite evidence: a non-empty list of {ref, quote} "
+                f"mappings drawn from {sorted(by_id)}"
             )
-        return errors
-    unknown = [ref for ref in refs if ref not in known]
-    if unknown:
-        errors.append(
-            f"evidence_refs cite ids not present in the packet: {sorted(unknown)} "
-            f"(available: {sorted(known)})"
-        )
-    return errors
+        return [], errors
+
+    citations: list[EvidenceCitation] = []
+    for index, entry in enumerate(entries):
+        ref = entry["ref"]
+        quote = entry["quote"]
+        if not ref:
+            errors.append(f"evidence[{index}] has no 'ref'")
+            continue
+        packet_entry = by_id.get(ref)
+        if packet_entry is None:
+            errors.append(
+                f"evidence[{index}] cites id {ref!r}, which is not in the packet "
+                f"(available: {sorted(by_id)})"
+            )
+            continue
+        problem = _verify_quote(quote, packet_entry)
+        if problem:
+            errors.append(problem)
+            continue
+        citations.append(EvidenceCitation(ref=ref, quote=quote))
+    return citations, errors
 
 
 def parse_triage_proposal(text: str, packet: FindingPacket) -> TriageProposal:
@@ -473,8 +616,9 @@ def parse_triage_proposal(text: str, packet: FindingPacket) -> TriageProposal:
       available for this packet,
     * the payload the disposition requires must be present and admissible
       (see :func:`_validate_payload`),
-    * ``evidence`` must be non-empty and ``evidence_refs`` must cite only
-      evidence IDs present in ``packet``.
+    * ``evidence`` must be a non-empty list of ``{ref, quote}`` citations, each
+      naming an evidence ID present in ``packet`` **and** quoting that entry's
+      own words verbatim (see :func:`_validate_grounding`).
 
     Any violation yields a proposal with ``parse_errors`` populated so the
     caller retries or falls back to ``needs_verification`` — never acts on a
@@ -509,13 +653,14 @@ def parse_triage_proposal(text: str, packet: FindingPacket) -> TriageProposal:
 
     target = _truncate(data.get("target_milestone") or data.get("target") or "")
     reason_code = str(data.get("punt_reason_code") or data.get("reason_code") or "").strip()
-    evidence = _truncate(data.get("evidence"))
     rationale = _truncate(data.get("rationale"))
-    refs = _coerce_refs(data.get("evidence_refs"))
+    entries, shape_errors = _coerce_citations(data.get("evidence"))
+    errors.extend(shape_errors)
 
     if disposition in DISPOSITION_TAXONOMY:
         errors.extend(_validate_payload(packet, disposition, target, reason_code))
-    errors.extend(_validate_grounding(packet, refs, evidence))
+    citations, grounding_errors = _validate_grounding(packet, entries)
+    errors.extend(grounding_errors)
 
     if errors:
         return _error_proposal(packet, errors, raw=data)
@@ -524,8 +669,7 @@ def parse_triage_proposal(text: str, packet: FindingPacket) -> TriageProposal:
         finding_id=packet.finding_id,
         issue_ref=packet.issue_ref,
         disposition=disposition,
-        evidence=evidence,
-        evidence_refs=tuple(refs),
+        citations=tuple(citations),
         rationale=rationale,
         target_milestone=target or None,
         punt_reason_code=reason_code or None,
@@ -552,6 +696,11 @@ def render_result(result: FindingProposalResult) -> str:
         lines.append(f"       evidence: {proposal.evidence}")
     if proposal.evidence_refs:
         lines.append(f"       cites: {', '.join(proposal.evidence_refs)}")
+    # Labelled, and below the evidence, because it is the proposer's own prose:
+    # nothing verified it against the packet and the operator must be able to
+    # tell it apart from the quoted lines above at a glance.
+    if proposal.rationale:
+        lines.append(f"       reasoning (unverified): {proposal.rationale}")
     if result.fallback_reason:
         lines.append(f"       fallback: {result.fallback_reason}")
     for error in result.validation_errors:

@@ -21,6 +21,7 @@ from .defaults import (
     PROVIDER_API_KEY_MAP,
     PROVIDER_SDK_MAP,
     SUPPORTED_CLIS,
+    TRIAGE_PROPOSER_TOOLS,
     generate_default_config,
     resolve_preflight_tools,
 )
@@ -157,6 +158,7 @@ __all__ = [
     "PREFLIGHT_ALLOWED_CAPABILITIES",
     "PREFLIGHT_FORBIDDEN_TOOLS",
     "PREFLIGHT_READ_ONLY_TOOLS",
+    "TRIAGE_PROPOSER_TOOLS",
     "PROVIDER_API_KEY_MAP",
     "PROVIDER_SDK_MAP",
     "SUPPORTED_CLIS",

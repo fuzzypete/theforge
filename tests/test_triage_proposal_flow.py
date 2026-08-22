@@ -9,7 +9,9 @@ the audit rows and the reported spend. The schema boundary itself lives in
 
 from __future__ import annotations
 
+import ast
 import subprocess
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -20,6 +22,7 @@ from theforge.config import (
     DEFAULT_PREFLIGHT_PROFILE,
     DEFAULT_REVIEW_PROFILE,
     DEFAULT_VALIDATION,
+    TRIAGE_PROPOSER_TOOLS,
     ForgeConfig,
     LogConfig,
     RetryPolicy,
@@ -27,6 +30,7 @@ from theforge.config import (
 )
 from theforge.coordinator import audit_read_model, audit_storage
 from theforge.coordinator import triage_proposal_flow as flow
+from theforge.runners.tool_runtime import grants_bash
 from theforge.triage_proposal import (
     DISPOSITION_NEEDS_VERIFICATION,
     DISPOSITION_PUNT,
@@ -83,6 +87,28 @@ def _install_runner(monkeypatch: pytest.MonkeyPatch, runner: object) -> None:
     monkeypatch.setattr(flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE)
 
 
+def _executable_source(path: Path) -> str:
+    """Return ``path``'s source with docstrings and comments removed.
+
+    Round-tripping through the AST drops comments outright, and every docstring
+    is stripped explicitly, so a static scan sees what the module *does* rather
+    than what it says about itself.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.Module, ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            continue
+        body = node.body
+        if (
+            body
+            and isinstance(body[0], ast.Expr)
+            and isinstance(body[0].value, ast.Constant)
+            and isinstance(body[0].value.value, str)
+        ):
+            node.body = body[1:] or [ast.Pass()]
+    return ast.unparse(ast.fix_missing_locations(tree))
+
+
 def _proposal_block(body: str) -> str:
     return f"<triage_proposal>\n{body}\n</triage_proposal>"
 
@@ -90,15 +116,27 @@ def _proposal_block(body: str) -> str:
 _VALID_PUNT = _proposal_block(
     "disposition: punt\n"
     "punt_reason_code: verified-stale\n"
-    "evidence: report shows cited symbol absent from current tree\n"
-    "evidence_refs: [symbol-absent]\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: cited symbol absent from current tree\n"
 )
 
 _INVALID = _proposal_block(
     "disposition: punt\n"
     "punt_reason_code: feels-old\n"
-    "evidence: vibes\n"
-    "evidence_refs: [symbol-absent]\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: cited symbol absent from current tree\n"
+)
+
+# Schema-valid and correctly referenced, but the quote is the proposer's own
+# claim rather than the entry's words — rejected by grounding, not by shape.
+_UNGROUNDED = _proposal_block(
+    "disposition: punt\n"
+    "punt_reason_code: verified-stale\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: a maintainer confirmed this was fixed last quarter\n"
 )
 
 
@@ -236,6 +274,38 @@ class TestRetryAndFallback:
         result = flow.run_triage_proposals(_report(), _config(tmp_path), record=False).results[0]
         assert result.proposal.disposition != DISPOSITION_PUNT
         assert result.proposal.punt_reason_code is None
+
+    def test_an_ungrounded_claim_is_retried_like_schema_invalid_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A real ref with an invented quote gets the same treatment as bad shape."""
+        runner = _StubRunner(
+            _StubResult(_UNGROUNDED, cost_usd=0.01),
+            _StubResult(_VALID_PUNT, cost_usd=0.01),
+        )
+        _install_runner(monkeypatch, runner)
+
+        result = flow.run_triage_proposals(_report(), _config(tmp_path), record=False).results[0]
+        assert result.proposal.disposition == DISPOSITION_PUNT
+        assert result.retry_count == 1
+        assert "not in that entry" in runner.prompts[1]
+
+    def test_a_persistently_ungrounded_claim_becomes_needs_verification(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_runner(
+            monkeypatch,
+            _StubRunner(
+                _StubResult(_UNGROUNDED, cost_usd=0.01), _StubResult(_UNGROUNDED, cost_usd=0.01)
+            ),
+        )
+
+        result = flow.run_triage_proposals(_report(), _config(tmp_path), record=False).results[0]
+        assert result.proposal.disposition == DISPOSITION_NEEDS_VERIFICATION
+        assert result.fallback_reason == flow.FALLBACK_INVALID_OUTPUT
+        assert any("not in that entry" in e for e in result.validation_errors)
+        # The unsupported claim is nowhere in what the operator is shown.
+        assert "maintainer confirmed" not in result.proposal.evidence
 
     def test_a_failed_agent_run_is_retried_then_falls_back(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -431,6 +501,127 @@ class TestNoTrackerWrites:
     away from being taken.
     """
 
+    def test_the_proposer_is_invoked_with_a_sealed_surface(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """What the runner is actually handed — the mechanical half of the guarantee.
+
+        A prompt that says "do not write anything" is a request. What makes it
+        a property of the run is the surface: no shell, a read-only sandbox, a
+        working directory that is not the checkout, and no tracker credential.
+        """
+        captured: dict = {}
+
+        def _capture(**kwargs: object) -> _StubResult:
+            captured.update(kwargs)
+            # Recorded here, while the scratch directory still exists: the run
+            # removes it on the way out.
+            captured["contents"] = list(Path(str(kwargs["working_dir"])).iterdir())
+            return _StubResult(_VALID_PUNT, cost_usd=0.01)
+
+        monkeypatch.setattr(flow, "run_agent", _capture)
+        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
+        # A profile that grants everything, so the sealing is what narrows it.
+        wide = replace(
+            DEFAULT_PREFLIGHT_PROFILE,
+            allowed_tools=("Read", "Bash", "Write", "Edit"),
+            sandbox_mode="workspace-write",
+        )
+        monkeypatch.setattr(flow, "_select_advisor_profile", lambda config: wide)
+
+        config = _config(tmp_path)
+        object.__setattr__(
+            config,
+            "secrets",
+            {
+                "ANTHROPIC_API_KEY": "sk-ant-x",
+                "GH_TOKEN": "ghp-secret",
+                "GITHUB_TOKEN": "ghp-secret",
+                "NTFY_URL": "https://ntfy.sh/topic",
+            },
+        )
+
+        flow.run_triage_proposals(_report(), config, record=False)
+
+        profile = captured["profile"]
+        assert not grants_bash(profile.allowed_tools)
+        assert profile.allowed_tools == TRIAGE_PROPOSER_TOOLS
+        assert profile.sandbox_mode == "read-only"
+        # Not the checkout, and empty: there is nothing here to read or write.
+        assert Path(captured["working_dir"]) != tmp_path
+        assert captured["contents"] == []
+        # Only the provider key survives.
+        assert captured["secrets"] == {"ANTHROPIC_API_KEY": "sk-ant-x"}
+
+    def test_the_scratch_directory_is_removed_after_the_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: list[Path] = []
+
+        def _capture(**kwargs: object) -> _StubResult:
+            seen.append(Path(str(kwargs["working_dir"])))
+            return _StubResult(_VALID_PUNT, cost_usd=0.01)
+
+        monkeypatch.setattr(flow, "run_agent", _capture)
+        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
+        monkeypatch.setattr(
+            flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
+        )
+
+        flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
+        assert seen and not seen[0].exists()
+
+    def test_secret_allowlist_keeps_provider_keys_and_drops_everything_else(self) -> None:
+        kept = flow.proposer_secrets(
+            {
+                "ANTHROPIC_API_KEY": "a",
+                "OPENAI_API_KEY": "b",
+                "CUSTOM_PROVIDER_API_KEY": "c",
+                "GH_TOKEN": "d",
+                "GITHUB_TOKEN": "e",
+                "NTFY_URL": "f",
+                "AWS_SECRET_ACCESS_KEY": "g",
+            }
+        )
+        assert kept == {
+            "ANTHROPIC_API_KEY": "a",
+            "OPENAI_API_KEY": "b",
+            "CUSTOM_PROVIDER_API_KEY": "c",
+        }
+
+    def test_sealing_is_applied_through_the_real_runner_binding(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Exercise the production wiring, not a pre-patched module global.
+
+        The other tests replace ``flow.run_agent`` directly, which would keep
+        passing if the flow stopped resolving the real runner at all. This one
+        clears the lazy slots so ``_ensure_runners`` binds
+        ``theforge.runners.run_agent`` itself, and intercepts there.
+        """
+        import theforge.runners as runners
+
+        captured: dict = {}
+
+        def _capture(**kwargs: object) -> _StubResult:
+            captured.update(kwargs)
+            return _StubResult(_VALID_PUNT, cost_usd=0.01)
+
+        monkeypatch.setattr(runners, "run_agent", _capture)
+        monkeypatch.setattr(runners, "log_agent_result", lambda *a, **k: None)
+        monkeypatch.setattr(flow, "run_agent", None)
+        monkeypatch.setattr(flow, "log_agent_result", None)
+        monkeypatch.setattr(
+            flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
+        )
+
+        summary = flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
+
+        assert summary.results[0].proposal.disposition == DISPOSITION_PUNT
+        assert captured["profile"].allowed_tools == TRIAGE_PROPOSER_TOOLS
+        assert not grants_bash(captured["profile"].allowed_tools)
+        assert Path(captured["working_dir"]) != tmp_path
+
     def test_a_full_run_spawns_no_subprocess(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -457,9 +648,10 @@ class TestNoTrackerWrites:
         ],
     )
     def test_no_triage_module_reaches_a_tracker_write_path(self, module_path: str) -> None:
-        source = Path(module_path).read_text(encoding="utf-8")
-        # Prose in docstrings names these to say they are absent, so match the
-        # call shapes rather than the words.
+        # Scan executable code only. Docstrings are where these modules *state*
+        # the guarantee ("no gh invocation, no GitHub API call"), so a raw text
+        # match would fail on the sentence promising the thing it looks for.
+        code = _executable_source(Path(module_path))
         forbidden = (
             "github_integration",
             "gh issue",
@@ -467,7 +659,5 @@ class TestNoTrackerWrites:
             "subprocess",
             "_run_shell",
         )
-        # Strip the module docstring, which is where the guarantee is stated.
-        body = source.split('"""', 2)[-1]
-        hits = [token for token in forbidden if token in body]
+        hits = [token for token in forbidden if token in code]
         assert hits == [], f"{module_path} reaches tracker/subprocess surfaces: {hits}"

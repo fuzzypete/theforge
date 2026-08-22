@@ -19,19 +19,29 @@ them is delegated to a model:
 * **Empty backlog → no runner.** No profile is selected and no agent is
   invoked; the run records an explicit zero cost.
 
-Nothing here writes to a tracker. There is no ``gh`` invocation, no GitHub API
-call, and no issue mutation on any path — the stage is advisory, and a later
-slice owns application.
+Nothing here writes to a tracker, and that is enforced by what the proposer is
+*given*, not by what the prompt asks of it. Every invocation goes through
+:func:`seal_proposer_profile` and :func:`proposer_secrets`, so the agent runs
+with a read-only tool surface that has no shell, in a read-only sandbox, in an
+empty scratch directory rather than the project checkout, holding only provider
+API keys. There is no ``gh`` invocation, no GitHub API call, and no issue
+mutation on any path — the stage is advisory, and a later slice owns
+application.
 """
 
 from __future__ import annotations
 
+import tempfile
 import uuid
 from dataclasses import replace
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from theforge.agent_types import COST_PROVIDER_REPORTED, COST_UNKNOWN
 from theforge.assignment import NoCapableCandidateError
+from theforge.config import TRIAGE_PROPOSER_TOOLS
+from theforge.config.defaults import PROVIDER_API_KEY_MAP
+from theforge.config.model_identity import PHASE_ADVISOR
 from theforge.task.triage_prompts import build_triage_prompt
 from theforge.triage_proposal import (
     FindingPacket,
@@ -53,7 +63,7 @@ from . import util as _cu
 from .escalation_advisor_flow import _select_advisor_profile
 
 if TYPE_CHECKING:
-    from pathlib import Path
+    from collections.abc import Mapping
 
     from theforge.config import ForgeConfig
     from theforge.triage_report import BacklogFinding, BacklogReport
@@ -182,8 +192,64 @@ def _combine_cost(
     return running, attempt_provenance
 
 
+def seal_proposer_profile(profile: object) -> object:
+    """Return ``profile`` narrowed to what an advisory proposer may hold.
+
+    The proposal stage is advisory, so its inability to write anywhere has to be
+    a property of the invocation rather than of the prompt. Three things are
+    overridden here, at the one place every proposer invocation passes through,
+    rather than trusted from whatever built the profile:
+
+    * ``allowed_tools`` becomes :data:`TRIAGE_PROPOSER_TOOLS` — read-only, and
+      specifically without a shell, which is the capability ``gh issue edit``
+      would need. It is set, never filtered: an empty ``allowed_tools`` means
+      *unrestricted* at CLI dispatch, so a surface derived by subtraction from
+      config would fail open on exactly its most dangerous input.
+    * ``sandbox_mode`` becomes ``read-only`` so the host sandbox refuses a write
+      even if a tool were somehow granted.
+    * ``phase``/``name`` identify the invocation as triage in the audit trail.
+
+    A model whose configured profile granted Bash therefore cannot bring it
+    here, which is what makes the no-tracker-writes guarantee mechanical.
+    """
+    return replace(
+        profile,
+        name="triage_proposer",
+        phase=PHASE_ADVISOR,
+        allowed_tools=TRIAGE_PROPOSER_TOOLS,
+        sandbox_mode="read-only",
+    )
+
+
+def proposer_secrets(secrets: "Mapping[str, str] | None") -> dict[str, str]:
+    """Return only the credentials a proposer invocation legitimately needs.
+
+    An ALLOW-list, and the distinction from a deny-list is the point: denying
+    ``GH_TOKEN`` answers "is today's known tracker credential absent?", while
+    allowing only provider API keys answers "is every credential this stage
+    holds one that cannot mutate a tracker?" Only the second survives an
+    operator putting a new forge-of-record credential in ``.forge/.env``.
+
+    A key qualifies if it is a provider API key by name. Everything else —
+    tracker tokens, webhook URLs, deploy credentials — is dropped, so an
+    advisory stage cannot authenticate as the operator against anything.
+    """
+    if not secrets:
+        return {}
+    known = {value.upper() for value in PROVIDER_API_KEY_MAP.values()}
+    return {
+        key: value
+        for key, value in secrets.items()
+        if key.upper() in known or key.upper().endswith("_API_KEY")
+    }
+
+
 def _propose_for_packet(
-    packet: FindingPacket, config: "ForgeConfig", profile: object
+    packet: FindingPacket,
+    *,
+    profile: object,
+    working_dir: "Path",
+    secrets: dict[str, str],
 ) -> FindingProposalResult:
     """Run the proposer against one packet, with one retry and the fallback."""
     errors: list[str] = []
@@ -198,8 +264,8 @@ def _propose_for_packet(
             result = run_agent(
                 prompt=prompt,
                 profile=profile,
-                working_dir=config.project_root,
-                secrets=config.secrets,
+                working_dir=working_dir,
+                secrets=secrets,
             )
         except Exception as exc:  # noqa: BLE001 - an unusable proposer is not a disposition
             errors = [f"proposer invocation failed: {exc}"]
@@ -261,12 +327,10 @@ def _fallback_result(
         packet_hash=packet.packet_hash(),
         proposal=needs_verification_proposal(
             packet,
-            evidence=(
+            basis=(
                 "No valid proposal survived validation for this packet; the "
-                "disposition is withheld rather than guessed."
+                f"disposition is withheld rather than guessed ({reason})."
             ),
-            evidence_refs=packet.evidence_ids(),
-            rationale=reason,
         ),
         attempts=attempts,
         retry_count=max(attempts - 1, 0),
@@ -289,12 +353,10 @@ def _no_evidence_result(packet: FindingPacket) -> FindingProposalResult:
         packet_hash=packet.packet_hash(),
         proposal=needs_verification_proposal(
             packet,
-            evidence=(
+            basis=(
                 "No checkable artifact is cited for this finding; stale and active "
                 "are indistinguishable from this packet."
             ),
-            evidence_refs=packet.evidence_ids(),
-            rationale=FALLBACK_NO_CHECKABLE_EVIDENCE,
         ),
         attempts=0,
         retry_count=0,
@@ -377,31 +439,46 @@ def run_triage_proposals(
     profile: object | None = None
     profile_error = ""
     results: list[FindingProposalResult] = []
+    secrets = proposer_secrets(config.secrets)
 
-    for packet in packets:
-        if not packet.has_checkable_evidence():
-            results.append(_no_evidence_result(packet))
-            continue
-        if profile is None and not profile_error:
-            _ensure_runners()
-            try:
-                profile = _select_advisor_profile(config)
-            except (NoCapableCandidateError, ValueError) as exc:
-                profile_error = str(exc)
-                _log(f"  ⚠ triage proposer unavailable: {exc}")
-        if profile is None:
+    # The proposer runs in an empty scratch directory, never the project
+    # checkout. Its packet is the record and the prompt forbids investigation;
+    # handing it the repository anyway would mean the one thing standing between
+    # an advisory agent and the working tree was the prompt. The directory is
+    # removed when the run ends.
+    with tempfile.TemporaryDirectory(prefix="forge-triage-") as scratch:
+        working_dir = Path(scratch)
+        for packet in packets:
+            if not packet.has_checkable_evidence():
+                results.append(_no_evidence_result(packet))
+                continue
+            if profile is None and not profile_error:
+                _ensure_runners()
+                try:
+                    profile = seal_proposer_profile(_select_advisor_profile(config))
+                except (NoCapableCandidateError, ValueError) as exc:
+                    profile_error = str(exc)
+                    _log(f"  ⚠ triage proposer unavailable: {exc}")
+            if profile is None:
+                results.append(
+                    _fallback_result(
+                        packet,
+                        attempts=0,
+                        errors=[profile_error],
+                        reason=FALLBACK_AGENT_UNAVAILABLE,
+                        cost_usd=0.0,
+                        provenance=COST_PROVIDER_REPORTED,
+                    )
+                )
+                continue
             results.append(
-                _fallback_result(
+                _propose_for_packet(
                     packet,
-                    attempts=0,
-                    errors=[profile_error],
-                    reason=FALLBACK_AGENT_UNAVAILABLE,
-                    cost_usd=0.0,
-                    provenance=COST_PROVIDER_REPORTED,
+                    profile=profile,
+                    working_dir=working_dir,
+                    secrets=secrets,
                 )
             )
-            continue
-        results.append(_propose_for_packet(packet, config, profile))
 
     total, provenance = _total_spend(results)
     summary = ProposalRunSummary(
@@ -419,5 +496,7 @@ def run_triage_proposals(
 __all__ = [
     "MAX_ATTEMPTS",
     "build_finding_packet",
+    "proposer_secrets",
     "run_triage_proposals",
+    "seal_proposer_profile",
 ]

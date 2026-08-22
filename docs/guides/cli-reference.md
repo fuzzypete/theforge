@@ -895,23 +895,36 @@ Sample output:
 
 ```
 #1312  PROPOSE punt (reason: verified-stale)
-       evidence: report shows cited symbol absent from current tree
+       evidence: cited symbol absent from current tree; no disposition rows recorded
        cites: symbol-absent, disposition-history
+       reasoning (unverified): nothing left in the tree for this to describe
        cost: $0.0123 (provider_reported)
 
 TOTAL SPEND: $0.0123 (provider_reported)
 Advisory only — no issue was modified.
 ```
 
+The `evidence` line is quoted from the packet and was verified against it; the
+`reasoning` line is the proposer's own prose and was not.
+
 Properties worth knowing before you rely on it:
 
-- **Advisory only.** The command performs no tracker writes of any kind — no
-  edit, comment, label, or close, on any issue. Applying a proposal is a
-  separate, operator-driven step.
-- **Grounded or rejected.** A proposal must cite evidence ids present in its own
-  packet. Ungrounded or schema-invalid output is rejected and retried once; if it
-  is still invalid the finding resolves to `needs_verification` with the
-  validation errors recorded — never guessed into a disposition.
+- **Advisory only, mechanically.** The command performs no tracker writes of any
+  kind — no edit, comment, label, or close, on any issue — and that is enforced
+  by what the proposer is given, not by what its prompt asks. Every invocation
+  runs with a read-only tool surface that has no shell, in a read-only sandbox,
+  in an empty scratch directory rather than your checkout, holding only provider
+  API keys (a `GH_TOKEN` in `.forge/.env` is never passed to it). Applying a
+  proposal is a separate, operator-driven step.
+- **Grounded or rejected.** A proposal cites evidence as `{ref, quote}` pairs: a
+  packet evidence id, plus that entry's **own words, verbatim**. Citing a valid
+  id does not license a claim beside it — a paraphrase or an invented assertion
+  is rejected even when the id is real. Anything the proposer says in its own
+  voice goes in `rationale` and is displayed as `reasoning (unverified)`, never
+  on the evidence line. Ungrounded or schema-invalid output is rejected and
+  retried once with the validator's errors named; if it is still invalid the
+  finding resolves to `needs_verification` with those errors recorded — never
+  guessed into a disposition.
 - **No evidence means no discard.** A finding whose packet holds nothing
   checkable is proposed `needs_verification` deterministically, without invoking
   an agent (and so at zero cost). Absence of evidence is never evidence for a

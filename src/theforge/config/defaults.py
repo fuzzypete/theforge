@@ -54,6 +54,19 @@ DEFAULT_INVESTIGATION_TOOLS: tuple[str, ...] = ("Read", "Bash", "Glob", "Grep")
 #: The tool surface preflight runs with when config supplies nothing usable.
 PREFLIGHT_READ_ONLY_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
 
+#: The tool surface the backlog-triage proposer runs with (#2228).
+#:
+#: The proposer decides from a packet that was assembled for it; the prompt tells
+#: it not to investigate, and it has nothing legitimate to reach for. What it
+#: cannot be given is the empty tuple: ``runner_claude.build_argv`` omits
+#: ``--allowedTools`` for ``()`` and hands the CLI its *unrestricted* default, so
+#: "no tools" spelled the obvious way is the widest surface there is. This is
+#: therefore the narrowest surface that is explicit — read-only, and in
+#: particular no shell, which is the capability an advisory stage would need to
+#: run ``gh issue edit``. Its absence is what makes "this stage performs no
+#: tracker writes" a property of the invocation rather than of the prompt.
+TRIAGE_PROPOSER_TOOLS: tuple[str, ...] = ("Read", "Glob", "Grep")
+
 #: The capabilities preflight may hold, in canonical (internal) tool names.
 #:
 #: An ALLOW-list, not a deny-list, and the distinction is the point. Denying

@@ -23,6 +23,7 @@ from theforge.triage_proposal import (
     DISPOSITION_NEEDS_VERIFICATION,
     DISPOSITION_PUNT,
     HYGIENE_POOL,
+    MIN_QUOTE_WORDS,
     PUNT_REASON_CODES,
     PUNT_REASON_GUIDE,
     FindingPacket,
@@ -98,6 +99,23 @@ def _render_packet(packet: FindingPacket) -> str:
     return "\n".join(lines)
 
 
+def _example_citation(packet: FindingPacket) -> tuple[str, str]:
+    """Return a (ref, quote) pair the example block can show.
+
+    Built from the packet's own first entry so the illustration demonstrates a
+    citation that would actually pass validation. A generic placeholder would
+    show the shape while modelling the exact mistake the validator rejects —
+    words that are not in any entry.
+    """
+    if not packet.evidence:
+        return "<evidence-id>", "<verbatim words from that entry>"
+    entry = packet.evidence[0]
+    words = entry.citable_text().replace('"', "").split()
+    if len(words) < MIN_QUOTE_WORDS:
+        return entry.evidence_id, entry.citable_text().replace('"', "")
+    return entry.evidence_id, " ".join(words[: max(MIN_QUOTE_WORDS, 6)])
+
+
 def build_triage_prompt(packet: FindingPacket, previous_errors: Sequence[str] = ()) -> str:
     """Build the fresh-context triage-proposal prompt for one finding packet.
 
@@ -109,6 +127,7 @@ def build_triage_prompt(packet: FindingPacket, previous_errors: Sequence[str] = 
     taxonomy = _render_taxonomy(available, packet)
     packet_text = _render_packet(packet)
     evidence_ids = list(packet.evidence_ids())
+    example_ref, example_quote = _example_citation(packet)
 
     retry_block = ""
     if previous_errors:
@@ -145,11 +164,23 @@ automatically. No issue will be modified by this run.
 
 ## Grounding rule (this is the rule that gets proposals rejected)
 
-Every proposal must cite `evidence_refs`: the ids of packet evidence entries \
-that support it. You may cite ONLY the ids listed in the packet below — \
-{evidence_ids or "(none)"}. A claim that is not backed by a packet entry is \
-not admissible, however confident you are about it. Do not investigate the \
-repository to manufacture new evidence; the packet is the record.
+You do not write the evidence — you SELECT it. Every proposal must cite \
+`evidence` as a list of `{{ref, quote}}` pairs, where:
+
+- `ref` is one of the packet evidence ids below — {evidence_ids or "(none)"} — \
+and nothing else, and
+- `quote` is a span of THAT entry's own text, copied **verbatim**, at least \
+{MIN_QUOTE_WORDS} consecutive words long.
+
+The quote is checked mechanically against the entry you cited. A paraphrase, a \
+summary, an inference, or a claim the entry does not make will be rejected even \
+when the `ref` is real — citing a valid id does not license a claim beside it. \
+Do not investigate the repository to manufacture new evidence; the packet is \
+the record.
+
+Anything you want to say in your own words belongs in `rationale`. It is shown \
+to the operator labelled as unverified reasoning and it is NOT evidence: it \
+cannot make a disposition admissible on its own.
 
 Absence of evidence is not evidence for discard. If the packet does not let you \
 tell a stale finding from an active one, the answer is \
@@ -166,21 +197,22 @@ put the block inside a code fence. Free-form triage prose is NOT allowed.
 
 The YAML mapping must have:
 - `disposition`: one of {list(available)}
-- `evidence`: one or two sentences saying what in the packet supports this \
-disposition.
-- `evidence_refs`: a list of packet evidence ids you are citing.
-- `rationale` (optional): why this disposition rather than the neighbouring one.
+- `evidence`: a non-empty list of mappings, each with `ref` (a packet evidence \
+id) and `quote` (that entry's words, verbatim).
+- `rationale` (optional): your own reasoning — why this disposition rather than \
+the neighbouring one. Never a substitute for a quote.
 - `target_milestone`: required for `{DISPOSITION_FIX_NOW}` and \
 `{DISPOSITION_FIX_LATER}`; MUST be omitted otherwise.
 - `punt_reason_code`: required for `{DISPOSITION_PUNT}`; MUST be omitted otherwise.
 
-Example shape (illustrative only — analyse the real packet):
+Example shape (illustrative only — analyse the real packet and quote ITS text):
 
 <triage_proposal>
 disposition: {DISPOSITION_NEEDS_VERIFICATION}
-evidence: "The packet carries no check against the current tree, so a stale \
-finding and an active one look identical here."
-evidence_refs: {evidence_ids[:1] or []}
-rationale: "Deciding either way would be a guess."
+evidence:
+  - ref: {example_ref}
+    quote: "{example_quote}"
+rationale: "Nothing here distinguishes a stale finding from an active one, so \
+deciding either way would be a guess."
 </triage_proposal>
 """

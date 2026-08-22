@@ -17,6 +17,7 @@ import pytest
 
 from theforge.cli import triage as cli_triage
 from theforge.cli.main import build_parser
+from theforge.config import DEFAULT_PREFLIGHT_PROFILE
 from theforge.triage_proposal import (
     FindingPacket,
     FindingProposalResult,
@@ -33,7 +34,12 @@ _REPORT = {
             "issue_ref": "#1312",
             "body": "audit count is off by one",
             "evidence": [
-                {"id": "symbol-absent", "kind": "staleness", "summary": "gone", "checkable": True}
+                {
+                    "id": "symbol-absent",
+                    "kind": "staleness",
+                    "summary": "cited symbol absent from current tree",
+                    "checkable": True,
+                }
             ],
         }
     ],
@@ -98,7 +104,7 @@ def _summary(**kwargs: object) -> ProposalRunSummary:
         finding_id="1312:audit-count",
         issue_ref="#1312",
         packet_hash="abc",
-        proposal=needs_verification_proposal(_packet(), evidence="no checkable artifact cited"),
+        proposal=needs_verification_proposal(_packet(), basis="no checkable artifact cited"),
         cost_usd=0.0123,
         cost_provenance="provider_reported",
     )
@@ -217,8 +223,9 @@ class TestCommand:
                 "<triage_proposal>\n"
                 "disposition: punt\n"
                 "punt_reason_code: verified-stale\n"
-                "evidence: report shows cited symbol absent from current tree\n"
-                "evidence_refs: [symbol-absent]\n"
+                "evidence:\n"
+                "  - ref: symbol-absent\n"
+                "    quote: cited symbol absent from current tree\n"
                 "</triage_proposal>"
             )
             success = True
@@ -227,7 +234,9 @@ class TestCommand:
 
         monkeypatch.setattr(flow, "run_agent", lambda **k: _Result())
         monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
-        monkeypatch.setattr(flow, "_select_advisor_profile", lambda config: object())
+        monkeypatch.setattr(
+            flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
+        )
 
         code = cli_triage.cmd_triage(
             _args(report=str(report_path), config=str(config_path), no_audit=False)
