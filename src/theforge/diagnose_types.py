@@ -362,6 +362,23 @@ class DiagnoseState:
     # this checkout would inject same-numbered content from the wrong project).
     # Recorded so the audit distinguishes "declined on purpose" from "found
     # nothing".
+    # ── Attached evidence (issue filed by ``forge report`` elsewhere) ──
+    # Set when the issue carried an observed run's evidence with it. When
+    # ``attached_evidence_source`` is non-empty the packet is the ONLY
+    # description of the observed run the agent was given: no local pre-load
+    # ran, no baseline SHA was stamped, and no premise was verified against this
+    # checkout's git history. Recorded so an operator reading the audit can tell
+    # which runtime a diagnosis actually describes, and can spot a diagnosis
+    # that cited local state anyway.
+    attached_evidence_source: str = ""
+    attached_evidence_run_id: str = ""
+    attached_evidence_forge_version: str = ""
+    attached_evidence_read: list[str] = field(default_factory=list)
+    # Every part of the observed record the packet does NOT carry, with the
+    # reason (absent from the bundle, never attached, clipped to fit). The
+    # diagnosis is expected to report these gaps rather than fill them locally.
+    attached_evidence_unreadable: list[str] = field(default_factory=list)
+    attached_evidence_chars: int = 0
     issue_scope_is_categorical: bool = False
     issue_scope_text: str = ""
     # Derived from the fetched issue text and recorded in the audit because it

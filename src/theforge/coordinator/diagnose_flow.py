@@ -33,7 +33,10 @@ import yaml
 from theforge import detach
 from theforge.config import DEFAULT_INVESTIGATION_TOOLS, ForgeConfig, ModelProfile
 from theforge.config.model_identity import PHASE_DIAGNOSE
-from theforge.coordinator.diagnose_evidence import build_starting_evidence
+from theforge.coordinator.diagnose_evidence import (
+    build_starting_evidence,
+    parse_attached_evidence,
+)
 from theforge.coordinator.log_tee import get_worker_slug, set_worker_slug
 from theforge.coordinator.util import _log as _progress_log
 from theforge.diagnose_types import (
@@ -367,7 +370,14 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
 
 
 def _gh_fetch_issue(number: int, project_root: Path) -> dict:
-    """Fetch an issue's title, body, and state via ``gh issue view``."""
+    """Fetch an issue's title, body, state, labels, and comments via ``gh``.
+
+    Comments are part of the fetch because an issue filed by ``forge report``
+    carries the observed run's artifacts *as comments* — the body only holds the
+    manifest naming them. Without them the evidence that travelled with the
+    report is unreachable and the diagnosis falls back to describing whichever
+    checkout it happens to run in.
+    """
     proc = subprocess.run(
         [
             "gh",
@@ -375,7 +385,7 @@ def _gh_fetch_issue(number: int, project_root: Path) -> dict:
             "view",
             str(number),
             "--json",
-            "number,title,body,state,labels",
+            "number,title,body,state,labels,comments",
         ],
         capture_output=True,
         text=True,
@@ -627,6 +637,23 @@ def write_diagnose_audit(state: DiagnoseState, project_root: Path) -> Path:
             "reference_labels": list(state.starting_evidence_labels),
             "chars": state.starting_evidence_chars,
             "declined_unqualified_refs": list(state.starting_evidence_declined),
+        },
+        # Non-empty ``source`` marks the run that read an observed run's evidence
+        # off the issue instead of inspecting this checkout. ``read`` and
+        # ``unreadable`` are the exact coverage the agent was shown, so a claim
+        # of having read evidence is checkable against what was actually handed
+        # over — and a diagnosis citing local state on this path is visible as a
+        # contradiction rather than being indistinguishable from a local run.
+        "attached_evidence": {
+            "source": state.attached_evidence_source,
+            "run_id": state.attached_evidence_run_id,
+            "forge_version": state.attached_evidence_forge_version,
+            "read": list(state.attached_evidence_read),
+            "unreadable": list(state.attached_evidence_unreadable),
+            "chars": state.attached_evidence_chars,
+            # The local anchors this path deliberately does not produce.
+            "local_baseline_skipped": bool(state.attached_evidence_source),
+            "local_premise_check_skipped": bool(state.attached_evidence_source),
         },
         "issue_scope_requirement": {
             "symptom_is_categorical": state.issue_scope_is_categorical,
@@ -1230,11 +1257,41 @@ def _run_diagnose_flow_body(
         write_diagnose_audit(state, project_root)
         return DiagnoseResult(success=False, state=state, message=state.error)
 
+    # ── ATTACHED EVIDENCE ─────────────────────────────────────────────
+    # An issue filed by ``forge report`` from the project where the behavior was
+    # observed carries that run's record with it: a manifest in the body,
+    # artifacts in the comments. When it is there, it is the ONLY description of
+    # the observed run this flow uses — the checkout executing the diagnosis is
+    # a different runtime, and reading its state to answer a question about the
+    # observed run inverts the answer rather than approximating it.
+    attached = parse_attached_evidence(
+        issue_body=state.issue_body,
+        comments=issue.get("comments"),
+    )
+    if attached.is_present:
+        state.attached_evidence_source = attached.observed_project or "an unnamed project"
+        state.attached_evidence_run_id = attached.run_id
+        state.attached_evidence_forge_version = attached.forge_version
+        state.attached_evidence_read = list(attached.read_labels)
+        state.attached_evidence_unreadable = list(attached.unreadable_labels)
+        state.attached_evidence_chars = attached.chars
+        emit(f"  evidence   : {attached.source_description}")
+        emit(f"  reading    : {', '.join(attached.read_labels) or 'nothing (manifest only)'}")
+        if attached.unreadable_labels:
+            emit(f"  unreadable : {'; '.join(attached.unreadable_labels)}")
+
     # Capture baseline SHA at the moment the diagnosis is anchored. Done
     # post-FETCH so a fetch failure doesn't burn a baseline timestamp; done
     # pre-INVESTIGATE so the agent runs against (and the staleness check
     # later compares against) one known commit.
-    state.baseline_sha = _capture_base_sha(project_root)
+    #
+    # Skipped entirely on the attached-evidence path: the baseline exists to
+    # anchor a diagnosis to the commit it was made against, and this checkout's
+    # HEAD is not that commit. Stamping it would put a local SHA (and local file
+    # hashes, and a local premise check) on a diagnosis of a run that happened
+    # somewhere else — the same substitution the attached path exists to stop.
+    if not attached.is_present:
+        state.baseline_sha = _capture_base_sha(project_root)
     state.baseline_captured_at = _now_iso()
     issue_state = str(issue.get("state", "OPEN")).upper()
     if issue_state != "OPEN":
@@ -1254,26 +1311,34 @@ def _run_diagnose_flow_body(
     # URLs) are resolved. A bare #NNNN is reported as declined rather than
     # resolved against this checkout, which on a cross-project issue would hand
     # the agent a same-numbered local PR/issue as "evidence".
-    evidence = build_starting_evidence(
-        issue_body=state.issue_body,
-        project_root=project_root,
-        self_issue_number=issue_number,
-    )
-    state.starting_evidence_labels = list(evidence.reference_labels)
-    state.starting_evidence_chars = len(evidence.text)
-    state.starting_evidence_declined = list(evidence.declined_labels)
-    if evidence.reference_labels:
-        emit(
-            f"  [diagnose] pre-loaded {len(evidence.reference_labels)} evidence "
-            f"excerpt(s) from issue-body references: "
-            f"{', '.join(evidence.reference_labels)}"
+    #
+    # Skipped when the issue carries attached evidence: that pre-load resolves
+    # references against THIS checkout, which is precisely the substitution a
+    # cross-project report must not receive.
+    if attached.is_present:
+        evidence_text = attached.text
+    else:
+        evidence = build_starting_evidence(
+            issue_body=state.issue_body,
+            project_root=project_root,
+            self_issue_number=issue_number,
         )
-    if evidence.declined_labels:
-        emit(
-            f"  [diagnose] declined {len(evidence.declined_labels)} unqualified "
-            f"issue-body reference(s) (no repository named, not resolved against "
-            f"this checkout): {', '.join(evidence.declined_labels)}"
-        )
+        evidence_text = evidence.text
+        state.starting_evidence_labels = list(evidence.reference_labels)
+        state.starting_evidence_chars = len(evidence.text)
+        state.starting_evidence_declined = list(evidence.declined_labels)
+        if evidence.reference_labels:
+            emit(
+                f"  [diagnose] pre-loaded {len(evidence.reference_labels)} evidence "
+                f"excerpt(s) from issue-body references: "
+                f"{', '.join(evidence.reference_labels)}"
+            )
+        if evidence.declined_labels:
+            emit(
+                f"  [diagnose] declined {len(evidence.declined_labels)} unqualified "
+                f"issue-body reference(s) (no repository named, not resolved against "
+                f"this checkout): {', '.join(evidence.declined_labels)}"
+            )
     (
         state.issue_scope_is_categorical,
         state.issue_scope_text,
@@ -1288,7 +1353,8 @@ def _run_diagnose_flow_body(
         title=state.issue_title,
         body=state.issue_body,
         mode=mode,
-        starting_evidence=evidence.text,
+        starting_evidence=evidence_text,
+        evidence_is_attached=attached.is_present,
     )
 
     t0 = time.monotonic()
@@ -1398,8 +1464,16 @@ def _run_diagnose_flow_body(
     # hash each agent-reported inspected file against that SHA so a later
     # `forge groom` can detect when the diagnosis has gone stale relative
     # to the current base branch.
-    inspected_with_hashes = _baseline_inspected_files(
-        artifact.inspected_files, state.baseline_sha, project_root
+    #
+    # On the attached-evidence path there is no such anchor to stamp: the
+    # inspected paths name the observed project, and hashing same-named files
+    # out of this checkout would attach local content digests to a diagnosis of
+    # a run that never touched them. The paths are carried as the agent reported
+    # them, unhashed.
+    inspected_with_hashes = (
+        artifact.inspected_files
+        if attached.is_present
+        else _baseline_inspected_files(artifact.inspected_files, state.baseline_sha, project_root)
     )
     artifact = dataclasses.replace(
         artifact,
@@ -1442,8 +1516,19 @@ def _run_diagnose_flow_body(
     # described symptom cannot reproduce against code that is gone — report
     # "appears already resolved" (naming the removing commit) and write no
     # confirmed-cause body, rather than manufacturing a live diagnosis.
+    #
+    # Not run on the attached-evidence path. The check asks git "does the cited
+    # code still exist *here*", and "here" is the wrong repository: a path this
+    # project never had, or removed for unrelated reasons, would report a live
+    # cross-project defect as already resolved and suppress the evidence-based
+    # diagnosis entirely. With no local premise to check, the fail-open
+    # direction is to land the diagnosis.
     emit_phase(DiagnosePhase.VERIFY_PREMISE)
-    verdict = verify_premise(artifact, state.baseline_sha, project_root)
+    verdict = (
+        PremiseVerdict(resolved=False)
+        if attached.is_present
+        else verify_premise(artifact, state.baseline_sha, project_root)
+    )
     if verdict.resolved:
         state.already_resolved = True
         state.absent_premises = verdict.absent

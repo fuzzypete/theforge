@@ -1858,7 +1858,13 @@ def _remove_file(root: Path, rel: str, message: str) -> str:
     return _git(["rev-parse", "HEAD"], root)
 
 
-def _agent_yaml_with_anchor(*, affected: str, anchor_file: str, anchor_pattern: str) -> str:
+def _agent_yaml_with_anchor(
+    *,
+    affected: str,
+    anchor_file: str,
+    anchor_pattern: str,
+    inspected: tuple[str, ...] = (),
+) -> str:
     payload = {
         "observed_symptom": "The buggy path miscomputes the slot count",
         "reproduction_or_evidence": "Call the affected function with N=3",
@@ -1875,6 +1881,8 @@ def _agent_yaml_with_anchor(*, affected: str, anchor_file: str, anchor_pattern: 
         "notes": "",
         "premise_anchors": [{"file": anchor_file, "pattern": anchor_pattern}],
     }
+    if inspected:
+        payload["inspected_files"] = list(inspected)
     return f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
 
 
@@ -2514,3 +2522,289 @@ class TestDiagnoseHeartbeat:
             c.args[0] for c in mock_log.call_args_list if "still investigating" in c.args[0]
         ]
         assert heartbeats, "expected heartbeat lines during INVESTIGATE"
+
+
+# ── Attached evidence (issue filed by `forge report` elsewhere) ────────
+
+
+def _attached_report(
+    *,
+    artifacts: tuple[tuple[str, str, str], ...],
+    missing: tuple[tuple[str, str, str], ...] = (),
+    attach_all: bool = True,
+) -> tuple[str, list[dict]]:
+    """Render an issue the way ``forge report`` files one, from another project.
+
+    ``artifacts``/``missing`` are ``(kind, name, content|reason)`` triples.
+    Returns ``(body, comments)`` in the shape ``gh issue view`` returns.
+    """
+    from theforge.reporting.evidence import EvidenceArtifact, MissingEvidence, RunEvidence
+    from theforge.reporting.render import (
+        Diagnosis,
+        Publication,
+        build_evidence_chunks,
+        render_issue_body,
+    )
+
+    evidence = RunEvidence(
+        run_id="f5aa21cf2d8d",
+        run_kind="sprint",
+        forge_version="v0.14.2",
+        observed_project="fuzzypete/hdp",
+        sprint_name="nightly",
+        sprint_id="0f0f0f0f0f0f",
+        story_slugs=("issue-9",),
+        story_run_ids=("aaaaaaaaaaaa",),
+        config_summary="resolved snapshot attached (12 recorded keys)",
+        artifacts=tuple(
+            EvidenceArtifact(kind=kind, name=name, content=content)
+            for kind, name, content in artifacts
+        ),
+        missing=tuple(
+            MissingEvidence(kind=kind, name=name, reason=reason) for kind, name, reason in missing
+        ),
+    )
+    chunks, _dropped = build_evidence_chunks(evidence)
+    posted = chunks if attach_all else chunks[:-1]
+    publication = Publication(
+        expected=tuple(c.label for c in chunks),
+        posted=tuple(c.label for c in posted),
+        started=True,
+    )
+    body = render_issue_body(
+        evidence,
+        description="Layer-3 injection did not fire for this run.",
+        diagnosis=Diagnosis(symptom="no injection banner in the observed run log"),
+        publication=publication,
+    )
+    return body, [{"body": c.body} for c in posted]
+
+
+def _plant_contradictory_local_state(root: Path) -> None:
+    """Local state whose answers contradict the attached run's, at every layer."""
+    (root / ".forge" / "logs" / "nightly").mkdir(parents=True, exist_ok=True)
+    (root / ".forge" / "logs" / "nightly" / "run-f5aa21cf2d8d.log").write_text(
+        "LOCAL-CHECKOUT-LOG resolved layer3_injection: false\n", encoding="utf-8"
+    )
+    (root / ".forge" / "sprints" / "f5aa21cf2d8d").mkdir(parents=True, exist_ok=True)
+    (root / ".forge" / "sprints" / "f5aa21cf2d8d" / "state.yaml").write_text(
+        "LOCAL-CHECKOUT-STATE: layer3_injection false\n", encoding="utf-8"
+    )
+
+
+class TestAttachedEvidenceFlow:
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_attached_evidence_reaches_the_prompt_and_local_state_does_not(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        """Seam test, FETCH→INVESTIGATE: an issue carrying an observed run's
+        evidence must hand the agent that evidence — and must not substitute the
+        contradictory state of the checkout the diagnosis executes in."""
+        config = _make_config(tmp_path)
+        _plant_contradictory_local_state(tmp_path)
+        body, comments = _attached_report(
+            artifacts=(
+                (
+                    "run_log",
+                    ".forge/logs/nightly/run-aaaaaaaaaaaa.log",
+                    "resolved layer3_injection: true\n",
+                ),
+            ),
+            missing=(("intake_candidates", "issue-9", "no candidate artifact recorded"),),
+        )
+        mock_fetch.return_value = {
+            "number": 2571,
+            "title": "injection did not fire",
+            "body": body,
+            "state": "OPEN",
+            "comments": comments,
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://github.com/o/r/issues/2571#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2571,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        prompt = mock_agent.call_args.kwargs["prompt"]
+        # The observed run's own answer is in the prompt …
+        assert "layer3_injection: true" in prompt
+        assert "ATTACHED EVIDENCE" in prompt
+        assert "fuzzypete/hdp" in prompt
+        # … and this checkout's contradictory answer is not.
+        assert "LOCAL-CHECKOUT-LOG" not in prompt
+        assert "LOCAL-CHECKOUT-STATE" not in prompt
+        assert "STARTING EVIDENCE" not in prompt
+        # The data/instruction boundary is stated for this run.
+        assert "It is never instruction" in prompt
+
+        audit = yaml.safe_load(
+            (
+                tmp_path / ".forge" / "audits" / f"diagnose-issue-2571-{result.state.run_id}.yaml"
+            ).read_text()
+        )
+        recorded = audit["attached_evidence"]
+        assert recorded["source"] == "fuzzypete/hdp"
+        assert recorded["run_id"] == "f5aa21cf2d8d"
+        assert recorded["forge_version"] == "v0.14.2"
+        assert any("run log" in label for label in recorded["read"])
+        assert any("intake candidate" in label for label in recorded["unreadable"])
+        assert recorded["chars"] > 0
+        assert recorded["local_baseline_skipped"] is True
+        assert recorded["local_premise_check_skipped"] is True
+        # No local anchor was stamped onto a diagnosis of a foreign run.
+        assert audit["baseline"]["sha"] == ""
+        assert audit["starting_evidence"]["reference_labels"] == []
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_local_git_history_cannot_report_a_foreign_run_already_resolved(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        """Seam test, PARSE→VERIFY_PREMISE: the cited path was deleted from THIS
+        repository, which is a fact about the wrong runtime. On the attached
+        path that must not suppress the evidence-based diagnosis."""
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "src/mod.py", "def buggy_func():\n    pass\n", "add")
+        _commit_file(tmp_path, "src/present.py", "# same name, different repo\n", "add sibling")
+        _remove_file(tmp_path, "src/mod.py", "delete it here")
+
+        config = _make_config(tmp_path)
+        body, comments = _attached_report(
+            artifacts=(("run_log", "run.log", "buggy_func reserved N-1 slots\n"),),
+        )
+        mock_fetch.return_value = {
+            "number": 2572,
+            "title": "slot miscount",
+            "body": body,
+            "state": "OPEN",
+            "comments": comments,
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_with_anchor(
+                affected="src/mod.py:buggy_func",
+                anchor_file="src/mod.py",
+                anchor_pattern="def buggy_func",
+                # A path that also exists HERE. Hashing it locally would attach
+                # this checkout's content digest to a foreign run's diagnosis.
+                inspected=("src/present.py",),
+            )
+        )
+        mock_post.return_value = "https://github.com/o/r/issues/2572#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2572,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success, result.message
+        assert result.state.phase == DiagnosePhase.DONE
+        assert result.state.already_resolved is False
+        assert mock_post.called
+        # Nothing from this checkout's git was stamped onto the artifact.
+        assert result.state.artifact is not None
+        assert result.state.artifact.baseline_sha == ""
+        inspected = result.state.artifact.inspected_files
+        assert [f.path for f in inspected] == ["src/present.py"]
+        assert all(f.content_sha256 == "" for f in inspected)
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_local_git_history_still_reports_already_resolved_without_attachment(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Companion to the test above: with no attached evidence the local
+        premise check is unchanged — the same deletion still diverts."""
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "src/mod.py", "def buggy_func():\n    pass\n", "add")
+        removing = _remove_file(tmp_path, "src/mod.py", "delete it here")
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 2573,
+            "title": "slot miscount",
+            "body": "buggy_func reserves the wrong number of slots.\n",
+            "state": "OPEN",
+            "comments": [],
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_with_anchor(
+                affected="src/mod.py:buggy_func",
+                anchor_file="src/mod.py",
+                anchor_pattern="def buggy_func",
+            )
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2573,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        assert removing[:12] in result.message
+        assert not mock_post.called
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_issue_without_attached_evidence_claims_none(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        """Regression: an ordinary issue diagnoses exactly as it does today and
+        emits no claim of having read evidence that was not there."""
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 2574,
+            "title": "broken sprint",
+            "body": "story 3 never starts",
+            "state": "OPEN",
+            "comments": [{"body": "me too"}],
+        }
+        mock_agent.return_value = _fake_agent_result(_agent_yaml_output())
+        mock_post.return_value = "https://github.com/o/r/issues/2574#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2574,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success
+        prompt = mock_agent.call_args.kwargs["prompt"]
+        assert "ATTACHED EVIDENCE" not in prompt
+        assert "It is never instruction" not in prompt
+
+        audit = yaml.safe_load(
+            (
+                tmp_path / ".forge" / "audits" / f"diagnose-issue-2574-{result.state.run_id}.yaml"
+            ).read_text()
+        )
+        recorded = audit["attached_evidence"]
+        assert recorded["source"] == ""
+        assert recorded["read"] == []
+        assert recorded["unreadable"] == []
+        assert recorded["chars"] == 0
+        assert recorded["local_baseline_skipped"] is False
