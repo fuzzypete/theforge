@@ -846,6 +846,61 @@ artifact against a fresh generation without writing.
 
 ---
 
+## `forge report`
+
+File a forge bug **into another repository from the project where you observed
+it**, carrying that run's evidence with the report. Run it in the consuming
+project; the evidence is captured there, so nothing has to be copied between
+checkouts and no later reader has to reconstruct which release was installed
+where.
+
+```bash
+forge report --run f5aa21cf2d8d --to fuzzypete/theforge \
+  --description "Sprint resume reported a story merged when no commit landed."
+forge report --run f5aa21cf2d8d --to fuzzypete/theforge --description - --dry-run
+```
+
+`--run` accepts either domain of run id: a story run
+(`.forge/audits/runs/<id>.json`) or a sprint run, whose run-keyed summary names
+every `story_run_id` in it — a sprint id reaches every story's record.
+
+The created issue carries the operator's description, a bug-shaped `Diagnosis`
+section, and an evidence manifest:
+
+```
+forge version : 0.14.2
+observed in   : fuzzypete/hdp
+run           : f5aa21cf2d8d  (sprint issues-320,324,331)  stories: issue-320
+config        : resolved snapshot attached (412 recorded keys, resolved sha256 02edf039db0d, unchanged during run)
+artifacts     : run log, run record, per-story audit, sprint state, reviewer outputs, story body
+missing       : intake candidate artifacts
+publication   : complete — 18 evidence comments attached
+```
+
+The `missing:` line is load-bearing. Everything the report asserts about the
+run — forge version, runtime identity, resolved configuration — is read out of
+the recorded run artifacts; when a part of the record is unavailable it is
+named, with its reason, rather than emitted as an empty artifact. A report with
+a gap never reads as complete.
+
+The artifacts themselves are attached as comments. The body states its own
+publication state: it is created saying `INCOMPLETE`, listing every expected
+comment, and is only rewritten to `complete` once every one has landed. If a
+comment fails to post, the body is corrected to mark those items `NOT ATTACHED`
+and the command exits non-zero.
+
+Before filing, the body is evaluated against the shape gate and the verdict is
+printed with the forge version that produced it — the gate lives in *this*
+checkout, and the target repository may run a different release. A body whose
+gate state cannot be determined at all is never filed.
+
+Useful flags: `--title`, `--description-file`, `--symptom`, `--cause`,
+`--code-path`, `--fix-criterion` (a report filed the moment a defect is seen
+defaults to an explicit "not yet identified" cause, which the gate recognises
+as investigation-ready), `--label`, `--max-comments`, and `--dry-run`.
+
+---
+
 ## `forge batch-report`
 
 Post-sprint batchability analytics for a completed run: which stories would
