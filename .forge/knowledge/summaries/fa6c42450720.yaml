@@ -1,0 +1,130 @@
+schema_version: 2
+run_id: fa6c42450720
+authoritative_run_record: .forge/audits/runs/fa6c42450720.json
+generated_at: '2026-08-22T08:44:23.878038+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0118025
+story:
+  slug: issue-2672
+  name: A diagnosis renders unverifiable claims and refuted claims identically, so
+    a missing artifact reads as a completed check
+  github_issue: 2672
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 6
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/diagnose_flow.py
+- src/theforge/diagnose_types.py
+- src/theforge/task/diagnose_prompts.py
+- tests/test_diagnose_flow.py
+- tests/test_diagnose_parse_retry.py
+- tests/test_diagnose_types.py
+- tests/test_intake/test_diagnosis_staleness.py
+- tests/test_operator_action_lifecycle.py
+what_changed:
+  description: The diagnosis pipeline was updated to record and render provenance
+    for claim verification, distinguish unverifiable claims from refuted ones, and
+    surface premises that could not be checked instead of rendering checked and unchecked
+    premises identically. The flow also preserves this information in landed diagnosis
+    artifacts and related lifecycle outputs.
+  approach: The change introduced stricter diagnosis typing and completeness rules
+    for claim-verification metadata, adjusted prompt/output expectations, and threaded
+    premise-verification status through the diagnose flow so both normal and attached-evidence
+    paths emit explicit operator-facing status rather than relying on omission.
+  files_modified: *id002
+what_was_learned:
+- claim: When a report becomes 'complete' based on structured subfields, completeness
+    checks must validate both presence and recognized values; otherwise a diagnosis
+    can land while silently dropping provenance in the rendered output.
+  evidence:
+  - type: review_finding
+    finding_id: 25372f10999a31fb
+    description: Review found that omitted claim_verification fields still allowed
+      a diagnosis to be treated as complete and rendered without verification lines,
+      showing that mere structural acceptance can erase required provenance at landing
+      time.
+  - type: review_finding
+    finding_id: ff017e9ab438efd7
+    description: Review later found that even with free-text detail present, an unrecognized
+      verification type normalized to unknown still counted as complete, demonstrating
+      that completeness must reject invalid enum-like values as well as missing fields.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 recorded resolution of the earlier completeness gap after
+      missing claim-verification fields were surfaced through required-field handling,
+      confirming that gating completeness on valid verification data was the mechanism
+      that closed the issue.
+- claim: A skipped verification path needs its own explicit artifact-shaping logic;
+    otherwise the absence of a check is rendered the same as a successful check that
+    found nothing.
+  evidence:
+  - type: review_finding
+    finding_id: 62bc8c3508040ae3
+    description: Review found that attached cross-project evidence caused premise
+      verification to be skipped entirely and omitted the whole premise-verification
+      section, directly demonstrating that skip paths can collapse into indistinguishable
+      output if not rendered explicitly.
+  - type: review_finding
+    finding_id: 81f24eb45f46816c
+    description: Review also found that an already-resolved path rendered only absent
+      premises and dropped unable-to-check premises, showing that even when skip state
+      exists in memory and audit data it can still disappear from operator-facing
+      output unless each path is shaped deliberately.
+  - type: review_finding
+    finding_id: e42ad08ce3450cc8
+    description: Review identified that the attached-evidence skipped-premise report
+      depended on anchors and file-like tokens, so prose-only affected code produced
+      no indication that checks were skipped, demonstrating how path-specific extraction
+      heuristics can hide unverifiable premises.
+- claim: Fallback representations for missing structured evidence must not reuse fields
+    whose semantics imply stronger provenance, because operator-facing rendering will
+    treat them as if the stronger structure existed.
+  evidence:
+  - type: review_finding
+    finding_id: 5291b9a9771891f6
+    description: Review found that when no premise anchors or file-shaped references
+      existed, free-text affected-code prose was inserted into the repository-path
+      field and rendered in code formatting, showing that semantic fallback into a
+      path slot misrepresents what kind of evidence was actually available.
+learned_patterns:
+- strict-completeness-for-provenance
+- explicit-skipped-check-rendering
+- semantic-fallback-fields
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 25372f10999a31fb
+    severity: P1
+    file: src/theforge/diagnose_types.py
+    description: A parsed diagnosis that omits claim_verification and confirmed_cause_verification
+      is still treated as complete and renders without any claim-verification lines,
+      so the landed diagnosis can present claims without saying whether they were
+      checked against source or only attached evidence.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced places where missing or skipped verification
+    data could still pass through as complete-looking output unless every runtime
+    branch emitted explicit provenance state.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 3
+  plan_regenerations: null
+  cost_usd: 11.64933245
+  dominant_difficulty: Making absence-of-evidence visible across all diagnose-flow
+    branches without letting skipped checks collapse into normal-looking rendered
+    conclusions.
