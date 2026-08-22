@@ -248,9 +248,21 @@ class TestDiagnoseRefusesOperatorAction:
             "observed_symptom": "Sprint drops the third story",
             "reproduction_or_evidence": "Run forge sprint --issues 1,2,3",
             "hypotheses": [
-                {"statement": "off-by-one", "status": "confirmed", "evidence": "scheduler.py:1"}
+                {
+                    "statement": "off-by-one",
+                    "status": "confirmed",
+                    "evidence": "scheduler.py:1",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
             ],
             "confirmed_cause": "Worker pool reserves N-1 slots",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
             "affected_code_path": "src/theforge/sprint/scheduler.py",
             "fix_success_criterion": "--parallel 3 completes all 3 stories",
             "notes": "",

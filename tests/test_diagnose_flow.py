@@ -21,6 +21,7 @@ import yaml
 from coord_test_helpers import _make_config
 
 from theforge.diagnose_types import (
+    ClaimVerification,
     DiagnosePartialReason,
     DiagnosePhase,
     DiagnoseState,
@@ -28,6 +29,7 @@ from theforge.diagnose_types import (
     Hypothesis,
     SupportProvenance,
     SymptomScopeCoverage,
+    UncheckedPremise,
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
@@ -70,6 +72,10 @@ def _agent_yaml_output(
                 "statement": statement,
                 "status": status,
                 "evidence": evidence,
+                "claim_verification": {
+                    "verification_type": "source",
+                    "detail": "Checked against the target repository source.",
+                },
             }
         )
     payload = {
@@ -84,6 +90,10 @@ def _agent_yaml_output(
             "Running with --parallel 3 schedules and completes all 3 stories"
         ),
         "notes": "",
+        "confirmed_cause_verification": {
+            "verification_type": "source",
+            "detail": "Checked against the target repository source.",
+        },
     }
     if symptom_scope_coverage is not None:
         payload["symptom_scope_coverage"] = symptom_scope_coverage
@@ -265,10 +275,22 @@ class TestArtifactRendering:
             issue_number=1,
             observed_symptom="x",
             reproduction_or_evidence="y",
-            hypotheses=(Hypothesis("z", "confirmed", "e"),),
+            hypotheses=(
+                Hypothesis(
+                    "z",
+                    "confirmed",
+                    "e",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
             confirmed_cause="cause",
             affected_code_path="p",
             fix_success_criterion="c",
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
         )
         assert complete.is_complete()
         partial_no_cause = DiagnosisArtifact(
@@ -384,8 +406,13 @@ class TestPromptBuilder:
         assert "issue comments" in lower
         assert "memory files" in lower
         assert "not independent corroboration" in lower
+        assert "status: unverifiable" in prompt
+        assert "claim_verification" in prompt
+        assert "confirmed_cause_verification" in prompt
         assert "evidence_provenance" in prompt
         assert "confirmed_cause_support_provenance" in prompt
+        assert "src/theforge/example.py" not in prompt
+        assert "src/theforge/routing.py" not in prompt
 
     def test_scope_coverage_example_stays_stack_neutral(self):
         prompt = build_diagnose_prompt(issue_number=1, title="t", body="b", mode="autonomous")
@@ -762,10 +789,18 @@ class TestDiagnoseFlow:
                         "prior_assertion",
                         "Earlier fix branch already asserted it.",
                     ),
+                    ClaimVerification(
+                        "attached_evidence",
+                        "Only the attached commit message was available.",
+                    ),
                 ),
             ),
             confirmed_cause="root cause",
             confirmed_cause_support="Earlier diagnosis already states the same cause",
+            confirmed_cause_verification=ClaimVerification(
+                "source_and_attached_evidence",
+                "Confirmed in source and attached packet.",
+            ),
             confirmed_cause_support_provenance=SupportProvenance(
                 "prior_assertion",
                 "Diagnosis hdp#342 already asserted the cause.",
@@ -779,9 +814,17 @@ class TestDiagnoseFlow:
             "source_type": "prior_assertion",
             "detail": "Earlier fix branch already asserted it.",
         }
+        assert payload["hypotheses"][0]["claim_verification"] == {
+            "verification_type": "attached_evidence",
+            "detail": "Only the attached commit message was available.",
+        }
         assert payload["confirmed_cause_support"] == (
             "Earlier diagnosis already states the same cause"
         )
+        assert payload["confirmed_cause_verification"] == {
+            "verification_type": "source_and_attached_evidence",
+            "detail": "Confirmed in source and attached packet.",
+        }
         assert payload["confirmed_cause_support_provenance"] == {
             "source_type": "prior_assertion",
             "detail": "Diagnosis hdp#342 already asserted the cause.",
@@ -852,6 +895,58 @@ class TestDiagnoseFlow:
         assert result.state.artifact is not None
         assert result.state.artifact.partial_reason is DiagnosePartialReason.UNCLASSIFIED
         assert _load_audit_artifact(tmp_path)["partial_reason"] == "unclassified"
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_missing_claim_verification_lands_partial_instead_of_complete_diagnosis(
+        self, mock_agent, mock_fetch, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 2672,
+            "title": "verification metadata missing",
+            "body": "diagnosis omitted claim provenance",
+            "state": "OPEN",
+        }
+        payload = {
+            "observed_symptom": "Diagnosis renders without claim-verification lines",
+            "reproduction_or_evidence": "Rendered markdown has no verification annotations",
+            "hypotheses": [
+                {
+                    "statement": "Renderer omitted the verification block",
+                    "status": "confirmed",
+                    "evidence": "The artifact lands as a complete diagnosis.",
+                }
+            ],
+            "confirmed_cause": "Completeness ignores missing claim verification metadata",
+            "affected_code_path": "src/theforge/diagnose_types.py:321",
+            "fix_success_criterion": "Diagnoses with omitted verification metadata land partial",
+        }
+        mock_agent.return_value = _fake_agent_result(
+            f"```yaml\n{yaml.safe_dump(payload, sort_keys=False)}```"
+        )
+        mock_post.return_value = "https://example/comment"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2672,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.UNCLASSIFIED_PARTIAL
+        assert mock_post.called
+        posted_body = mock_post.call_args[0][1]
+        assert "Partial diagnosis" in posted_body
+        assert result.state.artifact is not None
+        assert result.state.artifact.missing_required_fields() == (
+            "hypotheses[0].claim_verification",
+            "confirmed_cause_verification",
+        )
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
@@ -1873,9 +1968,17 @@ def _agent_yaml_with_anchor(
                 "statement": "Off-by-one in the reservation loop",
                 "status": "confirmed",
                 "evidence": "The loop reserves N-1 slots",
+                "claim_verification": {
+                    "verification_type": "source",
+                    "detail": "Checked against the target repository source.",
+                },
             }
         ],
         "confirmed_cause": "Off-by-one reservation in the affected function",
+        "confirmed_cause_verification": {
+            "verification_type": "source",
+            "detail": "Checked against the target repository source.",
+        },
         "affected_code_path": affected,
         "fix_success_criterion": "N=3 reserves 3 slots",
         "notes": "",
@@ -1991,8 +2094,22 @@ class TestPremiseVerification:
         payload = {
             "observed_symptom": "s",
             "reproduction_or_evidence": "r",
-            "hypotheses": [{"statement": "h", "status": "confirmed", "evidence": "e"}],
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
             "confirmed_cause": "off-by-one in buggy_func",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
             "affected_code_path": "src/mod.py:buggy_func",
             "fix_success_criterion": "c",
         }
@@ -2045,8 +2162,22 @@ class TestPremiseVerification:
         payload = {
             "observed_symptom": "s",
             "reproduction_or_evidence": "r",
-            "hypotheses": [{"statement": "h", "status": "confirmed", "evidence": "e"}],
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
             "confirmed_cause": "off-by-one in buggy_func",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
             "affected_code_path": "src/mod.py:buggy_func",
             "fix_success_criterion": "c",
         }
@@ -2093,8 +2224,22 @@ class TestPremiseVerification:
         payload = {
             "observed_symptom": "s",
             "reproduction_or_evidence": "r",
-            "hypotheses": [{"statement": "h", "status": "confirmed", "evidence": "e"}],
+            "hypotheses": [
+                {
+                    "statement": "h",
+                    "status": "confirmed",
+                    "evidence": "e",
+                    "claim_verification": {
+                        "verification_type": "source",
+                        "detail": "Checked against the target repository source.",
+                    },
+                }
+            ],
             "confirmed_cause": "cause in gone module",
+            "confirmed_cause_verification": {
+                "verification_type": "source",
+                "detail": "Checked against the target repository source.",
+            },
             "affected_code_path": "src/gone.py:1",
             "fix_success_criterion": "c",
         }
@@ -2177,6 +2322,18 @@ class TestPremiseVerification:
         )
         verdict = verify_premise(artifact, "", Path("/nonexistent"))
         assert verdict.resolved is False
+        assert verdict.unable_to_check == (
+            UncheckedPremise(
+                file="src/anything.py",
+                pattern="def x",
+                reason="baseline SHA unavailable; premise not checked",
+            ),
+            UncheckedPremise(
+                file="src/anything.py",
+                pattern="",
+                reason="baseline SHA unavailable; affected code path not checked",
+            ),
+        )
 
     def test_verify_premise_fails_open_when_pattern_never_existed(self, tmp_path):
         """A pattern that has no removal history yields no removing commit, so the
@@ -2201,6 +2358,13 @@ class TestPremiseVerification:
         )
         verdict = verify_premise(artifact, head, tmp_path)
         assert verdict.resolved is False
+        assert verdict.unable_to_check == (
+            UncheckedPremise(
+                file="src/mod.py",
+                pattern="never_here",
+                reason="pattern absent at baseline but no removing commit could be identified",
+            ),
+        )
 
 
 class TestParsePremiseAnchors:
@@ -2289,11 +2453,17 @@ class TestParseSupportProvenance:
             "observed_symptom: s\nreproduction_or_evidence: r\n"
             "hypotheses:\n"
             "  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "    claim_verification:\n"
+            "      verification_type: attached_evidence\n"
+            "      detail: Missing local artifact.\n"
             "    evidence_provenance:\n"
             "      source_type: prior_assertion\n"
             "      detail: Earlier diagnosis already stated it.\n"
             "confirmed_cause: c\n"
             "confirmed_cause_support: commit message already states the same cause\n"
+            "confirmed_cause_verification:\n"
+            "  verification_type: source\n"
+            "  detail: Checked in source.\n"
             "confirmed_cause_support_provenance:\n"
             "  source_type: mixed\n"
             "  detail: Mix of reproduced failure and operator note.\n"
@@ -2301,21 +2471,32 @@ class TestParseSupportProvenance:
         )
         artifact = parse_diagnose_output(payload, issue_number=1)
         assert artifact is not None
+        assert artifact.hypotheses[0].claim_verification.verification_type == "attached_evidence"
+        assert artifact.hypotheses[0].claim_verification.detail == "Missing local artifact."
         assert artifact.hypotheses[0].evidence_provenance.source_type == "prior_assertion"
         assert artifact.hypotheses[0].evidence_provenance.detail == (
             "Earlier diagnosis already stated it."
         )
         assert artifact.confirmed_cause_support == "commit message already states the same cause"
+        assert artifact.confirmed_cause_verification.verification_type == "source"
+        assert artifact.confirmed_cause_verification.detail == "Checked in source."
         assert artifact.confirmed_cause_support_provenance.source_type == "mixed"
         assert artifact.confirmed_cause_support_provenance.detail == (
             "Mix of reproduced failure and operator note."
         )
 
     def test_missing_support_provenance_defaults_to_unknown(self):
-        artifact = parse_diagnose_output(_agent_yaml_output(), issue_number=1)
+        payload = (
+            "observed_symptom: s\nreproduction_or_evidence: r\n"
+            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+        )
+        artifact = parse_diagnose_output(payload, issue_number=1)
         assert artifact is not None
+        assert artifact.hypotheses[0].claim_verification == ClaimVerification()
         assert artifact.hypotheses[0].evidence_provenance == SupportProvenance()
         assert artifact.confirmed_cause_support == ""
+        assert artifact.confirmed_cause_verification == ClaimVerification()
         assert artifact.confirmed_cause_support_provenance == SupportProvenance()
 
     def test_null_or_empty_provenance_detail_does_not_stringify_none(self):
@@ -2323,10 +2504,16 @@ class TestParseSupportProvenance:
             "observed_symptom: s\nreproduction_or_evidence: r\n"
             "hypotheses:\n"
             "  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "    claim_verification:\n"
+            "      verification_type:\n"
+            "      detail:\n"
             "    evidence_provenance:\n"
             "      source_type:\n"
             "      detail:\n"
             "confirmed_cause: c\n"
+            "confirmed_cause_verification:\n"
+            "  verification_type:\n"
+            "  detail:\n"
             "confirmed_cause_support_provenance:\n"
             "  source_type:\n"
             "  detail:\n"
@@ -2334,7 +2521,9 @@ class TestParseSupportProvenance:
         )
         artifact = parse_diagnose_output(payload, issue_number=1)
         assert artifact is not None
+        assert artifact.hypotheses[0].claim_verification == ClaimVerification()
         assert artifact.hypotheses[0].evidence_provenance == SupportProvenance()
+        assert artifact.confirmed_cause_verification == ClaimVerification()
         assert artifact.confirmed_cause_support_provenance == SupportProvenance()
 
 
@@ -2342,8 +2531,16 @@ class TestParseSymptomScopeCoverage:
     def test_parses_categorical_scope_coverage(self):
         payload = (
             "observed_symptom: s\nreproduction_or_evidence: r\n"
-            "hypotheses:\n  - statement: a\n    status: confirmed\n    evidence: e\n"
-            "confirmed_cause: c\naffected_code_path: p\nfix_success_criterion: f\n"
+            "hypotheses:\n"
+            "  - statement: a\n    status: confirmed\n    evidence: e\n"
+            "    claim_verification:\n"
+            "      verification_type: source\n"
+            "      detail: Checked against the target repository source.\n"
+            "confirmed_cause: c\n"
+            "confirmed_cause_verification:\n"
+            "  verification_type: source\n"
+            "  detail: Checked against the target repository source.\n"
+            "affected_code_path: p\nfix_success_criterion: f\n"
             "symptom_scope_coverage:\n"
             "  symptom_is_categorical: true\n"
             "  stated_scope: every sibling renderer\n"
@@ -2720,6 +2917,16 @@ class TestAttachedEvidenceFlow:
         inspected = result.state.artifact.inspected_files
         assert [f.path for f in inspected] == ["src/present.py"]
         assert all(f.content_sha256 == "" for f in inspected)
+        posted_body = mock_post.call_args[0][1]
+        assert "### Premise verification" in posted_body
+        assert "premise check skipped" in posted_body
+        audit = yaml.safe_load(
+            (
+                tmp_path / ".forge" / "audits" / f"diagnose-issue-2572-{result.state.run_id}.yaml"
+            ).read_text()
+        )
+        assert audit["unchecked_premises"]
+        assert audit["artifact"]["unchecked_premises"]
 
     @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
@@ -2763,6 +2970,139 @@ class TestAttachedEvidenceFlow:
         assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
         assert removing[:12] in result.message
         assert not mock_post.called
+
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_attached_evidence_reports_skipped_premise_when_affected_path_is_only_prose(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test: attached-evidence diagnoses with prose-only affected paths
+        must still surface that premise verification was skipped."""
+        _init_repo(tmp_path)
+        config = _make_config(tmp_path)
+        body, comments = _attached_report(
+            artifacts=(("run_log", "run.log", "reservation helper dropped one slot\n"),),
+        )
+        mock_fetch.return_value = {
+            "number": 2574,
+            "title": "slot miscount",
+            "body": body,
+            "state": "OPEN",
+            "comments": comments,
+        }
+        mock_agent.return_value = _fake_agent_result(
+            """```yaml
+observed_symptom: Slot count is wrong
+reproduction_or_evidence: Attached run record shows the mismatch
+hypotheses:
+  - statement: Reservation logic is off by one
+    status: confirmed
+    evidence: The attached audit shows one fewer slot than requested
+    claim_verification:
+      verification_type: attached_evidence
+      detail: Verified against the attached run record.
+confirmed_cause: Reservation loop drops the last slot
+confirmed_cause_verification:
+  verification_type: attached_evidence
+  detail: Verified against the attached run record.
+affected_code_path: >-
+  The reservation helper in the slot allocator computes one fewer slot
+  than requested.
+fix_success_criterion: >-
+  Attached evidence and follow-up reproduction both show the requested
+  slot count.
+```"""
+        )
+        mock_post.return_value = "https://github.com/o/r/issues/2574#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2574,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success, result.message
+        assert result.state.phase == DiagnosePhase.DONE
+        assert mock_post.called
+        posted_body = mock_post.call_args[0][1]
+        assert "### Premise verification" in posted_body
+        assert "premise check skipped" in posted_body
+        assert (
+            "did not record any premise anchors or file-like affected-code references"
+            in posted_body
+        )
+        audit = yaml.safe_load(
+            (
+                tmp_path / ".forge" / "audits" / f"diagnose-issue-2574-{result.state.run_id}.yaml"
+            ).read_text()
+        )
+        assert audit["unchecked_premises"] == [
+            {
+                "file": (
+                    "The reservation helper in the slot allocator computes one fewer "
+                    "slot than requested."
+                ),
+                "pattern": "",
+                "reason": (
+                    "premise check skipped: diagnosis is anchored to attached "
+                    "cross-project evidence, so this checkout cannot verify the "
+                    "cited code safely; the diagnosis did not record any premise "
+                    "anchors or file-like affected-code references"
+                ),
+            }
+        ]
+
+    @patch("theforge.coordinator.diagnose_flow._emit_dry_run")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_already_resolved_report_keeps_unchecked_premises(
+        self, mock_agent, mock_fetch, mock_emit_dry_run, tmp_path
+    ):
+        """Seam test: an already-resolved report must still surface premises the
+        same pass could not verify, rather than dropping them from the operator
+        report while retaining them only in audit."""
+        _init_repo(tmp_path)
+        _commit_file(tmp_path, "src/mod.py", "def buggy_func():\n    pass\n", "add")
+        _commit_file(tmp_path, "src/other.py", "def present():\n    pass\n", "add sibling")
+        _remove_file(tmp_path, "src/mod.py", "delete it here")
+
+        config = _make_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 2575,
+            "title": "slot miscount",
+            "body": "buggy_func reserves the wrong number of slots.\n",
+            "state": "OPEN",
+            "comments": [],
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_with_anchor(
+                affected="src/mod.py:buggy_func",
+                anchor_file="src/other.py",
+                anchor_pattern="never_here",
+            )
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2575,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+            dry_run=True,
+        )
+
+        assert not result.success
+        assert result.state.phase == DiagnosePhase.ALREADY_RESOLVED
+        report = mock_emit_dry_run.call_args[0][0]
+        assert "Premises the coordinator could not verify" in report
+        assert "src/other.py:never_here" in report
+        assert "no removing commit could be identified" in report
 
     @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")

@@ -46,6 +46,10 @@ def _payload(*, with_related: bool = True) -> dict:
                 "statement": "DAG scheduler skips dependents when a blocker fails",
                 "status": "ruled_out",
                 "evidence": "Logs show no failed blockers in this run",
+                "claim_verification": {
+                    "verification_type": "source",
+                    "detail": "Checked against the target repository source.",
+                },
                 "evidence_provenance": {
                     "source_type": "observed",
                     "detail": "Observed directly in the run log.",
@@ -55,6 +59,10 @@ def _payload(*, with_related: bool = True) -> dict:
                 "statement": "Worker pool size off-by-one",
                 "status": "confirmed",
                 "evidence": "scheduler.py:142 reserves N-1 slots when N requested",
+                "claim_verification": {
+                    "verification_type": "source",
+                    "detail": "Checked against the target repository source.",
+                },
                 "evidence_provenance": {
                     "source_type": "prior_assertion",
                     "detail": "An earlier note already states the same mechanism.",
@@ -62,6 +70,10 @@ def _payload(*, with_related: bool = True) -> dict:
             },
         ],
         "confirmed_cause": "Worker pool reserves N-1 slots in scheduler.py:142",
+        "confirmed_cause_verification": {
+            "verification_type": "source",
+            "detail": "Checked against the target repository source.",
+        },
         "confirmed_cause_support": "scheduler.py:142 reserves N-1 slots when N requested",
         "confirmed_cause_support_provenance": {
             "source_type": "observed",
@@ -163,8 +175,14 @@ hypotheses:
   - statement: Nested fence breaks extraction
     status: confirmed
     evidence: Extraction must continue past inner fences
+    claim_verification:
+      verification_type: source
+      detail: Checked against the target repository source.
 confirmed_cause: |
   The outer envelope closes later than the nested fence.
+confirmed_cause_verification:
+  verification_type: source
+  detail: Checked against the target repository source.
 affected_code_path: |
   src/theforge/task/diagnose_prompts.py
 fix_success_criterion: |
@@ -185,7 +203,13 @@ hypotheses:
   - statement: z
     status: confirmed
     evidence: e
+    claim_verification:
+      verification_type: source
+      detail: Checked against the target repository source.
 confirmed_cause: c
+confirmed_cause_verification:
+  verification_type: source
+  detail: Checked against the target repository source.
 affected_code_path: p
 fix_success_criterion: f
 ```
@@ -270,6 +294,8 @@ class TestReformatPrompt:
             "symptom_scope_coverage",
         ):
             assert key in prompt
+        assert "src/theforge/example.py" not in prompt
+        assert "src/theforge/routing.py" not in prompt
 
 
 # ── Flow seam: recovery ───────────────────────────────────────────────
