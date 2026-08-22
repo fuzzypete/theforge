@@ -343,9 +343,21 @@ def test_diagnose_flow_injects_baseline_into_artifact(tmp_path: Path, monkeypatc
         "observed_symptom": "x",
         "reproduction_or_evidence": "y",
         "hypotheses": [
-            {"statement": "h", "status": "confirmed", "evidence": "e"},
+            {
+                "statement": "h",
+                "status": "confirmed",
+                "evidence": "e",
+                "claim_verification": {
+                    "verification_type": "source",
+                    "detail": "Checked against the target repository source.",
+                },
+            },
         ],
         "confirmed_cause": "c",
+        "confirmed_cause_verification": {
+            "verification_type": "source",
+            "detail": "Checked against the target repository source.",
+        },
         "affected_code_path": "src/scheduler.py",
         "fix_success_criterion": "f",
         "notes": "",

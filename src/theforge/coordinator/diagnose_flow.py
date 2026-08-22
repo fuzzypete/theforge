@@ -442,6 +442,33 @@ def verify_premise(artifact: DiagnosisArtifact, sha: str, project_root: Path) ->
     )
 
 
+def _unchecked_attached_premises(artifact: DiagnosisArtifact) -> tuple[UncheckedPremise, ...]:
+    """Report premises the coordinator deliberately skipped on attached evidence."""
+    reason = (
+        "premise check skipped: diagnosis is anchored to attached cross-project evidence, "
+        "so this checkout cannot verify the cited code safely"
+    )
+    unchecked: list[UncheckedPremise] = []
+    seen: set[tuple[str, str]] = set()
+    for anchor in artifact.premise_anchors:
+        path = anchor.file.strip()
+        pattern = anchor.pattern.strip()
+        if not path:
+            continue
+        key = (path, pattern)
+        if key in seen:
+            continue
+        seen.add(key)
+        unchecked.append(UncheckedPremise(file=path, pattern=pattern, reason=reason))
+    for path, symbol in _extract_affected_refs(artifact.affected_code_path):
+        key = (path, symbol)
+        if key in seen:
+            continue
+        seen.add(key)
+        unchecked.append(UncheckedPremise(file=path, pattern=symbol, reason=reason))
+    return tuple(unchecked)
+
+
 def _gh_fetch_issue(number: int, project_root: Path) -> dict:
     """Fetch an issue's title, body, state, labels, and comments via ``gh``.
 
@@ -1622,7 +1649,10 @@ def _run_diagnose_flow_body(
     # direction is to land the diagnosis.
     emit_phase(DiagnosePhase.VERIFY_PREMISE)
     verdict = (
-        PremiseVerdict(resolved=False)
+        PremiseVerdict(
+            resolved=False,
+            unable_to_check=_unchecked_attached_premises(artifact),
+        )
         if attached.is_present
         else verify_premise(artifact, state.baseline_sha, project_root)
     )
@@ -1638,6 +1668,7 @@ def _run_diagnose_flow_body(
             issue_number=issue_number,
             baseline_sha=state.baseline_sha,
             absent=verdict.absent,
+            unable_to_check=verdict.unable_to_check,
         )
         if dry_run:
             _emit_dry_run(report)

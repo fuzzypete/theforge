@@ -98,6 +98,27 @@ class TestAlreadyResolvedRendering:
         assert "file removed" in md
         assert "src/gone.py" in md
 
+    def test_renders_unable_to_check_premises_alongside_absent_ones(self):
+        md = render_already_resolved_markdown(
+            issue_number=1,
+            baseline_sha="abc123",
+            absent=(
+                AbsentPremise(
+                    file="src/gone.py", pattern="", removing_commit="ff00aa", removing_summary=""
+                ),
+            ),
+            unable_to_check=(
+                UncheckedPremise(
+                    file="src/other.py",
+                    pattern="def maybe_buggy",
+                    reason="baseline artifact missing; premise not checked",
+                ),
+            ),
+        )
+        assert "Premises the coordinator could not verify" in md
+        assert "src/other.py:def maybe_buggy" in md
+        assert "baseline artifact missing" in md
+
 
 class TestPremiseAnchorField:
     def test_artifact_carries_premise_anchors(self):
@@ -105,10 +126,22 @@ class TestPremiseAnchorField:
             issue_number=1,
             observed_symptom="s",
             reproduction_or_evidence="r",
-            hypotheses=(Hypothesis("h", "confirmed", "e"),),
+            hypotheses=(
+                Hypothesis(
+                    "h",
+                    "confirmed",
+                    "e",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
             confirmed_cause="c",
             affected_code_path="p",
             fix_success_criterion="f",
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
             premise_anchors=(PremiseAnchor(file="a.py", pattern="def x"),),
         )
         assert artifact.premise_anchors[0].file == "a.py"
@@ -122,10 +155,22 @@ class TestRelatedFindingsField:
             issue_number=1672,
             observed_symptom="empty plan on connection close",
             reproduction_or_evidence="audit YAML shows empty plan",
-            hypotheses=(Hypothesis("missing retry", "confirmed", "no retry wrapper"),),
+            hypotheses=(
+                Hypothesis(
+                    "missing retry",
+                    "confirmed",
+                    "no retry wrapper",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
             confirmed_cause="PLAN runner does not retry on connection-closed",
             affected_code_path="runner_claude.py",
             fix_success_criterion="connection-closed retries and yields a plan",
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
         )
         defaults.update(overrides)
         return DiagnosisArtifact(**defaults)
@@ -284,10 +329,22 @@ class TestDiagnosisArtifact:
             issue_number=1,
             observed_symptom="x",
             reproduction_or_evidence="y",
-            hypotheses=(Hypothesis("z", "confirmed", "e"),),
+            hypotheses=(
+                Hypothesis(
+                    "z",
+                    "confirmed",
+                    "e",
+                    claim_verification=ClaimVerification(
+                        "source", "Checked against the target repository source."
+                    ),
+                ),
+            ),
             confirmed_cause="c",
             affected_code_path="p",
             fix_success_criterion="f",
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
         )
         defaults.update(overrides)
         return DiagnosisArtifact(**defaults)
@@ -302,6 +359,21 @@ class TestDiagnosisArtifact:
         assert not self._make(confirmed_cause="").is_complete()
         assert not self._make(affected_code_path="").is_complete()
         assert not self._make(fix_success_criterion="").is_complete()
+
+    def test_is_complete_false_when_claim_verification_missing_for_substantive_claims(self):
+        artifact = self._make(
+            hypotheses=(Hypothesis("z", "confirmed", "e"),),
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
+        )
+        assert not artifact.is_complete()
+        assert artifact.missing_required_fields() == ("hypotheses[0].claim_verification",)
+
+    def test_is_complete_false_when_confirmed_cause_verification_missing(self):
+        artifact = self._make(confirmed_cause_verification=ClaimVerification())
+        assert not artifact.is_complete()
+        assert artifact.missing_required_fields() == ("confirmed_cause_verification",)
 
     def test_partial_flag_does_not_affect_completeness(self):
         # is_complete checks structural fields only; partial is a separate

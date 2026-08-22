@@ -314,6 +314,20 @@ class DiagnosisArtifact:
     # Coordinator-populated report of premise anchors it could not verify.
     unchecked_premises: tuple[UncheckedPremise, ...] = ()
 
+    def _substantive_hypothesis_claims_missing_verification(self) -> tuple[str, ...]:
+        missing: list[str] = []
+        for idx, hypothesis in enumerate(self.hypotheses):
+            if not (hypothesis.statement.strip() or hypothesis.evidence.strip()):
+                continue
+            if not hypothesis.claim_verification.is_meaningful():
+                missing.append(f"hypotheses[{idx}].claim_verification")
+        return tuple(missing)
+
+    def _confirmed_cause_missing_verification(self) -> tuple[str, ...]:
+        if self.confirmed_cause.strip() and not self.confirmed_cause_verification.is_meaningful():
+            return ("confirmed_cause_verification",)
+        return ()
+
     def missing_required_fields(
         self, *, issue_requires_categorical_scope: bool = False
     ) -> tuple[str, ...]:
@@ -331,6 +345,8 @@ class DiagnosisArtifact:
             missing.append("affected_code_path")
         if not self.fix_success_criterion.strip():
             missing.append("fix_success_criterion")
+        missing.extend(self._substantive_hypothesis_claims_missing_verification())
+        missing.extend(self._confirmed_cause_missing_verification())
         if not self.symptom_scope_coverage.satisfies_issue_requirement(
             issue_requires_categorical_scope=issue_requires_categorical_scope
         ):
@@ -760,7 +776,11 @@ def render_artifact_markdown(artifact: DiagnosisArtifact) -> str:
 
 
 def render_already_resolved_markdown(
-    *, issue_number: int, baseline_sha: str, absent: tuple[AbsentPremise, ...]
+    *,
+    issue_number: int,
+    baseline_sha: str,
+    absent: tuple[AbsentPremise, ...],
+    unable_to_check: tuple[UncheckedPremise, ...] = (),
 ) -> str:
     """Render an "appears already resolved" report naming the removing commit(s).
 
@@ -792,6 +812,17 @@ def render_already_resolved_markdown(
             )
         else:
             lines.append(f"- `{a.file}` — file removed by commit `{commit}`{summary}")
+    if unable_to_check:
+        lines.extend(
+            [
+                "",
+                "**Premises the coordinator could not verify:**",
+                "",
+            ]
+        )
+        for premise in unable_to_check:
+            target = premise.file + (f":{premise.pattern}" if premise.pattern else "")
+            lines.append(f"- `{target}` — unable to check: {premise.reason}")
     lines.extend(
         [
             "",
