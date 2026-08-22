@@ -1,0 +1,107 @@
+schema_version: 2
+run_id: 6d7038281dbf
+authoritative_run_record: .forge/audits/runs/6d7038281dbf.json
+generated_at: '2026-08-22T07:33:39.266352+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.008418750000000001
+story:
+  slug: issue-2670
+  name: A forge bug observed in a consuming project must be re-created by hand in
+    the target repository, without its evidence
+  github_issue: 2670
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+- config
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/main.py
+- src/theforge/cli/report.py
+- src/theforge/reporting/__init__.py
+- src/theforge/reporting/evidence.py
+- src/theforge/reporting/render.py
+- src/theforge/reporting/target_gate.py
+- tests/test_cli_report.py
+- tests/test_reporting_evidence.py
+- tests/test_reporting_render.py
+- tests/test_reporting_target_gate.py
+what_changed:
+  description: This run added a `forge report` command that files a bug from the observing
+    project into a target repository while packaging run evidence, captured runtime/config
+    context, and explicit missing-artifact reporting into the created issue body.
+    It also made filing conditional on evaluating the created body against the target
+    repository's shape gate so the report is only submitted when its gate state is
+    known.
+  approach: The change was split into a CLI entrypoint plus reporting support modules
+    for evidence collection, issue-body rendering, and target-repository gate evaluation,
+    with documentation and focused tests around capture, rendering, CLI behavior,
+    and cross-repository gate checks.
+  files_modified: *id002
+what_was_learned:
+- claim: For cross-repository filing flows, gate validation has to be executed against
+    the target repository's pinned gate revision, not the observing checkout's local
+    gate, because a local pass does not establish the filed issue's actual gate state.
+  evidence:
+  - type: review_finding
+    finding_id: efe7cd5e209c5ef4
+    description: The review flagged as a P1 that the command was checking the observing
+      checkout's shape gate and still filing even while acknowledging the target repository
+      could use a different release, directly showing that local validation is insufficient
+      for cross-repository reporting.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 requested changes specifically because the implementation
+      evaluated only the observing checkout's gate before filing, demonstrating that
+      future work of this kind must treat target-side gate resolution as a correctness
+      requirement rather than an optional check.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved only after the command was changed to gate the body
+      with the target repository's pinned shape-gate revision, confirming that matching
+      the target's gate identity is the condition that makes the flow acceptable.
+  - type: file
+    path: src/theforge/reporting/target_gate.py
+    description: A dedicated target-gate module was introduced, which is evidence
+      that cross-repository reporting required separate target-aware gate resolution
+      and evaluation logic rather than reusing whatever gate context existed in the
+      observing checkout.
+learned_patterns:
+- target-gate-before-file
+- evidence-bundle-from-observer
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: efe7cd5e209c5ef4
+    severity: P1
+    file: src/theforge/cli/report.py
+    description: The command evaluates and reports the observing checkout's shape
+      gate, then continues to file the issue while explicitly stating that the target
+      repository may run a different gate release.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop centered on repository-boundary correctness: evidence capture
+    was acceptable once implemented, but filing was blocked until gate evaluation
+    matched the target repository rather than the observing checkout.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 17.670403399999998
+  dominant_difficulty: Preserving the observed run's identity and evidence while also
+    proving the report body's gate state in a different repository context.
