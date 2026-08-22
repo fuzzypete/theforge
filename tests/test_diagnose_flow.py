@@ -2971,6 +2971,92 @@ class TestAttachedEvidenceFlow:
         assert removing[:12] in result.message
         assert not mock_post.called
 
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_attached_evidence_reports_skipped_premise_when_affected_path_is_only_prose(
+        self, mock_agent, mock_fetch, mock_post, mock_edit, tmp_path
+    ):
+        """Seam test: attached-evidence diagnoses with prose-only affected paths
+        must still surface that premise verification was skipped."""
+        _init_repo(tmp_path)
+        config = _make_config(tmp_path)
+        body, comments = _attached_report(
+            artifacts=(("run_log", "run.log", "reservation helper dropped one slot\n"),),
+        )
+        mock_fetch.return_value = {
+            "number": 2574,
+            "title": "slot miscount",
+            "body": body,
+            "state": "OPEN",
+            "comments": comments,
+        }
+        mock_agent.return_value = _fake_agent_result(
+            """```yaml
+observed_symptom: Slot count is wrong
+reproduction_or_evidence: Attached run record shows the mismatch
+hypotheses:
+  - statement: Reservation logic is off by one
+    status: confirmed
+    evidence: The attached audit shows one fewer slot than requested
+    claim_verification:
+      verification_type: attached_evidence
+      detail: Verified against the attached run record.
+confirmed_cause: Reservation loop drops the last slot
+confirmed_cause_verification:
+  verification_type: attached_evidence
+  detail: Verified against the attached run record.
+affected_code_path: >-
+  The reservation helper in the slot allocator computes one fewer slot
+  than requested.
+fix_success_criterion: >-
+  Attached evidence and follow-up reproduction both show the requested
+  slot count.
+```"""
+        )
+        mock_post.return_value = "https://github.com/o/r/issues/2574#issuecomment-1"
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=2574,
+            config=config,
+            project_root=tmp_path,
+            output_destination="comment",
+        )
+
+        assert result.success, result.message
+        assert result.state.phase == DiagnosePhase.DONE
+        assert mock_post.called
+        posted_body = mock_post.call_args[0][1]
+        assert "### Premise verification" in posted_body
+        assert "premise check skipped" in posted_body
+        assert (
+            "did not record any premise anchors or file-like affected-code references"
+            in posted_body
+        )
+        audit = yaml.safe_load(
+            (
+                tmp_path / ".forge" / "audits" / f"diagnose-issue-2574-{result.state.run_id}.yaml"
+            ).read_text()
+        )
+        assert audit["unchecked_premises"] == [
+            {
+                "file": (
+                    "The reservation helper in the slot allocator computes one fewer "
+                    "slot than requested."
+                ),
+                "pattern": "",
+                "reason": (
+                    "premise check skipped: diagnosis is anchored to attached "
+                    "cross-project evidence, so this checkout cannot verify the "
+                    "cited code safely; the diagnosis did not record any premise "
+                    "anchors or file-like affected-code references"
+                ),
+            }
+        ]
+
     @patch("theforge.coordinator.diagnose_flow._emit_dry_run")
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")

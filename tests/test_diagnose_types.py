@@ -282,6 +282,10 @@ class TestClaimVerification:
         assert verification.verification_type == "unknown"
         assert verification.detail == "checked somewhere"
 
+    def test_unrecognized_type_does_not_count_as_recorded_verification(self):
+        verification = ClaimVerification("filesystem", "checked somewhere")
+        assert not verification.has_recorded_verification_type()
+
 
 class TestSymptomScopeCoverage:
     def test_non_categorical_record_is_complete_by_default(self):
@@ -372,6 +376,30 @@ class TestDiagnosisArtifact:
 
     def test_is_complete_false_when_confirmed_cause_verification_missing(self):
         artifact = self._make(confirmed_cause_verification=ClaimVerification())
+        assert not artifact.is_complete()
+        assert artifact.missing_required_fields() == ("confirmed_cause_verification",)
+
+    def test_is_complete_false_when_claim_verification_type_is_unrecognized(self):
+        artifact = self._make(
+            hypotheses=(
+                Hypothesis(
+                    "z",
+                    "confirmed",
+                    "e",
+                    claim_verification=ClaimVerification("filesystem", "checked somewhere"),
+                ),
+            ),
+            confirmed_cause_verification=ClaimVerification(
+                "source", "Checked against the target repository source."
+            ),
+        )
+        assert not artifact.is_complete()
+        assert artifact.missing_required_fields() == ("hypotheses[0].claim_verification",)
+
+    def test_is_complete_false_when_confirmed_cause_verification_type_is_unrecognized(self):
+        artifact = self._make(
+            confirmed_cause_verification=ClaimVerification("filesystem", "checked somewhere")
+        )
         assert not artifact.is_complete()
         assert artifact.missing_required_fields() == ("confirmed_cause_verification",)
 

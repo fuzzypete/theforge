@@ -466,6 +466,18 @@ def _unchecked_attached_premises(artifact: DiagnosisArtifact) -> tuple[Unchecked
             continue
         seen.add(key)
         unchecked.append(UncheckedPremise(file=path, pattern=symbol, reason=reason))
+    if not unchecked:
+        unchecked.append(
+            UncheckedPremise(
+                file=artifact.affected_code_path.strip()
+                or "affected code path described only in prose",
+                pattern="",
+                reason=(
+                    f"{reason}; the diagnosis did not record any premise anchors or "
+                    "file-like affected-code references"
+                ),
+            )
+        )
     return tuple(unchecked)
 
 

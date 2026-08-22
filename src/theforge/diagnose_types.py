@@ -110,6 +110,9 @@ class ClaimVerification:
     def is_meaningful(self) -> bool:
         return self.verification_type != "unknown" or bool(self.detail)
 
+    def has_recorded_verification_type(self) -> bool:
+        return self.verification_type != "unknown"
+
 
 @dataclass(frozen=True)
 class Hypothesis:
@@ -319,12 +322,15 @@ class DiagnosisArtifact:
         for idx, hypothesis in enumerate(self.hypotheses):
             if not (hypothesis.statement.strip() or hypothesis.evidence.strip()):
                 continue
-            if not hypothesis.claim_verification.is_meaningful():
+            if not hypothesis.claim_verification.has_recorded_verification_type():
                 missing.append(f"hypotheses[{idx}].claim_verification")
         return tuple(missing)
 
     def _confirmed_cause_missing_verification(self) -> tuple[str, ...]:
-        if self.confirmed_cause.strip() and not self.confirmed_cause_verification.is_meaningful():
+        if (
+            self.confirmed_cause.strip()
+            and not self.confirmed_cause_verification.has_recorded_verification_type()
+        ):
             return ("confirmed_cause_verification",)
         return ()
 
