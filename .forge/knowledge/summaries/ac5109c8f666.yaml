@@ -1,0 +1,209 @@
+schema_version: 2
+run_id: ac5109c8f666
+authoritative_run_record: .forge/audits/runs/ac5109c8f666.json
+generated_at: '2026-08-22T06:50:13.095807+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01542875
+story:
+  slug: issue-2669
+  name: A completed run cannot be asked what configuration it resolved, so a later
+    reader answers from its own configuration instead
+  github_issue: 2669
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- config
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/explain.py
+- src/theforge/cli/overrides.py
+- src/theforge/cli/run.py
+- src/theforge/cli/shared.py
+- src/theforge/cli/sprint.py
+- src/theforge/config/load.py
+- src/theforge/config/provenance.py
+- src/theforge/config/secrets.py
+- src/theforge/coordinator/audit.py
+- src/theforge/coordinator/audit_read_model.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/engine.py
+- src/theforge/coordinator/state.py
+- tests/fixtures/audit_record_schema_v35.json
+- tests/fixtures/audit_record_schema_v36.json
+- tests/test_cli_commands.py
+- tests/test_cli_explain.py
+- tests/test_config_composed_phase_refs.py
+- tests/test_config_provenance.py
+- tests/test_coord_adaptive_assignment_runtime.py
+- tests/test_coord_policy_provenance_seam.py
+what_changed:
+  description: Completed runs now persist the forge version and the resolved runtime
+    configuration they actually used, and the explain/read path answers configuration
+    queries from that recorded snapshot or reports that no record exists for older
+    runs.
+  approach: The change threaded resolved configuration provenance through load and
+    runtime mutation paths into the audit record, then added a read model that interprets
+    recorded values against the reader's schema while preserving absent and uninterpreted
+    cases.
+  files_modified: *id002
+what_was_learned:
+- claim: When recording configuration for later cross-version reads, list-indexed
+    paths need schema-aware interpretation; otherwise even same-version readers misclassify
+    valid entries as uninterpreted.
+  evidence:
+  - type: review_finding
+    finding_id: 88fca90b5361e4de
+    description: Review reported that keys like review_pool[0].model and agents[0].model
+      were returned as uninterpreted despite being defined by the current ForgeConfig
+      shape, showing that flat-path readers must explicitly understand indexed list
+      traversal.
+  - type: review_finding
+    finding_id: bb78851c9408572d
+    description: 'A second P1 on known list fields confirmed the failure mode was
+      structural rather than field-specific: paths inside list-typed config sections
+      need per-segment type interpretation, not generic dotted-key handling.'
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval noted the indexed-list lookup findings were fixed
+      and that remaining uninterpreted keys were of a different class, demonstrating
+      that schema-aware list handling was the necessary correction.
+- claim: If runtime configuration can change after initial load, audit capture must
+    read from the final coordinator config at the production seam; capturing an earlier
+    config object leaves persisted provenance stale.
+  evidence:
+  - type: review_finding
+    finding_id: 7608cd673c2f894f
+    description: Review found that after preflight adaptive routing changed config
+      values, the audit still emitted load-time values, showing that provenance capture
+      tied to pre-mutation state is not reliable.
+  - type: review_finding
+    finding_id: ccbdcb28042a292d
+    description: A later P1 showed the same stale-value problem persisted on the normal
+      forge run path, demonstrating that the fix had to be applied where completed-run
+      audit records are produced, not only in one helper.
+  - type: review_cycle
+    cycle: '5'
+    description: Final approval states the coordinator now attaches its final runtime
+      config to the result and audit generation consumes that value, evidencing that
+      the durable fix was to source capture from final runtime state.
+- claim: Flattening resolved configuration into dotted leaf paths is not a lossless
+    encoding when map keys may contain dots or brackets, so future work on recorded-config
+    formats must treat path representation as an actual data-model decision.
+  evidence:
+  - type: review_finding
+    finding_id: 58516edc2c801b57
+    description: Review identified concrete recorded keys whose original segments
+      cannot be reconstructed because the keys themselves contain path syntax characters,
+      showing that a flat dotted-path snapshot can destroy structure.
+- claim: Recording full resolved-config snapshots inside per-run audit records can
+    become a material storage and rewrite cost, especially when audits are repeatedly
+    reserialized.
+  evidence:
+  - type: review_finding
+    finding_id: e235d41bae926908
+    description: Review quantified the configuration block at roughly 2250 entries
+      and about 214 KB for this repository, and noted it is rewritten into per-run
+      audit storage on repeated writes, demonstrating that snapshot size is a first-order
+      concern.
+- claim: Audit-record construction should keep expensive or failure-prone configuration
+    walks behind the same degradation guards as the rest of configuration identity
+    capture; otherwise provenance capture can turn a partial-data case into a hard
+    failure.
+  evidence:
+  - type: review_finding
+    finding_id: 329ef44554f9f392
+    description: Review observed that the code recomputed the flattened snapshot before
+      the existing guard, so traversal failures escaped instead of degrading to a
+      partial result, showing that guard placement matters as much as guard existence.
+- claim: Command defaults that behave like overrides at runtime need distinct provenance
+    treatment from explicit CLI flags, or recorded source metadata will overstate
+    operator intent.
+  evidence:
+  - type: review_finding
+    finding_id: 5d1f9b7f95d2c1bb
+    description: Review found query-mode sprint runs always recorded sprint.max_parallel
+      as a cli override even when the value came from an implicit mode default, demonstrating
+      that provenance logic must distinguish synthesized defaults from user-supplied
+      flags.
+learned_patterns:
+- schema-aware-path-interpretation
+- capture-final-runtime-config
+- lossless-provenance-encoding
+- guarded-audit-capture
+review_insights:
+  recurring_findings:
+  - finding_id: e235d41bae926908
+    severity: P2
+    file: src/theforge/coordinator/audit.py
+    description: "The configuration block now embeds one entry per resolved leaf path\
+      \ \u2014 2250 entries, roughly 214 KB of JSON for this repository's own forge.yaml\
+      \ \u2014 in every per-run audit record, which is also re-serialised on each\
+      \ repeated write of a story's audit and stored again in the substrate."
+    cycles_seen: 3
+    disposition: unresolved
+  resolved_findings:
+  - finding_id: bb78851c9408572d
+    severity: P1
+    file: src/theforge/coordinator/audit_read_model.py
+    description: When a recorded configuration key points inside a known list field
+      such as review_pool[0].model, the lookup reports the value as uninterpreted
+      even though this ForgeConfig version defines review_pool as a list of ModelProfile
+      entries.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 88fca90b5361e4de
+    severity: P1
+    file: src/theforge/coordinator/audit_read_model.py
+    description: "Looking up a recorded configuration key that indexes into a list-typed\
+      \ field \u2014 for example review_pool[0].model, agents[0].model, or conventions_soft[0]\
+      \ \u2014 reports the value as \"uninterpreted by this forge version\" even when\
+      \ the record was written by the very same forge version whose config shape defines\
+      \ that field (measured against a freshly loaded forge.yaml: 1346 of 2250 recorded\
+      \ keys classify as uninterpreted, including all review_pool, agents, and models\
+      \ entries)."
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 7608cd673c2f894f
+    severity: P1
+    file: src/theforge/coordinator/audit.py
+    description: When preflight adaptive routing changes the runtime configuration,
+      the audit record's recorded_values can still report the load-time value, such
+      as dev_profile.model as sonnet after the config handed to audit generation has
+      been changed to opus.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: ccbdcb28042a292d
+    severity: P1
+    file: src/theforge/cli/run.py
+    description: When forge run performs preflight adaptive routing that changes the
+      runtime configuration, the completed run audit is still emitted with the pre-run
+      config object, so recorded_values can report the load-time dev_profile.model
+      instead of the model the coordinator used.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced provenance drift between load-time config,
+    runtime-mutated config, and how recorded paths were later reinterpreted.
+complexity_signal:
+  actual_iterations: 5
+  review_cycles: 5
+  plan_regenerations: false
+  cost_usd: 46.17715985
+  dominant_difficulty: Preserving configuration provenance accurately across write-time
+    resolution, runtime mutation, and read-time interpretation by different forge
+    versions.
