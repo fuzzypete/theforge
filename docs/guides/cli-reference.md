@@ -868,6 +868,66 @@ Optional flags record provenance: `--from-sprint`, `--issue`, `--run-id`.
 
 ---
 
+## `forge triage`
+
+Propose a disposition for every finding in a backlog report. A fresh-context
+agent reads one evidence packet per finding — the finding body, the report's
+deterministic staleness evidence, and whatever disposition history the audit
+substrate already holds for that finding — and proposes exactly one value from
+a fixed taxonomy.
+
+```bash
+forge triage --report .forge/backlog-report.json
+forge triage --report backlog.json --current-milestone v0.12.0
+forge triage --report backlog.json --no-audit   # print without recording the run
+```
+
+The taxonomy and its required payload:
+
+| disposition | payload |
+| --- | --- |
+| `fix_now` | `target_milestone` — must be the current milestone |
+| `fix_later` | `target_milestone` — a named milestone, or the standing `Hygiene` pool |
+| `punt` | `punt_reason_code` — one of `verified-stale`, `superseded`, `not-reproducible`, `duplicate`, `out-of-scope-by-policy` |
+| `needs_verification` | none |
+
+Sample output:
+
+```
+#1312  PROPOSE punt (reason: verified-stale)
+       evidence: report shows cited symbol absent from current tree
+       cites: symbol-absent, disposition-history
+       cost: $0.0123 (provider_reported)
+
+TOTAL SPEND: $0.0123 (provider_reported)
+Advisory only — no issue was modified.
+```
+
+Properties worth knowing before you rely on it:
+
+- **Advisory only.** The command performs no tracker writes of any kind — no
+  edit, comment, label, or close, on any issue. Applying a proposal is a
+  separate, operator-driven step.
+- **Grounded or rejected.** A proposal must cite evidence ids present in its own
+  packet. Ungrounded or schema-invalid output is rejected and retried once; if it
+  is still invalid the finding resolves to `needs_verification` with the
+  validation errors recorded — never guessed into a disposition.
+- **No evidence means no discard.** A finding whose packet holds nothing
+  checkable is proposed `needs_verification` deterministically, without invoking
+  an agent (and so at zero cost). Absence of evidence is never evidence for a
+  punt.
+- **Spend is visible.** Per-finding and total cost are printed and written to the
+  audit substrate (`triage_proposal_events` / `triage_proposal_runs`). An empty
+  backlog invokes no agent and records an explicit $0.00 run.
+- **`fix_now` needs a milestone.** Without `--current-milestone` or a
+  `current_milestone` in the report, `fix_now` is not offered to the agent and is
+  rejected by the validator — an unnameable target is not a checkable proposal.
+
+If `--report` names a file that does not exist or does not match the report
+contract, the command fails with an operator-legible error and invokes nothing.
+
+---
+
 ## `forge rca`
 
 Regenerate a sprint's root-cause-analysis artifact (`sprint-rca.yaml`) for a

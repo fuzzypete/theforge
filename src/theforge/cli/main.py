@@ -32,6 +32,7 @@ from theforge.cli import (
     status,
     telemetry,
     todo,
+    triage,
 )
 from theforge.cli import audits as audits_cmd
 from theforge.cli.init_commands import cmd_init, cmd_secrets_init, cmd_version
@@ -97,6 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     groom.register_parser(subparsers)
     migrate_profiles.register_parser(subparsers)
     profiles.register_parser(subparsers)
+    triage.register_parser(subparsers)
     status.register_parsers(subparsers)
 
     return parser
@@ -143,6 +145,7 @@ def main() -> None:
         "groom": groom.cmd_groom,
         "migrate-profiles": migrate_profiles.cmd_migrate_profiles,
         "profiles": profiles.cmd_profiles,
+        "triage": triage.cmd_triage,
         "status": status.cmd_status,
         "logs": status.cmd_logs,
         "stop": status.cmd_stop,

@@ -106,7 +106,22 @@ AuditConnection = sqlite3.Connection
 # makes "what did this module cost" a join instead of a scan that deserializes
 # every ``raw_json``. A version-8 substrate is re-derived on open so the table
 # covers already-indexed history wherever the record carries the block.
-SUBSTRATE_SCHEMA_VERSION = 9
+#
+# Bumped to 10 by #2228: ``forge triage`` proposes a disposition per backlog
+# finding, and a proposal that leaves no row is not auditable — the operator
+# cannot see what was proposed, what it cost, or what the same finding was
+# proposed last time. ``triage_proposal_runs`` and ``triage_proposal_events``
+# index one row per run and per finding-proposal, which is also what lets a
+# later packet carry this finding's own disposition history.
+#
+# Unlike versions 5-9 this bump implies NO re-index pass: both tables are
+# populated by the triage command as it runs, not derived from fields inside
+# existing ``audit_records.raw_json``, so there is nothing in already-indexed
+# history to re-derive. Opening an older substrate creates the empty tables and
+# stops there. The per-record shape is untouched, so no
+# ``CURRENT_RECORD_SCHEMA_VERSION`` bump and no ``MIGRATION_HELPERS`` entry is
+# implied either.
+SUBSTRATE_SCHEMA_VERSION = 10
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -390,6 +405,41 @@ CREATE TABLE IF NOT EXISTS audit_changed_files (
     PRIMARY KEY (run_id, path)
 );
 CREATE INDEX IF NOT EXISTS idx_audit_changed_files_path ON audit_changed_files(path);
+CREATE TABLE IF NOT EXISTS triage_proposal_runs (
+    run_row_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    triage_run_id TEXT NOT NULL,
+    findings_count INTEGER NOT NULL,
+    total_cost_usd REAL,
+    cost_provenance TEXT,
+    report_path TEXT,
+    emitted_at TEXT NOT NULL,
+    raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_triage_proposal_runs_run
+    ON triage_proposal_runs(triage_run_id);
+CREATE TABLE IF NOT EXISTS triage_proposal_events (
+    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+    triage_run_id TEXT,
+    finding_id TEXT NOT NULL,
+    issue_ref TEXT,
+    packet_hash TEXT,
+    disposition TEXT NOT NULL,
+    target_milestone TEXT,
+    punt_reason_code TEXT,
+    evidence_refs TEXT,
+    validation_errors TEXT,
+    retry_count INTEGER NOT NULL DEFAULT 0,
+    cost_usd REAL,
+    cost_provenance TEXT,
+    emitted_at TEXT NOT NULL,
+    raw_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_triage_proposal_events_finding
+    ON triage_proposal_events(finding_id);
+CREATE INDEX IF NOT EXISTS idx_triage_proposal_events_disposition
+    ON triage_proposal_events(disposition);
+CREATE INDEX IF NOT EXISTS idx_triage_proposal_events_run
+    ON triage_proposal_events(triage_run_id);
 """
 
 
@@ -2751,6 +2801,109 @@ def record_inline_remediation_event(project_root: Path, event: dict) -> int:
                 1 if event.get("succeeded") else 0,
                 cost_usd,
                 duration_seconds,
+                emitted_at,
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def _optional_float(value: object) -> float | None:
+    """Coerce a cost/duration field to float, or None when it is not a number.
+
+    An unmeasured cost is ``None`` here, never ``0.0``: "nothing was spent" and
+    "nobody knows what was spent" are different facts and the substrate has to
+    keep them apart (#1596).
+    """
+    if value is None:
+        return None
+    try:
+        return float(value)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def record_triage_proposal_event(project_root: Path, event: dict) -> int:
+    """Insert one ``forge triage`` per-finding proposal row.
+
+    Each row is a single finding's proposed disposition with the payload the
+    taxonomy required, the packet hash it was proposed from, the evidence ids it
+    cited, any validation errors that forced the ``needs_verification``
+    fallback, the retry count, and what the proposal cost. Indexing
+    ``finding_id`` is what makes a finding's disposition history a lookup rather
+    than a scan, so a later run's packet can include what was proposed before.
+
+    Required keys: ``finding_id``, ``disposition``. Returns the inserted row's
+    ``event_id``. Raises :class:`SubstrateError` on missing required keys or I/O
+    failure; the triage command treats audit failure as reportable, not fatal.
+    """
+    required = {"finding_id", "disposition"}
+    missing = required - set(event)
+    if missing:
+        raise SubstrateError(f"triage proposal event missing required keys: {sorted(missing)}")
+    raw_json = _canonical_json(event)
+    emitted_at = event.get("emitted_at") or _now_iso()
+    conn = create_or_open(project_root)
+    try:
+        cur = conn.execute(
+            "INSERT INTO triage_proposal_events "
+            "(triage_run_id, finding_id, issue_ref, packet_hash, disposition, "
+            "target_milestone, punt_reason_code, evidence_refs, validation_errors, "
+            "retry_count, cost_usd, cost_provenance, emitted_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                event.get("triage_run_id"),
+                str(event["finding_id"]),
+                event.get("issue_ref"),
+                event.get("packet_hash"),
+                str(event["disposition"]),
+                event.get("target_milestone"),
+                event.get("punt_reason_code"),
+                _canonical_json(list(event.get("evidence_refs") or [])),
+                _canonical_json(list(event.get("validation_errors") or [])),
+                int(event.get("retry_count") or 0),
+                _optional_float(event.get("cost_usd")),
+                event.get("cost_provenance"),
+                emitted_at,
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def record_triage_proposal_run(project_root: Path, summary: dict) -> int:
+    """Insert one ``forge triage`` proposal-run summary row.
+
+    Written for every run including the empty-backlog one, which records an
+    explicit zero cost rather than nothing at all: "the backlog was empty and
+    this run spent $0.00" is an auditable fact, and its absence would be
+    indistinguishable from a run that never happened.
+
+    Required key: ``triage_run_id``. Returns the inserted row's ``run_row_id``.
+    """
+    if "triage_run_id" not in summary:
+        raise SubstrateError("triage proposal run summary missing required key: triage_run_id")
+    raw_json = _canonical_json(summary)
+    emitted_at = summary.get("emitted_at") or _now_iso()
+    conn = create_or_open(project_root)
+    try:
+        cur = conn.execute(
+            "INSERT INTO triage_proposal_runs "
+            "(triage_run_id, findings_count, total_cost_usd, cost_provenance, "
+            "report_path, emitted_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (
+                str(summary["triage_run_id"]),
+                int(summary.get("findings_count") or 0),
+                _optional_float(summary.get("total_cost_usd")),
+                summary.get("cost_provenance"),
+                summary.get("report_path"),
                 emitted_at,
                 raw_json,
             ),
