@@ -532,6 +532,40 @@ def _print_block(block: dict) -> int:
     return 0
 
 
+def _format_config_value(value: object) -> str:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True)
+
+
+def _config_lookup_label(record: dict, fallback: str) -> str:
+    run_id = record.get("run_id")
+    return str(run_id) if isinstance(run_id, str) and run_id else fallback
+
+
+def _print_recorded_config_value(record: dict, *, key: str, fallback_label: str) -> int:
+    lookup = audit_substrate.lookup_recorded_configuration_value(record, key)
+    run_label = _config_lookup_label(record, fallback_label)
+    forge_version = lookup.get("forge_version") or record.get("forge_version") or "unknown"
+    prefix = f"{run_label}  forge v{forge_version}"
+    status = lookup.get("status")
+    if status == "absent":
+        print(f"{prefix}  no configuration record for this run (predates capture)")
+        return 0
+    if status == "missing":
+        print(f"{prefix}  {key} was not recorded in this run's resolved configuration")
+        return 1
+    if status == "uninterpreted":
+        print(
+            f"{prefix}  {key} = {_format_config_value(lookup.get('value'))}  "
+            f"(source: {lookup.get('source') or '?'}, uninterpreted by this forge version)"
+        )
+        return 0
+    print(
+        f"{prefix}  {key} = {_format_config_value(lookup.get('value'))}  "
+        f"(source: {lookup.get('source') or '?'})"
+    )
+    return 0
+
+
 def _explain_from_record(record: dict, label: str) -> int:
     """Render the routing_decision from a loaded audit record.
 
@@ -566,6 +600,7 @@ def _explain_from_record(record: dict, label: str) -> int:
 def cmd_explain(args: object) -> int:
     """Render the routing_decision block for a story, run, or per-run file."""
     file_arg = getattr(args, "file", None)
+    config_key = getattr(args, "config_key", None)
     if file_arg:
         path = Path(file_arg).resolve()
         if not path.exists():
@@ -579,6 +614,11 @@ def cmd_explain(args: object) -> int:
         if not isinstance(record, dict):
             print(f"[forge] audit file {path} is not a JSON object.", file=sys.stderr)
             return 1
+        version = record.get("schema_version")
+        if isinstance(version, int):
+            record = audit_substrate._migrate_record(record, from_version=version)
+        if config_key:
+            return _print_recorded_config_value(record, key=config_key, fallback_label=path.name)
         return _explain_from_record(record, path.name)
 
     config_arg = getattr(args, "config", None)
@@ -623,6 +663,8 @@ def cmd_explain(args: object) -> int:
     if record is None:
         print(f"[forge] no audit record found for {label}.", file=sys.stderr)
         return 1
+    if config_key:
+        return _print_recorded_config_value(record, key=config_key, fallback_label=label)
     return _explain_from_record(record, label)
 
 
@@ -660,4 +702,11 @@ def register_parser(subparsers: object) -> None:
     parser.add_argument(
         "--config",
         help="Path to forge.yaml (default: auto-detect)",
+    )
+    parser.add_argument(
+        "--config-key",
+        help=(
+            "Recorded resolved-config key to read from the run record "
+            "(e.g. knowledge.prior_run_context)"
+        ),
     )

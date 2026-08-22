@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import sys
+from dataclasses import replace
 from pathlib import Path
 
 from theforge.cli.overrides import apply_base_branch_override
 from theforge.cli.shared import _find_config, load_config_checked
 from theforge.config import load_config
+from theforge.config.provenance import VALUE_SOURCE_CLI_OVERRIDE, refresh_provenance
 from theforge.coordinator.util import set_log_level as coordinator_set_log_level
 from theforge.runners import LogLevel
 from theforge.runners import set_log_level as runner_set_log_level
@@ -1347,10 +1349,15 @@ def _run_query_mode(
     # See the manifest-mode comment: absence of a completion is not completion.
     outcome = "failed"
     cause: str | None = _UNKNOWN_END_CAUSE
+    runtime_config = refresh_provenance(
+        replace(config, sprint=replace(config.sprint, max_parallel=effective_max_parallel)),
+        source_updates={"sprint.max_parallel": VALUE_SOURCE_CLI_OVERRIDE},
+    )
+
     try:
         result = run_sprint(
             SprintRunContext.for_sprint(
-                config,
+                runtime_config,
                 resolved,
                 auto_merge=auto_merge,
                 interactive=interactive,

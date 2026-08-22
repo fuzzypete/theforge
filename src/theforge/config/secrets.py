@@ -24,13 +24,16 @@ def _resolve_secret(key: str, secrets: dict[str, str]) -> str | None:
 
 def _parse_notifications(
     notif_data: dict[str, Any], secrets: dict[str, str]
-) -> NotificationConfig:
+) -> tuple[NotificationConfig, dict[str, str]]:
     """Parse notifications section from raw YAML dict."""
+    environment_sources: dict[str, str] = {}
     notif_backend = notif_data.get("backend", "none")
     ntfy_config: NtfyConfig | None = None
     if "ntfy" in notif_data:
         ntfy_data = notif_data["ntfy"]
         ntfy_url = ntfy_data.get("url") or secrets.get("NTFY_URL") or os.getenv("NTFY_URL") or ""
+        if "url" not in ntfy_data and ntfy_url:
+            environment_sources["notifications.ntfy.url"] = "environment"
         if ntfy_url:
             ntfy_config = NtfyConfig(
                 url=ntfy_url,
@@ -42,6 +45,7 @@ def _parse_notifications(
         ntfy_url = secrets.get("NTFY_URL") or os.getenv("NTFY_URL") or ""
         if ntfy_url:
             ntfy_config = NtfyConfig(url=ntfy_url, priority="high")
+            environment_sources["notifications.ntfy.url"] = "environment"
         else:
             log.warning("ntfy backend enabled but no URL configured — notifications disabled")
 
@@ -99,7 +103,7 @@ def _parse_notifications(
     else:
         backends = [BackendConfig(type="terminal")]
 
-    return NotificationConfig(
+    config = NotificationConfig(
         backend=notif_backend,
         ntfy=ntfy_config,
         slack=slack_config,
@@ -107,3 +111,8 @@ def _parse_notifications(
         human_review_timeout_seconds=_hitl_timeout,
         backends=tuple(backends),
     )
+    if environment_sources.get("notifications.ntfy.url") and config.backends:
+        for idx, backend in enumerate(config.backends):
+            if backend.type == "ntfy" and backend.url == ntfy_config.url:
+                environment_sources[f"notifications.backends[{idx}].url"] = "environment"
+    return config, environment_sources

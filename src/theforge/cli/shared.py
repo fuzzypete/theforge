@@ -23,6 +23,7 @@ from theforge.config import (
 )
 from theforge.config.auth import check_agent_auth
 from theforge.config.profiles import iter_config_profiles
+from theforge.config.provenance import VALUE_SOURCE_CLI_OVERRIDE, refresh_provenance
 from theforge.coordinator.audit import generate_audit_log
 from theforge.coordinator.audit_substrate import CURRENT_RECORD_SCHEMA_VERSION
 from theforge.coordinator.knowledge_summary_flow import maybe_generate_run_summary
@@ -820,7 +821,19 @@ def _apply_dev_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig"
         # claude CLI) would persist and dispatch would still go CLI.
         transport=None,
     )
-    return replace(config, dev_profile=new_dev)
+    updated = replace(config, dev_profile=new_dev)
+    return refresh_provenance(
+        updated,
+        source_updates={
+            "dev_profile.cli": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.provider": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.model": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.base_url": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.transport.kind": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.transport.runner": VALUE_SOURCE_CLI_OVERRIDE,
+            "dev_profile.transport.executable": VALUE_SOURCE_CLI_OVERRIDE,
+        },
+    )
 
 
 def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig":
@@ -845,4 +858,16 @@ def _apply_plan_model_override(config: "ForgeConfig", spec: str) -> "ForgeConfig
     else:
         new_plan = replace(config.plan, ref=replace(config.plan.ref, model=spec))
 
-    return replace(config, plan=new_plan, plan_model_is_default=False)
+    updated = replace(config, plan=new_plan, plan_model_is_default=False)
+    return refresh_provenance(
+        updated,
+        source_updates={
+            "plan.ref.cli": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.provider": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.model": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.transport.kind": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.transport.runner": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan.ref.transport.executable": VALUE_SOURCE_CLI_OVERRIDE,
+            "plan_model_is_default": VALUE_SOURCE_CLI_OVERRIDE,
+        },
+    )

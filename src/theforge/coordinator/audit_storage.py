@@ -120,7 +120,7 @@ SUBSTRATE_SCHEMA_VERSION = 9
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 34
+CURRENT_RECORD_SCHEMA_VERSION = 35
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -1919,6 +1919,29 @@ def _migrate_v33_to_v34(record: dict) -> dict:
     return migrated
 
 
+def _migrate_v34_to_v35(record: dict) -> dict:
+    """Backfill explicit absence for recorded config values (issue #2669).
+
+    v35 records extend ``configuration`` with a versioned ``recorded_values``
+    section containing per-key resolved values and their source labels. A v34
+    record may have the older digest-only ``configuration`` block, or no block
+    at all on older migrated history. The reader must distinguish "this run
+    predates value capture" from "this run captured values and the queried key
+    was absent", so legacy digest-only blocks are lifted to
+    ``recorded_values: None`` rather than being silently treated as an empty
+    value map.
+    """
+    configuration = record.get("configuration")
+    if not isinstance(configuration, dict):
+        return record
+    if "recorded_values" in configuration:
+        return record
+    return {
+        **record,
+        "configuration": {**configuration, "recorded_values": None},
+    }
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -1961,6 +1984,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     31: _migrate_v31_to_v32,
     32: _migrate_v32_to_v33,
     33: _migrate_v33_to_v34,
+    34: _migrate_v34_to_v35,
 }
 
 

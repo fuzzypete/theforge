@@ -373,12 +373,35 @@ def _write_run_and_substrate(project_root: Path, record: dict) -> None:
 def _story_record(run_id: str, slug: str, issue: int, started: str) -> dict:
     return {
         "schema_version": 7,
+        "forge_version": "0.15.0",
         "run_id": run_id,
         "task": {"slug": slug, "name": slug, "github_issue": issue},
         "outcome": {"success": True, "final_phase": "DONE"},
         "timing": {"started_at": started, "duration_seconds": 60.0},
         "cost": {"total_usd": 1.0},
         "totals": {"cost_usd": 1.0},
+        "routing_decision": _routing_block(),
+    }
+
+
+def _recorded_config_record(
+    *, run_id: str = "run-270", key: str, value: object, source: str
+) -> dict:
+    return {
+        "schema_version": sub.CURRENT_RECORD_SCHEMA_VERSION,
+        "forge_version": "0.15.0",
+        "run_id": run_id,
+        "configuration": {
+            "recorded_values": {
+                "format_version": 1,
+                "entries": {
+                    key: {
+                        "value": value,
+                        "source": source,
+                    }
+                },
+            }
+        },
         "routing_decision": _routing_block(),
     }
 
@@ -438,6 +461,76 @@ def test_explain_story_not_found(tmp_path: Path, capsys) -> None:
 
     assert explain.cmd_explain(_Args()) == 1
     assert "no audit record found for story issue-999" in capsys.readouterr().err
+
+
+def test_explain_config_key_from_file_uses_recorded_run_values(tmp_path: Path, capsys) -> None:
+    record = _recorded_config_record(
+        key="knowledge.prior_run_context",
+        value=False,
+        source="cli override",
+    )
+    path = tmp_path / "run-config.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    class _Args:
+        file = str(path)
+        story = None
+        run = None
+        config = None
+        config_key = "knowledge.prior_run_context"
+
+    assert explain.cmd_explain(_Args()) == 0
+    out = capsys.readouterr().out.strip()
+    assert out == (
+        "run-270  forge v0.15.0  knowledge.prior_run_context = false  (source: cli override)"
+    )
+
+
+def test_explain_config_key_reports_predates_capture(tmp_path: Path, capsys) -> None:
+    record = {
+        "schema_version": 34,
+        "forge_version": "0.12.1",
+        "run_id": "run-old",
+        "configuration": {"resolved_sha256": "abc"},
+    }
+    path = tmp_path / "run-old.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    class _Args:
+        file = str(path)
+        story = None
+        run = None
+        config = None
+        config_key = "knowledge.prior_run_context"
+
+    assert explain.cmd_explain(_Args()) == 0
+    assert (
+        capsys.readouterr().out.strip()
+        == "run-old  forge v0.12.1  no configuration record for this run (predates capture)"
+    )
+
+
+def test_explain_config_key_reports_uninterpreted_values(tmp_path: Path, capsys) -> None:
+    record = _recorded_config_record(
+        key="future.config.flag",
+        value=True,
+        source="forge.yaml",
+    )
+    path = tmp_path / "run-future.json"
+    path.write_text(json.dumps(record), encoding="utf-8")
+
+    class _Args:
+        file = str(path)
+        story = None
+        run = None
+        config = None
+        config_key = "future.config.flag"
+
+    assert explain.cmd_explain(_Args()) == 0
+    assert (
+        capsys.readouterr().out.strip() == "run-270  forge v0.15.0  future.config.flag = true  "
+        "(source: forge.yaml, uninterpreted by this forge version)"
+    )
 
 
 def test_explain_story_does_not_rebuild_missing_substrate(tmp_path: Path, capsys) -> None:

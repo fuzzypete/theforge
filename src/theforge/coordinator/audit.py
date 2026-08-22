@@ -1275,6 +1275,8 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
     provenance = getattr(config, "provenance", None)
     source_path = getattr(provenance, "source_path", None)
     source_sha256 = getattr(provenance, "source_sha256", None)
+    resolved_values = getattr(provenance, "resolved_values", None)
+    resolved_value_sources = getattr(provenance, "resolved_value_sources", None)
 
     # Digested from the config object the coordinator actually held, not from the
     # load-time value cached on the provenance: CLI overrides (--dev-model,
@@ -1300,6 +1302,21 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
     if source_sha256 is not None and finish_sha256 is not None:
         changed_during_run = finish_sha256 != source_sha256
 
+    recorded_values: dict[str, object] | None = None
+    if isinstance(resolved_values, dict) and isinstance(resolved_value_sources, dict):
+        recorded_values = {
+            "format_version": config_provenance.RESOLVED_CONFIG_RECORD_FORMAT_VERSION,
+            "entries": {
+                path: {
+                    "value": value,
+                    "source": resolved_value_sources.get(
+                        path, config_provenance.VALUE_SOURCE_DERIVED
+                    ),
+                }
+                for path, value in sorted(resolved_values.items())
+            },
+        }
+
     return {
         "source_path": source_path,
         "source_sha256": source_sha256,
@@ -1307,6 +1324,7 @@ def _build_configuration_block(config: ForgeConfig) -> dict:
         "source_sha256_at_finish": finish_sha256,
         "changed_during_run": changed_during_run,
         "finish_read_error": finish_read_error,
+        "recorded_values": recorded_values,
     }
 
 

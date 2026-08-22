@@ -20,6 +20,7 @@ from theforge.cli.shared import (
     load_config_checked,
 )
 from theforge.config import load_config
+from theforge.config.provenance import VALUE_SOURCE_CLI_OVERRIDE, refresh_provenance
 from theforge.coordinator.engine import (
     run_from_review,
     run_task,
@@ -90,7 +91,13 @@ def cmd_run(args: "argparse.Namespace") -> int:
             return 1
         trimmed_pool = config.review_pool[:n]
         new_synth = None if len(trimmed_pool) <= 1 else config.synthesis_profile
-        config = dataclasses.replace(config, review_pool=trimmed_pool, synthesis_profile=new_synth)
+        config = refresh_provenance(
+            dataclasses.replace(config, review_pool=trimmed_pool, synthesis_profile=new_synth),
+            source_updates={
+                "review_pool": VALUE_SOURCE_CLI_OVERRIDE,
+                "synthesis_profile": VALUE_SOURCE_CLI_OVERRIDE,
+            },
+        )
 
     # --max-cycles N: cap review cycles for this run (never mutates forge.yaml)
     if getattr(args, "max_cycles", None) is not None:
@@ -99,7 +106,10 @@ def cmd_run(args: "argparse.Namespace") -> int:
             print(f"--max-cycles must be >= 1, got {n}", file=sys.stderr)
             return 1
         new_retry = dataclasses.replace(config.retry, max_review_cycles=n)
-        config = dataclasses.replace(config, retry=new_retry)
+        config = refresh_provenance(
+            dataclasses.replace(config, retry=new_retry),
+            source_updates={"retry.max_review_cycles": VALUE_SOURCE_CLI_OVERRIDE},
+        )
 
     task = _build_task(story_path, slug=args.slug)
 
