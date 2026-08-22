@@ -1311,3 +1311,80 @@ def inline_remediation_rollup_by_milestone(conn: AuditConnection) -> dict[str, d
             "total_cost_usd": float(total_cost),
         }
     return out
+
+
+# ── Triage proposals (#2228) ─────────────────────────────────────────────
+
+
+def iter_triage_proposal_events(
+    conn: AuditConnection,
+    *,
+    finding_id: str | None = None,
+    triage_run_id: str | None = None,
+) -> Iterable[dict]:
+    """Yield ``forge triage`` proposal events (parsed from raw_json), oldest first."""
+    sql = "SELECT raw_json FROM triage_proposal_events"
+    clauses: list[str] = []
+    params: list[object] = []
+    if finding_id is not None:
+        clauses.append("finding_id = ?")
+        params.append(finding_id)
+    if triage_run_id is not None:
+        clauses.append("triage_run_id = ?")
+        params.append(triage_run_id)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY emitted_at ASC, event_id ASC"
+    for row in conn.execute(sql, tuple(params)):
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            yield json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+
+
+def triage_disposition_history(conn: AuditConnection, finding_id: str) -> list[dict]:
+    """Return the disposition rows recorded for ``finding_id``, oldest first.
+
+    This is what a later triage packet carries as history, so it is projected
+    from indexed columns rather than from ``raw_json``: a row that failed to
+    serialise its payload still counts as "this finding was proposed on before",
+    and that is precisely the fact a fresh proposer must not be denied.
+    """
+    rows = conn.execute(
+        "SELECT triage_run_id, disposition, target_milestone, punt_reason_code, "
+        "packet_hash, emitted_at FROM triage_proposal_events "
+        "WHERE finding_id = ? ORDER BY emitted_at ASC, event_id ASC",
+        (finding_id,),
+    ).fetchall()
+    return [
+        {
+            "triage_run_id": row[0],
+            "disposition": row[1],
+            "target_milestone": row[2],
+            "punt_reason_code": row[3],
+            "packet_hash": row[4],
+            "emitted_at": row[5],
+        }
+        for row in rows
+    ]
+
+
+def triage_proposal_run_spend(conn: AuditConnection) -> list[dict]:
+    """Return every recorded triage proposal run with its findings count and spend."""
+    rows = conn.execute(
+        "SELECT triage_run_id, findings_count, total_cost_usd, cost_provenance, "
+        "report_path, emitted_at FROM triage_proposal_runs "
+        "ORDER BY emitted_at ASC, run_row_id ASC"
+    ).fetchall()
+    return [
+        {
+            "triage_run_id": row[0],
+            "findings_count": int(row[1] or 0),
+            "total_cost_usd": row[2],
+            "cost_provenance": row[3],
+            "report_path": row[4],
+            "emitted_at": row[5],
+        }
+        for row in rows
+    ]
