@@ -40,7 +40,7 @@ def _write_fake_gh(bin_dir: Path, *, put_exit: int) -> Path:
     # body via `echo "$BODY" | gh ...` under `set -o pipefail`; if this fake exits
     # without reading stdin the writer can receive SIGPIPE and pipefail fails the
     # pipeline nondeterministically. Reading stdin to a file (PUT) or /dev/null
-    # (non-PUT) before exiting removes that race — see docs/flake-register.md #2.
+    # (non-PUT) before exiting removes that race — this was a registered flake (#1722).
     fake.write_text(
         "#!/usr/bin/env bash\n"
         f'echo "$@" >> "{log}"\n'
