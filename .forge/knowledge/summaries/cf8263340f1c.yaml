@@ -1,0 +1,120 @@
+schema_version: 2
+run_id: cf8263340f1c
+authoritative_run_record: .forge/audits/runs/cf8263340f1c.json
+generated_at: '2026-08-22T18:15:42.452575+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00892875
+story:
+  slug: issue-2228
+  name: 'forge triage: evidence-backed disposition proposals from a fixed taxonomy'
+  github_issue: 2228
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/main.py
+- src/theforge/cli/triage.py
+- src/theforge/config/__init__.py
+- src/theforge/config/defaults.py
+- src/theforge/coordinator/audit_read_model.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/triage_proposal_flow.py
+- src/theforge/task/triage_prompts.py
+- src/theforge/triage_proposal.py
+- src/theforge/triage_report.py
+- tests/test_cli_triage.py
+- tests/test_triage_proposal.py
+- tests/test_triage_proposal_flow.py
+- tests/test_triage_report.py
+what_changed:
+  description: This run added the proposal stage for `forge triage`, producing one
+    schema-constrained advisory disposition per backlog finding from a fixed taxonomy,
+    with evidence citations, audit-history input, and spend reporting. It also wired
+    the stage into the CLI and audit substrate without applying any tracker changes.
+  approach: 'The change was structured as a separate proposal flow: build an evidence
+    packet from report data and audit history, invoke a fresh-context advisory agent
+    under constrained output rules, validate both schema and grounding, fall back
+    to `needs_verification` on invalid outputs, and record proposal and cost data
+    through the audit layer.'
+  files_modified: *id002
+what_was_learned:
+- claim: For evidence-grounded advisory output, validating only citation identifiers
+    is insufficient; acceptance needs to verify that the quoted evidence text itself
+    matches the packet, or grounded-looking but unsupported claims can pass.
+  evidence:
+  - type: review_finding
+    finding_id: 47af97ad2b5b7ebc
+    description: Review found that a proposal could reference a real packet evidence
+      id while asserting unrelated text, which shows id-level grounding checks alone
+      do not enforce that the agent's rationale is actually sourced from the supplied
+      packet.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval explicitly notes verbatim quote validation as the
+      fix, demonstrating that stricter text-level grounding was the mechanism required
+      to satisfy the acceptance criterion.
+- claim: Advisory-only stages still need mechanical execution isolation before validation,
+    because schema checks happen too late to mitigate risk if the agent is launched
+    with normal checkout access and secrets.
+  evidence:
+  - type: review_finding
+    finding_id: 1df1731161b08a1c
+    description: Review showed the proposer was dispatched with the normal agent runner
+      in the project checkout with configured secrets, proving that an advisory flow
+      can still expose mutation-capable tooling before any output validation occurs.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approval cites profile sealing and secrets filtering as the
+      resolution, showing that preventing write-capable execution had to be enforced
+      mechanically at launch time rather than inferred from the advisory contract.
+learned_patterns:
+- quote-grounding-not-just-ids
+- seal-advisory-agent-runtime
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 47af97ad2b5b7ebc
+    severity: P1
+    file: src/theforge/triage_proposal.py
+    description: A proposal can cite a real packet evidence id while its evidence
+      text asserts an unrelated claim, and the parser still accepts the disposition
+      as valid.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 1df1731161b08a1c
+    severity: P1
+    file: src/theforge/coordinator/triage_proposal_flow.py
+    description: When a finding has checkable evidence, forge triage dispatches the
+      normal agent runner in the project checkout with configured secrets, so the
+      advisory stage can start CLI agents with tool access before schema validation.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'The review loop concentrated on whether the implementation''s safety properties
+    were enforced mechanically: evidence grounding had to bind to actual quoted packet
+    text, and advisory execution had to be isolated from write-capable tooling.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 30.859603099999994
+  dominant_difficulty: Turning an advisory taxonomy into something auditable and safe
+    required enforcing both grounding and non-mutation as runtime invariants, not
+    just as prompt or schema intentions.
