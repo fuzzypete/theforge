@@ -147,6 +147,30 @@ class TestBuildBacklogReport:
         assert any("changed 4 time(s)" in entry.summary for entry in finding.evidence)
         assert finding.age_days == 83
 
+    def test_marks_active_when_github_line_anchor_targets_existing_line(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def demo():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(18, "Evidence: `src/demo.py#L2`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 2,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_ACTIVE
+        assert any(
+            entry.evidence_id == "path-line:src/demo.py:2:present" for entry in finding.evidence
+        )
+        assert any(entry.evidence_id == "path:src/demo.py:churn" for entry in finding.evidence)
+
     def test_marks_stale_when_cited_file_is_absent(self, tmp_path: Path) -> None:
         report = build_backlog_report(
             [_issue(13, "Evidence: `src/missing.py`")],
@@ -161,6 +185,27 @@ class TestBuildBacklogReport:
         finding = report.findings[0]
         assert finding.verification_status == STATUS_STALE
         assert "absent from current tree" in finding.evidence[0].summary
+
+    def test_marks_stale_when_cited_line_is_beyond_end_of_file(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def demo():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(19, "Evidence: `src/demo.py:9`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_STALE
+        assert any(
+            entry.evidence_id == "path-line:src/demo.py:9:absent" for entry in finding.evidence
+        )
 
     def test_marks_stale_when_cited_symbol_is_absent(self, tmp_path: Path) -> None:
         report = build_backlog_report(
@@ -219,6 +264,48 @@ class TestBuildBacklogReport:
         assert finding.verification_status == STATUS_UNVERIFIED
         assert any("could not count churn" in entry.summary for entry in finding.evidence)
 
+    def test_marks_unverified_for_unsupported_path_anchor(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def demo():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(21, "Evidence: `src/demo.py#main`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            "could not mechanically verify cited path token src/demo.py#main" in entry.summary
+            for entry in finding.evidence
+        )
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
+    def test_marks_unverified_when_bare_filename_does_not_resolve(self, tmp_path: Path) -> None:
+        report = build_backlog_report(
+            [_issue(22, "Operators were editing a stray config.yaml during the incident.")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            "could not attribute cited filename config.yaml" in entry.summary
+            for entry in finding.evidence
+        )
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
     def test_generated_artifact_round_trips_into_the_existing_consumer(
         self, tmp_path: Path
     ) -> None:
@@ -245,6 +332,35 @@ class TestBuildBacklogReport:
             entry.evidence_id.startswith("path:src/demo.py")
             for entry in loaded.findings[0].evidence
         )
+
+    def test_generated_artifact_round_trips_when_same_path_is_cited_multiple_times(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def demo():\n    return 1\n    return 2\n", encoding="utf-8")
+        churn_calls: list[tuple[str, str]] = []
+
+        def churn_counter(_root: Path, relpath: str, created_at: str) -> int:
+            churn_calls.append((relpath, created_at))
+            return 3
+
+        report = build_backlog_report(
+            [_issue(23, "Evidence: `src/demo.py:1`, `src/demo.py:3`, and `src/demo.py`")],
+            project_root=tmp_path,
+            current_milestone="v0.12.0",
+            named_milestones=("v0.13.0",),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=churn_counter,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+        path = write_backlog_report(tmp_path, report)
+        loaded = load_backlog_report(path)
+
+        assert churn_calls == [("src/demo.py", "2026-06-01T00:00:00Z")]
+        assert [entry.evidence_id for entry in loaded.findings[0].evidence].count(
+            "path:src/demo.py:churn"
+        ) == 1
 
 
 class TestRendering:

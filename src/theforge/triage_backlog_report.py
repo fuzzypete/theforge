@@ -10,6 +10,7 @@ structured artifact the later proposal stage consumes.
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 from collections import Counter
 from dataclasses import dataclass
@@ -32,6 +33,8 @@ STATUS_UNVERIFIED = "unverified"
 _GH_TIMEOUT_SECONDS = 30
 _GIT_TIMEOUT_SECONDS = 30
 _SEARCH_TIMEOUT_SECONDS = 30
+_PATH_SUFFIXES = (".py", ".md", ".sh", ".yaml", ".yml", ".json", ".toml", ".ini", ".txt")
+_GH_LINE_ANCHOR_RE = re.compile(r"^L(?P<line>\d+)(?:-L\d+)?$")
 
 _GH_ISSUE_JQ = (
     ".[] | select(.pull_request == null) | "
@@ -185,6 +188,14 @@ class SymbolCitation:
     symbol: str
 
 
+@dataclass(frozen=True)
+class InvalidPathCitation:
+    """A path-like token that could not be attributed mechanically."""
+
+    raw: str
+    detail: str
+
+
 def _parse_iso8601(timestamp: str) -> datetime:
     text = str(timestamp or "").strip()
     if not text:
@@ -266,10 +277,21 @@ def _is_path_like(token: str) -> bool:
     text = token.strip().strip(".,:;()[]")
     if not text:
         return False
-    if "/" in text:
+    if text.startswith(("http://", "https://")):
+        return False
+    candidate = text.split("#", 1)[0]
+    if not candidate:
+        return False
+    if "/" in candidate:
         return True
-    suffixes = (".py", ".md", ".sh", ".yaml", ".yml", ".json", ".toml", ".ini", ".txt")
-    return text.endswith(suffixes)
+    return candidate.endswith(_PATH_SUFFIXES)
+
+
+def _github_line_anchor(fragment: str) -> int | None:
+    match = _GH_LINE_ANCHOR_RE.fullmatch(fragment)
+    if match is None:
+        return None
+    return int(match.group("line"))
 
 
 def _parse_path_token(token: str) -> PathCitation | None:
@@ -277,9 +299,20 @@ def _parse_path_token(token: str) -> PathCitation | None:
     if not _is_path_like(text):
         return None
     line: int | None = None
+    if "#" in text:
+        candidate_path, fragment = text.split("#", 1)
+        if not candidate_path:
+            return None
+        anchored_line = _github_line_anchor(fragment)
+        if anchored_line is None:
+            raise ValueError(f"unsupported path anchor #{fragment}")
+        text = candidate_path
+        line = anchored_line
     if ":" in text:
         candidate_path, candidate_line = text.rsplit(":", 1)
         if candidate_line.isdigit():
+            if line is not None and line != int(candidate_line):
+                raise ValueError("path citation mixes multiple line references")
             text = candidate_path
             line = int(candidate_line)
     if not text or text.startswith(("http://", "https://")):
@@ -297,30 +330,43 @@ def _is_symbol_like(token: str) -> bool:
     return "_" in token or any(char.isupper() for char in token[1:]) or len(token) >= 8
 
 
-def parse_citations(body: str) -> tuple[tuple[PathCitation, ...], tuple[SymbolCitation, ...]]:
+def parse_citations(
+    body: str,
+) -> tuple[tuple[PathCitation, ...], tuple[SymbolCitation, ...], tuple[InvalidPathCitation, ...]]:
     """Extract conservative, mechanically checkable citations from a finding body."""
     text = str(body or "")
     paths: list[PathCitation] = []
     seen_paths: set[tuple[str, int | None]] = set()
+    invalid_paths: list[InvalidPathCitation] = []
+    seen_invalid_paths: set[tuple[str, str]] = set()
+
+    def _record_path_token(raw_token: str) -> None:
+        trimmed = raw_token.strip().strip(".,;()[]")
+        try:
+            citation = _parse_path_token(raw_token)
+        except ValueError as exc:
+            if _is_path_like(trimmed):
+                key = (trimmed, str(exc))
+                if key not in seen_invalid_paths:
+                    seen_invalid_paths.add(key)
+                    invalid_paths.append(InvalidPathCitation(raw=trimmed, detail=str(exc)))
+            return
+        if citation is None:
+            return
+        key = (citation.path, citation.line)
+        if key not in seen_paths:
+            seen_paths.add(key)
+            paths.append(citation)
+
     chunks = text.split("`")
     for index, chunk in enumerate(chunks):
         if index % 2 == 0:
             continue
-        citation = _parse_path_token(chunk)
-        if citation is not None:
-            key = (citation.path, citation.line)
-            if key not in seen_paths:
-                seen_paths.add(key)
-                paths.append(citation)
+        _record_path_token(chunk)
 
     plain_tokens = text.replace("`", " ").replace("\n", " ").split()
     for token in plain_tokens:
-        citation = _parse_path_token(token)
-        if citation is not None:
-            key = (citation.path, citation.line)
-            if key not in seen_paths:
-                seen_paths.add(key)
-                paths.append(citation)
+        _record_path_token(token)
 
     symbols: list[SymbolCitation] = []
     seen_symbols: set[str] = set()
@@ -344,7 +390,7 @@ def parse_citations(body: str) -> tuple[tuple[PathCitation, ...], tuple[SymbolCi
                 seen_symbols.add(token)
                 symbols.append(SymbolCitation(symbol=token))
 
-    return tuple(paths), tuple(symbols)
+    return tuple(paths), tuple(symbols), tuple(invalid_paths)
 
 
 def _normalize_repo_path(project_root: Path, raw_path: str) -> str:
@@ -423,17 +469,23 @@ def _symbol_hits(
     return deduped
 
 
-def _path_evidence(
-    issue: BacklogIssue,
+def _path_is_mechanically_attributable(
     citation: PathCitation,
     *,
     project_root: Path,
-    churn_counter: Callable[[Path, str, str], int],
-) -> tuple[list[EvidenceEntry], list[EvidenceEntry]]:
+    relpath: str,
+) -> bool:
+    return "/" in citation.path or (project_root / relpath).exists()
+
+
+def _path_presence_evidence(
+    citation: PathCitation,
+    *,
+    project_root: Path,
+) -> list[EvidenceEntry]:
     relpath = _normalize_repo_path(project_root, citation.path)
     absolute = project_root / relpath
     checked: list[EvidenceEntry] = []
-    failed: list[EvidenceEntry] = []
     line_label = f"{relpath}:{citation.line}" if citation.line is not None else relpath
 
     if absolute.exists():
@@ -474,6 +526,26 @@ def _path_evidence(
                 )
             )
     else:
+        if not _path_is_mechanically_attributable(
+            citation,
+            project_root=project_root,
+            relpath=relpath,
+        ):
+            checked.append(
+                EvidenceEntry(
+                    evidence_id=f"path:{relpath}:unverified",
+                    kind="unverified",
+                    summary=f"could not attribute cited filename {relpath} to a repo path",
+                    detail=(
+                        "bare filename mentions without a repo-relative path stay unverified when "
+                        "they do not resolve in the current tree"
+                    ),
+                    checkable=False,
+                    observed_status=STATUS_UNVERIFIED,
+                    artifact=relpath,
+                )
+            )
+            return checked
         checked.append(
             EvidenceEntry(
                 evidence_id=f"path:{relpath}:absent",
@@ -484,7 +556,18 @@ def _path_evidence(
                 artifact=relpath,
             )
         )
+    return checked
 
+
+def _path_churn_evidence(
+    issue: BacklogIssue,
+    *,
+    project_root: Path,
+    relpath: str,
+    churn_counter: Callable[[Path, str, str], int],
+) -> tuple[list[EvidenceEntry], list[EvidenceEntry]]:
+    checked: list[EvidenceEntry] = []
+    failed: list[EvidenceEntry] = []
     try:
         churn = churn_counter(project_root, relpath, issue.created_at)
     except Exception as exc:  # noqa: BLE001 - becomes explicit unverified evidence
@@ -648,11 +731,11 @@ def build_backlog_report(
 
     findings: list[BacklogFindingRecord] = []
     for issue in sorted(issues, key=lambda item: item.number):
-        paths, symbols = parse_citations(issue.body)
+        paths, symbols, invalid_paths = parse_citations(issue.body)
         evidence: list[EvidenceEntry] = []
         failures: list[EvidenceEntry] = []
 
-        if not paths and not symbols:
+        if not paths and not symbols and not invalid_paths:
             failures.append(
                 EvidenceEntry(
                     evidence_id="citation:none",
@@ -668,10 +751,24 @@ def build_backlog_report(
                 )
             )
 
+        for invalid in invalid_paths:
+            failures.append(
+                EvidenceEntry(
+                    evidence_id=f"path:{invalid.raw}:invalid",
+                    kind="unverified",
+                    summary=f"could not mechanically verify cited path token {invalid.raw}",
+                    detail=invalid.detail,
+                    checkable=False,
+                    observed_status=STATUS_UNVERIFIED,
+                    artifact=invalid.raw,
+                )
+            )
+
         normalized_paths: list[str] = []
+        churn_paths: dict[str, None] = {}
         for citation in paths:
             try:
-                normalized_paths.append(_normalize_repo_path(project_root, citation.path))
+                relpath = _normalize_repo_path(project_root, citation.path)
             except ValueError as exc:
                 failures.append(
                     EvidenceEntry(
@@ -685,10 +782,20 @@ def build_backlog_report(
                     )
                 )
                 continue
-            checked, failed = _path_evidence(
-                issue,
+            evidence.extend(_path_presence_evidence(citation, project_root=project_root))
+            if _path_is_mechanically_attributable(
                 citation,
                 project_root=project_root,
+                relpath=relpath,
+            ):
+                normalized_paths.append(relpath)
+                churn_paths.setdefault(relpath, None)
+
+        for relpath in churn_paths:
+            checked, failed = _path_churn_evidence(
+                issue,
+                project_root=project_root,
+                relpath=relpath,
                 churn_counter=churn_counter,
             )
             evidence.extend(checked)
