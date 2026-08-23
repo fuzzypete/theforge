@@ -1,0 +1,870 @@
+"""Deterministic backlog reporting for ``forge triage``.
+
+This slice inventories the open finding backlog and gathers only mechanical
+staleness evidence: whether cited artifacts still exist in the current tree and
+how much the cited code has churned since the finding was filed. No tracker
+write, model call, or judgment about disposition lives here; the output is the
+structured artifact the later proposal stage consumes.
+"""
+
+from __future__ import annotations
+
+import json
+import subprocess
+from collections import Counter
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Callable
+from urllib.parse import quote
+
+import yaml
+
+RECOGNIZED_FINDING_LABELS: tuple[str, ...] = ("forge-finding", "review-finding", "needs-triage")
+NEEDS_TRIAGE_LABEL = "needs-triage"
+HYGIENE_POOL = "Hygiene"
+UNPOOLED_STATE = "unpooled"
+
+STATUS_STALE = "stale_evidence"
+STATUS_ACTIVE = "active"
+STATUS_UNVERIFIED = "unverified"
+
+_GH_TIMEOUT_SECONDS = 30
+_GIT_TIMEOUT_SECONDS = 30
+_SEARCH_TIMEOUT_SECONDS = 30
+
+_GH_ISSUE_JQ = (
+    ".[] | select(.pull_request == null) | "
+    '{number: .number, title: .title, body: (.body // ""), '
+    'createdAt: (.created_at // ""), '
+    "labels: ((.labels // []) | map(.name)), "
+    "milestone: (.milestone.title // null)}"
+)
+_GH_MILESTONE_JQ = ".[] | .title"
+
+
+class TriageBacklogReportError(RuntimeError):
+    """The backlog report could not be generated from live repository state."""
+
+
+@dataclass(frozen=True)
+class BacklogIssue:
+    """One open GitHub issue in the finding backlog."""
+
+    number: int
+    title: str
+    body: str
+    labels: tuple[str, ...]
+    created_at: str
+    milestone: str | None = None
+
+    @property
+    def issue_ref(self) -> str:
+        return f"#{self.number}"
+
+    def state_label(self) -> str:
+        if self.milestone:
+            return self.milestone
+        if NEEDS_TRIAGE_LABEL in {label.lower() for label in self.labels}:
+            return NEEDS_TRIAGE_LABEL
+        return UNPOOLED_STATE
+
+    def display_labels(self) -> str:
+        hidden = {label.lower() for label in RECOGNIZED_FINDING_LABELS}
+        visible = [
+            label
+            for label in self.labels
+            if label.lower() not in hidden and label.lower() != NEEDS_TRIAGE_LABEL
+        ]
+        return ",".join(sorted(visible, key=str.lower)) or "—"
+
+
+@dataclass(frozen=True)
+class EvidenceEntry:
+    """One mechanically gathered evidence row for a backlog finding."""
+
+    evidence_id: str
+    kind: str
+    summary: str
+    detail: str = ""
+    checkable: bool = True
+    observed_status: str = STATUS_ACTIVE
+    artifact: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "id": self.evidence_id,
+            "kind": self.kind,
+            "summary": self.summary,
+            "checkable": self.checkable,
+            "detail": self.detail,
+            "observed_status": self.observed_status,
+        }
+        if self.artifact:
+            payload["artifact"] = self.artifact
+        return payload
+
+
+@dataclass(frozen=True)
+class BacklogFindingRecord:
+    """One finding in the generated backlog report."""
+
+    finding_id: str
+    issue_ref: str
+    issue_number: int
+    title: str
+    body: str
+    labels: tuple[str, ...]
+    display_labels: str
+    opened_at: str
+    age_days: int | None
+    pool_state: str
+    verification_status: str
+    evidence: tuple[EvidenceEntry, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "finding_id": self.finding_id,
+            "issue_ref": self.issue_ref,
+            "issue_number": self.issue_number,
+            "title": self.title,
+            "body": self.body,
+            "labels": list(self.labels),
+            "display_labels": self.display_labels,
+            "opened_at": self.opened_at,
+            "age_days": self.age_days,
+            "pool_state": self.pool_state,
+            "verification_status": self.verification_status,
+            "evidence": [entry.to_dict() for entry in self.evidence],
+        }
+
+
+@dataclass(frozen=True)
+class BacklogTriageReport:
+    """Human- and machine-readable deterministic backlog inventory."""
+
+    generated_at: str
+    current_milestone: str | None
+    named_milestones: tuple[str, ...]
+    findings: tuple[BacklogFindingRecord, ...]
+    milestone_inventory_error: str | None = None
+
+    def to_dict(self) -> dict[str, object]:
+        state_counts = Counter(finding.pool_state for finding in self.findings)
+        status_counts = Counter(finding.verification_status for finding in self.findings)
+        payload: dict[str, object] = {
+            "generated_at": self.generated_at,
+            "current_milestone": self.current_milestone,
+            "named_milestones": list(self.named_milestones),
+            "summary": {
+                "total_open": len(self.findings),
+                "by_state": dict(sorted(state_counts.items(), key=lambda item: item[0].lower())),
+                "by_verification_status": dict(
+                    sorted(status_counts.items(), key=lambda item: item[0].lower())
+                ),
+            },
+            "findings": [finding.to_dict() for finding in self.findings],
+        }
+        if self.milestone_inventory_error:
+            payload["milestone_inventory_error"] = self.milestone_inventory_error
+        return payload
+
+
+@dataclass(frozen=True)
+class PathCitation:
+    """A repo-relative artifact path cited in a finding body."""
+
+    path: str
+    line: int | None = None
+
+
+@dataclass(frozen=True)
+class SymbolCitation:
+    """A symbol-like identifier cited in a finding body."""
+
+    symbol: str
+
+
+def _parse_iso8601(timestamp: str) -> datetime:
+    text = str(timestamp or "").strip()
+    if not text:
+        raise ValueError("missing timestamp")
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(text)
+    if parsed.tzinfo is None:
+        return parsed.replace(tzinfo=UTC)
+    return parsed.astimezone(UTC)
+
+
+def _gh_api_lines(endpoint: str, jq_expr: str, project_root: Path) -> list[str]:
+    try:
+        proc = subprocess.run(
+            ["gh", "api", "--paginate", "--jq", jq_expr, endpoint],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=_GH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise TriageBacklogReportError(f"gh api {endpoint!r} failed: {exc}") from exc
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or "unknown gh api failure"
+        raise TriageBacklogReportError(f"gh api {endpoint!r} failed: {err}")
+    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+
+
+def fetch_backlog_issues(project_root: Path) -> list[BacklogIssue]:
+    """Return the union of open issues carrying any recognized finding label."""
+    issues_by_number: dict[int, BacklogIssue] = {}
+    for label in RECOGNIZED_FINDING_LABELS:
+        endpoint = (
+            "repos/{owner}/{repo}/issues"
+            f"?labels={quote(label, safe='')}&state=open&per_page=100"
+        )
+        for line in _gh_api_lines(endpoint, _GH_ISSUE_JQ, project_root):
+            try:
+                raw = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise TriageBacklogReportError(
+                    f"gh api returned malformed issue JSON for label {label!r}: {exc}"
+                ) from exc
+            if not isinstance(raw, dict):
+                raise TriageBacklogReportError(
+                    f"gh api returned a non-mapping issue row for label {label!r}"
+                )
+            number = int(raw["number"])
+            merged_labels = set(str(name) for name in raw.get("labels") or [])
+            if number in issues_by_number:
+                merged_labels.update(issues_by_number[number].labels)
+            issues_by_number[number] = BacklogIssue(
+                number=number,
+                title=str(raw.get("title") or ""),
+                body=str(raw.get("body") or ""),
+                labels=tuple(sorted(merged_labels, key=str.lower)),
+                created_at=str(raw.get("createdAt") or ""),
+                milestone=str(raw["milestone"]).strip() if raw.get("milestone") else None,
+            )
+    return [issues_by_number[number] for number in sorted(issues_by_number)]
+
+
+def fetch_open_milestones(project_root: Path) -> tuple[str, ...]:
+    """Return open milestone titles in stable order."""
+    endpoint = "repos/{owner}/{repo}/milestones?state=open&per_page=100"
+    seen: set[str] = set()
+    titles: list[str] = []
+    for line in _gh_api_lines(endpoint, _GH_MILESTONE_JQ, project_root):
+        title = str(line).strip()
+        if title and title not in seen:
+            seen.add(title)
+            titles.append(title)
+    return tuple(sorted(titles, key=str.lower))
+
+
+def _is_path_like(token: str) -> bool:
+    text = token.strip().strip(".,:;()[]")
+    if not text:
+        return False
+    if "/" in text:
+        return True
+    suffixes = (".py", ".md", ".sh", ".yaml", ".yml", ".json", ".toml", ".ini", ".txt")
+    return text.endswith(suffixes)
+
+
+def _parse_path_token(token: str) -> PathCitation | None:
+    text = token.strip().strip(".,;()[]")
+    if not _is_path_like(text):
+        return None
+    line: int | None = None
+    if ":" in text:
+        candidate_path, candidate_line = text.rsplit(":", 1)
+        if candidate_line.isdigit():
+            text = candidate_path
+            line = int(candidate_line)
+    if not text or text.startswith(("http://", "https://")):
+        return None
+    return PathCitation(path=text, line=line)
+
+
+def _is_symbol_like(token: str) -> bool:
+    if not token or "/" in token or " " in token:
+        return False
+    if not token.replace("_", "").isalnum():
+        return False
+    if not (token[0].isalpha() or token[0] == "_"):
+        return False
+    return "_" in token or any(char.isupper() for char in token[1:]) or len(token) >= 8
+
+
+def parse_citations(body: str) -> tuple[tuple[PathCitation, ...], tuple[SymbolCitation, ...]]:
+    """Extract conservative, mechanically checkable citations from a finding body."""
+    text = str(body or "")
+    paths: list[PathCitation] = []
+    seen_paths: set[tuple[str, int | None]] = set()
+    chunks = text.split("`")
+    for index, chunk in enumerate(chunks):
+        if index % 2 == 0:
+            continue
+        citation = _parse_path_token(chunk)
+        if citation is not None:
+            key = (citation.path, citation.line)
+            if key not in seen_paths:
+                seen_paths.add(key)
+                paths.append(citation)
+
+    plain_tokens = text.replace("`", " ").replace("\n", " ").split()
+    for token in plain_tokens:
+        citation = _parse_path_token(token)
+        if citation is not None:
+            key = (citation.path, citation.line)
+            if key not in seen_paths:
+                seen_paths.add(key)
+                paths.append(citation)
+
+    symbols: list[SymbolCitation] = []
+    seen_symbols: set[str] = set()
+    for index, chunk in enumerate(chunks):
+        if index % 2 == 0:
+            continue
+        token = chunk.strip().strip(".,;:()[]")
+        if _is_symbol_like(token) and token not in seen_symbols:
+            seen_symbols.add(token)
+            symbols.append(SymbolCitation(symbol=token))
+
+    for raw_token in plain_tokens:
+        token = raw_token.strip().strip(".,;:()[]")
+        lower = token.lower()
+        if lower in {"symbol", "function", "method", "class", "attribute", "constant"}:
+            continue
+        if _is_symbol_like(token) and token not in seen_symbols:
+            prefix = text.lower()
+            hint = f"symbol {token.lower()}" in prefix or f"function {token.lower()}" in prefix
+            if hint:
+                seen_symbols.add(token)
+                symbols.append(SymbolCitation(symbol=token))
+
+    return tuple(paths), tuple(symbols)
+
+
+def _normalize_repo_path(project_root: Path, raw_path: str) -> str:
+    candidate = Path(raw_path)
+    if candidate.is_absolute():
+        raise ValueError(f"absolute path citation is outside the repo contract: {raw_path}")
+    resolved = (project_root / candidate).resolve()
+    root = project_root.resolve()
+    try:
+        relative = resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"path citation escapes the repo root: {raw_path}") from exc
+    return relative.as_posix()
+
+
+def _file_line_count(path: Path) -> int:
+    with path.open(encoding="utf-8", errors="replace") as handle:
+        return sum(1 for _ in handle)
+
+
+def _git_churn_count(project_root: Path, relpath: str, created_at: str) -> int:
+    proc = subprocess.run(
+        ["git", "log", "--format=%H", f"--since={created_at}", "--", relpath],
+        capture_output=True,
+        text=True,
+        cwd=str(project_root),
+        timeout=_GIT_TIMEOUT_SECONDS,
+        check=False,
+    )
+    if proc.returncode != 0:
+        err = proc.stderr.strip() or proc.stdout.strip() or "git log failed"
+        raise RuntimeError(err)
+    return sum(1 for line in proc.stdout.splitlines() if line.strip())
+
+
+def _symbol_hits(
+    project_root: Path,
+    symbol: str,
+    candidate_paths: tuple[str, ...] = (),
+) -> list[tuple[str, int]]:
+    cmd = ["rg", "--line-number", "--fixed-strings", symbol]
+    cmd.extend(candidate_paths or ["."])
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=_SEARCH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except FileNotFoundError:
+        proc = subprocess.run(
+            ["git", "grep", "-n", "-F", symbol, "--", *(candidate_paths or ["."])],
+            capture_output=True,
+            text=True,
+            cwd=str(project_root),
+            timeout=_SEARCH_TIMEOUT_SECONDS,
+            check=False,
+        )
+    if proc.returncode not in {0, 1}:
+        err = proc.stderr.strip() or proc.stdout.strip() or "symbol search failed"
+        raise RuntimeError(err)
+    hits: list[tuple[str, int]] = []
+    for line in proc.stdout.splitlines():
+        parts = line.split(":", 2)
+        if len(parts) < 2 or not parts[1].isdigit():
+            continue
+        hits.append((parts[0], int(parts[1])))
+    deduped: list[tuple[str, int]] = []
+    seen: set[tuple[str, int]] = set()
+    for hit in hits:
+        if hit not in seen:
+            seen.add(hit)
+            deduped.append(hit)
+    return deduped
+
+
+def _path_evidence(
+    issue: BacklogIssue,
+    citation: PathCitation,
+    *,
+    project_root: Path,
+    churn_counter: Callable[[Path, str, str], int],
+) -> tuple[list[EvidenceEntry], list[EvidenceEntry]]:
+    relpath = _normalize_repo_path(project_root, citation.path)
+    absolute = project_root / relpath
+    checked: list[EvidenceEntry] = []
+    failed: list[EvidenceEntry] = []
+    line_label = f"{relpath}:{citation.line}" if citation.line is not None else relpath
+
+    if absolute.exists():
+        if citation.line is not None:
+            line_count = _file_line_count(absolute)
+            if citation.line > line_count:
+                checked.append(
+                    EvidenceEntry(
+                        evidence_id=f"path-line:{line_label}:absent",
+                        kind="staleness",
+                        summary=(
+                            f"cited line {line_label} absent from current file "
+                            f"(file has {line_count} line(s))"
+                        ),
+                        detail=f"checked {line_label} against the current tree",
+                        observed_status=STATUS_STALE,
+                        artifact=line_label,
+                    )
+                )
+            else:
+                checked.append(
+                    EvidenceEntry(
+                        evidence_id=f"path-line:{line_label}:present",
+                        kind="artifact_presence",
+                        summary=f"cited line {line_label} still falls within the current file",
+                        detail=f"checked {line_label} against the current tree",
+                        artifact=line_label,
+                    )
+                )
+        else:
+            checked.append(
+                EvidenceEntry(
+                    evidence_id=f"path:{relpath}:present",
+                    kind="artifact_presence",
+                    summary=f"cited path {relpath} present in current tree",
+                    detail=f"checked {relpath} at HEAD",
+                    artifact=relpath,
+                )
+            )
+    else:
+        checked.append(
+            EvidenceEntry(
+                evidence_id=f"path:{relpath}:absent",
+                kind="staleness",
+                summary=f"cited path {relpath} absent from current tree",
+                detail=f"checked {relpath} at HEAD",
+                observed_status=STATUS_STALE,
+                artifact=relpath,
+            )
+        )
+
+    try:
+        churn = churn_counter(project_root, relpath, issue.created_at)
+    except Exception as exc:  # noqa: BLE001 - becomes explicit unverified evidence
+        failed.append(
+            EvidenceEntry(
+                evidence_id=f"path:{relpath}:churn-unverified",
+                kind="unverified",
+                summary=f"could not count churn for cited path {relpath}",
+                detail=f"git history query failed: {exc}",
+                checkable=False,
+                observed_status=STATUS_UNVERIFIED,
+                artifact=relpath,
+            )
+        )
+    else:
+        checked.append(
+            EvidenceEntry(
+                evidence_id=f"path:{relpath}:churn",
+                kind="churn",
+                summary=(
+                    f"cited file {relpath} changed {churn} time(s) since filing on "
+                    f"{issue.created_at[:10]}"
+                ),
+                detail=f"git log --since={issue.created_at} -- {relpath}",
+                artifact=relpath,
+            )
+        )
+    return checked, failed
+
+
+def _symbol_evidence(
+    issue: BacklogIssue,
+    citation: SymbolCitation,
+    *,
+    project_root: Path,
+    candidate_paths: tuple[str, ...],
+    churn_counter: Callable[[Path, str, str], int],
+    symbol_lookup: Callable[[Path, str, tuple[str, ...]], list[tuple[str, int]]],
+) -> tuple[list[EvidenceEntry], list[EvidenceEntry]]:
+    checked: list[EvidenceEntry] = []
+    failed: list[EvidenceEntry] = []
+    try:
+        hits = symbol_lookup(project_root, citation.symbol, candidate_paths)
+    except Exception as exc:  # noqa: BLE001 - becomes explicit unverified evidence
+        failed.append(
+            EvidenceEntry(
+                evidence_id=f"symbol:{citation.symbol}:lookup-unverified",
+                kind="unverified",
+                summary=f"could not search for cited symbol {citation.symbol}",
+                detail=f"symbol search failed: {exc}",
+                checkable=False,
+                observed_status=STATUS_UNVERIFIED,
+                artifact=citation.symbol,
+            )
+        )
+        return checked, failed
+
+    if not hits:
+        checked.append(
+            EvidenceEntry(
+                evidence_id=f"symbol:{citation.symbol}:absent",
+                kind="staleness",
+                summary=f"cited symbol {citation.symbol} absent from current tree",
+                detail=f"searched for {citation.symbol} at HEAD",
+                observed_status=STATUS_STALE,
+                artifact=citation.symbol,
+            )
+        )
+        return checked, failed
+
+    unique_paths = sorted({path for path, _line in hits}, key=str.lower)
+    if len(unique_paths) != 1:
+        failed.append(
+            EvidenceEntry(
+                evidence_id=f"symbol:{citation.symbol}:ambiguous",
+                kind="unverified",
+                summary=(
+                    f"cited symbol {citation.symbol} resolves to {len(unique_paths)} files; "
+                    "churn is not attributable mechanically"
+                ),
+                detail=", ".join(unique_paths),
+                checkable=False,
+                observed_status=STATUS_UNVERIFIED,
+                artifact=citation.symbol,
+            )
+        )
+        return checked, failed
+
+    target_path = unique_paths[0]
+    first_line = next(line for path, line in hits if path == target_path)
+    checked.append(
+        EvidenceEntry(
+            evidence_id=f"symbol:{citation.symbol}:present",
+            kind="artifact_presence",
+            summary=f"cited symbol {citation.symbol} present at {target_path}:{first_line}",
+            detail=f"searched for {citation.symbol} at HEAD",
+            artifact=f"{target_path}:{first_line}",
+        )
+    )
+    try:
+        churn = churn_counter(project_root, target_path, issue.created_at)
+    except Exception as exc:  # noqa: BLE001 - becomes explicit unverified evidence
+        failed.append(
+            EvidenceEntry(
+                evidence_id=f"symbol:{citation.symbol}:churn-unverified",
+                kind="unverified",
+                summary=f"could not count churn for cited symbol {citation.symbol}",
+                detail=f"git history query failed for {target_path}: {exc}",
+                checkable=False,
+                observed_status=STATUS_UNVERIFIED,
+                artifact=citation.symbol,
+            )
+        )
+    else:
+        checked.append(
+            EvidenceEntry(
+                evidence_id=f"symbol:{citation.symbol}:churn",
+                kind="churn",
+                summary=(
+                    f"cited file {target_path} changed {churn} time(s) since filing on "
+                    f"{issue.created_at[:10]}"
+                ),
+                detail=f"git log --since={issue.created_at} -- {target_path}",
+                artifact=target_path,
+            )
+        )
+    return checked, failed
+
+
+def _verification_status(entries: tuple[EvidenceEntry, ...]) -> str:
+    if any(not entry.checkable for entry in entries):
+        return STATUS_UNVERIFIED
+    if any(entry.observed_status == STATUS_STALE for entry in entries):
+        return STATUS_STALE
+    return STATUS_ACTIVE
+
+
+def _age_days(created_at: str, *, now: datetime) -> int | None:
+    try:
+        opened = _parse_iso8601(created_at)
+    except ValueError:
+        return None
+    return (now.date() - opened.date()).days
+
+
+def build_backlog_report(
+    issues: list[BacklogIssue],
+    *,
+    project_root: Path,
+    current_milestone: str | None,
+    named_milestones: tuple[str, ...],
+    now: datetime | None = None,
+    churn_counter: Callable[[Path, str, str], int] | None = None,
+    symbol_lookup: Callable[[Path, str, tuple[str, ...]], list[tuple[str, int]]] | None = None,
+    milestone_inventory_error: str | None = None,
+) -> BacklogTriageReport:
+    """Build the deterministic report for an already-fetched backlog issue set."""
+    now = now or datetime.now(UTC)
+    churn_counter = churn_counter or _git_churn_count
+    symbol_lookup = symbol_lookup or _symbol_hits
+
+    findings: list[BacklogFindingRecord] = []
+    for issue in sorted(issues, key=lambda item: item.number):
+        paths, symbols = parse_citations(issue.body)
+        evidence: list[EvidenceEntry] = []
+        failures: list[EvidenceEntry] = []
+
+        if not paths and not symbols:
+            failures.append(
+                EvidenceEntry(
+                    evidence_id="citation:none",
+                    kind="unverified",
+                    summary=(
+                        "body cites no checkable artifact (prose-only or unparseable citation)"
+                    ),
+                    detail=(
+                        "no repo path or symbol-like citation could be parsed from the issue body"
+                    ),
+                    checkable=False,
+                    observed_status=STATUS_UNVERIFIED,
+                )
+            )
+
+        normalized_paths: list[str] = []
+        for citation in paths:
+            try:
+                normalized_paths.append(_normalize_repo_path(project_root, citation.path))
+            except ValueError as exc:
+                failures.append(
+                    EvidenceEntry(
+                        evidence_id=f"path:{citation.path}:invalid",
+                        kind="unverified",
+                        summary=f"could not normalize cited path {citation.path}",
+                        detail=str(exc),
+                        checkable=False,
+                        observed_status=STATUS_UNVERIFIED,
+                        artifact=citation.path,
+                    )
+                )
+                continue
+            checked, failed = _path_evidence(
+                issue,
+                citation,
+                project_root=project_root,
+                churn_counter=churn_counter,
+            )
+            evidence.extend(checked)
+            failures.extend(failed)
+
+        candidate_paths = tuple(sorted(set(normalized_paths), key=str.lower))
+        for citation in symbols:
+            checked, failed = _symbol_evidence(
+                issue,
+                citation,
+                project_root=project_root,
+                candidate_paths=candidate_paths,
+                churn_counter=churn_counter,
+                symbol_lookup=symbol_lookup,
+            )
+            evidence.extend(checked)
+            failures.extend(failed)
+
+        ordered_evidence = tuple(
+            sorted(
+                [*failures, *evidence],
+                key=lambda entry: (
+                    0 if not entry.checkable else 1,
+                    0 if entry.observed_status == STATUS_STALE else 1,
+                    entry.evidence_id,
+                ),
+            )
+        )
+        findings.append(
+            BacklogFindingRecord(
+                finding_id=issue.issue_ref,
+                issue_ref=issue.issue_ref,
+                issue_number=issue.number,
+                title=issue.title,
+                body=issue.body,
+                labels=issue.labels,
+                display_labels=issue.display_labels(),
+                opened_at=issue.created_at,
+                age_days=_age_days(issue.created_at, now=now),
+                pool_state=issue.state_label(),
+                verification_status=_verification_status(ordered_evidence),
+                evidence=ordered_evidence,
+            )
+        )
+
+    return BacklogTriageReport(
+        generated_at=now.replace(microsecond=0).isoformat().replace("+00:00", "Z"),
+        current_milestone=current_milestone,
+        named_milestones=named_milestones,
+        findings=tuple(findings),
+        milestone_inventory_error=milestone_inventory_error,
+    )
+
+
+def collect_backlog_report(
+    project_root: Path,
+    *,
+    current_milestone: str | None = None,
+    now: datetime | None = None,
+) -> BacklogTriageReport:
+    """Fetch the live backlog and build its deterministic report artifact."""
+    issues = fetch_backlog_issues(project_root)
+    milestone_inventory_error: str | None = None
+    try:
+        open_milestones = fetch_open_milestones(project_root)
+    except TriageBacklogReportError as exc:
+        open_milestones = ()
+        milestone_inventory_error = str(exc)
+
+    named_milestones = tuple(
+        title
+        for title in open_milestones
+        if title
+        and title != HYGIENE_POOL
+        and (current_milestone is None or title.lower() != current_milestone.lower())
+    )
+    return build_backlog_report(
+        issues,
+        project_root=project_root,
+        current_milestone=current_milestone,
+        named_milestones=named_milestones,
+        now=now,
+        milestone_inventory_error=milestone_inventory_error,
+    )
+
+
+def default_report_path(project_root: Path, generated_at: str) -> Path:
+    stamp = generated_at.replace("-", "").replace(":", "").replace("+00:00", "Z")
+    stamp = stamp.replace(".", "")
+    return project_root / ".forge" / "triage" / f"report-{stamp}.yaml"
+
+
+def write_backlog_report(
+    project_root: Path,
+    report: BacklogTriageReport,
+    *,
+    output_path: Path | None = None,
+) -> Path:
+    """Write the structured artifact and return its path."""
+    target = output_path or default_report_path(project_root, report.generated_at)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    payload = yaml.safe_dump(report.to_dict(), sort_keys=False, default_flow_style=False)
+    tmp = target.with_name(f".{target.name}.tmp")
+    tmp.write_text(payload, encoding="utf-8")
+    tmp.replace(target)
+    return target
+
+
+def _state_summary_label(state: str) -> str:
+    if state == HYGIENE_POOL:
+        return "hygiene-pool"
+    return state
+
+
+def _headline_evidence(
+    finding: BacklogFindingRecord,
+) -> tuple[EvidenceEntry | None, list[EvidenceEntry]]:
+    entries = list(finding.evidence)
+    if not entries:
+        return None, []
+    if finding.verification_status == STATUS_UNVERIFIED:
+        preferred = [entry for entry in entries if not entry.checkable]
+    elif finding.verification_status == STATUS_STALE:
+        preferred = [entry for entry in entries if entry.observed_status == STATUS_STALE]
+    else:
+        preferred = [entry for entry in entries if entry.kind == "churn"] or entries
+    first = preferred[0]
+    remaining = [entry for entry in entries if entry is not first]
+    return first, remaining
+
+
+def render_backlog_report(
+    report: BacklogTriageReport,
+    artifact_path: Path,
+    project_root: Path,
+) -> str:
+    """Render the operator-facing summary."""
+    if not report.findings:
+        path_text = (
+            str(artifact_path.relative_to(project_root))
+            if artifact_path.is_relative_to(project_root)
+            else str(artifact_path)
+        )
+        return "\n".join(
+            [
+                "FINDING BACKLOG — 0 open",
+                "",
+                "No open finding-labeled issues matched the backlog query.",
+                f"structured report: {path_text}",
+            ]
+        )
+
+    state_counts = Counter(finding.pool_state for finding in report.findings)
+    summary_bits = [
+        f"{count} {_state_summary_label(state)}"
+        for state, count in sorted(state_counts.items(), key=lambda item: item[0].lower())
+    ]
+    lines = [f"FINDING BACKLOG — {len(report.findings)} open ({', '.join(summary_bits)})", ""]
+    for finding in report.findings:
+        headline, remainder = _headline_evidence(finding)
+        age = f"{finding.age_days}d" if finding.age_days is not None else "unknown"
+        status_label = finding.verification_status.upper().replace("_", "-")
+        first_summary = headline.summary if headline is not None else "no evidence entries"
+        lines.append(
+            f"{finding.issue_ref:<6} {finding.display_labels:<10} {finding.pool_state:<12} "
+            f"age {age:<7} {status_label}: {first_summary}"
+        )
+        for entry in remainder:
+            lines.append(f"       {entry.summary}")
+    lines.append("")
+    if report.milestone_inventory_error:
+        lines.append(f"milestone inventory warning: {report.milestone_inventory_error}")
+    path_text = (
+        str(artifact_path.relative_to(project_root))
+        if artifact_path.is_relative_to(project_root)
+        else str(artifact_path)
+    )
+    lines.append(f"structured report: {path_text}")
+    return "\n".join(lines)

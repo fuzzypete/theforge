@@ -74,6 +74,16 @@ class TestParsing:
     def test_no_current_milestone_is_allowed(self) -> None:
         assert parse_backlog_report({"findings": []}).current_milestone is None
 
+    def test_generated_report_metadata_is_ignored_by_the_consumer(self) -> None:
+        report = parse_backlog_report(
+            {
+                **_REPORT,
+                "generated_at": "2026-08-23T00:00:00Z",
+                "summary": {"total_open": 1, "by_state": {"Hygiene": 1}},
+            }
+        )
+        assert report.findings[0].issue_ref == "#1312"
+
 
 class TestRejections:
     def test_non_mapping_report_is_rejected(self) -> None:
