@@ -1,0 +1,202 @@
+schema_version: 2
+run_id: 1019084bc18b
+authoritative_run_record: .forge/audits/runs/1019084bc18b.json
+generated_at: '2026-08-23T04:54:42.744120+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0161825
+story:
+  slug: issue-2263
+  name: 'Diagnosed bug still reports no-diagnosis: shape''s placeholder outranks diagnose''s
+    landed artifact, permanently blocking intake'
+  github_issue: 2263
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- parsing
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/diagnose_types.py
+- src/theforge/intake/shape_classify.py
+- src/theforge/intake/shape_render.py
+- src/theforge/shape_check/heuristics.py
+- src/theforge/shape_check/parsing.py
+- tests/test_diagnose_types.py
+- tests/test_fix_readiness.py
+- tests/test_intake/test_groom_flow.py
+- tests/test_intake/test_shape_classify.py
+- tests/test_intake/test_shape_render.py
+- tests/test_shape_verdict_diagnosis_split.py
+what_changed:
+  description: This run changed diagnosis handling so intake readers and writers agree
+    on a single authoritative diagnosis artifact even when multiple diagnosis-like
+    headings or stale scaffolds exist in the issue body. It also changed diagnose
+    landing to reconcile an existing diagnosis-shaped section instead of leaving contradictory
+    duplicate sections behind.
+  approach: The work introduced shared section-selection logic in the parsing/heuristics
+    layer, routed diagnosis-state readers through that authority rule, and adjusted
+    diagnosis upsert/render paths to update the intended diagnosis section in place
+    rather than appending beside shadowing or placeholder content.
+  files_modified: *id002
+what_was_learned:
+- claim: When issue bodies can contain multiple matching headings, authority cannot
+    be decided by first match or by simple 'longest section' scoring; selection has
+    to evaluate each candidate section for artifact completeness and placeholder signals,
+    otherwise stale scaffolds can outrank real landed artifacts in both directions.
+  evidence:
+  - type: review_finding
+    finding_id: ef272e23d539845d
+    description: This finding showed that even after the initial shadowing fix, a
+      later stale canonical Diagnosis section could still cause shape/groom to report
+      no-diagnosis, demonstrating that naive candidate selection still misidentified
+      authority.
+  - type: review_finding
+    finding_id: 74598cd93637aebd
+    description: 'This finding showed the opposite failure mode: authoritative scoring
+      promoted an unfilled stale scaffold over an earlier complete cause-unknown diagnosis,
+      proving that section choice must account for placeholder content, not just canonical
+      heading strength or amount of text.'
+  - type: review_finding
+    finding_id: 76f3bd81ac1ff5d1
+    description: This finding showed that a blanket penalty for placeholder-marker
+      text misclassified a genuine diagnosis whose evidence quoted the marker literally,
+      demonstrating that placeholder detection must be field-aware rather than simple
+      substring matching.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 explicitly reported that the new authoritative scoring could
+      promote an unfilled stale scaffold over an earlier inconclusive diagnosis, confirming
+      that authority selection remained the central correctness problem after the
+      first implementation.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 reported a regression caused by the iter-2 placeholder-marker
+      penalty, showing that the fix space required discriminating between actual unfilled
+      fields and incidental quoted text.
+- claim: Shared read-side interpretation is required across shape, groom, and gate
+    codepaths; if diagnosis headings or states are recognized differently in different
+    readers, the same issue body can be classified into incompatible states.
+  evidence:
+  - type: review_finding
+    finding_id: fef84ed95cc5af97
+    description: This finding showed that shape_classify accepted a 'Root cause' heading
+      as canonical while the gate matched only 'diagnosis', so one body was simultaneously
+      treated as confirmed-cause by one reader and incomplete by another.
+  - type: plan_step
+    step_id: '2'
+    description: The plan explicitly routed all diagnosis-state readers through shared
+      authoritative selection, reflecting that the bug was not isolated to one caller
+      but to divergent readers across intake paths.
+  - type: file
+    path: src/theforge/intake/shape_classify.py
+    description: This file was one of the diagnosis-state readers implicated in the
+      mismatch; its inclusion alongside shared parsing/heuristics changes shows the
+      run addressed cross-reader consistency rather than a single local check.
+  - type: file
+    path: src/theforge/shape_check/heuristics.py
+    description: This gate-side file was revised in the same run, which demonstrates
+      that the authoritative diagnosis interpretation had to be aligned across independent
+      read paths.
+- claim: Write-side reconciliation must target the authoritative diagnosis section
+    without overwriting unrelated prose headings that happen to mention diagnosis
+    concepts, or the fix for duplicate sections will regress operator-authored narrative
+    content.
+  evidence:
+  - type: review_finding
+    finding_id: d3f4f02e0611c21a
+    description: This finding showed that landing a diagnosis on a body with an operator-written
+      'Root cause' section deleted that section and its prose entirely, demonstrating
+      that reconciliation logic can be too aggressive if it treats all diagnosis-like
+      headings as replaceable artifacts.
+  - type: review_finding
+    finding_id: a914556ef63fc3ce
+    description: 'This finding showed the complementary write-path error: shape appended
+      scaffold bullets into an ordinary prose heading that mentioned diagnosis, proving
+      writers also need authoritative targeting and not just regex heading matches.'
+  - type: plan_step
+    step_id: '3'
+    description: The plan called for diagnose landing to reconcile an existing diagnosis-shaped
+      section instead of appending beside it, showing that write-path section targeting
+      was a first-class part of the bug rather than only a read-side issue.
+learned_patterns:
+- authoritative-section-selection
+- cross-reader-state-alignment
+- field-aware-placeholder-detection
+- targeted-section-reconciliation
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: ef272e23d539845d
+    severity: P1
+    file: src/theforge/shape_check/parsing.py
+    description: 'When a complete ## Diagnosis artifact appears before a longer stale
+      ## Diagnosis placeholder, shape and groom classify the bug as no-diagnosis.'
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: d3f4f02e0611c21a
+    severity: P1
+    file: src/theforge/diagnose_types.py
+    description: Landing a diagnosis on an issue whose body carries an operator-written
+      'Root cause' section removes that section and its prose entirely, replacing
+      it with the generated artifact; running upsert_diagnosis_section on a body containing
+      an Observed / Root cause / Expected shape returns a body in which the Root cause
+      narrative is gone.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: a914556ef63fc3ce
+    severity: P1
+    file: src/theforge/intake/shape_render.py
+    description: For a bug body containing an ordinary prose heading that mentions
+      diagnosis above an incomplete canonical Diagnosis section, forge shape appends
+      the missing diagnosis scaffold bullets to the end of the prose section instead
+      of the Diagnosis section, so the gate still reports the same components missing
+      and each further shape run appends another duplicate copy of the same bullets
+      without ever converging.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 74598cd93637aebd
+    severity: P1
+    file: src/theforge/shape_check/heuristics.py
+    description: When a complete cause-unknown Diagnosis artifact is followed by a
+      stale Diagnosis scaffold whose fields still contain <fill in>, the shape gate
+      reports the issue as RUNNABLE with an asserted cause.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 76f3bd81ac1ff5d1
+    severity: P1
+    file: src/theforge/shape_check/heuristics.py
+    description: A bug body carrying a genuine but inconclusive Diagnosis section
+      whose evidence text quotes the literal placeholder marker used by the shape
+      scaffold, alongside a stale second Diagnosis-headed section containing only
+      loose prose, is classified as having no diagnosis at all, and the gate reports
+      the required components missing even though the real section lists every one
+      of them.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced authority-selection edge cases where diagnosis-like
+    headings existed in multiple forms, and each iteration had to tighten how real
+    artifacts were distinguished from placeholders or prose.
+  - Reader and writer paths regressed in different ways until both were forced to
+    use the same notion of which diagnosis section is authoritative.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 40.351892299999996
+  dominant_difficulty: Determining a single authoritative diagnosis artifact from
+    ambiguous markdown bodies without letting placeholder text or prose headings shadow,
+    replace, or contradict the real section.

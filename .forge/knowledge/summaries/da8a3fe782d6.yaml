@@ -1,0 +1,64 @@
+schema_version: 2
+run_id: da8a3fe782d6
+authoritative_run_record: .forge/audits/runs/da8a3fe782d6.json
+generated_at: '2026-08-23T04:07:45.597550+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0054199999999999995
+story:
+  slug: issue-2665
+  name: Sprint admission refuses a locally-runnable issue on the needs-grooming label
+    alone, contradicting the state-authority contract
+  github_issue: 2665
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/adr/0003-intake-state-authority-and-label-reconciliation.md
+- src/theforge/admissibility.py
+- src/theforge/sprint/shape_gate.py
+- tests/test_admissibility.py
+- tests/test_ready_queue.py
+- tests/test_sprint_shape_gate.py
+what_changed:
+  description: Sprint admission was adjusted so a computed needs-grooming label no
+    longer causes a default-path refusal when the live local shape check is runnable,
+    while leaving deliberate operator-action refusal behavior intact. The ADR text
+    was updated to remove the recorded as-built divergence.
+  approach: The change aligned admissibility control flow with the state-authority
+    contract by making the live local shape verdict authoritative for computed needs-grooming
+    cases, preserving the existing operator-control short-circuit and same-run remediation
+    seam, and updating targeted seam tests around admissibility, ready-queue behavior,
+    and sprint shape gating.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- live-state-over-computed-label
+- operator-control-separate-from-derived-state
+- seam-verification-around-admission
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review focused on preserving operator-action behavior while removing label-only
+    computed refusal from sprint admission.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: false
+  cost_usd: 4.8677797
+  dominant_difficulty: Untangling authoritative live shape state from stale or derived
+    label state without disturbing the separate operator-control path.
