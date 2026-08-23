@@ -19,11 +19,17 @@ from enum import Enum
 from theforge.intake.clarification import ClarificationQuestion, for_situation
 from theforge.shape_check.parsing import (
     extract_ac_section,
+    extract_authoritative_section,
     extract_section,
     has_bug_body_headings,
     has_heading,
     iter_headings,
 )
+
+# Headings whose text, normalized, exactly equals one of these are the
+# canonical diagnosis/root-cause section — as opposed to a heading that
+# merely mentions the topic in a longer, unrelated title (#2263).
+_DIAGNOSIS_CANONICAL_HEADING_TEXTS = ("diagnosis", "root cause")
 
 # Back-compat alias so existing call sites that imported AmbiguityQuestion
 # continue to work; the canonical home for the type is the clarification
@@ -95,7 +101,9 @@ def _label_set(labels: list[str]) -> set[str]:
 
 
 def _detect_diagnosis_state(body: str) -> DiagnosisState:
-    section = extract_section(body, r"diagnosis|root cause")
+    section = extract_authoritative_section(
+        body, r"diagnosis|root cause", _DIAGNOSIS_CANONICAL_HEADING_TEXTS
+    )
     if section is None:
         return DiagnosisState.NO_DIAGNOSIS
     lowered = section.lower()

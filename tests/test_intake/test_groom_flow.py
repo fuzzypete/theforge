@@ -72,6 +72,80 @@ Tests sometimes fail flakily on CI.
 Tests pass deterministically.
 """
 
+# A shape-authored placeholder stub left in place above a landed artifact
+# (#2263, hdp#259). The stub is a non-canonical-level (### not ##) heading
+# that merely contains the word "diagnosis" in "no diagnosis yet".
+_SHADOWED_BY_PLACEHOLDER_CONFIRMED_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+### Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`.
+
+## Diagnosis
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Ruled out: agent role mismatch
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+"""
+
+# An ordinary operator-written prose heading that merely mentions the word
+# "diagnosis" above a landed artifact (#2263, fuzzypete/theforge#2673).
+_SHADOWED_BY_PROSE_HEADING_CONFIRMED_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+## Further evidence — generated diagnosis text becomes scope-classification input on rerun
+
+Some unrelated narrative about the diagnose flow itself.
+
+## Diagnosis
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Ruled out: agent role mismatch
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+"""
+
+_SHADOWED_BY_PLACEHOLDER_CAUSE_UNKNOWN_BUG_BODY = """\
+## What happened
+
+Reviewer agents sometimes write to the worktree.
+
+## What was expected
+
+Reviewers are read-only.
+
+### Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`.
+
+## Diagnosis
+
+- Observed symptom: intermittent worktree writes from review phase
+- Evidence: git log shows phantom commits
+- Ruled out: permission misconfig
+- Confirmed cause: not yet identified
+- Affected code path: TBD
+- Fix-success criterion: no review-phase worktree writes
+"""
+
 
 # ── Issue-loading seam ────────────────────────────────────────────────────
 
@@ -108,6 +182,27 @@ def test_classify_no_diagnosis():
 def test_classify_non_bug_returns_not_a_bug():
     state = classify_bug_diagnosis("body", ["enhancement"])
     assert state is BugDiagnosisState.NOT_A_BUG
+
+
+def test_landed_diagnosis_outranks_stale_placeholder_stub_above_it():
+    """A shape-authored placeholder stub left above a landed artifact must not
+    shadow it (#2263, hdp#259)."""
+    state = classify_bug_diagnosis(_SHADOWED_BY_PLACEHOLDER_CONFIRMED_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_landed_diagnosis_outranks_ordinary_prose_heading_above_it():
+    """An operator-written heading that merely mentions "diagnosis" must not
+    shadow a landed artifact below it (#2263, fuzzypete/theforge#2673)."""
+    state = classify_bug_diagnosis(_SHADOWED_BY_PROSE_HEADING_CONFIRMED_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_shadowed_inconclusive_diagnosis_is_cause_unknown_not_no_diagnosis():
+    """A genuinely inconclusive diagnosis is distinguishable from no diagnosis
+    at all, even when shadowed by an earlier placeholder heading."""
+    state = classify_bug_diagnosis(_SHADOWED_BY_PLACEHOLDER_CAUSE_UNKNOWN_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CAUSE_UNKNOWN
 
 
 # ── Three-state branching ─────────────────────────────────────────────────

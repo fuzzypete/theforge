@@ -972,3 +972,63 @@ class TestUpsertDiagnosisSection:
         new = upsert_diagnosis_section(body, "## Diagnosis\n\ncanonical new\n")
         assert "lowercase old" not in new
         assert "canonical new" in new
+
+    def test_replaces_non_h2_diagnosis_heading_instead_of_appending(self):
+        """A shape-authored ### Diagnosis placeholder must be reconciled in
+        place, not left standing beside a newly appended artifact (#2263)."""
+        body = (
+            "# Title\n\nIntro\n\n"
+            "### Diagnosis\n\nStatus: no diagnosis yet. Next step: run `forge diagnose`.\n"
+        )
+        new = upsert_diagnosis_section(body, "## Diagnosis\n\nLanded artifact content\n")
+        assert "no diagnosis yet" not in new
+        assert "Landed artifact content" in new
+        assert new.lower().count("diagnosis") == new.lower().count("## diagnosis")
+
+    def test_leaves_ordinary_prose_heading_mentioning_diagnosis_untouched(self):
+        body = (
+            "# Title\n\n"
+            "## Further evidence — generated diagnosis text becomes scope-classification input\n\n"
+            "narrative content\n\n"
+            "## Diagnosis\n\nOld content\n"
+        )
+        new = upsert_diagnosis_section(body, "## Diagnosis\n\nNew content\n")
+        assert (
+            "## Further evidence — generated diagnosis text becomes "
+            "scope-classification input" in new
+        )
+        assert "narrative content" in new
+        assert "Old content" not in new
+        assert "New content" in new
+
+    def test_reconciles_preexisting_duplicate_canonical_sections(self):
+        """A body that already carries two canonical Diagnosis sections (left
+        by a prior append-instead-of-replace bug) collapses to one on the
+        next landing, regardless of which duplicate came first (#2263)."""
+        body = (
+            "# Title\n\nIntro\n\n"
+            "## Diagnosis\n\nFirst old content\n\n"
+            "## Other section\n\nKeep me\n\n"
+            "## Diagnosis\n\nSecond old content\n"
+        )
+        new = upsert_diagnosis_section(body, "## Diagnosis\n\nReconciled content\n")
+        assert new.count("## Diagnosis") == 1
+        assert "First old content" not in new
+        assert "Second old content" not in new
+        assert "Reconciled content" in new
+        assert "Keep me" in new
+
+    def test_reconciles_placeholder_after_artifact_in_reversed_order(self):
+        """Order of the canonical sections in the body must not change the
+        outcome: a single canonical Diagnosis section survives either way."""
+        body = (
+            "# Title\n\nIntro\n\n"
+            "## Diagnosis\n\nLanded artifact\n\n"
+            "### Diagnosis\n\nStatus: no diagnosis yet.\n"
+        )
+        new = upsert_diagnosis_section(body, "## Diagnosis\n\nReconciled content\n")
+        assert new.lower().count("diagnosis") == new.lower().count("## diagnosis")
+        assert new.count("## Diagnosis") == 1
+        assert "Landed artifact" not in new
+        assert "no diagnosis yet" not in new
+        assert "Reconciled content" in new

@@ -64,6 +64,32 @@ COMPLETE_DIAGNOSIS_BODY = textwrap.dedent(
     """
 )
 
+# A complete, confirmed-cause diagnosis shadowed by an earlier heading that
+# merely mentions the word "diagnosis" — reproduces fuzzypete/theforge#2673,
+# where a genuinely landed artifact was still refused as needs_diagnosis
+# because the gate read the empty prose section above it (#2263).
+SHADOWED_COMPLETE_DIAGNOSIS_BODY = textwrap.dedent(
+    """\
+    ## What happened
+    Resume false-skips zero-delta APPROVE stories.
+
+    ## What was expected
+    Resume identifies them as already merged.
+
+    ## Further evidence — generated diagnosis text becomes scope-classification input on rerun
+
+    Some unrelated narrative about the diagnose flow itself.
+
+    ## Diagnosis
+
+    - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
+    - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
+    - **Confirmed cause.** `_is_already_merged` requires at least one commit ahead.
+    - **Affected code path.** sprint.runner._is_already_merged.
+    - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.
+    """
+)
+
 
 def _fetch_for(body: str, labels: list[str]):
     def fetch(_number, _root):
@@ -114,6 +140,19 @@ def test_complete_diagnosis_lands_on_runnable(tmp_path: Path) -> None:
     assert runnable["number"] == 3
     assert runnable["shape_verdict"] == ShapeVerdict.RUNNABLE.value
     assert VERDICT_DESCRIPTIONS[ShapeVerdict.RUNNABLE].strip() != ""
+
+
+def test_shadowed_complete_diagnosis_still_lands_on_runnable(tmp_path: Path) -> None:
+    """A landed diagnosis must outrank an earlier lookalike heading (#2263)."""
+    issues = [{"number": 4, "title": "Bug"}]
+    result = apply_shape_gate(
+        issues, tmp_path, fetch_detail=_fetch_for(SHADOWED_COMPLETE_DIAGNOSIS_BODY, ["bug"])
+    )
+    assert result.skipped == []
+    assert len(result.runnable) == 1
+    runnable = result.runnable[0]
+    assert runnable["number"] == 4
+    assert runnable["shape_verdict"] == ShapeVerdict.RUNNABLE.value
 
 
 def test_skipped_issue_state_fields_prefers_typed_verdict() -> None:

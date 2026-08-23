@@ -24,10 +24,12 @@ from theforge.shape_check.parsing import (
     FenceTracker,
     blockquote_blocks,
     extract_ac_section,
+    extract_authoritative_section,
     extract_bullets,
     extract_section,
     extract_top_level_bullet_blocks,
     fenced_code_blocks,
+    find_authoritative_heading,
     has_bug_body_headings,
     has_heading,
     iter_headings,
@@ -176,6 +178,13 @@ _OBSERVABLE_VERBS = (
 
 DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
 
+# Headings whose text, normalized, exactly equals one of these are the
+# canonical diagnosis section — as opposed to a heading that merely mentions
+# the word in a longer, unrelated title. Used to pick the authoritative
+# Diagnosis section when a body carries more than one heading matching
+# DIAGNOSIS_HEADING_PATTERN (#2263).
+DIAGNOSIS_CANONICAL_HEADING_TEXTS = ("diagnosis",)
+
 
 @dataclass(frozen=True)
 class TypeShapeRule:
@@ -282,7 +291,10 @@ def _bug_report_section_headings(body: str) -> list[str]:
         heading = _heading_text_for_pattern(body, pattern)
         if heading is not None and heading not in headings:
             headings.append(heading)
-    diagnosis = _heading_text_for_pattern(body, DIAGNOSIS_HEADING_PATTERN)
+    diagnosis_match = find_authoritative_heading(
+        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+    )
+    diagnosis = diagnosis_match.group(2).strip() if diagnosis_match is not None else None
     if diagnosis is not None and diagnosis not in headings:
         headings.append(diagnosis)
     return headings
@@ -437,7 +449,9 @@ def cause_assertion_state(body: str) -> str:
     A field written but left empty is a non-assertion, not an assertion: the
     record states no cause was found, and must never read as one (#2060).
     """
-    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    section = extract_authoritative_section(
+        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+    )
     if section is None:
         return "missing"
     value = _extract_confirmed_cause_value(section)
@@ -462,7 +476,9 @@ def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
     states is the job of :func:`cause_assertion_state` — the gate's only
     responsibility here is verifying the operator filled the slot at all.
     """
-    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    section = extract_authoritative_section(
+        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+    )
     if section is None:
         return False, ["missing Diagnosis section"]
     section_lower = section.lower()
@@ -498,7 +514,9 @@ def _diagnosis_unreadable_region_hint(body: str, missing: list[str]) -> str:
                     region_matches.append((region_name, ()))
                     break
                 continue
-            section = extract_section(region_body, DIAGNOSIS_HEADING_PATTERN)
+            section = extract_authoritative_section(
+                region_body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+            )
             if section is None:
                 continue
             section_lower = section.lower()
@@ -668,7 +686,9 @@ def _diagnosis_cause_unknown(body: str) -> bool:
     the vocabulary above cannot see an absence, and a producer that emits the
     label with nothing under it is reporting no cause, not a cause (#2060).
     """
-    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    section = extract_authoritative_section(
+        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+    )
     if section is None:
         return False
     if _UNRESOLVED_CAUSE_RE.search(section):
