@@ -1211,11 +1211,19 @@ class SprintBatchConfig:
 
 @dataclass(frozen=True)
 class SprintConfig:
-    """Project-level sprint defaults from forge.yaml."""
+    """Project-level sprint defaults from forge.yaml.
+
+    ``post_sprint_triage`` opts a project into a headless ``forge triage``
+    proposal pass after a sprint reaches its terminal result. It is **off by
+    default** and stays a proposal: the pass writes a pending operator decision
+    and never ratifies, so nothing is applied to a tracker without a person. A
+    failure in the pass is reported and never changes the sprint's outcome.
+    """
 
     max_parallel: int = 1
     worker_timeout_seconds: int = 3600
     batch: SprintBatchConfig = field(default_factory=SprintBatchConfig)
+    post_sprint_triage: bool = False
 
 
 @dataclass(frozen=True)

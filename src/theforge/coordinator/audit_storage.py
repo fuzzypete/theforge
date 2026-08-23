@@ -151,7 +151,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 36
+CURRENT_RECORD_SCHEMA_VERSION = 37
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2074,6 +2074,21 @@ def _migrate_v35_to_v36(record: dict) -> dict:
     return record
 
 
+def _migrate_v36_to_v37(record: dict) -> dict:
+    """Advance v36 records across the ``sprint.post_sprint_triage`` key (#2231).
+
+    ``configuration.recorded_values.entries`` enumerates every resolved config
+    key, so adding one changes the record's field set. v37 carries
+    ``sprint.post_sprint_triage``; a v36 record predates the setting entirely.
+    Backfilling a ``false`` here would claim the run resolved a key it never
+    had — the reader already distinguishes an absent key ("missing") from a
+    recorded one, and that is the honest answer for a run that could not have
+    triggered a post-sprint triage pass. So the migration is a no-op and the
+    stored record is never rewritten (ADR-0002 refusal-to-forget).
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2118,6 +2133,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     33: _migrate_v33_to_v34,
     34: _migrate_v34_to_v35,
     35: _migrate_v35_to_v36,
+    36: _migrate_v36_to_v37,
 }
 
 

@@ -64,6 +64,7 @@ def _args(**kwargs: object) -> argparse.Namespace:
     defaults = {
         "report": None,
         "ratify": None,
+        "discard": None,
         "output": None,
         "config": None,
         "current_milestone": None,
@@ -72,6 +73,17 @@ def _args(**kwargs: object) -> argparse.Namespace:
     }
     defaults.update(kwargs)
     return argparse.Namespace(**defaults)
+
+
+@pytest.fixture(autouse=True)
+def _operator_present(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Default these tests to an operator at the keyboard.
+
+    ``forge triage`` picks its mode from stdin (#2231), and a pytest process
+    never has a TTY — so without this every test in the file would exercise the
+    headless path. Tests that mean the headless path say so explicitly.
+    """
+    monkeypatch.setattr(cli_triage, "stdin_is_interactive", lambda: True)
 
 
 class _FakeConfig:
@@ -98,9 +110,29 @@ def _stub_flow(monkeypatch: pytest.MonkeyPatch, summary: ProposalRunSummary) -> 
         calls.append({"report": report, **kwargs})
         return summary
 
+    import theforge.coordinator.triage_headless_flow as headless_flow
     import theforge.coordinator.triage_proposal_flow as flow
 
     monkeypatch.setattr(flow, "run_triage_proposals", _run)
+    # The headless path reads the run back out of the audit substrate before it
+    # will publish a pending decision. These tests stub the proposal flow, so
+    # nothing was really recorded — stand in for the reload the real run would
+    # get. Its absence is covered as its own case in test_triage_headless.py.
+    monkeypatch.setattr(
+        headless_flow,
+        "_recorded_events",
+        lambda root, run_id: (
+            [
+                {
+                    "finding_id": "1312:audit-count",
+                    "issue_ref": "#1312",
+                    "disposition": "needs_verification",
+                    "proposal": {"disposition": "needs_verification"},
+                }
+            ]
+            * summary.findings_count
+        ),
+    )
     return calls
 
 
@@ -487,3 +519,246 @@ class TestCommand:
         )
         assert code == 1
         assert "--ratify cannot be combined with --report" in capsys.readouterr().err
+
+
+class TestHeadlessCommand:
+    """``forge triage`` with nobody at the keyboard (#2231)."""
+
+    @pytest.fixture(autouse=True)
+    def _no_operator(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setattr(cli_triage, "stdin_is_interactive", lambda: False)
+
+    def test_report_mode_persists_instead_of_only_printing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge import pending as _pending
+
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _stub_flow(monkeypatch, _summary(triage_run_id="run123"))
+
+        code = cli_triage.cmd_triage(
+            _args(report=str(report_path), config=str(config_path), no_audit=False)
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "pending operator decision written" in out
+        entry = _pending.find_triage_pending("run123", tmp_path)
+        assert entry is not None
+        assert entry["findings_count"] == 1
+
+    def test_bare_invocation_runs_the_whole_flow_and_persists(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A cron entry runs `forge triage` with no mode; it must still propose."""
+        import theforge.triage_backlog_report as backlog_mod
+        import theforge.triage_report as report_mod
+        from theforge import pending as _pending
+
+        config_path, _ = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            backlog_mod, "collect_backlog_report", lambda root, current_milestone=None: object()
+        )
+        monkeypatch.setattr(
+            backlog_mod,
+            "write_backlog_report",
+            lambda root, report, output_path=None: tmp_path / "backlog.yaml",
+        )
+        monkeypatch.setattr(
+            report_mod,
+            "load_backlog_report",
+            lambda path: BacklogReport(findings=(), source_path=str(path)),
+        )
+        calls = _stub_flow(monkeypatch, _summary(triage_run_id="run123"))
+
+        code = cli_triage.cmd_triage(_args(config=str(config_path), no_audit=False))
+        assert code == 0
+        assert len(calls) == 1
+        assert _pending.find_triage_pending("run123", tmp_path) is not None
+
+    def test_no_audit_is_refused_before_spending(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        calls = _stub_flow(monkeypatch, _summary())
+
+        code = cli_triage.cmd_triage(
+            _args(report=str(report_path), config=str(config_path), no_audit=True)
+        )
+        assert code == 1
+        assert "--no-audit cannot be used without an operator present" in capsys.readouterr().err
+        assert calls == []
+
+    def test_supersession_names_the_pending_run(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge import pending as _pending
+
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _pending.write_triage_pending("earlier", {"findings_count": 4}, project_root=tmp_path)
+        calls = _stub_flow(monkeypatch, _summary())
+
+        code = cli_triage.cmd_triage(
+            _args(report=str(report_path), config=str(config_path), no_audit=False)
+        )
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "triage-earlier" in err
+        assert calls == []
+
+    def test_an_unratifiable_run_fails_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge import pending as _pending
+
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _stub_flow(monkeypatch, _summary(triage_run_id="run123", audit_error="disk full"))
+
+        code = cli_triage.cmd_triage(
+            _args(report=str(report_path), config=str(config_path), no_audit=False)
+        )
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "disk full" in err
+        assert _pending.find_triage_pending("run123", tmp_path) is None
+
+    def test_ratify_is_refused_without_a_terminal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        import theforge.coordinator.triage_ratification_flow as ratify_flow
+
+        config_path, _ = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            ratify_flow,
+            "ratify_triage_run",
+            lambda *a, **k: pytest.fail("headless ratify must refuse before prompting"),
+        )
+
+        code = cli_triage.cmd_triage(
+            _args(ratify="run123", config=str(config_path), no_audit=False)
+        )
+        assert code == 1
+        assert "requires an interactive terminal" in capsys.readouterr().err
+
+
+class TestRatifyResolvesPending:
+    def test_pending_id_is_accepted_and_removed_when_every_outcome_is_terminal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge import pending as _pending
+        from theforge.triage_ratification import RatificationFindingOutcome, RatificationSummary
+
+        config_path, _ = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _pending.write_triage_pending("run123", {"findings_count": 1}, project_root=tmp_path)
+
+        seen: dict[str, object] = {}
+
+        def _ratify(run_id: str, config: object, **kwargs: object) -> RatificationSummary:
+            seen["run_id"] = run_id
+            return RatificationSummary(
+                triage_run_id=run_id,
+                findings=(
+                    RatificationFindingOutcome(
+                        finding_id="1312:audit-count",
+                        issue_ref="#1312",
+                        decision="accept",
+                        status="applied",
+                        disposition="needs_verification",
+                    ),
+                ),
+            )
+
+        import theforge.coordinator.triage_ratification_flow as ratify_flow
+
+        monkeypatch.setattr(ratify_flow, "ratify_triage_run", _ratify)
+
+        code = cli_triage.cmd_triage(
+            _args(ratify="triage-run123", config=str(config_path), no_audit=False)
+        )
+        assert code == 0
+        # The pending id resolved to the recorded run id the substrate holds.
+        assert seen["run_id"] == "run123"
+        assert "resolved and removed" in capsys.readouterr().out
+        assert _pending.find_triage_pending("run123", tmp_path) is None
+
+    def test_pending_is_kept_when_a_finding_is_not_terminal(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge import pending as _pending
+        from theforge.triage_ratification import RatificationFindingOutcome, RatificationSummary
+
+        config_path, _ = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _pending.write_triage_pending("run123", {"findings_count": 1}, project_root=tmp_path)
+
+        import theforge.coordinator.triage_ratification_flow as ratify_flow
+
+        monkeypatch.setattr(
+            ratify_flow,
+            "ratify_triage_run",
+            lambda run_id, config, **k: RatificationSummary(
+                triage_run_id=run_id,
+                findings=(
+                    RatificationFindingOutcome(
+                        finding_id="1312:audit-count",
+                        issue_ref="#1312",
+                        decision="accept",
+                        status="failed",
+                        disposition="punt",
+                    ),
+                ),
+            ),
+        )
+
+        code = cli_triage.cmd_triage(
+            _args(ratify="run123", config=str(config_path), no_audit=False)
+        )
+        assert code == 0
+        assert "kept" in capsys.readouterr().out
+        assert _pending.find_triage_pending("run123", tmp_path) is not None
+
+    def test_discard_removes_the_record_without_applying(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge import pending as _pending
+
+        config_path, _ = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _pending.write_triage_pending("run123", {"findings_count": 7}, project_root=tmp_path)
+
+        import theforge.coordinator.triage_ratification_flow as ratify_flow
+
+        monkeypatch.setattr(
+            ratify_flow,
+            "ratify_triage_run",
+            lambda *a, **k: pytest.fail("--discard must not ratify"),
+        )
+
+        code = cli_triage.cmd_triage(
+            _args(discard="triage-run123", config=str(config_path), no_audit=False)
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "no disposition was applied" in out
+        assert _pending.find_triage_pending("run123", tmp_path) is None
+
+    def test_discard_of_an_unknown_id_fails_legibly(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path, _ = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        code = cli_triage.cmd_triage(
+            _args(discard="nope", config=str(config_path), no_audit=False)
+        )
+        assert code == 1
+        assert "no pending triage decision matches" in capsys.readouterr().err
+
+    def test_parser_accepts_discard_mode(self) -> None:
+        args = build_parser().parse_args(["triage", "--discard", "triage-run123"])
+        assert args.discard == "triage-run123"

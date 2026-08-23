@@ -611,6 +611,12 @@ def _pending_entry_is_live(entry: dict) -> bool:
     """
     if entry.get("decision"):
         return False
+    # A triage record shares the directory but is not a story gate: no story is
+    # held at it and no process owns it. It is pid-less by construction, so this
+    # would already fall through — the kind check makes the exclusion explicit
+    # rather than a consequence of a field being absent.
+    if str(entry.get("kind") or "").strip() == "triage":
+        return False
     pid = entry.get("pid")
     try:
         owner_pid = int(pid)
