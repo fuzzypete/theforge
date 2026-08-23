@@ -318,16 +318,16 @@ def test_cause_unknown_refusal_keeps_phrase_advice_out_of_skip_codes() -> None:
 # ── classify_admissibility: needs-grooming label ────────────────────────────
 
 
-def test_needs_grooming_label_refuses_an_otherwise_runnable_issue() -> None:
+def test_needs_grooming_label_admits_an_otherwise_runnable_issue() -> None:
+    # ADR-0003 clause 2: a label-only refusal (no concomitant local blocking
+    # finding) is invalid and must not drop an issue.
     verdict = classify_admissibility(
         "Add a flag", _RUNNABLE_BODY, ["enhancement", NEEDS_GROOMING_LABEL]
     )
 
-    assert verdict.admissible is False
-    assert verdict.source == "label"
-    # Nothing blocking in the live check, so the label's own code stands in.
-    assert verdict.reason_codes == ("needs_grooming_label",)
-    assert NEEDS_GROOMING_LABEL in verdict.detail
+    assert verdict.admissible is True
+    assert verdict.source == "local_check"
+    assert verdict.reason_codes == ()
 
 
 def test_needs_grooming_label_surfaces_live_blocking_findings() -> None:

@@ -168,9 +168,12 @@ def test_label_skip_uses_live_reason_details_when_issue_is_tracking_only(
     assert "Label 'epic' present" in entry.detail
 
 
-def test_label_skip_falls_back_to_label_detail_when_live_check_is_runnable(
+def test_label_only_skip_admits_issue_when_live_check_is_runnable(
     tmp_path: Path,
 ) -> None:
+    """ADR-0003 clause 2: a needs-grooming label with no concomitant local
+    blocking finding is never terminal on its own — the issue dispatches.
+    """
     issues = [{"number": 8, "title": "Label only"}]
 
     result = apply_shape_gate(
@@ -179,12 +182,8 @@ def test_label_skip_falls_back_to_label_detail_when_live_check_is_runnable(
         fetch_detail=_fake_detail(_RUNNABLE_BODY, [NEEDS_GROOMING_LABEL, "enhancement"]),
     )
 
-    assert result.runnable == []
-    assert len(result.skipped) == 1
-    entry = result.skipped[0]
-    assert entry.source == "label"
-    assert entry.reason_codes == ("needs_grooming_label",)
-    assert entry.detail == "issue carries 'needs-grooming' label"
+    assert [i["number"] for i in result.runnable] == [8]
+    assert result.skipped == []
 
 
 # ── Live-run evidence criterion (#1735) ─────────────────────────────────────
@@ -240,7 +239,10 @@ def test_intake_remediated_issue_with_stale_grooming_label_runs(tmp_path: Path) 
 
 def test_intake_remediated_set_does_not_rescue_unrelated_issues(tmp_path: Path) -> None:
     """The suppression is per-issue: a remediated issue is rescued, an
-    unrelated needs-grooming issue is still skipped on the same call.
+    unrelated needs-grooming issue with a genuinely broken body is still
+    skipped on the same call. (A needs-grooming label alone, with no
+    concomitant local blocking finding, is never terminal — ADR-0003
+    clause 2 — so the unrescued issue here must still fail its local check.)
     """
     issues = [
         {"number": 1545, "title": "Just-remediated"},
@@ -248,9 +250,10 @@ def test_intake_remediated_set_does_not_rescue_unrelated_issues(tmp_path: Path) 
     ]
 
     def fetch(number, _project_root):
+        body = _RUNNABLE_BODY if number == 1545 else _BAD_BODY
         return {
             "title": f"#{number}",
-            "body": _RUNNABLE_BODY,
+            "body": body,
             "labels": [NEEDS_GROOMING_LABEL, "enhancement"],
         }
 
