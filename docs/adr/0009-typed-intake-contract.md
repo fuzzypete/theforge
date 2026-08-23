@@ -1,0 +1,149 @@
+# ADR-0009: Typed Intake Contract
+
+- **Status:** Proposed
+- **Date:** 2026-08-23
+- **Deciders:** Peter Wickersham (project lead), with iterative review by Claude and Codex
+- **Affected milestones:** v0.16.0
+- **Supersedes in part:** ADR-0001 (intake readiness workflow — its lifecycle stands; its
+  implicit "the checker is the contract" model does not)
+- **Related ADRs:** ADR-0001 (intake readiness workflow), ADR-0003 (intake state authority
+  and label reconciliation — its single-recognition principle is generalized here)
+
+---
+
+## Context
+
+TheForge validates issue bodies at several gates: `forge shape`, `forge groom`, the
+ambient shape-check Action, and sprint admission. There is no shared specification of what
+a well-formed issue is. Each gate reads the same `shape_check` module, and the module's
+implementation *is* the contract — there is no artifact that states it independently.
+
+Three consequences have been observed in the corpus rather than predicted.
+
+**The system returns two readiness answers for one document.** `shape_check.check()`
+produces a list of `Reason` objects carrying a severity. Two functions then reduce that
+list, and they disagree by construction. `_mapping.map_shape` filters by severity — only
+`Severity.BLOCKING` reasons downgrade a document, so an advisory yields
+`Shape.RUNNABLE`. `verdict.derive_verdict` maps by code through a hand-ordered
+precedence table that ignores severity, so the advisory code `no_observable_done_state`
+yields `ShapeVerdict.NEEDS_GROOMING_MISSING_AC`. Issue #2230 evaluates as
+`shape: runnable` and `verdict: needs_grooming_missing_ac` simultaneously. Sprint
+admission consumes the first; `forge shape` and `forge groom` report the second. An
+operator reading "needs grooming" and a scheduler reading "runnable" are both reading the
+system correctly.
+
+**Documentation of the contract cannot stay true.** The rules exist once, in the checker,
+and every prose restatement has drifted from it. `docs/guides/authoring.md` names six of
+the thirty enforced acceptance-criterion verbs, inside a section about refactors, and
+states neither that the list is closed nor that it is tense-sensitive — `writes` satisfies
+it and `written` does not. `docs/reference/bug-shape.md` covers the Diagnosis bullets and
+nothing else. The `implementation_plan_in_body` rule appears only in ADR-0003 and the
+changelog. No command emits the rules; an author discovers each one by submitting a body
+and reading the refusal.
+
+**Producers emit bodies their own consumers refuse.** The post-run hook files findings
+with no type label, so the classifier evaluates defect reports as features and demands
+acceptance criteria from them (#2713). `forge diagnose` appends a Diagnosis section whose
+`file:line` citations trip `implementation_plan_in_body` on non-bug issues (#2136).
+`forge groom`, run on an untyped finding, scaffolds the feature sections the classifier
+asked for, and those sections then contradict the type label when one is added.
+
+These are not separate defects. They are what follows from having no contract: nothing to
+derive a single answer from, nothing to render documentation from, and nothing for a
+producer to render against.
+
+## Decision
+
+**1. A declarative typed specification is the contract.** A per-type `IssueShapeSpec`
+declares canonical type label, section headings and their order, which sections are
+required and which are forbidden, field-level constraints, and lifecycle states. The
+specification is data. The checker validates against it, documentation is rendered from
+it, and producers render through it. Markdown is a rendering of the structure, never the
+structure itself.
+
+**2. Evaluation returns four separable results, not one enum.** Compressing distinct
+questions into a single readiness value is what produced the two-answer defect. A result
+carries:
+
+- **Structural status** — does the document satisfy the typed grammar?
+- **Admission** — may it enter implementation?
+- **Routing recommendation** — what should happen to it next?
+- **Advisories** — non-blocking observations that inform a reader and decide nothing.
+
+**3. One admission answer, consumed everywhere.** `forge shape`, `forge groom`, the ready
+queue, the ambient relabeler, and sprint admission consume the same admission result. No
+surface derives its own. This generalizes ADR-0003's principle — a body admitted by one
+gate must not be refused by another — from heading recognition to the whole evaluation.
+
+**4. Advisories never decide admission.** An advisory is an observation. Where a condition
+must block, it is a structural rule or an explicit lifecycle rule and says so.
+`diagnosis_cause_unknown` is non-admissible because the lifecycle requires a confirmed
+cause before implementation, not because an advisory code won a position in a precedence
+table.
+
+**5. Syntax and judgment are separated.** Structural validation answers only mechanical
+questions: is the type declared, are required sections present, are forbidden sections
+absent, do declared relationships resolve. Whether an acceptance criterion is meaningful,
+sufficiently precise, or expresses the author's intent is a semantic question and does not
+belong in the structural gate. Presence of acceptance-criterion bullets is structural;
+whether they are observable is semantic. The closed verb list is retired as an admission
+input.
+
+**6. Semantic review is a distinct, explicitly probabilistic stage.** It may not alter
+structural validity, and it may not be implemented by adding heuristics to the structural
+gate. Its findings identify the model, prompt, and version that produced them.
+`STRUCTURALLY_VALID` is a factual claim about grammar; `REVIEWED_READY` means a recorded
+semantic review was passed, not that the document is mechanically proven sound. Review
+findings are operator-ratifiable rather than silently authoritative.
+
+**7. Every producer renders and pre-validates.** Any component that writes an issue body —
+`shape`, `groom`, `diagnose`, `report`, the post-run hook — renders through the
+specification and validates the result before mutating anything. A producer that cannot
+produce a conforming body fails loudly rather than filing an object that is dead on
+arrival. Producer conformance is covered by tests, not by convention.
+
+## Consequences
+
+**A canonical spelling must be chosen.** ADR-0003's single-recognition principle led
+`shape_check` to accept both `What happened` / `What was expected` and `Observed` /
+`Expected` (#2139), correctly, so that one gate could not refuse what another admitted.
+But nothing declared which is canonical, so `intake/shape_render.py` emits `Observed`
+while `docs/guides/authoring.md` mandates `What happened`. Compatibility aliases became an
+accidental contract. Recognition of both continues; the specification names one canonical
+form, and renderers emit that form.
+
+**Documentation becomes generated.** Prose that restates the rules is replaced by
+rendering from the specification, verified in CI. Guides continue to carry worked examples
+and rationale, which are not derivable.
+
+**The verdict precedence table is retired.** It presently carries routing decisions rather
+than readiness — `implementation_plan_in_body` maps to `ADR_CANDIDATE`, and
+`bug_fix_location_prescription` maps to `RUNNABLE`. Those are routing recommendations, and
+they move to the routing result rather than being compressed into a readiness enum.
+
+**Existing intake work is re-scoped, not discarded.** #2510's canonicalization work stands;
+its premise that #2139 loosened the contract to match the corpus does not, and is corrected
+here. #2408 is re-framed as a front end that compiles typed fields into a canonical
+rendering, and its present criterion — that the authoring path name the vocabulary that
+counts as observable — is withdrawn, because it would make the closed verb list permanent.
+
+**A conforming document may still be wrong.** #2408 satisfies the structural gate today
+while encoding the defect above. That is the clearest available evidence for clause 5: a
+structural gate can establish that an object conforms to the contract, and cannot
+establish that the contract it conforms to is correct. Only semantic review reaches that,
+and only probabilistically.
+
+## Alternatives considered
+
+**Generate documentation from the checker.** Keeps the implementation as truth and makes
+prose a derivative. Removes doc drift but freezes the current implementation as the
+specification, including the closed verb list and the two-answer reduction. Rejected: it
+solves the symptom that is cheapest to see.
+
+**Fix the two reductions to agree.** Choosing `_mapping` or `verdict` as authoritative and
+deleting the other. Rejected: both compress separable concerns into misleading enums, and
+agreeing on one compression preserves the defect that produced the disagreement.
+
+**Add the missing rules to the authoring guide.** The response to every previous instance,
+and the reason there are now four partial restatements. Rejected: a fifth is a fifth thing
+to drift.
