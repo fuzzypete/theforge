@@ -230,6 +230,38 @@ Secrets propagate.
 - Fix-success criterion: .env present after worktree creation
 """
 
+# A genuine, inconclusive diagnosis whose *evidence* quotes the literal
+# `<fill in>` marker as prose (describing a bug in the marker itself),
+# competing with a second, stale Diagnosis-headed section that is only loose
+# prose. The real section must win: it carries real content in every field
+# except confirmed-cause, and quoting the marker string is not the same as
+# a field's value *being* the marker (#2263 review cycle 3).
+_INCONCLUSIVE_DIAGNOSIS_QUOTING_MARKER_BUG_BODY = """\
+## What happened
+
+The shape scaffold's placeholder marker leaks into rendered issue bodies.
+
+## What was expected
+
+Rendered bodies never contain literal scaffold markers.
+
+## Diagnosis
+
+- **Observed symptom:** rendered Diagnosis sections sometimes contain the
+  literal text `<fill in>` where a real value was expected.
+- **Evidence:** issue #2263's rendered body shows `<fill in>` verbatim under
+  the Confirmed cause bullet, quoted here as evidence of the leak itself.
+- **Confirmed cause:** not yet identified
+- **Affected code path:** intake/shape_render.py
+- **Fix-success criterion:** rendered bodies never contain the literal
+  scaffold marker text.
+
+## Diagnosis
+
+Some loose prose left over from an earlier draft of this issue, with no
+bolded component labels at all.
+"""
+
 
 # ── Issue-loading seam ────────────────────────────────────────────────────
 
@@ -312,6 +344,15 @@ def test_root_cause_heading_alone_is_recognized_as_diagnosed():
     undiagnosed (#2263 review cycle 2)."""
     state = classify_bug_diagnosis(_ROOT_CAUSE_ONLY_HEADING_CONFIRMED_BUG_BODY, ["bug"])
     assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_inconclusive_diagnosis_quoting_marker_outranks_stale_loose_prose():
+    """A genuine diagnosis that quotes the shape scaffold's `<fill in>`
+    marker as prose (not as a field's actual value) must still outrank a
+    stale, unlabeled lookalike section — and must classify as CAUSE_UNKNOWN,
+    not NO_DIAGNOSIS (#2263 review cycle 3)."""
+    state = classify_bug_diagnosis(_INCONCLUSIVE_DIAGNOSIS_QUOTING_MARKER_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CAUSE_UNKNOWN
 
 
 # ── Three-state branching ─────────────────────────────────────────────────
