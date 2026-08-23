@@ -1,0 +1,56 @@
+schema_version: 2
+run_id: 9c6db18e5727
+authoritative_run_record: .forge/audits/runs/9c6db18e5727.json
+generated_at: '2026-08-23T14:39:56.809475+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.004878749999999999
+story:
+  slug: issue-2690
+  name: '[P2] issue-2227: A finding body that names a module by its dotted-free p'
+  github_issue: 2690
+story_shape:
+  work_type: bug
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/triage_backlog_report.py
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: The staleness check for cited paths was adjusted so slash-delimited
+    module references without an extension are resolved against tracked source files
+    before they are treated as absent. Targeted tests were added around extensionless
+    module citations and the resulting stale-versus-unverified classification.
+  approach: The fix stayed within the backlog-report path-presence pipeline, teaching
+    path resolution to try conventional source-file forms for extensionless tracked-root
+    citations and verifying the behavior with focused regression cases.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- extensionless-module-citation
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review confirmed the issue was resolved by handling extensionless slash-delimited
+    module citations during path-presence evaluation.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.5574704999999998
+  dominant_difficulty: Identifying the actual staleness mechanism despite the issue
+    report pointing at the wrong module/function.

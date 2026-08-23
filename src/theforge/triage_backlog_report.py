@@ -522,13 +522,45 @@ def _symbol_hits(
     return deduped
 
 
+def _resolve_extensionless_path(project_root: Path, relpath: str) -> str | None:
+    """Resolve a dotted-free path citation against known source extensions.
+
+    A citation like ``src/theforge/cli/triage`` names a module by its
+    extensionless import-style path even though the tracked artifact on disk
+    is ``src/theforge/cli/triage.py``. Trying the repository's known source
+    extensions before declaring the citation absent keeps STALE verdicts
+    resting on a check that would actually have succeeded had the artifact
+    still existed.
+    """
+    if relpath.endswith(_PATH_SUFFIXES):
+        return None
+    for suffix in _PATH_SUFFIXES:
+        candidate = f"{relpath}{suffix}"
+        if (project_root / candidate).exists():
+            return candidate
+    return None
+
+
+def _resolved_repo_relpath(project_root: Path, relpath: str) -> str:
+    """Return relpath as-is if it exists, else its extension-resolved form if any."""
+    if (project_root / relpath).exists():
+        return relpath
+    extension_match = _resolve_extensionless_path(project_root, relpath)
+    return extension_match if extension_match is not None else relpath
+
+
 def _path_is_mechanically_attributable(
     citation: PathCitation,
     *,
     project_root: Path,
     relpath: str,
 ) -> bool:
-    return "/" in citation.path or (project_root / relpath).exists()
+    resolved = _resolved_repo_relpath(project_root, relpath)
+    if (project_root / resolved).exists():
+        return True
+    if not resolved.endswith(_PATH_SUFFIXES):
+        return False
+    return "/" in citation.path
 
 
 def _path_presence_evidence(
@@ -537,6 +569,7 @@ def _path_presence_evidence(
     project_root: Path,
 ) -> list[EvidenceEntry]:
     relpath = _normalize_repo_path(project_root, citation.path)
+    relpath = _resolved_repo_relpath(project_root, relpath)
     absolute = project_root / relpath
     checked: list[EvidenceEntry] = []
     line_label = _line_label(relpath, citation)
@@ -853,8 +886,9 @@ def build_backlog_report(
                 project_root=project_root,
                 relpath=relpath,
             ):
-                normalized_paths.append(relpath)
-                churn_paths.setdefault(relpath, None)
+                resolved_relpath = _resolved_repo_relpath(project_root, relpath)
+                normalized_paths.append(resolved_relpath)
+                churn_paths.setdefault(resolved_relpath, None)
 
         for relpath in churn_paths:
             checked, failed = _path_churn_evidence(
