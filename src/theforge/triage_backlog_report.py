@@ -484,8 +484,12 @@ def _symbol_hits(
     symbol: str,
     candidate_paths: tuple[str, ...] = (),
 ) -> list[tuple[str, int]]:
-    cmd = ["rg", "--line-number", "--fixed-strings", symbol]
-    cmd.extend(candidate_paths or ["."])
+    search_roots = [path for path in candidate_paths if (project_root / path).exists()]
+    if candidate_paths and not search_roots:
+        raise RuntimeError("symbol search had no resolvable candidate paths")
+
+    cmd = ["rg", "--line-number", "--with-filename", "--fixed-strings", symbol]
+    cmd.extend(search_roots or ["."])
     try:
         proc = subprocess.run(
             cmd,
@@ -497,7 +501,7 @@ def _symbol_hits(
         )
     except FileNotFoundError:
         proc = subprocess.run(
-            ["git", "grep", "-n", "-F", symbol, "--", *(candidate_paths or ["."])],
+            ["git", "grep", "-n", "-F", symbol, "--", *(search_roots or ["."])],
             capture_output=True,
             text=True,
             cwd=str(project_root),

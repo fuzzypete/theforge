@@ -270,6 +270,49 @@ class TestBuildBacklogReport:
             for e in finding.evidence
         )
 
+    def test_symbol_search_ignores_unresolvable_candidate_paths_when_resolvable_ones_exist(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def ExampleSymbol():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(28, "Evidence: `src/demo.py`, `src/missing.py`, and `ExampleSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 2,
+        )
+
+        finding = report.findings[0]
+        evidence_ids = {entry.evidence_id for entry in finding.evidence}
+        assert finding.verification_status == STATUS_STALE
+        assert "symbol:ExampleSymbol:present" in evidence_ids
+        assert "symbol:ExampleSymbol:churn" in evidence_ids
+        assert "symbol:ExampleSymbol:lookup-unverified" not in evidence_ids
+
+    def test_symbol_search_stays_unverified_when_all_candidate_paths_are_unresolvable(
+        self, tmp_path: Path
+    ) -> None:
+        report = build_backlog_report(
+            [_issue(29, "Evidence: `src/missing.py` and `ExampleSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            entry.evidence_id == "symbol:ExampleSymbol:lookup-unverified"
+            and "no resolvable candidate paths" in entry.detail
+            for entry in finding.evidence
+        )
+
     def test_marks_unverified_when_no_checkable_citation_can_be_parsed(
         self, tmp_path: Path
     ) -> None:
