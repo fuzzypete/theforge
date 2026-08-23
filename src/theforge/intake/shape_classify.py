@@ -17,7 +17,11 @@ from dataclasses import dataclass
 from enum import Enum
 
 from theforge.intake.clarification import ClarificationQuestion, for_situation
-from theforge.shape_check.heuristics import diagnosis_completeness_score
+from theforge.shape_check.heuristics import (
+    DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+    DIAGNOSIS_HEADING_PATTERN,
+    diagnosis_completeness_score,
+)
 from theforge.shape_check.parsing import (
     extract_ac_section,
     extract_authoritative_section,
@@ -26,11 +30,6 @@ from theforge.shape_check.parsing import (
     has_heading,
     iter_headings,
 )
-
-# Headings whose text, normalized, exactly equals one of these are the
-# canonical diagnosis/root-cause section — as opposed to a heading that
-# merely mentions the topic in a longer, unrelated title (#2263).
-_DIAGNOSIS_CANONICAL_HEADING_TEXTS = ("diagnosis", "root cause")
 
 # Back-compat alias so existing call sites that imported AmbiguityQuestion
 # continue to work; the canonical home for the type is the clarification
@@ -104,8 +103,8 @@ def _label_set(labels: list[str]) -> set[str]:
 def _detect_diagnosis_state(body: str) -> DiagnosisState:
     section = extract_authoritative_section(
         body,
-        r"diagnosis|root cause",
-        _DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
         diagnosis_completeness_score,
     )
     if section is None:

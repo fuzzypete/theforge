@@ -839,12 +839,12 @@ def render_already_resolved_markdown(
     return "\n".join(lines)
 
 
-# Local, minimal heading scan for the canonical-heading check below. This
-# module is pure-data / stdlib-only by contract, so it does not import
-# shape_check.parsing's heading machinery even though the concept (a
-# "canonical" heading, any level, exact text) is shared with
-# theforge.shape_check.heuristics.DIAGNOSIS_CANONICAL_HEADING_TEXTS and
-# theforge.intake.shape_classify's equivalent — keep the two in sync by hand.
+# Local, minimal heading scan for the reconciliation below. This module is
+# pure-data / stdlib-only by contract, so it does not import
+# shape_check.parsing's heading machinery. The heading text a landing call
+# reconciles is not a fixed list to keep in sync — it is read directly off
+# section_markdown's own leading heading (see _leading_heading_text), so
+# only headings matching what is actually being landed are ever touched.
 _HEADING_LINE_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 _FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 

@@ -176,6 +176,60 @@ Status: no diagnosis yet. Next step: run `forge diagnose`.
 - Fix-success criterion: no review-phase worktree writes
 """
 
+# A genuine, complete cause-unknown diagnosis followed by an entirely
+# unfilled `forge shape` scaffold — every required label present, every
+# value the literal `<fill in>` slot marker. Label-count alone cannot tell
+# these apart; the scaffold must never outrank the real (if inconclusive)
+# diagnosis that precedes it (#2263 review cycle 2).
+_CAUSE_UNKNOWN_FOLLOWED_BY_UNFILLED_SCAFFOLD_BUG_BODY = """\
+## What happened
+
+Reviewer agents sometimes write to the worktree.
+
+## What was expected
+
+Reviewers are read-only.
+
+## Diagnosis
+
+- **Observed symptom:** intermittent worktree writes from review phase
+- **Evidence:** git log shows phantom commits
+- **Confirmed cause:** not yet identified
+- **Affected code path:** TBD
+- **Fix-success criterion:** no review-phase worktree writes
+
+## Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`.
+
+- **Observed symptom:** <fill in>
+- **Evidence:** <fill in>
+- **Confirmed cause:** <fill in>
+- **Affected code path:** <fill in>
+- **Fix-success criterion:** <fill in>
+"""
+
+# A bug whose diagnosis narrative lives entirely under a "Root cause"
+# heading rather than "Diagnosis" — the classifier and the gate must agree
+# it is diagnosed (#2263 review cycle 2).
+_ROOT_CAUSE_ONLY_HEADING_CONFIRMED_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+## Root cause
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+"""
+
 
 # ── Issue-loading seam ────────────────────────────────────────────────────
 
@@ -240,6 +294,23 @@ def test_complete_artifact_outranks_longer_stale_placeholder_after_it():
     length or document position: a longer, later placeholder must not
     outrank an earlier, complete, confirmed-cause artifact (#2263)."""
     state = classify_bug_diagnosis(_ARTIFACT_BEFORE_LONGER_STALE_PLACEHOLDER_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_cause_unknown_artifact_outranks_unfilled_scaffold_after_it():
+    """An unfilled `forge shape` scaffold lists every required label, so
+    label count alone cannot distinguish it from a genuine artifact — it
+    must never outrank a real, if inconclusive, diagnosis that precedes it,
+    and must never itself read as an asserted cause (#2263 review cycle 2)."""
+    state = classify_bug_diagnosis(_CAUSE_UNKNOWN_FOLLOWED_BY_UNFILLED_SCAFFOLD_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CAUSE_UNKNOWN
+
+
+def test_root_cause_heading_alone_is_recognized_as_diagnosed():
+    """The classifier and the gate must agree: a bug whose diagnosis lives
+    under "## Root cause" (not "## Diagnosis") is diagnosed, not
+    undiagnosed (#2263 review cycle 2)."""
+    state = classify_bug_diagnosis(_ROOT_CAUSE_ONLY_HEADING_CONFIRMED_BUG_BODY, ["bug"])
     assert state is BugDiagnosisState.CONFIRMED_CAUSE
 
 

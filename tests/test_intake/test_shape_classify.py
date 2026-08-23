@@ -89,6 +89,22 @@ def test_landed_diagnosis_outranks_stale_placeholder_below_it():
     assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
 
 
+def test_root_cause_heading_alone_detects_confirmed_cause():
+    """The classifier must agree with the shape gate's own DIAGNOSIS_HEADING_PATTERN
+    about what counts as a diagnosis-shaped heading: a body whose analysis
+    lives entirely under "## Root cause" is diagnosed, not undiagnosed
+    (#2263 review cycle 2)."""
+    body = (
+        "## Observed\nfoo\n\n## Expected\nbar\n\n"
+        "## Root cause\n\n"
+        "**Confirmed cause:** regression in module X.\n\n"
+        "**Affected code path:** src/module_x.py\n"
+    )
+    proposal = classify("bug: regression", body, ["bug"])
+    assert proposal.classification is Classification.BUG
+    assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
+
+
 def test_classifies_enhancement_by_ac_section():
     proposal = classify(
         title="add forge shape command",

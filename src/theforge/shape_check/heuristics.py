@@ -176,14 +176,19 @@ _OBSERVABLE_VERBS = (
     "reject",
 )
 
-DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
+# "root cause" is included alongside "diagnosis" so the gate agrees with
+# theforge.intake.shape_classify's diagnosis-state detection about what
+# counts as a diagnosis-shaped heading — a body whose analysis lives under
+# "## Root cause" must not be treated as diagnosed by the classifier while
+# the gate simultaneously reports the Diagnosis section missing (#2263).
+DIAGNOSIS_HEADING_PATTERN = r"diagnosis|root cause"
 
 # Headings whose text, normalized, exactly equals one of these are the
 # canonical diagnosis section — as opposed to a heading that merely mentions
 # the word in a longer, unrelated title. Used to pick the authoritative
 # Diagnosis section when a body carries more than one heading matching
 # DIAGNOSIS_HEADING_PATTERN (#2263).
-DIAGNOSIS_CANONICAL_HEADING_TEXTS = ("diagnosis",)
+DIAGNOSIS_CANONICAL_HEADING_TEXTS = ("diagnosis", "root cause")
 
 
 @dataclass(frozen=True)
@@ -355,6 +360,12 @@ _NON_ASSERTION_CAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"^\s*_*\(?\s*(?:empty|none(?:\s+recorded)?|not\s+recorded|n/?a)\s*\)?_*\s*$",
         re.IGNORECASE,
     ),
+    # The `<fill in>` slot marker `forge shape`'s own scaffold
+    # (intake.shape_render._diagnosis_bullets) writes for every component
+    # value in a freshly-appended Diagnosis section. Unfilled shape
+    # scaffolding is never a cause claim, however label-complete it reads
+    # (#2263).
+    re.compile(r"^\s*<\s*fill\s+in\s*>\s*$", re.IGNORECASE),
 )
 
 # Status labels operators can apply to a bug to communicate fix-readiness intent.
@@ -435,6 +446,13 @@ def _is_non_assertion_cause(value: str) -> bool:
     return any(pattern.match(value) for pattern in _NON_ASSERTION_CAUSE_PATTERNS)
 
 
+# Matches anywhere in a section — unlike the confirmed-cause-only pattern in
+# _NON_ASSERTION_CAUSE_PATTERNS, this flags *any* unfilled `<fill in>` slot in
+# the section so a `forge shape` scaffold that lists every required label but
+# fills none of them scores as unfilled scaffolding, not a genuine artifact.
+_SCAFFOLD_PLACEHOLDER_RE = re.compile(r"<\s*fill\s+in\s*>", re.IGNORECASE)
+
+
 def diagnosis_completeness_score(section: str) -> int:
     """Rank a candidate Diagnosis section by how much of the required shape
     it actually satisfies, so a complete, confirmed-cause artifact outranks
@@ -447,12 +465,21 @@ def diagnosis_completeness_score(section: str) -> int:
     an asserted cause always outranks any token-count tie, matching the
     same "asserted beats non-asserted beats missing" ordering
     :func:`cause_assertion_state` reports.
+
+    A section still carrying `forge shape`'s own unfilled `<fill in>` scaffold
+    marker is heavily penalized regardless of how many required labels it
+    lists: listing every label is exactly what the scaffold does by
+    construction, so label count alone cannot tell a genuine artifact from
+    unfilled scaffolding. Any section with real content — even an
+    inconclusive, cause-unknown diagnosis — must outrank it (#2263).
     """
     section_lower = section.lower()
     score = sum(1 for tok in REQUIRED_DIAGNOSIS_TOKENS if tok in section_lower)
     cause_value = _extract_confirmed_cause_value(section)
     if cause_value and not _is_non_assertion_cause(cause_value):
         score += len(REQUIRED_DIAGNOSIS_TOKENS) + 1
+    if _SCAFFOLD_PLACEHOLDER_RE.search(section):
+        score -= len(REQUIRED_DIAGNOSIS_TOKENS) + 1
     return score
 
 
