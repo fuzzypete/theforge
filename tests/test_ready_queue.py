@@ -153,10 +153,14 @@ def test_build_marks_enhancement_in_bug_shape_as_type_shape_contradiction(
     assert entry.detail.startswith("enhancement body carries bug-report-shape sections")
 
 
-def test_build_marks_needs_grooming_labeled_issue_not_admissible(tmp_path: Path) -> None:
+def test_build_admits_needs_grooming_labeled_issue_when_body_is_well_shaped(
+    tmp_path: Path,
+) -> None:
+    # ADR-0003 clause 2: a needs-grooming label with no concomitant local
+    # blocking finding is never terminal on its own.
     issues = [_issue(1900, "well shaped but flagged", ["ready", "enhancement", "needs-grooming"])]
     entry = build_ready_queue(tmp_path, fetch_issues=lambda: issues)[0]
-    assert entry.admissible is False
+    assert entry.admissible is True
 
 
 def test_build_marks_operator_action_issue_not_admissible(tmp_path: Path) -> None:

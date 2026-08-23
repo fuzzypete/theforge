@@ -341,8 +341,10 @@ def apply_shape_gate(
     2. Re-run the local shape check against the current body and labels for
        every issue (the defense-in-depth step that closes the stale-comment
        loophole).
-    3. If ``needs-grooming`` is present, skip with ``source='label'`` while
-       surfacing the live blocking findings that explain the current state.
+    3. If ``needs-grooming`` is present and the live check has a concomitant
+       blocking finding, skip with ``source='label'`` while surfacing that
+       finding. A label with no blocking finding is never terminal on its
+       own (ADR-0003 clause 2) and falls through to step 4.
     4. Otherwise, if the check returns a non-``RUNNABLE`` shape, skip with
        ``source='local_check'``.
 

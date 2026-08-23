@@ -35,6 +35,10 @@ OPERATOR_ACTION_MISSING_AC_CODE = "operator_action_missing_ac"
 # operator-action is mutually exclusive with the runnable type labels.
 OPERATOR_ACTION_CONFLICT_LABELS = frozenset({"bug", "enhancement", "epic", "task"})
 
+# No longer emitted by classify_admissibility (ADR-0003 clause 2: a bare
+# label refusal with no concomitant blocking finding is invalid). Kept as
+# the string identity for historical skip records and skip_taxonomy's
+# classification of them.
 NEEDS_GROOMING_LABEL_CODE = "needs_grooming_label"
 
 _VALID_CLASSIFIER_MODES = frozenset({"heuristic", "off", "llm"})
@@ -245,15 +249,17 @@ def classify_admissibility(
        issue is not malformed; running the standard check would flag it for
        ``missing_type`` and conflate two distinct operator signals.
     2. A live ``shape_check`` run supplies the verdict for everything else.
-    3. A ``needs-grooming`` label refuses with ``source='label'`` while
-       surfacing the live blocking findings that explain the current state.
+    3. A ``needs-grooming`` label refuses with ``source='label'`` only when
+       the live check has a concomitant blocking finding to surface; a label
+       with no blocking finding is never terminal on its own (ADR-0003
+       clause 2) and falls through to the shape verdict below.
     4. ``diagnosis_cause_unknown`` is admissible as a *shape* but not
        implementation-runnable per ADR-0001, so it is refused on the verdict.
     5. Any non-``RUNNABLE`` shape is refused with ``source='local_check'``.
 
-    ``trust_local_over_grooming_label`` suppresses step 3: the caller has
-    authoritatively edited the body (intake remediation) and the async
-    relabeler may not have caught up.
+    ``trust_local_over_grooming_label`` suppresses step 3 entirely: the
+    caller has authoritatively edited the body (intake remediation) and the
+    async relabeler may not have caught up.
     """
     label_set_lc = {str(lbl).strip().lower() for lbl in labels}
     if OPERATOR_ACTION_LABEL in label_set_lc:
@@ -268,24 +274,25 @@ def classify_admissibility(
     )
 
     if NEEDS_GROOMING_LABEL in labels and not trust_local_over_grooming_label:
-        codes = refusal_reason_codes(local) or [NEEDS_GROOMING_LABEL_CODE]
-        verdict = (
-            local.verdict
-            if local.verdict is not ShapeVerdict.RUNNABLE
-            else ShapeVerdict.NEEDS_OPERATOR_ACTION
-        )
-        return Admissibility(
-            admissible=False,
-            source="label",
-            verdict=verdict.value,
-            verdict_description=VERDICT_DESCRIPTIONS[verdict],
-            reason_codes=tuple(codes),
-            detail=refusal_detail(
-                local,
-                fallback=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
-            ),
-            result=local,
-        )
+        codes = refusal_reason_codes(local)
+        if codes:
+            verdict = (
+                local.verdict
+                if local.verdict is not ShapeVerdict.RUNNABLE
+                else ShapeVerdict.NEEDS_OPERATOR_ACTION
+            )
+            return Admissibility(
+                admissible=False,
+                source="label",
+                verdict=verdict.value,
+                verdict_description=VERDICT_DESCRIPTIONS[verdict],
+                reason_codes=tuple(codes),
+                detail=refusal_detail(
+                    local,
+                    fallback=f"issue carries '{NEEDS_GROOMING_LABEL}' label",
+                ),
+                result=local,
+            )
 
     if local.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN:
         codes = refusal_reason_codes(local)
