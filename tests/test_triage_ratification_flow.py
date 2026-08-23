@@ -717,6 +717,85 @@ class TestRatificationFlow:
         assert len(state["comments"]) == 1
         assert state["close_calls"] == 2
 
+    def test_missing_issue_number_marks_only_that_finding_failed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_id = _seed_run(tmp_path, monkeypatch, findings=2)
+        conn = audit_storage.create_or_open(tmp_path)
+        try:
+            rows = conn.execute(
+                "SELECT finding_id, raw_json FROM triage_proposal_events ORDER BY finding_id"
+            ).fetchall()
+            payload = json.loads(rows[0][1])
+            payload["issue_ref"] = "audit-count-without-number"
+            snapshot = payload.get("finding_snapshot")
+            if isinstance(snapshot, dict):
+                snapshot.pop("issue_number", None)
+            conn.execute(
+                "UPDATE triage_proposal_events SET raw_json = ? WHERE finding_id = ?",
+                (json.dumps(payload), rows[0][0]),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        state: dict[int, dict[str, object]] = {}
+        comment_numbers: list[int] = []
+        closed_numbers: list[int] = []
+
+        monkeypatch.setattr(
+            ratify_flow,
+            "collect_backlog_report",
+            lambda *a, **k: _live_report(findings=2),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "fetch_open_milestones",
+            lambda *_: ("v0.13.0", HYGIENE_POOL),
+        )
+
+        def _gh_issue_view(number: int, root: Path) -> dict:
+            issue_state = state.setdefault(
+                number,
+                {"state": "OPEN", "comments": []},
+            )
+            return {
+                "number": number,
+                "state": issue_state["state"],
+                "milestone": None,
+                "comments": [{"body": body} for body in issue_state["comments"]],
+            }
+
+        def _gh_issue_comment(number: int, body: str, root: Path) -> None:
+            state.setdefault(number, {"state": "OPEN", "comments": []})["comments"].append(body)
+            comment_numbers.append(number)
+
+        def _gh_issue_close(number: int, root: Path) -> None:
+            state.setdefault(number, {"state": "OPEN", "comments": []})["state"] = "CLOSED"
+            closed_numbers.append(number)
+
+        monkeypatch.setattr(ratify_flow, "_gh_issue_view", _gh_issue_view)
+        monkeypatch.setattr(ratify_flow, "_gh_issue_comment", _gh_issue_comment)
+        monkeypatch.setattr(ratify_flow, "_gh_issue_close", _gh_issue_close)
+
+        summary = ratify_flow.ratify_triage_run(
+            run_id,
+            _config(tmp_path),
+            project_root=tmp_path,
+            input_fn=_inputs("accept", "missing number", "accept", "apply second"),
+            emit=lambda _line: None,
+        )
+
+        assert [finding.status for finding in summary.findings] == ["failed", "applied"]
+        assert "has no usable issue number" in summary.findings[0].summary
+        assert summary.findings[1].issue_ref == "#1311"
+        assert comment_numbers == [1311]
+        assert closed_numbers == [1311]
+        rows = _application_rows(tmp_path)
+        assert [row["status"] for row in rows] == ["failed", "applied"]
+        assert "has no usable issue number" in rows[0]["external_effect_summary"]
+        assert rows[1]["external_effect_summary"] == "Posted closing comment and closed the issue."
+
     def test_resume_recognizes_a_closed_marked_punt_as_already_applied(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

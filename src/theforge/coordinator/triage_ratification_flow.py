@@ -538,78 +538,34 @@ def _apply_choice(
     issue_ref = str(event.get("issue_ref") or event.get("finding_id") or "?")
     snapshot = event.get("finding_snapshot")
     snapshot_map = snapshot if isinstance(snapshot, Mapping) else {}
-    issue_number = _issue_number_from_snapshot(snapshot_map)
-    if issue_number is None:
-        issue_number = _issue_number_from_issue_ref(issue_ref)
-    if issue_number is None:
-        raise TriageRatificationError(
-            f"triage run {event.get('triage_run_id')}: finding {event.get('finding_id')} "
-            "has no usable issue number"
+    try:
+        issue_number = _issue_number_from_snapshot(snapshot_map)
+        if issue_number is None:
+            issue_number = _issue_number_from_issue_ref(issue_ref)
+        if issue_number is None:
+            raise TriageRatificationError(
+                f"triage run {event.get('triage_run_id')}: finding {event.get('finding_id')} "
+                "has no usable issue number"
+            )
+        live_issue = _gh_issue_view(issue_number, project_root)
+        current_milestone = (
+            (live_issue.get("milestone") or {}).get("title")
+            if isinstance(live_issue.get("milestone"), Mapping)
+            else None
         )
-    live_issue = _gh_issue_view(issue_number, project_root)
-    current_milestone = (
-        (live_issue.get("milestone") or {}).get("title")
-        if isinstance(live_issue.get("milestone"), Mapping)
-        else None
-    )
-    marker = _idempotency_marker(
-        str(event.get("triage_run_id") or ""),
-        str(event.get("finding_id") or ""),
-    )
-    comments = live_issue.get("comments") or []
-    has_comment = any(
-        marker in str(comment.get("body") or "")
-        for comment in comments
-        if isinstance(comment, Mapping)
-    )
-    issue_closed = str(live_issue.get("state") or "").upper() == "CLOSED"
-    if choice.disposition == "punt" and issue_closed and has_comment:
-        summary = "Closing comment already posted and issue already closed."
-        _upsert_application(
-            project_root,
-            event=event,
-            choice=choice,
-            status=STATUS_APPLIED,
-            external_effect_summary=summary,
-            applied_at=audit_storage._now_iso(),
-            emitted_at=str(row.get("emitted_at") or "").strip() or None,
+        marker = _idempotency_marker(
+            str(event.get("triage_run_id") or ""),
+            str(event.get("finding_id") or ""),
         )
-        return RatificationFindingOutcome(
-            finding_id=str(event.get("finding_id") or ""),
-            issue_ref=issue_ref,
-            decision=choice.decision,
-            status=STATUS_APPLIED,
-            disposition=choice.disposition,
-            target_milestone=choice.target_milestone,
-            punt_reason_code=choice.punt_reason_code,
-            summary=summary,
+        comments = live_issue.get("comments") or []
+        has_comment = any(
+            marker in str(comment.get("body") or "")
+            for comment in comments
+            if isinstance(comment, Mapping)
         )
-    stale = _stale_reason(event, live_findings=live_findings, live_issue=live_issue)
-    if stale:
-        _upsert_application(
-            project_root,
-            event=event,
-            choice=choice,
-            status=STATUS_STALE,
-            stale_reason=stale,
-            external_effect_summary="No mutation applied.",
-            applied_at=audit_storage._now_iso(),
-            emitted_at=str(row.get("emitted_at") or "").strip() or None,
-        )
-        return RatificationFindingOutcome(
-            finding_id=str(event.get("finding_id") or ""),
-            issue_ref=issue_ref,
-            decision=choice.decision,
-            status=STATUS_STALE,
-            disposition=choice.disposition,
-            target_milestone=choice.target_milestone,
-            punt_reason_code=choice.punt_reason_code,
-            summary="Skipped instead of applying.",
-            stale_reason=stale,
-        )
-    if choice.disposition in {"fix_now", "fix_later"} and choice.target_milestone:
-        if str(current_milestone or "").strip().lower() == choice.target_milestone.lower():
-            summary = f"Milestone already {choice.target_milestone}; no edit needed."
+        issue_closed = str(live_issue.get("state") or "").upper() == "CLOSED"
+        if choice.disposition == "punt" and issue_closed and has_comment:
+            summary = "Closing comment already posted and issue already closed."
             _upsert_application(
                 project_root,
                 event=event,
@@ -629,9 +585,53 @@ def _apply_choice(
                 punt_reason_code=choice.punt_reason_code,
                 summary=summary,
             )
+        stale = _stale_reason(event, live_findings=live_findings, live_issue=live_issue)
+        if stale:
+            _upsert_application(
+                project_root,
+                event=event,
+                choice=choice,
+                status=STATUS_STALE,
+                stale_reason=stale,
+                external_effect_summary="No mutation applied.",
+                applied_at=audit_storage._now_iso(),
+                emitted_at=str(row.get("emitted_at") or "").strip() or None,
+            )
+            return RatificationFindingOutcome(
+                finding_id=str(event.get("finding_id") or ""),
+                issue_ref=issue_ref,
+                decision=choice.decision,
+                status=STATUS_STALE,
+                disposition=choice.disposition,
+                target_milestone=choice.target_milestone,
+                punt_reason_code=choice.punt_reason_code,
+                summary="Skipped instead of applying.",
+                stale_reason=stale,
+            )
+        if choice.disposition in {"fix_now", "fix_later"} and choice.target_milestone:
+            if str(current_milestone or "").strip().lower() == choice.target_milestone.lower():
+                summary = f"Milestone already {choice.target_milestone}; no edit needed."
+                _upsert_application(
+                    project_root,
+                    event=event,
+                    choice=choice,
+                    status=STATUS_APPLIED,
+                    external_effect_summary=summary,
+                    applied_at=audit_storage._now_iso(),
+                    emitted_at=str(row.get("emitted_at") or "").strip() or None,
+                )
+                return RatificationFindingOutcome(
+                    finding_id=str(event.get("finding_id") or ""),
+                    issue_ref=issue_ref,
+                    decision=choice.decision,
+                    status=STATUS_APPLIED,
+                    disposition=choice.disposition,
+                    target_milestone=choice.target_milestone,
+                    punt_reason_code=choice.punt_reason_code,
+                    summary=summary,
+                )
 
-    disposition = choice.disposition or ""
-    try:
+        disposition = choice.disposition or ""
         if disposition == "needs_verification":
             summary = "Recorded operator decision only; no tracker mutation."
         elif disposition in {"fix_now", "fix_later"}:
