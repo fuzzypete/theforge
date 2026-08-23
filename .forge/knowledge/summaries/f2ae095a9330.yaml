@@ -1,0 +1,118 @@
+schema_version: 2
+run_id: f2ae095a9330
+authoritative_run_record: .forge/audits/runs/f2ae095a9330.json
+generated_at: '2026-08-23T03:51:32.623585+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0093225
+story:
+  slug: issue-2231
+  name: 'forge triage: headless runs persist pending decisions; opt-in post-sprint
+    trigger'
+  github_issue: 2231
+story_shape:
+  work_type: feature
+  complexity: large
+  complexity_score: 8
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+- config
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- docs/guides/inputs-reference.md
+- src/theforge/cli/status.py
+- src/theforge/cli/triage.py
+- src/theforge/config/defaults.py
+- src/theforge/config/load.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/triage_headless_flow.py
+- src/theforge/pending.py
+- src/theforge/sprint/post_sprint_triage.py
+- src/theforge/sprint/runner.py
+- src/theforge/sprint/status_reader.py
+- tests/fixtures/audit_record_schema_v37.json
+- tests/test_cli_triage.py
+- tests/test_coord_policy_provenance_seam.py
+- tests/test_triage_headless.py
+what_changed:
+  description: This run added a headless triage path that stops after proposal review,
+    persists the result as a pending operator decision, and exposes pending triage
+    decisions through CLI status. It also added an opt-in post-sprint trigger that
+    invokes triage automatically without blocking or failing the sprint on triage-stage
+    errors.
+  approach: The work introduced a dedicated coordinator flow for non-interactive triage,
+    extended pending-decision storage and status reporting to include triage artifacts,
+    and threaded new configuration and sprint-hook entry points through the CLI and
+    runner so later ratification reuses the existing interactive decision path.
+  files_modified: *id002
+what_was_learned:
+- claim: When a headless flow persists a later-ratifiable decision, persistence must
+    be gated on all prerequisite durable records succeeding; otherwise the system
+    can publish a decision that looks actionable but cannot be completed.
+  evidence:
+  - type: review_finding
+    finding_id: f59b715c931767ff
+    description: Review caught that headless triage wrote a pending decision even
+      after the proposal stage failed to record its audit entry, proving that publishing
+      the pending artifact without confirming upstream durability creates an unusable
+      ratification target.
+  - type: review_cycle
+    cycle: '2'
+    description: Approval in cycle 2 after the cycle-1 P1 fix shows this durability
+      coupling was the blocking correctness issue for the headless persistence path.
+  - type: file
+    path: src/theforge/coordinator/triage_headless_flow.py
+    description: This new coordinator flow is where proposal generation, audit recording,
+      and pending-decision publication are sequenced, making it the control point
+      where prerequisite writes must succeed before advertising ratifiable state.
+- claim: Pending-decision lookup semantics need explicit verification for recency/ordering,
+    because a simple iteration-based selector can silently return the wrong unresolved
+    item and change which operator action is surfaced.
+  evidence:
+  - type: review_finding
+    finding_id: f6430e08ddc66471
+    description: The net-new P2 finding shows unresolved_triage_pending returned the
+      oldest item by exiting on the first loop iteration, demonstrating that pending-selection
+      logic can be wrong even when the code appears straightforward.
+  - type: file
+    path: src/theforge/pending.py
+    description: The finding is localized to the pending-decision retrieval helper,
+      showing that ordering assumptions inside shared pending utilities directly determine
+      which unresolved triage artifact users see.
+learned_patterns:
+- gate-pending-on-durable-audit
+- verify-pending-selection-order
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: f59b715c931767ff
+    severity: P1
+    file: src/theforge/coordinator/triage_headless_flow.py
+    description: When the proposal stage reports an audit write failure, headless
+      triage still writes a pending decision and advertises it as ratifiable, but
+      later ratification cannot find the recorded proposal run in the audit substrate.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - 'Review concentrated on correctness at the handoff from proposal generation to
+    persisted pending state: whether the artifact is truly ratifiable and whether
+    the surfaced unresolved item is the intended one.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 22.689020499999998
+  dominant_difficulty: Preserving the safety and exactness of later ratification across
+    a new headless, deferred-decision execution path.
