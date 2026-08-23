@@ -562,6 +562,28 @@ def _apply_choice(
         for comment in comments
         if isinstance(comment, Mapping)
     )
+    issue_closed = str(live_issue.get("state") or "").upper() == "CLOSED"
+    if choice.disposition == "punt" and issue_closed and has_comment:
+        summary = "Closing comment already posted and issue already closed."
+        _upsert_application(
+            project_root,
+            event=event,
+            choice=choice,
+            status=STATUS_APPLIED,
+            external_effect_summary=summary,
+            applied_at=audit_storage._now_iso(),
+            emitted_at=str(row.get("emitted_at") or "").strip() or None,
+        )
+        return RatificationFindingOutcome(
+            finding_id=str(event.get("finding_id") or ""),
+            issue_ref=issue_ref,
+            decision=choice.decision,
+            status=STATUS_APPLIED,
+            disposition=choice.disposition,
+            target_milestone=choice.target_milestone,
+            punt_reason_code=choice.punt_reason_code,
+            summary=summary,
+        )
     stale = _stale_reason(event, live_findings=live_findings, live_issue=live_issue)
     if stale:
         _upsert_application(
@@ -607,31 +629,6 @@ def _apply_choice(
                 punt_reason_code=choice.punt_reason_code,
                 summary=summary,
             )
-    if (
-        choice.disposition == "punt"
-        and str(live_issue.get("state") or "").upper() == "CLOSED"
-        and has_comment
-    ):
-        summary = "Closing comment already posted and issue already closed."
-        _upsert_application(
-            project_root,
-            event=event,
-            choice=choice,
-            status=STATUS_APPLIED,
-            external_effect_summary=summary,
-            applied_at=audit_storage._now_iso(),
-            emitted_at=str(row.get("emitted_at") or "").strip() or None,
-        )
-        return RatificationFindingOutcome(
-            finding_id=str(event.get("finding_id") or ""),
-            issue_ref=issue_ref,
-            decision=choice.decision,
-            status=STATUS_APPLIED,
-            disposition=choice.disposition,
-            target_milestone=choice.target_milestone,
-            punt_reason_code=choice.punt_reason_code,
-            summary=summary,
-        )
 
     disposition = choice.disposition or ""
     try:
@@ -674,7 +671,7 @@ def _apply_choice(
                     ),
                     project_root,
                 )
-            if str(live_issue.get("state") or "").upper() != "CLOSED":
+            if not issue_closed:
                 _gh_issue_close(issue_number, project_root)
             summary = "Posted closing comment and closed the issue."
         else:

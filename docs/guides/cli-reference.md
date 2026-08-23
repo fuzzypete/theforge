@@ -1092,8 +1092,9 @@ Properties worth knowing:
   is updated in place, so rerunning `--ratify` completes any remaining
   `ratified`/`failed` rows without re-prompting or duplicating work already
   visible on the issue. Existing milestone assignments, existing close comments
-  carrying the marker, and already-closed marked punts are treated as already
-  applied.
+  carrying the marker, and already-closed punts carrying that same marker are
+  treated as already applied. A close that happened without the recorded marker
+  still fails closed as stale.
 
 Sample output:
 

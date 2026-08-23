@@ -220,6 +220,19 @@ def _application_rows(tmp_path: Path) -> list[dict]:
         conn.close()
 
 
+def _proposal_events(tmp_path: Path, triage_run_id: str) -> list[dict]:
+    conn = audit_storage.open_readonly(tmp_path)
+    try:
+        return list(
+            audit_read_model.iter_triage_proposal_events(
+                conn,
+                triage_run_id=triage_run_id,
+            )
+        )
+    finally:
+        conn.close()
+
+
 class TestRatificationFlow:
     def test_accept_applies_the_reviewed_punt(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -703,6 +716,87 @@ class TestRatificationFlow:
         assert second.findings[0].status == "applied"
         assert len(state["comments"]) == 1
         assert state["close_calls"] == 2
+
+    def test_resume_recognizes_a_closed_marked_punt_as_already_applied(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_id = _seed_run(tmp_path, monkeypatch)
+        event = _proposal_events(tmp_path, run_id)[0]
+        marker = ratify_flow._idempotency_marker(run_id, str(event["finding_id"]))
+
+        audit_storage.upsert_triage_application_record(
+            tmp_path,
+            {
+                "triage_run_id": run_id,
+                "finding_id": str(event["finding_id"]),
+                "issue_ref": str(event["issue_ref"]),
+                "proposed_payload": dict(event["proposal"]),
+                "operator_decision": "accept",
+                "applied_disposition": "punt",
+                "target_milestone": None,
+                "punt_reason_code": "verified-stale",
+                "evidence_refs": ["symbol-absent"],
+                "operator_note": "resume after interruption",
+                "status": "failed",
+                "stale_reason": "",
+                "idempotency_marker": marker,
+                "external_effect_summary": "close interrupted after GitHub mutation",
+            },
+        )
+
+        comment_bodies: list[str] = []
+        closed: list[int] = []
+        monkeypatch.setattr(
+            ratify_flow,
+            "collect_backlog_report",
+            lambda *a, **k: _live_report(),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "fetch_open_milestones",
+            lambda *_: ("v0.13.0", HYGIENE_POOL),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_view",
+            lambda number, root: {
+                "number": number,
+                "state": "CLOSED",
+                "milestone": None,
+                "comments": [{"body": f"forge triage ratification\nMarker: {marker}"}],
+            },
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_comment",
+            lambda number, body, root: comment_bodies.append(body),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_close",
+            lambda number, root: closed.append(number),
+        )
+
+        summary = ratify_flow.ratify_triage_run(
+            run_id,
+            _config(tmp_path),
+            project_root=tmp_path,
+            input_fn=lambda _prompt="": (_ for _ in ()).throw(
+                AssertionError("should not re-prompt")
+            ),
+            emit=lambda _line: None,
+        )
+
+        assert summary.findings[0].status == "applied"
+        assert (
+            summary.findings[0].summary
+            == "Closing comment already posted and issue already closed."
+        )
+        assert comment_bodies == []
+        assert closed == []
+        rows = _application_rows(tmp_path)
+        assert rows[0]["status"] == "applied"
+        assert rows[0]["stale_reason"] == ""
 
     def test_ratify_names_the_no_audit_case_explicitly(self, tmp_path: Path) -> None:
         with pytest.raises(ratify_flow.TriageRatificationError, match="--no-audit"):
