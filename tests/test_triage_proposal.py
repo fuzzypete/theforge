@@ -578,8 +578,14 @@ class TestRendering:
 
     def test_empty_run_says_nothing_was_spent(self) -> None:
         text = render_run_summary(
-            ProposalRunSummary(results=(), total_cost_usd=0.0, cost_provenance="provider_reported")
+            ProposalRunSummary(
+                results=(),
+                total_cost_usd=0.0,
+                cost_provenance="provider_reported",
+                triage_run_id="run123",
+            )
         )
+        assert "run run123" in text
         assert "no findings" in text
         assert "$0.0000" in text
         assert "no agent was invoked" in text
@@ -591,9 +597,11 @@ class TestRendering:
             results=(_result(proposal),),
             total_cost_usd=0.0123,
             cost_provenance="provider_reported",
+            triage_run_id="run123",
             review_stage=PuntReviewStage(),
         )
         text = render_run_summary(summary)
+        assert "run run123" in text
         assert "TOTAL SPEND: $0.0123" in text
         assert "no issue was modified" in text
         assert "REVIEW STAGE: no-op" in text

@@ -128,7 +128,16 @@ AuditConnection = sqlite3.Connection
 # queryable. ``triage_proposal_runs`` keeps the run-level review-stage summary in
 # ``raw_json``; there is no separate per-record migration because older rows had
 # no review stage to backfill.
-SUBSTRATE_SCHEMA_VERSION = 11
+#
+# Bumped to 12 by #2230: proposal runs now have an operator-ratified application
+# stage. ``triage_application_records`` indexes one upserted row per
+# ``(triage_run_id, finding_id)`` with the operator decision, the actually
+# applied disposition payload, idempotency marker, stale/failure state, and the
+# external effect summary so resume can continue from durable application state
+# rather than re-deriving it from raw proposal rows. Proposal-event writes also
+# now carry their richer snapshot only in ``raw_json``, so no re-index pass is
+# required for older rows.
+SUBSTRATE_SCHEMA_VERSION = 12
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -454,6 +463,30 @@ CREATE INDEX IF NOT EXISTS idx_triage_proposal_events_disposition
     ON triage_proposal_events(disposition);
 CREATE INDEX IF NOT EXISTS idx_triage_proposal_events_run
     ON triage_proposal_events(triage_run_id);
+CREATE TABLE IF NOT EXISTS triage_application_records (
+    triage_run_id TEXT NOT NULL,
+    finding_id TEXT NOT NULL,
+    issue_ref TEXT,
+    proposed_payload TEXT,
+    operator_decision TEXT NOT NULL,
+    applied_disposition TEXT,
+    target_milestone TEXT,
+    punt_reason_code TEXT,
+    evidence_refs TEXT,
+    operator_note TEXT,
+    status TEXT NOT NULL,
+    stale_reason TEXT,
+    idempotency_marker TEXT,
+    external_effect_summary TEXT,
+    emitted_at TEXT NOT NULL,
+    applied_at TEXT,
+    raw_json TEXT NOT NULL,
+    PRIMARY KEY (triage_run_id, finding_id)
+);
+CREATE INDEX IF NOT EXISTS idx_triage_application_records_run
+    ON triage_application_records(triage_run_id);
+CREATE INDEX IF NOT EXISTS idx_triage_application_records_status
+    ON triage_application_records(status);
 """
 
 
@@ -492,6 +525,21 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE triage_proposal_events ADD COLUMN review_fallback_reason TEXT",
         "ALTER TABLE triage_proposal_events ADD COLUMN review_cost_usd REAL",
         "ALTER TABLE triage_proposal_events ADD COLUMN review_cost_provenance TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN issue_ref TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN proposed_payload TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN operator_decision TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN applied_disposition TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN target_milestone TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN punt_reason_code TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN evidence_refs TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN operator_note TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN status TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN stale_reason TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN idempotency_marker TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN external_effect_summary TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN emitted_at TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN applied_at TEXT",
+        "ALTER TABLE triage_application_records ADD COLUMN raw_json TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -2941,6 +2989,71 @@ def record_triage_proposal_run(project_root: Path, summary: dict) -> int:
         )
         conn.commit()
         return int(cur.lastrowid or 0)
+    finally:
+        conn.close()
+
+
+def upsert_triage_application_record(project_root: Path, record: dict) -> int:
+    """Insert or update one ratified/application state row for ``forge triage``.
+
+    Required keys: ``triage_run_id``, ``finding_id``, ``operator_decision``,
+    ``status``. The row is keyed by ``(triage_run_id, finding_id)`` so resume
+    can update the same finding from ``ratified`` to ``applied`` / ``stale`` /
+    ``failed`` without duplicating state.
+    """
+    required = {"triage_run_id", "finding_id", "operator_decision", "status"}
+    missing = required - set(record)
+    if missing:
+        raise SubstrateError(f"triage application record missing required keys: {sorted(missing)}")
+    raw_json = _canonical_json(record)
+    emitted_at = record.get("emitted_at") or _now_iso()
+    conn = create_or_open(project_root)
+    try:
+        conn.execute(
+            "INSERT INTO triage_application_records "
+            "(triage_run_id, finding_id, issue_ref, proposed_payload, operator_decision, "
+            "applied_disposition, target_milestone, punt_reason_code, evidence_refs, "
+            "operator_note, status, stale_reason, idempotency_marker, external_effect_summary, "
+            "emitted_at, applied_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(triage_run_id, finding_id) DO UPDATE SET "
+            "issue_ref=excluded.issue_ref, "
+            "proposed_payload=excluded.proposed_payload, "
+            "operator_decision=excluded.operator_decision, "
+            "applied_disposition=excluded.applied_disposition, "
+            "target_milestone=excluded.target_milestone, "
+            "punt_reason_code=excluded.punt_reason_code, "
+            "evidence_refs=excluded.evidence_refs, "
+            "operator_note=excluded.operator_note, "
+            "status=excluded.status, "
+            "stale_reason=excluded.stale_reason, "
+            "idempotency_marker=excluded.idempotency_marker, "
+            "external_effect_summary=excluded.external_effect_summary, "
+            "emitted_at=excluded.emitted_at, "
+            "applied_at=excluded.applied_at, "
+            "raw_json=excluded.raw_json",
+            (
+                str(record["triage_run_id"]),
+                str(record["finding_id"]),
+                record.get("issue_ref"),
+                _canonical_json(record.get("proposed_payload") or {}),
+                str(record["operator_decision"]),
+                record.get("applied_disposition"),
+                record.get("target_milestone"),
+                record.get("punt_reason_code"),
+                _canonical_json(list(record.get("evidence_refs") or [])),
+                record.get("operator_note"),
+                str(record["status"]),
+                record.get("stale_reason"),
+                record.get("idempotency_marker"),
+                record.get("external_effect_summary"),
+                emitted_at,
+                record.get("applied_at"),
+                raw_json,
+            ),
+        )
+        conn.commit()
+        return 1
     finally:
         conn.close()
 

@@ -628,6 +628,9 @@ class TestAuditPersistence:
         assert len(events) == 1
         assert events[0]["proposal"]["disposition"] == DISPOSITION_PUNT
         assert events[0]["proposal"]["evidence_refs"] == ["symbol-absent"]
+        assert events[0]["packet"]["finding_id"] == "1310:audit-count"
+        assert events[0]["finding_snapshot"]["issue_ref"] == "#1310"
+        assert events[0]["finding_snapshot_digest"]
         assert events[0]["punt_review"]["verdict"] == "concur"
         assert events[0]["cost_usd"] == pytest.approx(0.02)
         assert events[0]["review_cost_usd"] == pytest.approx(0.03)

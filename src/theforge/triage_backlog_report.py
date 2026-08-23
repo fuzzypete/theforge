@@ -21,6 +21,8 @@ from urllib.parse import quote
 
 import yaml
 
+from theforge.triage_snapshot import canonicalize_finding_snapshot
+
 RECOGNIZED_FINDING_LABELS: tuple[str, ...] = ("forge-finding", "review-finding", "needs-triage")
 NEEDS_TRIAGE_LABEL = "needs-triage"
 HYGIENE_POOL = "Hygiene"
@@ -140,6 +142,10 @@ class BacklogFindingRecord:
             "verification_status": self.verification_status,
             "evidence": [entry.to_dict() for entry in self.evidence],
         }
+
+    def snapshot_dict(self) -> dict[str, object]:
+        """Return the stable finding/evidence state used for stale ratification."""
+        return canonicalize_finding_snapshot(self.to_dict())
 
 
 @dataclass(frozen=True)

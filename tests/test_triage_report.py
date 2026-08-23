@@ -84,6 +84,28 @@ class TestParsing:
         )
         assert report.findings[0].issue_ref == "#1312"
 
+    def test_optional_finding_snapshot_fields_are_retained(self) -> None:
+        report = parse_backlog_report(
+            {
+                "findings": [
+                    {
+                        **_REPORT["findings"][0],
+                        "issue_number": 1312,
+                        "title": "audit count is off by one",
+                        "labels": ["bug", "forge-finding"],
+                        "pool_state": "Hygiene",
+                        "verification_status": "stale_evidence",
+                    }
+                ]
+            }
+        )
+        finding = report.findings[0]
+        assert finding.issue_number == 1312
+        assert finding.title == "audit count is off by one"
+        assert finding.labels == ("bug", "forge-finding")
+        assert finding.pool_state == "Hygiene"
+        assert finding.verification_status == "stale_evidence"
+
 
 class TestRejections:
     def test_non_mapping_report_is_rejected(self) -> None:

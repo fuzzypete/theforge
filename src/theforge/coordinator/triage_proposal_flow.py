@@ -58,6 +58,7 @@ from theforge.triage_proposal import (
     needs_verification_proposal,
     parse_triage_proposal,
     parse_triage_punt_review,
+    stable_triage_digest,
 )
 
 from . import util as _cu
@@ -540,7 +541,13 @@ def _review_stage(results: list[FindingProposalResult]) -> PuntReviewStage:
     )
 
 
-def _record_run(project_root: "Path", summary: ProposalRunSummary) -> str:
+def _record_run(
+    project_root: "Path",
+    summary: ProposalRunSummary,
+    *,
+    packets_by_id: dict[str, FindingPacket] | None = None,
+    findings_by_id: dict[str, "BacklogFinding"] | None = None,
+) -> str:
     """Persist the run summary and every per-finding proposal. Returns an error string."""
     from . import audit_storage  # noqa: PLC0415
 
@@ -552,6 +559,12 @@ def _record_run(project_root: "Path", summary: ProposalRunSummary) -> str:
             event["target_milestone"] = result.proposal.target_milestone
             event["punt_reason_code"] = result.proposal.punt_reason_code
             event["evidence_refs"] = list(result.proposal.evidence_refs)
+            if packets_by_id is not None and result.finding_id in packets_by_id:
+                event["packet"] = packets_by_id[result.finding_id].to_dict()
+            if findings_by_id is not None and result.finding_id in findings_by_id:
+                snapshot = findings_by_id[result.finding_id].snapshot_dict()
+                event["finding_snapshot"] = snapshot
+                event["finding_snapshot_digest"] = stable_triage_digest(snapshot)
             audit_storage.record_triage_proposal_event(project_root, event)
         audit_storage.record_triage_proposal_run(project_root, summary.to_dict())
     except Exception as exc:  # noqa: BLE001 - report the audit gap, don't lose the output
@@ -596,6 +609,8 @@ def run_triage_proposals(
         )
         for finding in report.findings
     ]
+    packets_by_id = {packet.finding_id: packet for packet in packets}
+    findings_by_id = {finding.finding_id: finding for finding in report.findings}
 
     proposer_profile: object | None = None
     reviewer_profile: object | None = None
@@ -675,7 +690,15 @@ def run_triage_proposals(
         review_stage=_review_stage(results),
     )
     if record:
-        summary = replace(summary, audit_error=_record_run(root, summary))
+        summary = replace(
+            summary,
+            audit_error=_record_run(
+                root,
+                summary,
+                packets_by_id=packets_by_id,
+                findings_by_id=findings_by_id,
+            ),
+        )
     return summary
 
 
