@@ -160,7 +160,7 @@ line — `Status: record (YYYY-MM-DD[, issue #N])`, or the older
 `Status: Shipped (vX.Y) … retained for historical context` form. A short
 qualifier after the form is fine. Living documents need no marker; add
 `Status: living` only where a document could otherwise be mistaken for a
-record (the flake register, an active plan in `docs/plans/`).
+record (an active plan in `docs/plans/`).
 `docs/README.md` indexes the living-vs-record classification.
 
 Source: `feedback_capture_decisions.md`
@@ -764,7 +764,8 @@ land in `.forge/worktrees/<slug>/` on branch `feat/<slug>`.
 
 A flaky gate is a trust violation: a red-when-it-should-be-green (or the reverse)
 gate is the gate lying, and combined with auto-merge a lucky re-run can land
-unreviewed code (this happened — see [`docs/flake-register.md`](docs/flake-register.md)).
+unreviewed code (this happened on 2026-07-17 — a flaky gate blocked a PR, the
+re-run passed, and armed auto-merge landed out-of-scope code, #1717).
 The rules:
 
 - **Fix flakes by removing nondeterminism, not by retrying.** Retrying a flaky
@@ -776,10 +777,20 @@ The rules:
   it.
 - **A green-on-re-run after a same-SHA red is a flake signal, not a pass.** If the
   gate goes red and a plain re-run of the *same commit* goes green, treat the test
-  that flipped as flaky. Do not merge on the green — register the flake first.
-- **Track every known flake in [`docs/flake-register.md`](docs/flake-register.md)**
-  (test id, symptom, suspected cause, owning issue) so it is burned down, never
-  silently retried into invisibility. A flake that isn't tracked rots.
+  that flipped as flaky. Do not merge on the green — file the flake first.
+- **Every known flake is an open issue labelled `flake`** (test id, symptom,
+  expected determinism). The register is the label query, nothing else:
+
+  ```bash
+  gh issue list --label flake --state open
+  ```
+
+  Issue state is the flake's state — there is no separate ledger to reconcile,
+  and a flake without an issue does not exist as far as burndown is concerned.
+  The sprint baseline gate re-runs an unreproduced failure once and records it
+  (`baseline_gate_failure_not_reproduced` in the sprint log, `failure_reproduced:
+  false` in the audit's `baseline_check`); each of those is a flake candidate to
+  file, not a pass to forget.
 
 ## Cutting a Release
 
