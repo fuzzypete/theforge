@@ -10,6 +10,7 @@ the audit rows and the reported spend. The schema boundary itself lives in
 from __future__ import annotations
 
 import ast
+import json
 import subprocess
 from dataclasses import replace
 from pathlib import Path
@@ -28,12 +29,14 @@ from theforge.config import (
     RetryPolicy,
     WorkspaceConfig,
 )
+from theforge.config import auth as auth_mod
 from theforge.coordinator import audit_read_model, audit_storage
 from theforge.coordinator import triage_proposal_flow as flow
 from theforge.runners.tool_runtime import grants_bash
 from theforge.triage_proposal import (
     DISPOSITION_NEEDS_VERIFICATION,
     DISPOSITION_PUNT,
+    render_run_summary,
 )
 from theforge.triage_report import parse_backlog_report
 
@@ -600,6 +603,106 @@ class TestDeterministicPaths:
         assert summary.review_stage.no_op is True
 
 
+class TestPreDispatchAuthGate:
+    def test_project_claude_token_is_passed_to_proposer_and_reviewer(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[dict[str, object]] = []
+        credentials_path = tmp_path / "claude-credentials.json"
+        credentials_path.write_text(
+            json.dumps(
+                {
+                    "claudeAiOauth": {
+                        "accessToken": "",
+                        "refreshToken": "",
+                        "expiresAt": 0,
+                        "refreshTokenExpiresAt": 0,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        def _capture(**kwargs: object) -> _StubResult:
+            calls.append(dict(kwargs))
+            prompt = str(kwargs.get("prompt", ""))
+            if "ADVERSARIAL PUNT REVIEWER" in prompt:
+                return _StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.02)
+            return _StubResult(_VALID_PUNT, cost_usd=0.01)
+
+        def _check(merged: dict[str, str]) -> tuple[bool, str]:
+            return auth_mod.check_claude_credentials(merged, credentials_path=credentials_path)
+
+        monkeypatch.setattr(flow, "run_agent", _capture)
+        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
+        monkeypatch.setattr(
+            flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
+        )
+        monkeypatch.setattr(flow, "check_claude_credentials", _check)
+
+        config = _config(tmp_path)
+        object.__setattr__(
+            config,
+            "secrets",
+            {
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth-token",
+                "GH_TOKEN": "ghp-secret",
+            },
+        )
+
+        summary = flow.run_triage_proposals(_report(), config, record=False)
+
+        assert summary.run_level_failure == ""
+        assert len(calls) == 2
+        assert calls[0]["secrets"] == {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}
+        assert calls[1]["secrets"] == {"CLAUDE_CODE_OAUTH_TOKEN": "oauth-token"}
+
+    def test_claude_auth_failure_is_checked_once_before_any_dispatch(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        gate_calls: list[dict[str, str]] = []
+
+        def _forbidden(**kwargs: object) -> object:
+            raise AssertionError("run_agent must not be called when the auth gate fails")
+
+        def _stale(merged: dict[str, str]) -> tuple[bool, str]:
+            gate_calls.append(dict(merged))
+            return (
+                False,
+                "claude credential store at /tmp/stale/.credentials.json holds no access "
+                "or refresh token",
+            )
+
+        monkeypatch.setattr(flow, "run_agent", _forbidden)
+        monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
+        monkeypatch.setattr(
+            flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
+        )
+        monkeypatch.setattr(flow, "check_claude_credentials", _stale)
+
+        summary = flow.run_triage_proposals(_report(findings=2), _config(tmp_path), record=False)
+
+        assert len(gate_calls) == 1
+        assert summary.total_cost_usd == 0.0
+        assert summary.run_level_failure.startswith(
+            "triage aborted agent dispatch before any proposer ran"
+        )
+        assert "shell environment overlaid by project .forge/.env secrets" in (
+            summary.run_level_failure
+        )
+        assert "/tmp/stale/.credentials.json" in summary.run_level_failure
+        assert all(result.attempts == 0 for result in summary.results)
+        assert all(result.cost_usd == 0.0 for result in summary.results)
+        assert all(
+            result.fallback_reason == flow.FALLBACK_AGENT_UNAVAILABLE for result in summary.results
+        )
+
+        rendered = render_run_summary(summary)
+        assert rendered.count("RUN-LEVEL FAILURE:") == 1
+        assert rendered.count("/tmp/stale/.credentials.json") == 1
+        assert "proposer invocation failed" not in rendered
+
+
 # ── Audit persistence ─────────────────────────────────────────────────────────
 
 
@@ -845,6 +948,7 @@ class TestNoTrackerWrites:
         kept = flow.proposer_secrets(
             {
                 "ANTHROPIC_API_KEY": "a",
+                "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
                 "OPENAI_API_KEY": "b",
                 "CUSTOM_PROVIDER_API_KEY": "c",
                 "GH_TOKEN": "d",
@@ -855,6 +959,7 @@ class TestNoTrackerWrites:
         )
         assert kept == {
             "ANTHROPIC_API_KEY": "a",
+            "CLAUDE_CODE_OAUTH_TOKEN": "oauth",
             "OPENAI_API_KEY": "b",
             "CUSTOM_PROVIDER_API_KEY": "c",
         }
