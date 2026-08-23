@@ -42,14 +42,22 @@ from theforge.assignment import NoCapableCandidateError
 from theforge.config import TRIAGE_PROPOSER_TOOLS
 from theforge.config.defaults import PROVIDER_API_KEY_MAP
 from theforge.config.model_identity import PHASE_ADVISOR
-from theforge.task.triage_prompts import build_triage_prompt
+from theforge.task.triage_prompts import (
+    build_triage_prompt,
+    build_triage_punt_review_prompt,
+)
 from theforge.triage_proposal import (
+    DISPOSITION_PUNT,
+    PUNT_REVIEW_CHALLENGE,
     FindingPacket,
     FindingProposalResult,
     PacketEvidence,
     ProposalRunSummary,
+    PuntReviewStage,
+    challenged_punt_review,
     needs_verification_proposal,
     parse_triage_proposal,
+    parse_triage_punt_review,
 )
 
 from . import util as _cu
@@ -92,6 +100,8 @@ FALLBACK_NO_CHECKABLE_EVIDENCE = (
 )
 FALLBACK_INVALID_OUTPUT = "agent output failed validation on every attempt"
 FALLBACK_AGENT_UNAVAILABLE = "the proposer agent could not be invoked"
+FALLBACK_REVIEW_INVALID_OUTPUT = "reviewer output failed validation on every attempt"
+FALLBACK_REVIEWER_UNAVAILABLE = "the reviewer agent could not be invoked"
 
 
 def _ensure_runners() -> None:
@@ -221,6 +231,17 @@ def seal_proposer_profile(profile: object) -> object:
     )
 
 
+def seal_reviewer_profile(profile: object) -> object:
+    """Return ``profile`` narrowed to what an advisory punt reviewer may hold."""
+    return replace(
+        profile,
+        name="triage_punt_reviewer",
+        phase=PHASE_ADVISOR,
+        allowed_tools=TRIAGE_PROPOSER_TOOLS,
+        sandbox_mode="read-only",
+    )
+
+
 def proposer_secrets(secrets: "Mapping[str, str] | None") -> dict[str, str]:
     """Return only the credentials a proposer invocation legitimately needs.
 
@@ -311,6 +332,72 @@ def _propose_for_packet(
     )
 
 
+def _review_punt_result(
+    packet: FindingPacket,
+    result: FindingProposalResult,
+    *,
+    profile: object,
+    working_dir: "Path",
+    secrets: dict[str, str],
+) -> FindingProposalResult:
+    """Run the adversarial reviewer against one accepted punt proposal."""
+    errors: list[str] = []
+    total_cost: float | None = None
+    provenance = COST_PROVIDER_REPORTED
+    attempts = 0
+
+    for attempt in range(MAX_ATTEMPTS):
+        prompt = build_triage_punt_review_prompt(packet, result.proposal, previous_errors=errors)
+        attempts += 1
+        try:
+            review_result = run_agent(
+                prompt=prompt,
+                profile=profile,
+                working_dir=working_dir,
+                secrets=secrets,
+            )
+        except Exception as exc:  # noqa: BLE001 - reviewer failure challenges safely
+            errors = [f"reviewer invocation failed: {exc}"]
+            _log(f"  ⚠ triage punt reviewer invocation failed for {packet.finding_id}: {exc}")
+            return _review_fallback_result(
+                result,
+                attempts=attempts,
+                errors=errors,
+                reason=FALLBACK_REVIEWER_UNAVAILABLE,
+                cost_usd=total_cost,
+                provenance=provenance,
+            )
+
+        log_agent_result(review_result, "TRIAGE_PUNT_REVIEWER")
+        total_cost, provenance = _combine_cost(total_cost, provenance, review_result)
+
+        if not getattr(review_result, "success", False):
+            errors = ["reviewer agent returned failure before a usable review"]
+            continue
+
+        review = parse_triage_punt_review(getattr(review_result, "output", "") or "", packet)
+        if review.ok:
+            return replace(
+                result,
+                punt_review=review,
+                review_attempts=attempts,
+                review_retry_count=attempt,
+                review_cost_usd=total_cost,
+                review_cost_provenance=provenance,
+            )
+        errors = list(review.parse_errors)
+        _log_verbose(f"  triage punt review rejected for {packet.finding_id}: {errors}")
+
+    return _review_fallback_result(
+        result,
+        attempts=attempts,
+        errors=errors,
+        reason=FALLBACK_REVIEW_INVALID_OUTPUT,
+        cost_usd=total_cost,
+        provenance=provenance,
+    )
+
+
 def _fallback_result(
     packet: FindingPacket,
     *,
@@ -341,6 +428,33 @@ def _fallback_result(
     )
 
 
+def _review_fallback_result(
+    result: FindingProposalResult,
+    *,
+    attempts: int,
+    errors: list[str],
+    reason: str,
+    cost_usd: float | None,
+    provenance: str,
+) -> FindingProposalResult:
+    """Attach the deterministic challenged review when no valid review survived."""
+    return replace(
+        result,
+        punt_review=challenged_punt_review(
+            basis=(
+                "No valid adversarial review survived validation for this punt; "
+                f"it is challenged rather than presented as clean ({reason})."
+            )
+        ),
+        review_attempts=attempts,
+        review_retry_count=max(attempts - 1, 0),
+        review_validation_errors=tuple(errors),
+        review_fallback_reason=reason,
+        review_cost_usd=cost_usd,
+        review_cost_provenance=provenance,
+    )
+
+
 def _no_evidence_result(packet: FindingPacket) -> FindingProposalResult:
     """The deterministic needs_verification for a packet with nothing checkable.
 
@@ -366,18 +480,64 @@ def _no_evidence_result(packet: FindingPacket) -> FindingProposalResult:
     )
 
 
+def _sum_cost_leg(
+    total: float,
+    provenance: str,
+    *,
+    include: bool,
+    cost_usd: float | None,
+    cost_provenance: str,
+) -> tuple[float, str]:
+    if not include:
+        return total, provenance
+    if cost_usd is None:
+        return total, COST_UNKNOWN
+    total += cost_usd
+    if cost_provenance == COST_UNKNOWN:
+        provenance = COST_UNKNOWN
+    return total, provenance
+
+
 def _total_spend(results: list[FindingProposalResult]) -> tuple[float | None, str]:
     """Sum per-finding spend, keeping an unmeasured finding visible in the provenance."""
     total = 0.0
     provenance = COST_PROVIDER_REPORTED
     for result in results:
-        if result.cost_usd is None:
-            provenance = COST_UNKNOWN
-            continue
-        total += result.cost_usd
-        if result.cost_provenance == COST_UNKNOWN:
-            provenance = COST_UNKNOWN
+        total, provenance = _sum_cost_leg(
+            total,
+            provenance,
+            include=True,
+            cost_usd=result.cost_usd,
+            cost_provenance=result.cost_provenance,
+        )
+        total, provenance = _sum_cost_leg(
+            total,
+            provenance,
+            include=(
+                result.punt_review is not None
+                or result.review_attempts > 0
+                or bool(result.review_fallback_reason)
+            ),
+            cost_usd=result.review_cost_usd,
+            cost_provenance=result.review_cost_provenance,
+        )
     return total, provenance
+
+
+def _review_stage(results: list[FindingProposalResult]) -> PuntReviewStage:
+    punts = [result for result in results if result.proposal.disposition == DISPOSITION_PUNT]
+    if not punts:
+        return PuntReviewStage()
+    challenged = sum(
+        1
+        for result in punts
+        if result.punt_review is not None and result.punt_review.verdict == PUNT_REVIEW_CHALLENGE
+    )
+    return PuntReviewStage(
+        reviewed_punt_count=len(punts),
+        challenged_punt_count=challenged,
+        no_op=False,
+    )
 
 
 def _record_run(project_root: "Path", summary: ProposalRunSummary) -> str:
@@ -424,6 +584,7 @@ def run_triage_proposals(
             cost_provenance=COST_PROVIDER_REPORTED,
             triage_run_id=triage_run_id,
             report_path=report.source_path,
+            review_stage=PuntReviewStage(),
         )
         if record:
             summary = replace(summary, audit_error=_record_run(root, summary))
@@ -436,7 +597,8 @@ def run_triage_proposals(
         for finding in report.findings
     ]
 
-    profile: object | None = None
+    proposer_profile: object | None = None
+    reviewer_profile: object | None = None
     profile_error = ""
     results: list[FindingProposalResult] = []
     secrets = proposer_secrets(config.secrets)
@@ -452,14 +614,16 @@ def run_triage_proposals(
             if not packet.has_checkable_evidence():
                 results.append(_no_evidence_result(packet))
                 continue
-            if profile is None and not profile_error:
+            if proposer_profile is None and not profile_error:
                 _ensure_runners()
                 try:
-                    profile = seal_proposer_profile(_select_advisor_profile(config))
+                    base_profile = _select_advisor_profile(config)
+                    proposer_profile = seal_proposer_profile(base_profile)
+                    reviewer_profile = seal_reviewer_profile(base_profile)
                 except (NoCapableCandidateError, ValueError) as exc:
                     profile_error = str(exc)
                     _log(f"  ⚠ triage proposer unavailable: {exc}")
-            if profile is None:
+            if proposer_profile is None:
                 results.append(
                     _fallback_result(
                         packet,
@@ -474,10 +638,31 @@ def run_triage_proposals(
             results.append(
                 _propose_for_packet(
                     packet,
-                    profile=profile,
+                    profile=proposer_profile,
                     working_dir=working_dir,
                     secrets=secrets,
                 )
+            )
+
+        for index, result in enumerate(results):
+            if result.proposal.disposition != DISPOSITION_PUNT:
+                continue
+            if reviewer_profile is None:
+                results[index] = _review_fallback_result(
+                    result,
+                    attempts=0,
+                    errors=[profile_error or FALLBACK_REVIEWER_UNAVAILABLE],
+                    reason=FALLBACK_REVIEWER_UNAVAILABLE,
+                    cost_usd=0.0,
+                    provenance=COST_PROVIDER_REPORTED,
+                )
+                continue
+            results[index] = _review_punt_result(
+                packets[index],
+                result,
+                profile=reviewer_profile,
+                working_dir=working_dir,
+                secrets=secrets,
             )
 
     total, provenance = _total_spend(results)
@@ -487,6 +672,7 @@ def run_triage_proposals(
         cost_provenance=provenance,
         triage_run_id=triage_run_id,
         report_path=report.source_path,
+        review_stage=_review_stage(results),
     )
     if record:
         summary = replace(summary, audit_error=_record_run(root, summary))
@@ -499,4 +685,5 @@ __all__ = [
     "proposer_secrets",
     "run_triage_proposals",
     "seal_proposer_profile",
+    "seal_reviewer_profile",
 ]

@@ -26,7 +26,10 @@ from theforge.triage_proposal import (
     MIN_QUOTE_WORDS,
     PUNT_REASON_CODES,
     PUNT_REASON_GUIDE,
+    PUNT_REVIEW_CHALLENGE,
+    PUNT_REVIEW_CONCUR,
     FindingPacket,
+    TriageProposal,
 )
 
 _DISPOSITION_GUIDE: dict[str, str] = {
@@ -114,6 +117,14 @@ def _example_citation(packet: FindingPacket) -> tuple[str, str]:
     if len(words) < MIN_QUOTE_WORDS:
         return entry.evidence_id, entry.citable_text().replace('"', "")
     return entry.evidence_id, " ".join(words[: max(MIN_QUOTE_WORDS, 6)])
+
+
+def _render_proposal_citations(proposal: TriageProposal) -> str:
+    if not proposal.citations:
+        return "(none)"
+    return "\n".join(
+        f"- ref: `{citation.ref}`\n  quote: {citation.quote}" for citation in proposal.citations
+    )
 
 
 def build_triage_prompt(packet: FindingPacket, previous_errors: Sequence[str] = ()) -> str:
@@ -215,4 +226,92 @@ evidence:
 rationale: "Nothing here distinguishes a stale finding from an active one, so \
 deciding either way would be a guess."
 </triage_proposal>
+"""
+
+
+def build_triage_punt_review_prompt(
+    packet: FindingPacket,
+    proposal: TriageProposal,
+    previous_errors: Sequence[str] = (),
+) -> str:
+    """Build the fresh-context adversarial prompt for reviewing one accepted punt."""
+    if proposal.disposition != DISPOSITION_PUNT:
+        raise ValueError("punt review prompt requires an accepted punt proposal")
+
+    packet_text = _render_packet(packet)
+    evidence_ids = list(packet.evidence_ids())
+    example_ref, example_quote = _example_citation(packet)
+
+    retry_block = ""
+    if previous_errors:
+        rendered = "\n".join(f"- {error}" for error in previous_errors)
+        retry_block = (
+            "\n## Your previous attempt was REJECTED\n\n"
+            "It failed schema/grounding validation for these reasons. Fix exactly "
+            "these and emit a new review:\n\n"
+            f"{rendered}\n"
+        )
+
+    return f"""You are the ADVERSARIAL PUNT REVIEWER for an autonomous \
+software-development orchestrator.
+
+You are reviewing an ACCEPTED punt proposal from a fresh context. Your job is \
+to REFUTE it if the packet allows. Start from the assumption that the punt may \
+be wrong. Only return `{PUNT_REVIEW_CONCUR}` if you tried to break the punt and \
+the packet still supports discarding the finding. Return \
+`{PUNT_REVIEW_CHALLENGE}` when the packet does not support the punt reason, \
+leaves a live defect possibility, or otherwise fails to justify discard.
+
+The human operator sees both the original punt and your verdict. Nothing is \
+applied automatically.
+
+## Accepted punt proposal under review
+
+- disposition: `{proposal.disposition}`
+- punt_reason_code: `{proposal.punt_reason_code or ""}`
+- proposal evidence refs: {list(proposal.evidence_refs) or "(none)"}
+- proposal evidence quotes:
+{_render_proposal_citations(proposal)}
+- proposal rationale (unverified): {proposal.rationale or "(none)"}
+
+## Grounding rule (this is the rule that gets reviews rejected)
+
+You do not write the evidence — you SELECT it. Every review must cite \
+`evidence` as a list of `{{ref, quote}}` pairs, where:
+
+- `ref` is one of the packet evidence ids below — {evidence_ids or "(none)"} — \
+and nothing else, and
+- `quote` is a span of THAT entry's own text, copied **verbatim**, at least \
+{MIN_QUOTE_WORDS} consecutive words long.
+
+The quote is checked mechanically against the entry you cited. A paraphrase, a \
+summary, an inference, or a claim the entry does not make will be rejected even \
+when the `ref` is real. You may cite evidence that supports the punt or \
+evidence that contradicts it, but every citation must come from the packet. Do \
+not investigate the repository to manufacture new evidence.
+
+## Evidence packet
+
+{packet_text}
+{retry_block}
+## Required output
+
+Emit EXACTLY ONE `<triage_punt_review>` block containing a YAML mapping. Do not \
+put the block inside a code fence.
+
+The YAML mapping must have:
+- `verdict`: one of `{PUNT_REVIEW_CONCUR}` or `{PUNT_REVIEW_CHALLENGE}`
+- `evidence`: a non-empty list of mappings, each with `ref` (a packet evidence \
+id) and `quote` (that entry's words, verbatim)
+- `rationale` (optional): your own reasoning about why the punt survives or fails
+
+Example shape (illustrative only — analyse the real packet and quote ITS text):
+
+<triage_punt_review>
+verdict: {PUNT_REVIEW_CHALLENGE}
+evidence:
+  - ref: {example_ref}
+    quote: "{example_quote}"
+rationale: "The packet does not support discarding this finding cleanly."
+</triage_punt_review>
 """

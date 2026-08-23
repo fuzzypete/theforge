@@ -70,15 +70,32 @@ class _StubResult:
 class _StubRunner:
     """Records every invocation and replays a scripted sequence of outputs."""
 
-    def __init__(self, *results: _StubResult) -> None:
-        self._results = list(results)
+    def __init__(
+        self,
+        *proposal_results: _StubResult,
+        review_results: tuple[_StubResult, ...] | None = None,
+    ) -> None:
+        self._proposal_results = list(proposal_results)
+        self._review_results = list(review_results or [])
+        self._default_review_result = (
+            None if review_results is not None else _StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.0)
+        )
         self.prompts: list[str] = []
+        self.review_prompts: list[str] = []
 
     def __call__(self, **kwargs: object) -> _StubResult:
-        self.prompts.append(str(kwargs.get("prompt", "")))
-        if not self._results:
-            raise AssertionError("runner invoked more times than scripted")
-        return self._results.pop(0)
+        prompt = str(kwargs.get("prompt", ""))
+        if "ADVERSARIAL PUNT REVIEWER" in prompt:
+            self.review_prompts.append(prompt)
+            if self._review_results:
+                return self._review_results.pop(0)
+            if self._default_review_result is not None:
+                return self._default_review_result
+            raise AssertionError("reviewer invoked more times than scripted")
+        self.prompts.append(prompt)
+        if not self._proposal_results:
+            raise AssertionError("proposer invoked more times than scripted")
+        return self._proposal_results.pop(0)
 
 
 def _install_runner(monkeypatch: pytest.MonkeyPatch, runner: object) -> None:
@@ -139,6 +156,47 @@ _UNGROUNDED = _proposal_block(
     "    quote: a maintainer confirmed this was fixed last quarter\n"
 )
 
+_VALID_FIX_LATER = _proposal_block(
+    "disposition: fix_later\n"
+    "target_milestone: Hygiene\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: cited symbol absent from current tree\n"
+)
+
+
+def _review_block(body: str) -> str:
+    return f"<triage_punt_review>\n{body}\n</triage_punt_review>"
+
+
+_VALID_REVIEW_CONCUR = _review_block(
+    "verdict: concur\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: cited symbol absent from current tree\n"
+)
+
+_VALID_REVIEW_CHALLENGE = _review_block(
+    "verdict: challenge\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: cited symbol absent from current tree\n"
+)
+
+_INVALID_REVIEW = _review_block(
+    "verdict: maybe\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: cited symbol absent from current tree\n"
+)
+
+_UNGROUNDED_REVIEW = _review_block(
+    "verdict: challenge\n"
+    "evidence:\n"
+    "  - ref: symbol-absent\n"
+    "    quote: a maintainer confirmed this was fixed last quarter\n"
+)
+
 
 def _report(*, checkable: bool = True, findings: int = 1) -> object:
     return parse_backlog_report(
@@ -173,7 +231,10 @@ class TestValidProposal:
     def test_valid_output_is_accepted_with_its_cost(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        runner = _StubRunner(_StubResult(_VALID_PUNT, cost_usd=0.02))
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=0.02),
+            review_results=(_StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.03),),
+        )
         _install_runner(monkeypatch, runner)
 
         summary = flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
@@ -182,10 +243,13 @@ class TestValidProposal:
         result = summary.results[0]
         assert result.proposal.disposition == DISPOSITION_PUNT
         assert result.proposal.punt_reason_code == "verified-stale"
+        assert result.punt_review is not None
+        assert result.punt_review.verdict == "concur"
         assert result.cost_usd == pytest.approx(0.02)
+        assert result.review_cost_usd == pytest.approx(0.03)
         assert result.retry_count == 0
         assert result.fallback_reason == ""
-        assert summary.total_cost_usd == pytest.approx(0.02)
+        assert summary.total_cost_usd == pytest.approx(0.05)
 
     def test_per_finding_and_total_spend_are_both_reported(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -193,6 +257,10 @@ class TestValidProposal:
         runner = _StubRunner(
             _StubResult(_VALID_PUNT, cost_usd=0.02),
             _StubResult(_VALID_PUNT, cost_usd=0.03),
+            review_results=(
+                _StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.04),
+                _StubResult(_VALID_REVIEW_CHALLENGE, cost_usd=0.05),
+            ),
         )
         _install_runner(monkeypatch, runner)
 
@@ -201,18 +269,40 @@ class TestValidProposal:
             pytest.approx(0.02),
             pytest.approx(0.03),
         ]
-        assert summary.total_cost_usd == pytest.approx(0.05)
+        assert [r.review_cost_usd for r in summary.results] == [
+            pytest.approx(0.04),
+            pytest.approx(0.05),
+        ]
+        assert summary.total_cost_usd == pytest.approx(0.14)
         assert summary.cost_provenance == COST_PROVIDER_REPORTED
 
-    def test_an_unmeasured_attempt_taints_the_total_provenance(
+    def test_an_unmeasured_review_attempt_taints_the_total_provenance(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        runner = _StubRunner(_StubResult(_VALID_PUNT, cost_usd=None))
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=0.02),
+            review_results=(_StubResult(_VALID_REVIEW_CONCUR, cost_usd=None),),
+        )
         _install_runner(monkeypatch, runner)
 
         summary = flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
-        assert summary.results[0].cost_usd is None
+        assert summary.results[0].cost_usd == pytest.approx(0.02)
+        assert summary.results[0].review_cost_usd is None
+        assert summary.total_cost_usd == pytest.approx(0.02)
         assert summary.cost_provenance == COST_UNKNOWN
+
+    def test_non_punt_proposals_pass_through_unreviewed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = _StubRunner(_StubResult(_VALID_FIX_LATER, cost_usd=0.02), review_results=())
+        _install_runner(monkeypatch, runner)
+
+        summary = flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
+
+        assert summary.results[0].proposal.disposition == "fix_later"
+        assert summary.results[0].punt_review is None
+        assert summary.review_stage.no_op is True
+        assert runner.review_prompts == []
 
 
 # ── Retry and fallback ────────────────────────────────────────────────────────
@@ -336,6 +426,120 @@ class TestRetryAndFallback:
         assert result.fallback_reason == flow.FALLBACK_AGENT_UNAVAILABLE
 
 
+class TestPuntReview:
+    def test_every_punt_gets_reviewed_before_return(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=0.01),
+            _StubResult(_VALID_PUNT, cost_usd=0.01),
+            review_results=(
+                _StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.02),
+                _StubResult(_VALID_REVIEW_CHALLENGE, cost_usd=0.03),
+            ),
+        )
+        _install_runner(monkeypatch, runner)
+
+        summary = flow.run_triage_proposals(_report(findings=2), _config(tmp_path), record=False)
+
+        verdicts = [result.punt_review.verdict for result in summary.results if result.punt_review]
+        assert verdicts == ["concur", "challenge"]
+        assert len(runner.review_prompts) == 2
+        assert summary.review_stage.reviewed_punt_count == 2
+        assert summary.review_stage.challenged_punt_count == 1
+        assert summary.review_stage.no_op is False
+
+    def test_invalid_review_is_retried_once_and_can_recover(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=0.01),
+            review_results=(
+                _StubResult(_INVALID_REVIEW, cost_usd=0.02),
+                _StubResult(_VALID_REVIEW_CHALLENGE, cost_usd=0.03),
+            ),
+        )
+        _install_runner(monkeypatch, runner)
+
+        result = flow.run_triage_proposals(_report(), _config(tmp_path), record=False).results[0]
+        assert result.punt_review is not None
+        assert result.punt_review.verdict == "challenge"
+        assert result.review_attempts == 2
+        assert result.review_retry_count == 1
+        assert result.review_cost_usd == pytest.approx(0.05)
+
+    def test_reviewer_retry_prompt_names_the_validator_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=0.01),
+            review_results=(
+                _StubResult(_INVALID_REVIEW, cost_usd=0.02),
+                _StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.03),
+            ),
+        )
+        _install_runner(monkeypatch, runner)
+
+        flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
+        assert "previous attempt was REJECTED" in runner.review_prompts[1]
+        assert "verdict must be one of" in runner.review_prompts[1]
+
+    def test_persistently_invalid_review_becomes_a_safe_challenge(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=0.01),
+            review_results=(
+                _StubResult(_INVALID_REVIEW, cost_usd=0.02),
+                _StubResult(_INVALID_REVIEW, cost_usd=0.03),
+            ),
+        )
+        _install_runner(monkeypatch, runner)
+
+        result = flow.run_triage_proposals(_report(), _config(tmp_path), record=False).results[0]
+        assert result.punt_review is not None
+        assert result.punt_review.verdict == "challenge"
+        assert result.review_fallback_reason == flow.FALLBACK_REVIEW_INVALID_OUTPUT
+        assert any("verdict must be one of" in e for e in result.review_validation_errors)
+
+    def test_ungrounded_review_is_retried_then_challenges_safely(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=0.01),
+            review_results=(
+                _StubResult(_UNGROUNDED_REVIEW, cost_usd=0.02),
+                _StubResult(_UNGROUNDED_REVIEW, cost_usd=0.03),
+            ),
+        )
+        _install_runner(monkeypatch, runner)
+
+        result = flow.run_triage_proposals(_report(), _config(tmp_path), record=False).results[0]
+        assert result.punt_review is not None
+        assert result.punt_review.verdict == "challenge"
+        assert any("not in that entry" in e for e in result.review_validation_errors)
+
+    def test_an_unavailable_reviewer_challenges_rather_than_crashing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        prompts: list[str] = []
+
+        def _runner(**kwargs: object) -> _StubResult:
+            prompt = str(kwargs.get("prompt", ""))
+            prompts.append(prompt)
+            if "ADVERSARIAL PUNT REVIEWER" in prompt:
+                raise RuntimeError("reviewer offline")
+            return _StubResult(_VALID_PUNT, cost_usd=0.01)
+
+        _install_runner(monkeypatch, _runner)
+
+        result = flow.run_triage_proposals(_report(), _config(tmp_path), record=False).results[0]
+        assert any("ADVERSARIAL PUNT REVIEWER" in prompt for prompt in prompts)
+        assert result.punt_review is not None
+        assert result.punt_review.verdict == "challenge"
+        assert result.review_fallback_reason == flow.FALLBACK_REVIEWER_UNAVAILABLE
+
+
 # ── Deterministic paths that spend nothing ────────────────────────────────────
 
 
@@ -378,6 +582,7 @@ class TestDeterministicPaths:
         )
         assert summary.findings_count == 0
         assert summary.total_cost_usd == 0.0
+        assert summary.review_stage.no_op is True
 
 
 # ── Audit persistence ─────────────────────────────────────────────────────────
@@ -387,7 +592,13 @@ class TestAuditPersistence:
     def test_proposals_and_run_spend_are_written_and_readable(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        _install_runner(monkeypatch, _StubRunner(_StubResult(_VALID_PUNT, cost_usd=0.02)))
+        _install_runner(
+            monkeypatch,
+            _StubRunner(
+                _StubResult(_VALID_PUNT, cost_usd=0.02),
+                review_results=(_StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.03),),
+            ),
+        )
 
         summary = flow.run_triage_proposals(_report(), _config(tmp_path), record=True)
         assert summary.audit_error == ""
@@ -402,11 +613,18 @@ class TestAuditPersistence:
         assert len(events) == 1
         assert events[0]["proposal"]["disposition"] == DISPOSITION_PUNT
         assert events[0]["proposal"]["evidence_refs"] == ["symbol-absent"]
+        assert events[0]["punt_review"]["verdict"] == "concur"
         assert events[0]["cost_usd"] == pytest.approx(0.02)
+        assert events[0]["review_cost_usd"] == pytest.approx(0.03)
         assert len(runs) == 1
         assert runs[0]["findings_count"] == 1
-        assert runs[0]["total_cost_usd"] == pytest.approx(0.02)
+        assert runs[0]["total_cost_usd"] == pytest.approx(0.05)
         assert runs[0]["report_path"] == "backlog.json"
+        assert runs[0]["review_stage"] == {
+            "reviewed_punt_count": 1,
+            "challenged_punt_count": 0,
+            "no_op": False,
+        }
 
     def test_empty_backlog_records_an_explicit_zero_cost_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -423,6 +641,11 @@ class TestAuditPersistence:
         assert runs[0]["findings_count"] == 0
         assert runs[0]["total_cost_usd"] == 0.0
         assert runs[0]["triage_run_id"] == summary.triage_run_id
+        assert runs[0]["review_stage"] == {
+            "reviewed_punt_count": 0,
+            "challenged_punt_count": 0,
+            "no_op": True,
+        }
 
     def test_validation_errors_survive_into_the_recorded_row(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -445,6 +668,35 @@ class TestAuditPersistence:
         assert rows[0][0] == DISPOSITION_NEEDS_VERIFICATION
         assert rows[0][1] == 1
         assert "punt_reason_code" in rows[0][2]
+
+    def test_review_fields_survive_into_the_recorded_row(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _install_runner(
+            monkeypatch,
+            _StubRunner(
+                _StubResult(_VALID_PUNT, cost_usd=0.01),
+                review_results=(
+                    _StubResult(_INVALID_REVIEW, cost_usd=0.02),
+                    _StubResult(_INVALID_REVIEW, cost_usd=0.03),
+                ),
+            ),
+        )
+        flow.run_triage_proposals(_report(), _config(tmp_path), record=True)
+
+        conn = audit_storage.open_readonly(tmp_path)
+        try:
+            rows = conn.execute(
+                "SELECT review_verdict, review_retry_count, review_validation_errors, "
+                "review_fallback_reason, review_cost_usd FROM triage_proposal_events"
+            ).fetchall()
+        finally:
+            conn.close()
+        assert rows[0][0] == "challenge"
+        assert rows[0][1] == 1
+        assert "verdict must be one of" in rows[0][2]
+        assert rows[0][3] == flow.FALLBACK_REVIEW_INVALID_OUTPUT
+        assert rows[0][4] == pytest.approx(0.05)
 
     def test_a_prior_disposition_becomes_packet_evidence_for_the_next_run(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

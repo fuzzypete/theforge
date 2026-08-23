@@ -16,12 +16,17 @@ from theforge.triage_proposal import (
     HYGIENE_POOL,
     MIN_QUOTE_WORDS,
     PUNT_REASON_CODES,
+    PUNT_REVIEW_CHALLENGE,
+    PUNT_REVIEW_CONCUR,
     FindingPacket,
     FindingProposalResult,
     PacketEvidence,
     ProposalRunSummary,
+    PuntReviewStage,
+    challenged_punt_review,
     needs_verification_proposal,
     parse_triage_proposal,
+    parse_triage_punt_review,
     render_result,
     render_run_summary,
 )
@@ -63,6 +68,10 @@ def _cite(quote: str = _QUOTE, ref: str = "symbol-absent") -> str:
 
 def _block(body: str) -> str:
     return f"prose before\n<triage_proposal>\n{body}\n</triage_proposal>\nprose after"
+
+
+def _review_block(body: str) -> str:
+    return f"prose before\n<triage_punt_review>\n{body}\n</triage_punt_review>\nprose after"
 
 
 # ── Taxonomy shape ────────────────────────────────────────────────────────────
@@ -416,6 +425,40 @@ class TestNoCheckableEvidenceHelper:
         assert proposal.evidence == "nothing checkable here"
 
 
+class TestPuntReviewParsing:
+    def test_concur_review_with_grounded_evidence_parses(self) -> None:
+        review = parse_triage_punt_review(
+            _review_block(f"verdict: concur\n{_cite()}"),
+            _packet(),
+        )
+        assert review.ok, review.parse_errors
+        assert review.verdict == PUNT_REVIEW_CONCUR
+
+    def test_challenge_review_with_grounded_evidence_parses(self) -> None:
+        review = parse_triage_punt_review(
+            _review_block(f"verdict: challenge\n{_cite()}"),
+            _packet(),
+        )
+        assert review.ok, review.parse_errors
+        assert review.verdict == PUNT_REVIEW_CHALLENGE
+
+    def test_review_without_evidence_is_rejected(self) -> None:
+        review = parse_triage_punt_review(_review_block("verdict: concur\n"), _packet())
+        assert not review.ok
+        assert any("must cite evidence" in error for error in review.parse_errors)
+
+    def test_review_with_invalid_quote_is_rejected(self) -> None:
+        review = parse_triage_punt_review(
+            _review_block(
+                "verdict: challenge\n"
+                + _cite(quote="the maintainer confirmed this was fixed last quarter")
+            ),
+            _packet(),
+        )
+        assert not review.ok
+        assert any("not in that entry" in error for error in review.parse_errors)
+
+
 # ── Rendering ─────────────────────────────────────────────────────────────────
 
 
@@ -482,6 +525,55 @@ class TestRendering:
         assert "fallback:" in text
         assert "validation error: punt_reason_code" in text
 
+    def test_challenged_punt_review_renders_original_and_review_evidence(self) -> None:
+        packet = _packet(
+            evidence=(
+                PacketEvidence(evidence_id="a", kind="staleness", summary="alpha words here"),
+                PacketEvidence(evidence_id="b", kind="churn", summary="beta words there"),
+            )
+        )
+        proposal = parse_triage_proposal(
+            _block(
+                "disposition: punt\n"
+                "punt_reason_code: verified-stale\n"
+                "evidence:\n"
+                "  - ref: a\n"
+                "    quote: alpha words here\n"
+            ),
+            packet,
+        )
+        review = parse_triage_punt_review(
+            _review_block(
+                "verdict: challenge\nevidence:\n  - ref: b\n    quote: beta words there\n"
+            ),
+            packet,
+        )
+        text = render_result(_result(proposal, punt_review=review, review_cost_usd=0.0045))
+        assert "evidence: alpha words here" in text
+        assert "REVIEW: challenge" in text
+        assert "review evidence: beta words there" in text
+
+    def test_challenged_fallback_renders_review_errors_without_fabricated_evidence(self) -> None:
+        proposal = parse_triage_proposal(
+            _block(
+                "disposition: punt\npunt_reason_code: verified-stale\n" + _cite(quote=_SUMMARY)
+            ),
+            _packet(),
+        )
+        text = render_result(
+            _result(
+                proposal,
+                punt_review=challenged_punt_review(basis="review withheld safely"),
+                review_fallback_reason="reviewer output failed validation on every attempt",
+                review_validation_errors=("verdict must be one of ['concur', 'challenge']",),
+                review_cost_usd=None,
+                review_cost_provenance="unknown",
+            )
+        )
+        assert "REVIEW: challenge" in text
+        assert "review fallback: reviewer output failed validation on every attempt" in text
+        assert "review validation error: verdict must be one of" in text
+
     def test_empty_run_says_nothing_was_spent(self) -> None:
         text = render_run_summary(
             ProposalRunSummary(results=(), total_cost_usd=0.0, cost_provenance="provider_reported")
@@ -489,6 +581,7 @@ class TestRendering:
         assert "no findings" in text
         assert "$0.0000" in text
         assert "no agent was invoked" in text
+        assert "REVIEW STAGE: no-op" in text
 
     def test_run_summary_reports_total_and_advisory_status(self) -> None:
         proposal = needs_verification_proposal(_packet(), basis="thin")
@@ -496,8 +589,10 @@ class TestRendering:
             results=(_result(proposal),),
             total_cost_usd=0.0123,
             cost_provenance="provider_reported",
+            review_stage=PuntReviewStage(),
         )
         text = render_run_summary(summary)
         assert "TOTAL SPEND: $0.0123" in text
         assert "no issue was modified" in text
+        assert "REVIEW STAGE: no-op" in text
         assert summary.findings_count == 1

@@ -354,20 +354,38 @@ class TestCommand:
         _stub_config(monkeypatch, tmp_path)
 
         class _Result:
-            output = (
-                "<triage_proposal>\n"
-                "disposition: punt\n"
-                "punt_reason_code: verified-stale\n"
+            def __init__(self, output: str, cost_usd: float) -> None:
+                self.output = output
+                self.success = True
+                self.cost_usd = cost_usd
+                self.cost_provenance = "provider_reported"
+
+        calls = {"count": 0}
+
+        def _run_agent(**kwargs: object) -> _Result:
+            calls["count"] += 1
+            if calls["count"] == 1:
+                return _Result(
+                    "<triage_proposal>\n"
+                    "disposition: punt\n"
+                    "punt_reason_code: verified-stale\n"
+                    "evidence:\n"
+                    "  - ref: symbol-absent\n"
+                    "    quote: cited symbol absent from current tree\n"
+                    "</triage_proposal>",
+                    0.05,
+                )
+            return _Result(
+                "<triage_punt_review>\n"
+                "verdict: concur\n"
                 "evidence:\n"
                 "  - ref: symbol-absent\n"
                 "    quote: cited symbol absent from current tree\n"
-                "</triage_proposal>"
+                "</triage_punt_review>",
+                0.02,
             )
-            success = True
-            cost_usd = 0.05
-            cost_provenance = "provider_reported"
 
-        monkeypatch.setattr(flow, "run_agent", lambda **k: _Result())
+        monkeypatch.setattr(flow, "run_agent", _run_agent)
         monkeypatch.setattr(flow, "log_agent_result", lambda *a, **k: None)
         monkeypatch.setattr(
             flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
@@ -379,7 +397,9 @@ class TestCommand:
         out = capsys.readouterr().out
         assert code == 0
         assert "#1312  PROPOSE punt (reason: verified-stale)" in out
-        assert "TOTAL SPEND: $0.0500" in out
+        assert "REVIEW: concur" in out
+        assert "review cost: $0.0200" in out
+        assert "TOTAL SPEND: $0.0700" in out
 
         conn = audit_storage.open_readonly(tmp_path)
         try:
@@ -388,7 +408,9 @@ class TestCommand:
         finally:
             conn.close()
         assert events[0]["proposal"]["punt_reason_code"] == "verified-stale"
-        assert runs[0]["total_cost_usd"] == pytest.approx(0.05)
+        assert events[0]["punt_review"]["verdict"] == "concur"
+        assert runs[0]["total_cost_usd"] == pytest.approx(0.07)
+        assert runs[0]["review_stage"]["reviewed_punt_count"] == 1
 
     def test_the_command_spawns_no_subprocess(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
