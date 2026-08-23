@@ -110,9 +110,29 @@ def _stub_flow(monkeypatch: pytest.MonkeyPatch, summary: ProposalRunSummary) -> 
         calls.append({"report": report, **kwargs})
         return summary
 
+    import theforge.coordinator.triage_headless_flow as headless_flow
     import theforge.coordinator.triage_proposal_flow as flow
 
     monkeypatch.setattr(flow, "run_triage_proposals", _run)
+    # The headless path reads the run back out of the audit substrate before it
+    # will publish a pending decision. These tests stub the proposal flow, so
+    # nothing was really recorded — stand in for the reload the real run would
+    # get. Its absence is covered as its own case in test_triage_headless.py.
+    monkeypatch.setattr(
+        headless_flow,
+        "_recorded_events",
+        lambda root, run_id: (
+            [
+                {
+                    "finding_id": "1312:audit-count",
+                    "issue_ref": "#1312",
+                    "disposition": "needs_verification",
+                    "proposal": {"disposition": "needs_verification"},
+                }
+            ]
+            * summary.findings_count
+        ),
+    )
     return calls
 
 
@@ -588,6 +608,23 @@ class TestHeadlessCommand:
         assert code == 1
         assert "triage-earlier" in err
         assert calls == []
+
+    def test_an_unratifiable_run_fails_and_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge import pending as _pending
+
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _stub_flow(monkeypatch, _summary(triage_run_id="run123", audit_error="disk full"))
+
+        code = cli_triage.cmd_triage(
+            _args(report=str(report_path), config=str(config_path), no_audit=False)
+        )
+        err = capsys.readouterr().err
+        assert code == 1
+        assert "disk full" in err
+        assert _pending.find_triage_pending("run123", tmp_path) is None
 
     def test_ratify_is_refused_without_a_terminal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture

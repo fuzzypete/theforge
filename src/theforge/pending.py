@@ -461,6 +461,4 @@ def unresolved_triage_pending(project_root: Path | None = None) -> dict[str, Any
     nobody has looked at yet, and would bury the un-acted-on package behind a
     newer one — so the second run refuses and names the first (#2231).
     """
-    for entry in list_triage_pending(project_root):
-        return entry
-    return None
+    return next(iter(list_triage_pending(project_root)), None)

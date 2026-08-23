@@ -140,7 +140,24 @@ class _StubReport:
     findings: tuple = ()
 
 
-def _stub_flow(monkeypatch: pytest.MonkeyPatch, summary: ProposalRunSummary) -> list[dict]:
+#: The reload a one-finding run's recording is expected to produce. Stubbed by
+#: default because a run that proposed findings but reloads nothing is a
+#: recording failure, not the happy path (see TestUnratifiableRuns).
+_RECORDED_EVENT: dict = {
+    "finding_id": "1312:audit-count",
+    "issue_ref": "#1312",
+    "disposition": "needs_verification",
+    "evidence_refs": [],
+    "proposal": {"disposition": "needs_verification"},
+}
+
+
+def _stub_flow(
+    monkeypatch: pytest.MonkeyPatch,
+    summary: ProposalRunSummary,
+    *,
+    events: list[dict] | None = None,
+) -> list[dict]:
     calls: list[dict] = []
     import theforge.coordinator.triage_proposal_flow as flow
 
@@ -148,8 +165,9 @@ def _stub_flow(monkeypatch: pytest.MonkeyPatch, summary: ProposalRunSummary) -> 
         calls.append({"report": report, **kwargs})
         return summary
 
+    recorded = [_RECORDED_EVENT] if events is None else events
     monkeypatch.setattr(flow, "run_triage_proposals", _run)
-    monkeypatch.setattr(headless, "_recorded_events", lambda root, run_id: [])
+    monkeypatch.setattr(headless, "_recorded_events", lambda root, run_id: recorded)
     return calls
 
 
@@ -180,7 +198,7 @@ class TestHeadlessFlow:
         assert entry["flagged_count"] == 1
         assert entry["report_path"] == "/tmp/backlog.yaml"
         assert "run_summary" in entry
-        assert entry["proposals"] == []
+        assert entry["proposals"][0]["finding_id"] == "1312:audit-count"
         assert "decision" not in entry
 
     def test_package_carries_proposals_reviews_and_evidence_refs(
@@ -254,6 +272,22 @@ class TestHeadlessFlow:
         assert seen["collected"] is True
         assert len(calls) == 1
 
+    def test_an_empty_backlog_still_persists_despite_recording_no_events(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No events is correct for a run with no findings — not a failure."""
+        _stub_flow(
+            monkeypatch,
+            _summary(results=(), total_cost_usd=0.0, review_stage=PuntReviewStage()),
+            events=[],
+        )
+        outcome = headless.run_headless_triage(
+            _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+        )
+        assert outcome.status == headless.HEADLESS_WRITTEN
+        assert outcome.findings_count == 0
+        assert _pending.find_triage_pending("run123", tmp_path) is not None
+
     def test_report_collection_failure_raises_a_headless_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -268,6 +302,78 @@ class TestHeadlessFlow:
         )
         with pytest.raises(headless.HeadlessTriageError, match="gh api failed"):
             headless.run_headless_triage(_FakeConfig(tmp_path), project_root=tmp_path)
+
+
+class TestUnratifiableRuns:
+    """A package the operator could not ratify is never published (#2231, cycle 1).
+
+    ``ratify_triage_run`` reads the run and its proposal events out of the audit
+    substrate and refuses a run it cannot find — so a pending decision whose
+    recording did not survive promises an operator something forge cannot keep.
+    """
+
+    def test_an_audit_write_failure_writes_no_pending_decision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _stub_flow(monkeypatch, _summary(audit_error="disk full"))
+
+        with pytest.raises(headless.HeadlessTriageError, match="disk full"):
+            headless.run_headless_triage(
+                _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+            )
+        assert _pending.find_triage_pending("run123", tmp_path) is None
+        assert _pending.unresolved_triage_pending(tmp_path) is None
+
+    def test_an_unreadable_recording_writes_no_pending_decision(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The writer reported success but the events cannot be read back."""
+        _stub_flow(monkeypatch, _summary(), events=[])
+
+        with pytest.raises(headless.HeadlessTriageError, match="could not be read back"):
+            headless.run_headless_triage(
+                _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+            )
+        assert _pending.find_triage_pending("run123", tmp_path) is None
+
+    def test_the_failure_names_the_run_and_what_it_proposed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The spend already happened; the message must not read as a no-op."""
+        _stub_flow(monkeypatch, _summary(audit_error="disk full"))
+
+        with pytest.raises(headless.HeadlessTriageError) as excinfo:
+            headless.run_headless_triage(
+                _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+            )
+        message = str(excinfo.value)
+        assert "run123" in message
+        assert "1 finding(s)" in message
+
+    def test_a_recording_failure_never_fails_the_sprint_that_triggered_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        import theforge.triage_backlog_report as backlog_mod
+        import theforge.triage_report as report_mod
+        from theforge.sprint.post_sprint_triage import run_post_sprint_triage
+
+        monkeypatch.setattr(
+            backlog_mod, "collect_backlog_report", lambda root, current_milestone=None: object()
+        )
+        monkeypatch.setattr(
+            backlog_mod,
+            "write_backlog_report",
+            lambda root, report, output_path=None: tmp_path / "backlog.yaml",
+        )
+        monkeypatch.setattr(report_mod, "load_backlog_report", lambda path: _StubReport())
+        _stub_flow(monkeypatch, _summary(audit_error="disk full"))
+
+        outcome = run_post_sprint_triage(_StubState(_FakeConfig(tmp_path)))
+        assert outcome.status == headless.HEADLESS_FAILED
+        assert "disk full" in outcome.error
+        assert _pending.find_triage_pending("run123", tmp_path) is None
+        combined = capsys.readouterr()
+        assert "disk full" in (combined.out + combined.err)
 
 
 # ── Status rendering ─────────────────────────────────────────────────────────

@@ -102,7 +102,10 @@ def _recorded_events(project_root: Path, triage_run_id: str) -> list[dict[str, A
 
     The pending artifact carries what was *recorded*, not what was returned in
     memory: ratification reads the substrate, so a package built from anything
-    else could describe a run ratification would not recognise.
+    else could describe a run ratification would not recognise. An empty result
+    is not interpreted here — :func:`run_headless_triage` decides what it means
+    for the run that asked, because "no events" is correct for an empty backlog
+    and a broken promise for anything else.
     """
     from . import audit_read_model, audit_storage  # noqa: PLC0415
 
@@ -117,10 +120,40 @@ def _recorded_events(project_root: Path, triage_run_id: str) -> list[dict[str, A
                 conn, triage_run_id=triage_run_id
             )
         ]
-    except Exception:  # noqa: BLE001 - the artifact degrades, the run does not fail
+    except Exception:  # noqa: BLE001 - the caller decides what an empty reload means
         return []
     finally:
         conn.close()
+
+
+def _unratifiable_reason(summary: "ProposalRunSummary", events: list[dict[str, Any]]) -> str:
+    """Why this run's package could not be ratified later, or "" if it can.
+
+    A pending triage decision makes exactly one promise: an operator can come
+    back to it and ``forge triage --ratify`` will apply what was reviewed. That
+    promise rests entirely on the audit substrate — ``ratify_triage_run`` reads
+    the recorded run and its proposal events, and refuses a run it cannot find.
+    So a package whose recording did not survive is not a decision the operator
+    can act on; publishing it anyway would put an unresolvable record on the
+    status surface and spend the operator's attention discovering that at the
+    ratify prompt rather than here (#2231, review cycle 1).
+
+    Both halves of the recording are checked, because they fail separately: the
+    writer can report an error, and it can report none while the reload comes
+    back empty (an unreadable substrate, a failed open). The empty reload is a
+    problem only for a run that actually proposed something — an empty backlog
+    records no events by construction and ratifies as an empty run.
+    """
+    if summary.audit_error:
+        return (
+            f"the proposal run could not be recorded in the audit substrate: {summary.audit_error}"
+        )
+    if summary.findings_count > 0 and not events:
+        return (
+            "the recorded proposal events for this run could not be read back from the "
+            "audit substrate"
+        )
+    return ""
 
 
 def _proposal_entries(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -263,6 +296,20 @@ def run_headless_triage(
     )
 
     events = _recorded_events(root, summary.triage_run_id)
+
+    # Checked BEFORE the artifact is written: an unratifiable package must not
+    # reach the operator's status surface at all. The spend is named because it
+    # already happened — the run is lost, and saying so is the difference
+    # between "nothing was proposed" and "proposals were made and could not be
+    # kept".
+    unratifiable = _unratifiable_reason(summary, events)
+    if unratifiable:
+        raise HeadlessTriageError(
+            f"triage run {summary.triage_run_id} proposed {summary.findings_count} finding(s) "
+            f"but {unratifiable}; no pending decision was written because it could not be "
+            "ratified later"
+        )
+
     payload = build_pending_payload(
         summary,
         events=events,

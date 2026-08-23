@@ -1150,6 +1150,14 @@ Properties worth knowing:
 - **`--no-audit` is refused.** A run recorded nowhere cannot be ratified later,
   so a headless run that would produce an unusable package is refused before
   spending.
+- **A run that could not be recorded publishes nothing.** Ratification reads the
+  run and its proposal events out of the audit substrate, so if the proposal
+  stage reports an audit write failure — or its events cannot be read back — the
+  command fails with that reason and writes no pending decision, rather than
+  putting a record on the status surface that `--ratify` would later refuse. The
+  message names the run id and how many findings it proposed, because that spend
+  already happened. (An empty backlog records no events by construction and is
+  persisted normally.)
 - **Repeated runs do not pile up.** A new headless run that would supersede an
   unresolved pending decision refuses and names the pending one, rather than
   burying it. Resolve or discard the first before proposing again.
