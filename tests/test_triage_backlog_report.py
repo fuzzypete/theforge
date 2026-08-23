@@ -336,6 +336,48 @@ class TestBuildBacklogReport:
         assert any(entry.evidence_id == "path:src/demo.py:churn" for entry in finding.evidence)
         assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
 
+    def test_extensionless_module_path_resolves_against_known_source_extensions(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "theforge" / "cli" / "triage.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def main():\n    return 0\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(23, "Evidence: `src/theforge/cli/triage`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+        assert any(
+            entry.evidence_id == "path:src/theforge/cli/triage.py:present"
+            for entry in finding.evidence
+        )
+
+    def test_unresolvable_extensionless_path_is_unverified_not_stale(self, tmp_path: Path) -> None:
+        report = build_backlog_report(
+            [_issue(24, "Evidence: `src/theforge/cli/ghost`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+        assert any(
+            entry.evidence_id == "path:src/theforge/cli/ghost:unverified"
+            for entry in finding.evidence
+        )
+
     def test_marks_unverified_when_bare_filename_does_not_resolve(self, tmp_path: Path) -> None:
         report = build_backlog_report(
             [_issue(22, "Operators were editing a stray config.yaml during the incident.")],
