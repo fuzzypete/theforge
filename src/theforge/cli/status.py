@@ -632,13 +632,65 @@ def _pending_reentry_lines(project_root: Path, story: str) -> list[str]:
     return reentry_lines(project_root, story, indent="    ")
 
 
+def _pending_age_text(created_at: str, now: datetime.datetime) -> str:
+    """Render how long a pending decision has been waiting, e.g. ``age 3h``."""
+    if not created_at:
+        return ""
+    try:
+        created = datetime.datetime.fromisoformat(created_at)
+    except Exception:
+        return ""
+    if created.tzinfo is None:
+        created = created.replace(tzinfo=datetime.timezone.utc)
+    seconds = max(0.0, (now - created).total_seconds())
+    if seconds < 3600:
+        return f"age {int(seconds // 60)}m"
+    if seconds < 86400:
+        return f"age {int(seconds // 3600)}h"
+    return f"age {int(seconds // 86400)}d"
+
+
+def _show_triage_pending_decision(entry: dict, now: datetime.datetime) -> None:
+    """Render one persisted headless-triage decision.
+
+    Deliberately not the HITL rendering: a triage record has no deadline and no
+    options to pick from, so the fields that matter are how long it has waited,
+    how much it covers, and the one command that resolves it.
+    """
+    run_id = entry.get("run_id", "?")
+    triage_run_id = str(entry.get("triage_run_id") or "")
+    created_at = str(entry.get("created_at") or "")
+    findings = int(entry.get("findings_count") or 0)
+    flagged = int(entry.get("flagged_count") or 0)
+
+    parts = [f"{findings} findings"]
+    if flagged:
+        parts.append(f"({flagged} flagged)")
+    age = _pending_age_text(created_at, now)
+    if age:
+        parts.append(age)
+    date_text = created_at.split("T")[0] if created_at else "?"
+    print(f"  triage  {date_text}  {'  '.join(parts)}")
+    print(f"    id: {run_id}")
+    print(f"    resolve: forge triage --ratify {triage_run_id or run_id}")
+    print(f"    discard: forge triage --discard {run_id}")
+
+
 def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
     """Print the pending-decisions section."""
+    # The kind predicate is a pure function of the record, not of whichever
+    # module supplied it — ``pending_mod`` is injected only so the listing can be
+    # substituted, so the classification comes from the real substrate.
+    from theforge.pending import is_triage_pending  # noqa: PLC0415
+
     pending_entries = pending_mod.list_pending(project_root)
     if pending_entries:
         print("\nPending decisions:")
         now = datetime.datetime.now(datetime.timezone.utc)
         for entry in pending_entries:
+            if is_triage_pending(entry):
+                _show_triage_pending_decision(entry, now)
+                continue
             run_id = entry.get("run_id", "?")
             story = entry.get("story", "?")
             phase = entry.get("phase", "?")
@@ -1074,6 +1126,19 @@ def cmd_decide(args: object) -> int:
     entry = _pending.read_pending(run_id, project_root)
     if entry is None:
         print(f"No pending decision found for run_id={run_id!r}", file=sys.stderr)
+        return 1
+
+    if _pending.is_triage_pending(entry):
+        # A triage decision is not resolved by a `decision:` field — nothing
+        # polls for one, and writing it would leave the record on the operator's
+        # surface forever while looking answered.
+        triage_run_id = str(entry.get("triage_run_id") or run_id)
+        print(
+            f"{run_id} is a pending triage decision, not a gate. Resolve it with "
+            f"'forge triage --ratify {triage_run_id}' or drop it with "
+            f"'forge triage --discard {run_id}'.",
+            file=sys.stderr,
+        )
         return 1
 
     options = entry.get("options", [])

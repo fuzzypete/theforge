@@ -8112,4 +8112,13 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
             secrets=_ctx.config.secrets,
         )
 
+    # ── Opt-in post-sprint triage (#2231) ─────────────────────────────
+    # Runs after the sprint's result is terminal and cannot change it: the pass
+    # only proposes and persists a pending operator decision, and swallows its
+    # own failures. The work itself belongs to sprint.post_sprint_triage.
+    if _ctx.config.sprint.post_sprint_triage:
+        from .post_sprint_triage import run_post_sprint_triage  # noqa: PLC0415
+
+        run_post_sprint_triage(_sprint_state)
+
     return sprint_result

@@ -826,6 +826,12 @@ transport_fallback:
 sprint:
   max_parallel: 1                  # parallel story workers (manifest key wins)
   worker_timeout_seconds: 3600     # per-worker timeout (manifest key wins)
+  post_sprint_triage: false        # opt-in headless `forge triage` proposal pass
+                                   # after the sprint's terminal result. Proposes
+                                   # and persists a pending operator decision;
+                                   # never ratifies, never mutates a tracker, and
+                                   # a failure never fails the sprint. See
+                                   # docs/guides/cli-reference.md "Headless mode".
   # batch: — see "Batch groups" above
 
 # ── Stuck-agent detection (dev phase only) ─────────────────

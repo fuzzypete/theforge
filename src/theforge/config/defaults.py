@@ -246,6 +246,15 @@ retry:
 #     provider: openai
 #     model: o4-mini
 
+# Optional: run a headless `forge triage` proposal pass after a sprint reaches
+# its terminal result. Disabled by default. The pass only proposes and reviews —
+# it writes a pending operator decision to .forge/pending and never ratifies, so
+# no issue is modified without a person. A failure in the pass is reported and
+# never fails the sprint that triggered it. Resolve what it writes with
+# `forge triage --ratify <id>` (or drop it with `forge triage --discard <id>`).
+# sprint:
+#   post_sprint_triage: false
+
 context:
   preflight_budget: 200
   plan_budget: 120

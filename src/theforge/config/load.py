@@ -1665,10 +1665,17 @@ def load_config(config_path: Path) -> ForgeConfig:
         if _raw_value < 1:
             raise ValueError(f"forge.yaml 'sprint.batch.{_key}' must be >= 1, got {_raw_value}")
         _batch_values[_key] = _raw_value
+    sprint_post_triage_raw = sprint_data.get("post_sprint_triage", False)
+    if not isinstance(sprint_post_triage_raw, bool):
+        raise ValueError(
+            f"forge.yaml 'sprint.post_sprint_triage' must be a boolean, "
+            f"got {sprint_post_triage_raw!r}"
+        )
     sprint_cfg = SprintConfig(
         max_parallel=sprint_max_parallel_raw,
         worker_timeout_seconds=sprint_worker_timeout_raw,
         batch=SprintBatchConfig(**_batch_values),
+        post_sprint_triage=sprint_post_triage_raw,
     )
 
     shape_check_data = raw.get("shape_check", {}) or {}

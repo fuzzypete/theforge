@@ -870,15 +870,22 @@ Optional flags record provenance: `--from-sprint`, `--issue`, `--run-id`.
 
 ## `forge triage`
 
-`forge triage` now has three modes:
+`forge triage` has four modes, and which one a bare invocation takes depends on
+whether an operator is present (stdin is a TTY):
 
-- With no `--report`, it generates the deterministic backlog report for every
-  open finding-labeled issue.
-- With `--report <path>`, it consumes an existing backlog report artifact and
-  runs the advisory proposal stage against it.
-- With `--ratify <triage-run-id>`, it loads one recorded proposal run from the
-  audit substrate, prompts the operator finding-by-finding, and applies only
-  the ratified dispositions.
+- With no `--report` **and an operator present**, it generates the deterministic
+  backlog report for every open finding-labeled issue.
+- With `--report <path>` and an operator present, it consumes an existing backlog
+  report artifact and runs the advisory proposal stage against it.
+- **Without an operator** (cron, a post-sprint pass, any non-interactive
+  invocation), it runs the report + proposal + punt-review stages and persists
+  the reviewed package as a pending operator decision. See
+  [Headless mode](#headless-mode) below.
+- With `--ratify <triage-run-id | pending-id>`, it loads one recorded proposal
+  run from the audit substrate, prompts the operator finding-by-finding, and
+  applies only the ratified dispositions. Requires a TTY.
+- With `--discard <pending-id | triage-run-id>`, it drops a persisted pending
+  triage decision without applying anything.
 
 ```bash
 forge triage
@@ -887,6 +894,7 @@ forge triage --report .forge/backlog-report.json
 forge triage --report backlog.json --current-milestone v0.12.0
 forge triage --report backlog.json --no-audit   # print without recording the run
 forge triage --ratify 4601fd03e0c7
+forge triage --discard triage-4601fd03e0c7
 ```
 
 ### Deterministic backlog report mode
@@ -1112,6 +1120,68 @@ Applied: 2, stale: 1, skipped: 0, failed: 0
        Skipped instead of applying.
        stale: live finding state diverged from the reviewed snapshot
 ```
+
+### Headless mode
+
+A `forge triage` invocation with no TTY on stdin cannot prompt, so it cannot
+ratify — and since application already requires ratification, a headless run can
+only propose and persist. It collects the backlog report (or uses `--report`),
+runs the proposal and punt-review stages with the run recorded to the audit
+substrate, and writes the reviewed package to
+`.forge/pending/triage-<triage-run-id>.yaml`.
+
+```text
+$ forge triage            # from cron, stdin not a terminal
+triage: proposal pass proposed 3 disposition(s) (1 punt, concurred)
+triage: pending operator decision written — triage-4601fd03e0c7; resolve with 'forge triage --ratify 4601fd03e0c7'
+```
+
+Properties worth knowing:
+
+- **Never blocks, never applies.** No prompt is issued and no tracker mutation
+  is attempted on any headless path. `--ratify` refuses outright without a TTY,
+  before prompting and before applying anything.
+- **The pending record is the product.** It carries the run summary, the
+  proposals, the punt reviews, the cited evidence refs, the report path, and the
+  finding/flagged counts. Unlike an HITL gate record it has no owning pid and no
+  timeout: it survives the process that wrote it and is never swept as stale. It
+  is removed only by a ratification whose findings all reached a terminal status,
+  or by `forge triage --discard`.
+- **`--no-audit` is refused.** A run recorded nowhere cannot be ratified later,
+  so a headless run that would produce an unusable package is refused before
+  spending.
+- **Repeated runs do not pile up.** A new headless run that would supersede an
+  unresolved pending decision refuses and names the pending one, rather than
+  burying it. Resolve or discard the first before proposing again.
+- **`forge status` surfaces it.** Pending triage decisions appear in the
+  `Pending decisions` section alongside pending HITL gates, with the creation
+  date, finding count, flagged count, age, and the commands that resolve them:
+
+  ```text
+  Pending decisions:
+    triage  2026-08-05  15 findings  (2 flagged)  age 3h
+      id: triage-4601fd03e0c7
+      resolve: forge triage --ratify 4601fd03e0c7
+      discard: forge triage --discard triage-4601fd03e0c7
+  ```
+
+  `forge decide` refuses a triage entry and points at these two commands: a
+  triage decision is not resolved by writing a generic `decision` field.
+
+### Post-sprint trigger
+
+Set `sprint.post_sprint_triage: true` in `forge.yaml` to run one headless triage
+pass after a sprint reaches its terminal result. It ships **off**.
+
+```yaml
+sprint:
+  post_sprint_triage: true
+```
+
+The pass runs only the proposal stages — it never ratifies — and is best effort:
+a triage-stage failure is reported in the sprint log and never fails, blocks, or
+changes the outcome of the sprint that triggered it. Supersession is reported the
+same way, naming the pending decision that blocked the new pass.
 
 ---
 
