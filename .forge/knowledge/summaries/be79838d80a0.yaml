@@ -1,0 +1,127 @@
+schema_version: 2
+run_id: be79838d80a0
+authoritative_run_record: .forge/audits/runs/be79838d80a0.json
+generated_at: '2026-08-23T07:20:36.900244+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01228
+story:
+  slug: issue-2704
+  name: forge triage cannot authenticate agents in a project whose sprints authenticate
+    fine, and blames a credential file the working runs never consult
+  github_issue: 2704
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- security
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/triage.py
+- src/theforge/coordinator/triage_headless_flow.py
+- src/theforge/coordinator/triage_proposal_flow.py
+- src/theforge/triage_proposal.py
+- tests/test_cli_triage.py
+- tests/test_triage_headless.py
+- tests/test_triage_proposal.py
+- tests/test_triage_proposal_flow.py
+what_changed:
+  description: Triage was changed to resolve Claude credentials through the same project-aware
+    path used by sprint flows and to fail before dispatch when that credential is
+    unusable. Its CLI surfaces were also adjusted so auth-gate aborts report as command
+    failures instead of successful runs.
+  approach: The run introduced a shared pre-dispatch authentication gate into the
+    triage proposal and headless flows, threaded the resulting failed outcome through
+    the triage CLI, and verified both interactive and non-interactive paths with focused
+    regression tests.
+  files_modified: *id002
+what_was_learned:
+- claim: When adding a pre-dispatch environment/auth gate to multiple execution surfaces,
+    the gate must be carried through to each surface's process exit semantics as well
+    as its internal outcome model; otherwise automation and operators can still observe
+    a failed run as success.
+  evidence:
+  - type: review_finding
+    finding_id: ec6dd095a0b44c3b
+    description: Review found that headless triage already created a failed auth outcome
+      but still exited with status 0, showing that introducing the gate in flow logic
+      alone did not make the surface report failure correctly to callers.
+  - type: review_finding
+    finding_id: 51026fed73ff061e
+    description: A second headless finding narrowed the same issue to stdout/status
+      behavior for pre-dispatch auth aborts, demonstrating that environment-failure
+      handling has to be wired through the CLI contract, not just represented in run
+      data.
+  - type: review_finding
+    finding_id: cff06792c6ce9a1e
+    description: The interactive proposal path repeated the same mistake after headless
+      was fixed, showing that each entry point needs its own exit-status and stderr/stdout
+      handling reviewed when a shared gate is introduced.
+  - type: review_cycle
+    cycle: '3'
+    description: Cycle 3 approval explicitly called out that both the earlier headless
+      exit-status issue and the later interactive proposal exit-status issue were
+      resolved, confirming that the review loop treated CLI failure signaling as a
+      distinct implementation obligation.
+- claim: Credential resolution should be treated as shared project infrastructure
+    for every dispatching entry point, because separate surface-specific authentication
+    paths drift into contradictory behavior under the same project state.
+  evidence:
+  - type: file
+    path: src/theforge/coordinator/triage_proposal_flow.py
+    description: This flow was one of the main change points, showing triage proposal
+      dispatch needed to be brought onto a common auth path rather than continuing
+      to authenticate independently per invocation.
+  - type: file
+    path: src/theforge/coordinator/triage_headless_flow.py
+    description: The headless flow was updated in parallel with the proposal flow,
+      demonstrating that credential handling had to be normalized across distinct
+      triage surfaces rather than patched in only one caller.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 review described the accepted core fix as token allow-listing
+      plus a single pre-dispatch Claude gate, indicating the durable solution was
+      centralizing the auth decision instead of leaving per-surface credential behavior
+      in place.
+  - type: diff
+    ref: f4f24b3a834af38307477d34c8954b14d4c85713
+    description: The final diff spans both triage flows and the CLI, which demonstrates
+      the issue was resolved by aligning multiple entry points around shared auth
+      behavior rather than by a one-off local patch.
+learned_patterns:
+- auth-gate-needs-cli-failure-plumbing
+- shared-credential-resolution-across-surfaces
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: ec6dd095a0b44c3b
+    severity: P1
+    file: src/theforge/coordinator/triage_headless_flow.py
+    description: When non-interactive forge triage hits the pre-dispatch Claude auth
+      gate, it prints the failure line and exits with status 0, so automation sees
+      the failed headless run as successful.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - Review repeatedly surfaced that auth-gate failures were represented internally
+    but not yet exposed as non-zero CLI outcomes on every triage surface.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 3
+  plan_regenerations: false
+  cost_usd: 8.84364435
+  dominant_difficulty: Propagating one authentication rule consistently through multiple
+    triage entry points, including their user-visible and automation-visible failure
+    contracts.
