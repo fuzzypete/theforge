@@ -291,6 +291,21 @@ class TestValidProposal:
         assert summary.total_cost_usd == pytest.approx(0.02)
         assert summary.cost_provenance == COST_UNKNOWN
 
+    def test_an_unmeasured_proposal_attempt_taints_the_total_provenance(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runner = _StubRunner(
+            _StubResult(_VALID_PUNT, cost_usd=None),
+            review_results=(_StubResult(_VALID_REVIEW_CONCUR, cost_usd=0.03),),
+        )
+        _install_runner(monkeypatch, runner)
+
+        summary = flow.run_triage_proposals(_report(), _config(tmp_path), record=False)
+        assert summary.results[0].cost_usd is None
+        assert summary.results[0].review_cost_usd == pytest.approx(0.03)
+        assert summary.total_cost_usd == pytest.approx(0.03)
+        assert summary.cost_provenance == COST_UNKNOWN
+
     def test_non_punt_proposals_pass_through_unreviewed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

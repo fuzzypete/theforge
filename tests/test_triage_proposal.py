@@ -571,6 +571,8 @@ class TestRendering:
             )
         )
         assert "REVIEW: challenge" in text
+        assert "review basis: review withheld safely" in text
+        assert "review evidence:" not in text
         assert "review fallback: reviewer output failed validation on every attempt" in text
         assert "review validation error: verdict must be one of" in text
 

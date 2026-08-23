@@ -848,8 +848,10 @@ def render_result(result: FindingProposalResult) -> str:
     review = result.punt_review
     if review is not None:
         lines.append(f"       REVIEW: {review.verdict}")
-        if review.evidence:
+        if review.citations:
             lines.append(f"       review evidence: {review.evidence}")
+        elif review.coordinator_basis:
+            lines.append(f"       review basis: {review.coordinator_basis}")
         if review.evidence_refs:
             lines.append(f"       review cites: {', '.join(review.evidence_refs)}")
         if review.rationale:
