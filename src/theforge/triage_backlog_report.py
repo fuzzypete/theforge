@@ -348,7 +348,7 @@ def _path_only_fallback_for_invalid_anchor(token: str) -> PathCitation | None:
     try:
         anchored_location = _github_line_anchor(fragment)
     except ValueError:
-        return None
+        anchored_location = None
     if anchored_location is not None:
         return None
     base_path = candidate_path
