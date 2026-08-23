@@ -987,21 +987,30 @@ The taxonomy and its required payload:
 | `punt` | `punt_reason_code` — one of `verified-stale`, `superseded`, `not-reproducible`, `duplicate`, `out-of-scope-by-policy` |
 | `needs_verification` | none |
 
-Sample output:
+Sample output for a punt proposal that passes adversarial review:
 
 ```
+TRIAGE PROPOSALS — 1 finding(s)
+REVIEW STAGE: reviewed 1 punt proposal(s), challenged 0.
+
 #1312  PROPOSE punt (reason: verified-stale)
        evidence: cited symbol absent from current tree; no disposition rows recorded
        cites: symbol-absent, disposition-history
        reasoning (unverified): nothing left in the tree for this to describe
+       REVIEW: concur
+       review evidence: cited symbol absent from current tree
+       review cites: symbol-absent
+       review cost: $0.0123 (provider_reported)
        cost: $0.0123 (provider_reported)
 
-TOTAL SPEND: $0.0123 (provider_reported)
+TOTAL SPEND: $0.0246 (provider_reported)
 Advisory only — no issue was modified.
 ```
 
 The `evidence` line is quoted from the packet and was verified against it; the
-`reasoning` line is the proposer's own prose and was not.
+`reasoning` line is the proposer's own prose and was not. Punt reviews follow
+the same rule: `review evidence` is packet-grounded, while deterministic
+fallback text is rendered separately as `review basis`.
 
 Properties worth knowing before you rely on it:
 
@@ -1017,17 +1026,23 @@ Properties worth knowing before you rely on it:
   id does not license a claim beside it — a paraphrase or an invented assertion
   is rejected even when the id is real. Anything the proposer says in its own
   voice goes in `rationale` and is displayed as `reasoning (unverified)`, never
-  on the evidence line. Ungrounded or schema-invalid output is rejected and
-  retried once with the validator's errors named; if it is still invalid the
-  finding resolves to `needs_verification` with those errors recorded — never
-  guessed into a disposition.
+  on the evidence line. Punt review uses the same evidence-packet grounding
+  rule, but a fresh-context reviewer must emit only `concur` or `challenge`.
+  Ungrounded or schema-invalid output is rejected and retried once with the
+  validator's errors named; if the proposer is still invalid the finding
+  resolves to `needs_verification`, and if the reviewer is still invalid or
+  unavailable the punt is challenged by a deterministic safe fallback with the
+  validation errors recorded — never guessed into grounded evidence.
 - **No evidence means no discard.** A finding whose packet holds nothing
   checkable is proposed `needs_verification` deterministically, without invoking
   an agent (and so at zero cost). Absence of evidence is never evidence for a
   punt.
-- **Spend is visible.** Per-finding and total cost are printed and written to the
-  audit substrate (`triage_proposal_events` / `triage_proposal_runs`). An empty
-  backlog invokes no agent and records an explicit $0.00 run.
+- **Spend is visible.** Punt proposals can now incur both proposal and review
+  spend, and both legs are printed and written to the audit substrate
+  (`triage_proposal_events` / `triage_proposal_runs`). The run summary also
+  records whether the review stage reviewed punts or was an explicit no-op when
+  no punt proposals required review. An empty backlog invokes no agent and
+  records an explicit $0.00 run.
 - **`fix_now` needs a milestone.** Without `--current-milestone` or a
   `current_milestone` in the report, `fix_now` is not offered to the agent and is
   rejected by the validator — an unnameable target is not a checkable proposal.

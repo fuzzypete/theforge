@@ -111,6 +111,8 @@ PUNT_REASON_GUIDE: dict[str, str] = {
 
 _OPEN_TAG = "<triage_proposal>"
 _CLOSE_TAG = "</triage_proposal>"
+_REVIEW_OPEN_TAG = "<triage_punt_review>"
+_REVIEW_CLOSE_TAG = "</triage_punt_review>"
 _FENCED_BLOCK_RE = re.compile(r"```.*?```", re.DOTALL)
 
 # Cap free-text fields so a runaway agent cannot balloon the packet/proposal.
@@ -120,6 +122,16 @@ _FIELD_MAX_LEN = 2000
 # that appears in almost any text, so matching it would prove nothing about
 # what the packet says.
 MIN_QUOTE_WORDS = 3
+
+# ── Punt review verdicts ──────────────────────────────────────────────────────
+
+PUNT_REVIEW_CONCUR = "concur"
+PUNT_REVIEW_CHALLENGE = "challenge"
+
+PUNT_REVIEW_VERDICTS: tuple[str, ...] = (
+    PUNT_REVIEW_CONCUR,
+    PUNT_REVIEW_CHALLENGE,
+)
 
 
 # ── Evidence packet ───────────────────────────────────────────────────────────
@@ -323,6 +335,44 @@ class TriageProposal:
 
 
 @dataclass(frozen=True)
+class PuntReview:
+    """One parsed, validated adversarial review of an accepted punt proposal."""
+
+    verdict: str
+    citations: tuple[EvidenceCitation, ...] = ()
+    # Coordinator-authored basis used only by the deterministic challenge
+    # fallback after reviewer failure/invalid output. Never agent text.
+    coordinator_basis: str = ""
+    rationale: str = ""
+    parse_errors: tuple[str, ...] = ()
+    raw: dict = field(default_factory=dict)
+
+    @property
+    def ok(self) -> bool:
+        return not self.parse_errors and self.verdict in PUNT_REVIEW_VERDICTS
+
+    @property
+    def evidence_refs(self) -> tuple[str, ...]:
+        return tuple(citation.ref for citation in self.citations)
+
+    @property
+    def evidence(self) -> str:
+        if self.citations:
+            return "; ".join(citation.quote for citation in self.citations)
+        return self.coordinator_basis
+
+    def to_dict(self) -> dict:
+        return {
+            "verdict": self.verdict,
+            "evidence": self.evidence,
+            "evidence_refs": list(self.evidence_refs),
+            "citations": [c.to_dict() for c in self.citations],
+            "rationale": self.rationale,
+            "parse_errors": list(self.parse_errors),
+        }
+
+
+@dataclass(frozen=True)
 class FindingProposalResult:
     """The proposal stage's outcome for one finding, with what it cost.
 
@@ -345,6 +395,13 @@ class FindingProposalResult:
     fallback_reason: str = ""
     cost_usd: float | None = None
     cost_provenance: str = "unknown"
+    punt_review: PuntReview | None = None
+    review_attempts: int = 0
+    review_retry_count: int = 0
+    review_validation_errors: tuple[str, ...] = ()
+    review_fallback_reason: str = ""
+    review_cost_usd: float | None = None
+    review_cost_provenance: str = "unknown"
 
     def to_dict(self) -> dict:
         return {
@@ -358,6 +415,29 @@ class FindingProposalResult:
             "fallback_reason": self.fallback_reason,
             "cost_usd": self.cost_usd,
             "cost_provenance": self.cost_provenance,
+            "punt_review": None if self.punt_review is None else self.punt_review.to_dict(),
+            "review_attempts": self.review_attempts,
+            "review_retry_count": self.review_retry_count,
+            "review_validation_errors": list(self.review_validation_errors),
+            "review_fallback_reason": self.review_fallback_reason,
+            "review_cost_usd": self.review_cost_usd,
+            "review_cost_provenance": self.review_cost_provenance,
+        }
+
+
+@dataclass(frozen=True)
+class PuntReviewStage:
+    """Run-level metadata for the punt-review stage."""
+
+    reviewed_punt_count: int = 0
+    challenged_punt_count: int = 0
+    no_op: bool = True
+
+    def to_dict(self) -> dict:
+        return {
+            "reviewed_punt_count": self.reviewed_punt_count,
+            "challenged_punt_count": self.challenged_punt_count,
+            "no_op": self.no_op,
         }
 
 
@@ -371,6 +451,7 @@ class ProposalRunSummary:
     triage_run_id: str = ""
     report_path: str = ""
     audit_error: str = ""
+    review_stage: PuntReviewStage = field(default_factory=PuntReviewStage)
 
     @property
     def findings_count(self) -> int:
@@ -385,6 +466,7 @@ class ProposalRunSummary:
             "total_cost_usd": self.total_cost_usd,
             "cost_provenance": self.cost_provenance,
             "audit_error": self.audit_error,
+            "review_stage": self.review_stage.to_dict(),
         }
 
 
@@ -408,6 +490,14 @@ def needs_verification_proposal(packet: FindingPacket, *, basis: str) -> TriageP
     )
 
 
+def challenged_punt_review(*, basis: str) -> PuntReview:
+    """Build the deterministic ``challenge`` used when review cannot validate cleanly."""
+    return PuntReview(
+        verdict=PUNT_REVIEW_CHALLENGE,
+        coordinator_basis=basis,
+    )
+
+
 def _truncate(value: object) -> str:
     text = "" if value is None else str(value).strip()
     if len(text) > _FIELD_MAX_LEN:
@@ -415,21 +505,31 @@ def _truncate(value: object) -> str:
     return text
 
 
-def _extract_proposal_block(text: str) -> str | None:
-    """Return the YAML body inside <triage_proposal>…</triage_proposal>, or None.
+def _extract_tagged_block(text: str, *, open_tag: str, close_tag: str) -> str | None:
+    """Return the YAML body inside one tagged block, or None.
 
     Fenced code blocks are stripped first so an agent quoting the schema in
     prose does not produce a false match.
     """
     stripped = _FENCED_BLOCK_RE.sub("", text)
-    open_pos = stripped.find(_OPEN_TAG)
-    close_pos = stripped.find(_CLOSE_TAG)
+    open_pos = stripped.find(open_tag)
+    close_pos = stripped.find(close_tag)
     if open_pos < 0 or close_pos < 0:
         return None
-    if close_pos < open_pos + len(_OPEN_TAG):
+    if close_pos < open_pos + len(open_tag):
         return None
-    body = stripped[open_pos + len(_OPEN_TAG) : close_pos].strip()
+    body = stripped[open_pos + len(open_tag) : close_pos].strip()
     return body or None
+
+
+def _extract_proposal_block(text: str) -> str | None:
+    """Return the YAML body inside <triage_proposal>…</triage_proposal>, or None."""
+    return _extract_tagged_block(text, open_tag=_OPEN_TAG, close_tag=_CLOSE_TAG)
+
+
+def _extract_review_block(text: str) -> str | None:
+    """Return the YAML body inside <triage_punt_review>…</triage_punt_review>, or None."""
+    return _extract_tagged_block(text, open_tag=_REVIEW_OPEN_TAG, close_tag=_REVIEW_CLOSE_TAG)
 
 
 def _error_proposal(
@@ -439,6 +539,14 @@ def _error_proposal(
         finding_id=packet.finding_id,
         issue_ref=packet.issue_ref,
         disposition="",
+        parse_errors=tuple(errors),
+        raw=raw or {},
+    )
+
+
+def _error_review(errors: list[str], raw: dict | None = None) -> PuntReview:
+    return PuntReview(
+        verdict="",
         parse_errors=tuple(errors),
         raw=raw or {},
     )
@@ -565,7 +673,7 @@ def _validate_payload(
 
 
 def _validate_grounding(
-    packet: FindingPacket, entries: list[dict]
+    packet: FindingPacket, entries: list[dict], *, subject: str = "proposal"
 ) -> tuple[list[EvidenceCitation], list[str]]:
     """Check every citation names a packet entry AND quotes that entry verbatim.
 
@@ -579,7 +687,7 @@ def _validate_grounding(
     if not entries:
         if by_id:
             errors.append(
-                "proposal must cite evidence: a non-empty list of {ref, quote} "
+                f"{subject} must cite evidence: a non-empty list of {{ref, quote}} "
                 f"mappings drawn from {sorted(by_id)}"
             )
         return [], errors
@@ -659,7 +767,7 @@ def parse_triage_proposal(text: str, packet: FindingPacket) -> TriageProposal:
 
     if disposition in DISPOSITION_TAXONOMY:
         errors.extend(_validate_payload(packet, disposition, target, reason_code))
-    citations, grounding_errors = _validate_grounding(packet, entries)
+    citations, grounding_errors = _validate_grounding(packet, entries, subject="proposal")
     errors.extend(grounding_errors)
 
     if errors:
@@ -673,6 +781,42 @@ def parse_triage_proposal(text: str, packet: FindingPacket) -> TriageProposal:
         rationale=rationale,
         target_milestone=target or None,
         punt_reason_code=reason_code or None,
+        raw=data,
+    )
+
+
+def parse_triage_punt_review(text: str, packet: FindingPacket) -> PuntReview:
+    """Parse and validate punt-review output into a :class:`PuntReview`."""
+    body = _extract_review_block(text)
+    if body is None:
+        return _error_review(["no <triage_punt_review> block found in agent output"])
+
+    try:
+        data = yaml.safe_load(body)
+    except yaml.YAMLError as exc:
+        return _error_review([f"YAML parse error in punt review: {exc}"])
+
+    if not isinstance(data, dict):
+        return _error_review([f"punt review must be a YAML mapping, got {type(data).__name__}"])
+
+    errors: list[str] = []
+    verdict = str(data.get("verdict") or "").strip().lower()
+    if verdict not in PUNT_REVIEW_VERDICTS:
+        errors.append(f"verdict must be one of {list(PUNT_REVIEW_VERDICTS)}, got {verdict!r}")
+
+    rationale = _truncate(data.get("rationale"))
+    entries, shape_errors = _coerce_citations(data.get("evidence"))
+    errors.extend(shape_errors)
+    citations, grounding_errors = _validate_grounding(packet, entries, subject="review")
+    errors.extend(grounding_errors)
+
+    if errors:
+        return _error_review(errors, raw=data)
+
+    return PuntReview(
+        verdict=verdict,
+        citations=tuple(citations),
+        rationale=rationale,
         raw=data,
     )
 
@@ -701,6 +845,25 @@ def render_result(result: FindingProposalResult) -> str:
     # tell it apart from the quoted lines above at a glance.
     if proposal.rationale:
         lines.append(f"       reasoning (unverified): {proposal.rationale}")
+    review = result.punt_review
+    if review is not None:
+        lines.append(f"       REVIEW: {review.verdict}")
+        if review.citations:
+            lines.append(f"       review evidence: {review.evidence}")
+        elif review.coordinator_basis:
+            lines.append(f"       review basis: {review.coordinator_basis}")
+        if review.evidence_refs:
+            lines.append(f"       review cites: {', '.join(review.evidence_refs)}")
+        if review.rationale:
+            lines.append(f"       reviewer reasoning (unverified): {review.rationale}")
+        if result.review_fallback_reason:
+            lines.append(f"       review fallback: {result.review_fallback_reason}")
+        for error in result.review_validation_errors:
+            lines.append(f"       review validation error: {error}")
+        lines.append(
+            "       review cost: "
+            f"{_format_cost(result.review_cost_usd)} ({result.review_cost_provenance})"
+        )
     if result.fallback_reason:
         lines.append(f"       fallback: {result.fallback_reason}")
     for error in result.validation_errors:
@@ -714,9 +877,20 @@ def render_run_summary(summary: ProposalRunSummary) -> str:
     if not summary.results:
         return (
             "TRIAGE PROPOSALS — backlog report contains no findings.\n"
+            "REVIEW STAGE: no-op (0 punt proposals required review).\n"
             "Nothing was proposed and no agent was invoked; total spend $0.0000."
         )
-    lines = [f"TRIAGE PROPOSALS — {summary.findings_count} finding(s)", ""]
+    review_stage = summary.review_stage
+    review_line = (
+        "REVIEW STAGE: no-op (0 punt proposals required review)."
+        if review_stage.no_op
+        else (
+            "REVIEW STAGE: reviewed "
+            f"{review_stage.reviewed_punt_count} punt proposal(s), challenged "
+            f"{review_stage.challenged_punt_count}."
+        )
+    )
+    lines = [f"TRIAGE PROPOSALS — {summary.findings_count} finding(s)", review_line, ""]
     for result in summary.results:
         lines.append(render_result(result))
         lines.append("")

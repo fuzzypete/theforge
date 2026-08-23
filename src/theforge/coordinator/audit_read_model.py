@@ -1374,17 +1374,25 @@ def triage_proposal_run_spend(conn: AuditConnection) -> list[dict]:
     """Return every recorded triage proposal run with its findings count and spend."""
     rows = conn.execute(
         "SELECT triage_run_id, findings_count, total_cost_usd, cost_provenance, "
-        "report_path, emitted_at FROM triage_proposal_runs "
+        "report_path, emitted_at, raw_json FROM triage_proposal_runs "
         "ORDER BY emitted_at ASC, run_row_id ASC"
     ).fetchall()
-    return [
-        {
-            "triage_run_id": row[0],
-            "findings_count": int(row[1] or 0),
-            "total_cost_usd": row[2],
-            "cost_provenance": row[3],
-            "report_path": row[4],
-            "emitted_at": row[5],
-        }
-        for row in rows
-    ]
+    out: list[dict] = []
+    for row in rows:
+        try:
+            raw = json.loads(row[6])
+        except json.JSONDecodeError:
+            raw = {}
+        review_stage = raw.get("review_stage") if isinstance(raw, dict) else None
+        out.append(
+            {
+                "triage_run_id": row[0],
+                "findings_count": int(row[1] or 0),
+                "total_cost_usd": row[2],
+                "cost_provenance": row[3],
+                "report_path": row[4],
+                "emitted_at": row[5],
+                "review_stage": review_stage,
+            }
+        )
+    return out

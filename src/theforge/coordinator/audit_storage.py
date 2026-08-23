@@ -121,7 +121,14 @@ AuditConnection = sqlite3.Connection
 # stops there. The per-record shape is untouched, so no
 # ``CURRENT_RECORD_SCHEMA_VERSION`` bump and no ``MIGRATION_HELPERS`` entry is
 # implied either.
-SUBSTRATE_SCHEMA_VERSION = 10
+#
+# Bumped to 11 by #2229: punt proposals now carry an adversarial second review.
+# ``triage_proposal_events`` indexes the review verdict, cited refs, retry /
+# fallback state, and reviewer spend so the challenged-safe-default path is
+# queryable. ``triage_proposal_runs`` keeps the run-level review-stage summary in
+# ``raw_json``; there is no separate per-record migration because older rows had
+# no review stage to backfill.
+SUBSTRATE_SCHEMA_VERSION = 11
 # Current per-record schema version. Records pre-dating the indexed-dimensions
 # slice (#1522) are treated as version 1. The reader-side migration helper
 # (`_migrate_record`) is the seam future breaking changes hang off — a version
@@ -429,8 +436,15 @@ CREATE TABLE IF NOT EXISTS triage_proposal_events (
     evidence_refs TEXT,
     validation_errors TEXT,
     retry_count INTEGER NOT NULL DEFAULT 0,
+    review_verdict TEXT,
+    review_evidence_refs TEXT,
+    review_validation_errors TEXT,
+    review_retry_count INTEGER NOT NULL DEFAULT 0,
+    review_fallback_reason TEXT,
     cost_usd REAL,
     cost_provenance TEXT,
+    review_cost_usd REAL,
+    review_cost_provenance TEXT,
     emitted_at TEXT NOT NULL,
     raw_json TEXT NOT NULL
 );
@@ -470,6 +484,14 @@ def _apply_schema(conn: sqlite3.Connection) -> None:
         "ALTER TABLE readiness_events ADD COLUMN staleness_verdict TEXT",
         "ALTER TABLE readiness_events ADD COLUMN diagnosis_baseline_sha TEXT",
         "ALTER TABLE shape_skip_events ADD COLUMN last_status TEXT",
+        "ALTER TABLE triage_proposal_events ADD COLUMN review_verdict TEXT",
+        "ALTER TABLE triage_proposal_events ADD COLUMN review_evidence_refs TEXT",
+        "ALTER TABLE triage_proposal_events ADD COLUMN review_validation_errors TEXT",
+        "ALTER TABLE triage_proposal_events ADD COLUMN review_retry_count "
+        "INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE triage_proposal_events ADD COLUMN review_fallback_reason TEXT",
+        "ALTER TABLE triage_proposal_events ADD COLUMN review_cost_usd REAL",
+        "ALTER TABLE triage_proposal_events ADD COLUMN review_cost_provenance TEXT",
     ):
         try:
             conn.execute(stmt)
@@ -2852,8 +2874,10 @@ def record_triage_proposal_event(project_root: Path, event: dict) -> int:
             "INSERT INTO triage_proposal_events "
             "(triage_run_id, finding_id, issue_ref, packet_hash, disposition, "
             "target_milestone, punt_reason_code, evidence_refs, validation_errors, "
-            "retry_count, cost_usd, cost_provenance, emitted_at, raw_json) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "retry_count, review_verdict, review_evidence_refs, review_validation_errors, "
+            "review_retry_count, review_fallback_reason, cost_usd, cost_provenance, "
+            "review_cost_usd, review_cost_provenance, emitted_at, raw_json) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 event.get("triage_run_id"),
                 str(event["finding_id"]),
@@ -2865,8 +2889,15 @@ def record_triage_proposal_event(project_root: Path, event: dict) -> int:
                 _canonical_json(list(event.get("evidence_refs") or [])),
                 _canonical_json(list(event.get("validation_errors") or [])),
                 int(event.get("retry_count") or 0),
+                (event.get("punt_review") or {}).get("verdict"),
+                _canonical_json(list((event.get("punt_review") or {}).get("evidence_refs") or [])),
+                _canonical_json(list(event.get("review_validation_errors") or [])),
+                int(event.get("review_retry_count") or 0),
+                event.get("review_fallback_reason"),
                 _optional_float(event.get("cost_usd")),
                 event.get("cost_provenance"),
+                _optional_float(event.get("review_cost_usd")),
+                event.get("review_cost_provenance"),
                 emitted_at,
                 raw_json,
             ),
