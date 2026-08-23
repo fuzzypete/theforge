@@ -233,6 +233,213 @@ class TestHeadlessFlow:
         assert entry["punt_reviews"][0]["verdict"] == "challenge"
         assert entry["evidence_refs"] == ["symbol-absent", "path-churn"]
 
+    def test_all_agent_failure_fallbacks_are_persisted_and_reported_as_unreviewed(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import theforge.coordinator.triage_proposal_flow as flow
+
+        summary = _summary(
+            results=(
+                FindingProposalResult(
+                    finding_id="1312:audit-count",
+                    issue_ref="#1312",
+                    packet_hash="abc",
+                    proposal=needs_verification_proposal(
+                        _packet(), basis="proposer failed validation"
+                    ),
+                    fallback_reason=flow.FALLBACK_INVALID_OUTPUT,
+                ),
+                FindingProposalResult(
+                    finding_id="1444:missing-evidence",
+                    issue_ref="#1444",
+                    packet_hash="def",
+                    proposal=needs_verification_proposal(
+                        FindingPacket(
+                            finding_id="1444:missing-evidence",
+                            issue_ref="#1444",
+                            finding_body="missing checkable evidence",
+                        ),
+                        basis="no checkable artifact cited",
+                    ),
+                    fallback_reason=flow.FALLBACK_NO_CHECKABLE_EVIDENCE,
+                ),
+            ),
+            total_cost_usd=0.0,
+            review_stage=PuntReviewStage(),
+        )
+        _stub_flow(
+            monkeypatch,
+            summary,
+            events=[
+                {
+                    "finding_id": "1312:audit-count",
+                    "issue_ref": "#1312",
+                    "disposition": "needs_verification",
+                    "fallback_reason": flow.FALLBACK_INVALID_OUTPUT,
+                    "proposal": {
+                        "disposition": "needs_verification",
+                        "rationale": "",
+                    },
+                },
+                {
+                    "finding_id": "1444:missing-evidence",
+                    "issue_ref": "#1444",
+                    "disposition": "needs_verification",
+                    "fallback_reason": flow.FALLBACK_NO_CHECKABLE_EVIDENCE,
+                    "proposal": {
+                        "disposition": "needs_verification",
+                        "rationale": "",
+                    },
+                },
+            ],
+        )
+
+        outcome = headless.run_headless_triage(
+            _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+        )
+
+        assert "degraded to 2 fallback disposition(s)" in outcome.lines[0]
+        assert "without accepted proposer review" in outcome.lines[0]
+        entry = _pending.find_triage_pending("run123", tmp_path)
+        assert entry is not None
+        assert entry["all_findings_unreviewed"] is True
+        assert entry["accepted_proposal_count"] == 0
+        assert entry["agent_failure_fallback_count"] == 1
+        assert entry["no_checkable_evidence_count"] == 1
+        assert "without accepted proposer review" in entry["reason"]
+        assert "awaiting operator decision" in entry["reason"]
+        assert entry["proposals"][0]["fallback_reason"] == flow.FALLBACK_INVALID_OUTPUT
+
+    def test_legitimate_no_checkable_evidence_path_stays_a_normal_result(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import theforge.coordinator.triage_proposal_flow as flow
+
+        summary = _summary(
+            results=(
+                FindingProposalResult(
+                    finding_id="1312:audit-count",
+                    issue_ref="#1312",
+                    packet_hash="abc",
+                    proposal=needs_verification_proposal(
+                        _packet(), basis="no checkable artifact cited"
+                    ),
+                    fallback_reason=flow.FALLBACK_NO_CHECKABLE_EVIDENCE,
+                ),
+            ),
+            total_cost_usd=0.0,
+            review_stage=PuntReviewStage(),
+        )
+        _stub_flow(
+            monkeypatch,
+            summary,
+            events=[
+                {
+                    "finding_id": "1312:audit-count",
+                    "issue_ref": "#1312",
+                    "disposition": "needs_verification",
+                    "fallback_reason": flow.FALLBACK_NO_CHECKABLE_EVIDENCE,
+                    "proposal": {
+                        "disposition": "needs_verification",
+                        "rationale": "",
+                    },
+                }
+            ],
+        )
+
+        outcome = headless.run_headless_triage(
+            _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+        )
+
+        assert outcome.lines[0] == "triage: proposal pass proposed 1 disposition(s)"
+        entry = _pending.find_triage_pending("run123", tmp_path)
+        assert entry is not None
+        assert entry["all_findings_unreviewed"] is False
+        assert entry["accepted_proposal_count"] == 0
+        assert entry["agent_failure_fallback_count"] == 0
+        assert entry["no_checkable_evidence_count"] == 1
+
+    def test_partial_agent_failure_fallbacks_are_reported_as_mixed_results(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import theforge.coordinator.triage_proposal_flow as flow
+
+        accepted = FindingProposalResult(
+            finding_id="1312:audit-count",
+            issue_ref="#1312",
+            packet_hash="abc",
+            proposal=needs_verification_proposal(_packet(), basis="reviewed evidence"),
+            cost_usd=0.0123,
+            cost_provenance="provider_reported",
+        )
+        fallback = FindingProposalResult(
+            finding_id="1444:missing-evidence",
+            issue_ref="#1444",
+            packet_hash="def",
+            proposal=needs_verification_proposal(
+                FindingPacket(
+                    finding_id="1444:missing-evidence",
+                    issue_ref="#1444",
+                    finding_body="missing checkable evidence",
+                ),
+                basis="proposer failed validation",
+            ),
+            fallback_reason=flow.FALLBACK_INVALID_OUTPUT,
+        )
+        summary = _summary(
+            results=(accepted, fallback),
+            total_cost_usd=0.0123,
+            review_stage=PuntReviewStage(reviewed_punt_count=0, challenged_punt_count=0),
+        )
+        _stub_flow(
+            monkeypatch,
+            summary,
+            events=[
+                {
+                    "finding_id": "1312:audit-count",
+                    "issue_ref": "#1312",
+                    "disposition": "needs_verification",
+                    "proposal": {
+                        "disposition": "needs_verification",
+                        "rationale": "reviewed evidence",
+                    },
+                },
+                {
+                    "finding_id": "1444:missing-evidence",
+                    "issue_ref": "#1444",
+                    "disposition": "needs_verification",
+                    "fallback_reason": flow.FALLBACK_INVALID_OUTPUT,
+                    "proposal": {
+                        "disposition": "needs_verification",
+                        "rationale": "",
+                    },
+                },
+            ],
+        )
+
+        outcome = headless.run_headless_triage(
+            _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+        )
+
+        assert (
+            outcome.lines[0]
+            == "triage: proposal pass proposed 1 disposition(s) and degraded to 1 fallback "
+            "disposition(s) (1 proposer failure fallback(s))"
+        )
+        entry = _pending.find_triage_pending("run123", tmp_path)
+        assert entry is not None
+        assert entry["all_findings_unreviewed"] is False
+        assert entry["accepted_proposal_count"] == 1
+        assert entry["fallback_count"] == 1
+        assert entry["agent_failure_fallback_count"] == 1
+        assert (
+            entry["reason"]
+            == "headless triage run run123: 2 finding(s) produced 1 accepted proposal(s) "
+            "and 1 fallback disposition(s) (1 proposer failure fallback(s)), awaiting "
+            "operator ratification"
+        )
+        assert entry["reason"].endswith("awaiting operator ratification")
+
     def test_supersession_names_the_pending_run_and_spends_nothing(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

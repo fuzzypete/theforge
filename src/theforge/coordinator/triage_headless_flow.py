@@ -172,6 +172,7 @@ def _proposal_entries(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 or proposal_map.get("target_milestone"),
                 "punt_reason_code": event.get("punt_reason_code")
                 or proposal_map.get("punt_reason_code"),
+                "fallback_reason": str(event.get("fallback_reason") or ""),
                 "evidence_refs": [
                     str(ref)
                     for ref in (
@@ -211,6 +212,102 @@ def _evidence_refs(proposals: list[dict[str, Any]], reviews: list[dict[str, Any]
     return seen
 
 
+def _proposal_reporting_summary(events: list[dict[str, Any]]) -> dict[str, int | bool]:
+    """Summarize which dispositions came from accepted proposals vs fallback."""
+    from .triage_proposal_flow import (  # noqa: PLC0415
+        FALLBACK_AGENT_UNAVAILABLE,
+        FALLBACK_INVALID_OUTPUT,
+        FALLBACK_NO_CHECKABLE_EVIDENCE,
+    )
+
+    accepted_count = 0
+    agent_failure_fallback_count = 0
+    no_checkable_evidence_count = 0
+    other_fallback_count = 0
+    for event in events:
+        fallback_reason = str(event.get("fallback_reason") or "").strip()
+        if not fallback_reason:
+            accepted_count += 1
+        elif fallback_reason in {FALLBACK_AGENT_UNAVAILABLE, FALLBACK_INVALID_OUTPUT}:
+            agent_failure_fallback_count += 1
+        elif fallback_reason == FALLBACK_NO_CHECKABLE_EVIDENCE:
+            no_checkable_evidence_count += 1
+        else:
+            other_fallback_count += 1
+    fallback_count = (
+        agent_failure_fallback_count + no_checkable_evidence_count + other_fallback_count
+    )
+    all_findings_unreviewed = (
+        bool(events) and accepted_count == 0 and agent_failure_fallback_count > 0
+    )
+    return {
+        "accepted_count": accepted_count,
+        "fallback_count": fallback_count,
+        "agent_failure_fallback_count": agent_failure_fallback_count,
+        "no_checkable_evidence_count": no_checkable_evidence_count,
+        "other_fallback_count": other_fallback_count,
+        "all_findings_unreviewed": all_findings_unreviewed,
+    }
+
+
+def _fallback_detail(reporting: dict[str, int | bool]) -> str:
+    parts: list[str] = []
+    agent_failures = int(reporting["agent_failure_fallback_count"])
+    no_evidence = int(reporting["no_checkable_evidence_count"])
+    other_fallbacks = int(reporting["other_fallback_count"])
+    if agent_failures:
+        parts.append(f"{agent_failures} proposer failure fallback(s)")
+    if no_evidence:
+        parts.append(f"{no_evidence} no-checkable-evidence fallback(s)")
+    if other_fallbacks:
+        parts.append(f"{other_fallbacks} other fallback(s)")
+    return ", ".join(parts)
+
+
+def _pending_reason(
+    triage_run_id: str, findings_count: int, reporting: dict[str, int | bool]
+) -> str:
+    if bool(reporting["all_findings_unreviewed"]):
+        detail = _fallback_detail(reporting)
+        return (
+            f"headless triage run {triage_run_id}: {findings_count} finding(s) resolved only by "
+            f"fallback without accepted proposer review ({detail}), awaiting operator decision"
+        )
+    if int(reporting["agent_failure_fallback_count"]) > 0:
+        accepted_count = int(reporting["accepted_count"])
+        fallback_count = int(reporting["fallback_count"])
+        detail = _fallback_detail(reporting)
+        return (
+            f"headless triage run {triage_run_id}: {findings_count} finding(s) produced "
+            f"{accepted_count} accepted proposal(s) and {fallback_count} fallback disposition(s) "
+            f"({detail}), awaiting operator ratification"
+        )
+    return (
+        f"headless triage run {triage_run_id}: {findings_count} finding(s) proposed and "
+        f"reviewed, awaiting operator ratification"
+    )
+
+
+def _proposal_pass_line(
+    findings_count: int, reporting: dict[str, int | bool], punt_text: str
+) -> str:
+    if bool(reporting["all_findings_unreviewed"]):
+        detail = _fallback_detail(reporting)
+        return (
+            f"triage: proposal pass degraded to {findings_count} fallback disposition(s)"
+            f" without accepted proposer review ({detail}){punt_text}"
+        )
+    if int(reporting["agent_failure_fallback_count"]) > 0:
+        accepted_count = int(reporting["accepted_count"])
+        fallback_count = int(reporting["fallback_count"])
+        detail = _fallback_detail(reporting)
+        return (
+            f"triage: proposal pass proposed {accepted_count} disposition(s) and degraded to "
+            f"{fallback_count} fallback disposition(s) ({detail}){punt_text}"
+        )
+    return f"triage: proposal pass proposed {findings_count} disposition(s){punt_text}"
+
+
 def build_pending_payload(
     summary: "ProposalRunSummary",
     *,
@@ -221,6 +318,7 @@ def build_pending_payload(
     proposals = _proposal_entries(events)
     punt_reviews = _punt_review_entries(events)
     review_stage = summary.review_stage
+    reporting = _proposal_reporting_summary(events)
     return {
         "story": "triage",
         "phase": "TRIAGE",
@@ -236,10 +334,13 @@ def build_pending_payload(
         "proposals": proposals,
         "punt_reviews": punt_reviews,
         "evidence_refs": _evidence_refs(proposals, punt_reviews),
-        "reason": (
-            f"headless triage run {summary.triage_run_id}: {summary.findings_count} finding(s) "
-            f"proposed and reviewed, awaiting operator ratification"
-        ),
+        "accepted_proposal_count": int(reporting["accepted_count"]),
+        "fallback_count": int(reporting["fallback_count"]),
+        "agent_failure_fallback_count": int(reporting["agent_failure_fallback_count"]),
+        "no_checkable_evidence_count": int(reporting["no_checkable_evidence_count"]),
+        "other_fallback_count": int(reporting["other_fallback_count"]),
+        "all_findings_unreviewed": bool(reporting["all_findings_unreviewed"]),
+        "reason": _pending_reason(summary.triage_run_id, summary.findings_count, reporting),
     }
 
 
@@ -338,13 +439,14 @@ def run_headless_triage(
     findings = summary.findings_count
     flagged = summary.review_stage.challenged_punt_count
     reviewed = summary.review_stage.reviewed_punt_count
+    reporting = _proposal_reporting_summary(events)
     punt_text = (
         f" ({reviewed} punt, {'concurred' if flagged == 0 else f'{flagged} challenged'})"
         if reviewed
         else ""
     )
     lines = (
-        f"triage: proposal pass proposed {findings} disposition(s){punt_text}",
+        _proposal_pass_line(findings, reporting, punt_text),
         (
             f"triage: pending operator decision written — {pending_id}; "
             f"resolve with 'forge triage --ratify {summary.triage_run_id}'"
