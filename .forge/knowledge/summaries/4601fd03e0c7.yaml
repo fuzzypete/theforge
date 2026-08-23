@@ -1,0 +1,155 @@
+schema_version: 2
+run_id: 4601fd03e0c7
+authoritative_run_record: .forge/audits/runs/4601fd03e0c7.json
+generated_at: '2026-08-23T01:08:07.748805+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.012385
+story:
+  slug: issue-2227
+  name: 'forge triage: deterministic finding-backlog report with verified-staleness
+    evidence'
+  github_issue: 2227
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/triage.py
+- src/theforge/triage_backlog_report.py
+- tests/test_cli_triage.py
+- tests/test_triage_backlog_report.py
+- tests/test_triage_report.py
+what_changed:
+  description: Added a read-only `forge triage` backlog report that inventories all
+    open finding-labeled issues, computes mechanical staleness evidence, and emits
+    both CLI output and a structured artifact. The run also documented the report
+    format and exercised the CLI and report generator with focused tests.
+  approach: The change introduced a dedicated backlog-reporting module, wired it into
+    the CLI as a deterministic reporting path, and iterated through review-driven
+    fixes for citation parsing, evidence identity, and line-anchor handling so the
+    emitted artifact stayed mechanically derivable and loadable.
+  files_modified: *id002
+what_was_learned:
+- claim: Citation handling needs to normalize and evaluate repository paths and fragments
+    separately; otherwise common reference forms produce false stale or unverified
+    results.
+  evidence:
+  - type: review_finding
+    finding_id: 12fdfc98274d453e
+    description: This finding showed that treating a GitHub-style anchor like `src/demo.py#L1`
+      as a literal path caused an existing file to be reported absent, demonstrating
+      that path existence must be checked on the file portion after fragment parsing.
+  - type: review_finding
+    finding_id: 849b67bb896b4b3c
+    description: 'This finding showed that range anchors need their own bounds check:
+      collapsing `#L1-L3` to line 1 let a partially missing cited range appear active,
+      so fragment semantics cannot be reduced to a single-line existence test.'
+  - type: review_finding
+    finding_id: 087e17a3b3c9392b
+    description: This unresolved finding showed that non-line fragments on existing
+      files still carry checkable path/churn evidence even when the fragment itself
+      is not interpretable, so fragment parse failure should not discard file-level
+      verification.
+  - type: review_finding
+    finding_id: 1194e7855b60c906
+    description: 'This finding showed the opposite failure mode: prose mentions of
+      bare filenames were over-read as repository citations and marked stale, demonstrating
+      the need for stricter path recognition before any absence claim is emitted.'
+- claim: Structured evidence identifiers must be unique per cited instance and evidence
+    kind, or downstream artifact loading can fail even when the report text looks
+    correct.
+  evidence:
+  - type: review_finding
+    finding_id: 3e045aa830fd9ff7
+    description: This finding showed that citing the same file multiple times produced
+      duplicate `path:...:churn` identifiers, which broke consumer loading of the
+      artifact; repeated citations therefore need disambiguated identities, not just
+      repeated rows.
+  - type: review_finding
+    finding_id: 4b85a7a1e740fef2
+    description: This finding showed that the initial regression only covered one
+      duplicate shape, leaving other duplicate-id variants undetected, reinforcing
+      that identifier uniqueness has to hold across absent, unattributable, and repeated-path
+      evidence forms.
+- claim: For machine-consumable report formats, documentation has to enumerate all
+    emitted evidence shapes, not just the happy-path example, because undocumented
+    variants become part of the consumer contract immediately.
+  evidence:
+  - type: review_finding
+    finding_id: df016661ec1dc511
+    description: This finding showed that the published artifact example documented
+      only stale-evidence rows while the generator also emitted unverified, invalid,
+      and range-scoped identifiers, demonstrating that format docs must describe the
+      full emitted shape seen by downstream readers.
+learned_patterns:
+- separate-path-from-fragment
+- unique-evidence-instance-ids
+- document-all-emitted-variants
+review_insights:
+  recurring_findings:
+  - &id003
+    finding_id: 3e045aa830fd9ff7
+    severity: P1
+    file: src/theforge/triage_backlog_report.py
+    description: "When a finding body cites the same repository file more than once\
+      \ (for example src/demo.py:12 and src/demo.py:40, or the same path with and\
+      \ without a line number), the generated report emits two evidence rows that\
+      \ share the identifier path:src/demo.py:churn, and loading that artifact through\
+      \ the documented consumer fails with a duplicate evidence id error, so the entire\
+      \ backlog report \u2014 including every other finding in it \u2014 becomes unusable\
+      \ downstream."
+    cycles_seen: 2
+    disposition: fixed
+  - finding_id: 087e17a3b3c9392b
+    severity: P2
+    file: src/theforge/triage_backlog_report.py
+    description: When a finding cites an existing file with a non-line fragment such
+      as docs/guide.md#configuration, the report emits only an unverified row for
+      the whole token and gathers no path-existence or churn evidence for the file
+      part, so a finding with a perfectly checkable file reference lands as UNVERIFIED
+      with nothing measured.
+    cycles_seen: 2
+    disposition: unresolved
+  resolved_findings:
+  - finding_id: 12fdfc98274d453e
+    severity: P1
+    file: src/theforge/triage_backlog_report.py
+    description: When a finding cites an existing file with a GitHub-style line anchor
+      such as src/demo.py#L1, the report records src/demo.py#L1 as an absent path
+      and marks the finding stale.
+    cycles_seen: 1
+    disposition: fixed
+  - *id003
+  - finding_id: 849b67bb896b4b3c
+    severity: P1
+    file: src/theforge/triage_backlog_report.py
+    description: When a finding cites src/demo.py#L1-L3 and the current file has only
+      line 1, the backlog report records the citation as ACTIVE because it checks
+      only src/demo.py:1.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced edge cases in citation parsing and evidence
+    identity rather than the top-level read-only reporting flow.
+complexity_signal:
+  actual_iterations: 4
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 15.235881449999999
+  dominant_difficulty: Turning free-form finding citations into deterministic, mechanically
+    checkable evidence without producing false stale classifications.
