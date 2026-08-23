@@ -309,7 +309,9 @@ class TestBuildBacklogReport:
         assert finding.verification_status == STATUS_UNVERIFIED
         assert any("could not count churn" in entry.summary for entry in finding.evidence)
 
-    def test_marks_unverified_for_unsupported_path_anchor(self, tmp_path: Path) -> None:
+    def test_unsupported_non_line_anchor_still_collects_path_evidence(
+        self, tmp_path: Path
+    ) -> None:
         target = tmp_path / "src" / "demo.py"
         target.parent.mkdir(parents=True)
         target.write_text("def demo():\n    return 1\n", encoding="utf-8")
@@ -330,6 +332,8 @@ class TestBuildBacklogReport:
             "could not mechanically verify cited path token src/demo.py#main" in entry.summary
             for entry in finding.evidence
         )
+        assert any(entry.evidence_id == "path:src/demo.py:present" for entry in finding.evidence)
+        assert any(entry.evidence_id == "path:src/demo.py:churn" for entry in finding.evidence)
         assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
 
     def test_marks_unverified_when_bare_filename_does_not_resolve(self, tmp_path: Path) -> None:

@@ -332,6 +332,27 @@ def _parse_path_token(token: str) -> PathCitation | None:
     return PathCitation(path=text, line=line, end_line=end_line)
 
 
+def _path_only_fallback_for_invalid_anchor(token: str) -> PathCitation | None:
+    text = token.strip().strip(".,;()[]")
+    if "#" not in text:
+        return None
+    candidate_path, fragment = text.split("#", 1)
+    if not candidate_path:
+        return None
+    try:
+        anchored_location = _github_line_anchor(fragment)
+    except ValueError:
+        return None
+    if anchored_location is not None:
+        return None
+    base_path = candidate_path
+    if ":" in base_path:
+        stripped_path, candidate_line = base_path.rsplit(":", 1)
+        if candidate_line.isdigit():
+            base_path = stripped_path
+    return _parse_path_token(base_path)
+
+
 def _line_label(relpath: str, citation: PathCitation) -> str:
     if citation.line is None:
         return relpath
@@ -360,6 +381,12 @@ def parse_citations(
     invalid_paths: list[InvalidPathCitation] = []
     seen_invalid_paths: set[tuple[str, str]] = set()
 
+    def _record_path_citation(citation: PathCitation) -> None:
+        key = (citation.path, citation.line, citation.end_line)
+        if key not in seen_paths:
+            seen_paths.add(key)
+            paths.append(citation)
+
     def _record_path_token(raw_token: str) -> None:
         trimmed = raw_token.strip().strip(".,;()[]")
         try:
@@ -370,13 +397,13 @@ def parse_citations(
                 if key not in seen_invalid_paths:
                     seen_invalid_paths.add(key)
                     invalid_paths.append(InvalidPathCitation(raw=trimmed, detail=str(exc)))
+                fallback = _path_only_fallback_for_invalid_anchor(trimmed)
+                if fallback is not None:
+                    _record_path_citation(fallback)
             return
         if citation is None:
             return
-        key = (citation.path, citation.line, citation.end_line)
-        if key not in seen_paths:
-            seen_paths.add(key)
-            paths.append(citation)
+        _record_path_citation(citation)
 
     chunks = text.split("`")
     for index, chunk in enumerate(chunks):

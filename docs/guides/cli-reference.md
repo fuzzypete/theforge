@@ -958,6 +958,15 @@ findings:
         observed_status: stale_evidence
 ```
 
+Evidence entry ids are deterministic and may be range-scoped. File evidence uses
+`path:<repo-relative-path>:<suffix>` or
+`path-line:<repo-relative-path>:<line[-end]>:<suffix>`, and symbol evidence
+uses `symbol:<name>:<suffix>`. The generator emits more than `staleness` rows:
+`artifact_presence`, `churn`, and `unverified` appear in the same `evidence`
+list and are accepted by the downstream consumer. Common examples include
+`path:src/demo.py:churn`, `path-line:src/demo.py:1-3:absent`, and
+`path:config.yaml:unverified`.
+
 If the backlog is empty, the command prints an explicit zero-backlog success and
 still writes the structured artifact.
 
