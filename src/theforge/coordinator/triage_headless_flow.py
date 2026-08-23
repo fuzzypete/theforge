@@ -243,6 +243,19 @@ def build_pending_payload(
     }
 
 
+def _dispatch_failed_outcome(summary: "ProposalRunSummary") -> HeadlessTriageOutcome:
+    """Return the headless outcome for a run that never reached agent dispatch."""
+    message = summary.run_level_failure
+    return HeadlessTriageOutcome(
+        status=HEADLESS_FAILED,
+        message=message,
+        error=message,
+        triage_run_id=summary.triage_run_id,
+        findings_count=summary.findings_count,
+        lines=(f"triage: {message}",),
+    )
+
+
 def run_headless_triage(
     config: object,
     *,
@@ -294,6 +307,10 @@ def run_headless_triage(
         current_milestone=current_milestone,
         record=True,
     )
+    if summary.run_level_failure:
+        outcome = _dispatch_failed_outcome(summary)
+        _log(f"  {outcome.lines[0]}")
+        return outcome
 
     events = _recorded_events(root, summary.triage_run_id)
 
