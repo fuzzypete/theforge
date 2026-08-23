@@ -1,9 +1,10 @@
 """Tests for the ``forge triage`` command layer.
 
-The command is a thin wrapper: resolve config, load the report, run the
-proposal flow, render. What is pinned here is what the operator sees (one
-proposal per finding, per-finding and total spend, the explicit empty-backlog
-zero) and what the command must never do (touch an issue).
+The command now has two read-only modes:
+
+* bare ``forge triage`` generates the deterministic backlog report artifact;
+* ``forge triage --report ...`` consumes an existing artifact for the advisory
+  proposal stage.
 """
 
 from __future__ import annotations
@@ -18,6 +19,11 @@ import pytest
 from theforge.cli import triage as cli_triage
 from theforge.cli.main import build_parser
 from theforge.config import DEFAULT_PREFLIGHT_PROFILE
+from theforge.triage_backlog_report import (
+    BacklogFindingRecord,
+    BacklogTriageReport,
+    EvidenceEntry,
+)
 from theforge.triage_proposal import (
     FindingPacket,
     FindingProposalResult,
@@ -56,7 +62,8 @@ def _write_project(tmp_path: Path, report: dict) -> tuple[Path, Path]:
 
 def _args(**kwargs: object) -> argparse.Namespace:
     defaults = {
-        "report": "",
+        "report": None,
+        "output": None,
         "config": None,
         "current_milestone": None,
         "no_audit": True,
@@ -70,6 +77,11 @@ class _FakeConfig:
     def __init__(self, project_root: Path) -> None:
         self.project_root = project_root
         self.secrets: dict[str, str] = {}
+        self.conventions_advisory = type(
+            "_Advice",
+            (),
+            {"issue_filing": type("_IssueFiling", (), {"milestone": "v0.12.0"})()},
+        )()
 
 
 def _stub_config(monkeypatch: pytest.MonkeyPatch, project_root: Path) -> None:
@@ -117,16 +129,56 @@ def _summary(**kwargs: object) -> ProposalRunSummary:
     return ProposalRunSummary(**defaults)
 
 
+def _backlog_report(**kwargs: object) -> BacklogTriageReport:
+    finding = BacklogFindingRecord(
+        finding_id="#1312",
+        issue_ref="#1312",
+        issue_number=1312,
+        title="audit count is off by one",
+        body="audit count is off by one",
+        labels=("bug", "forge-finding"),
+        display_labels="bug",
+        opened_at="2026-05-31T00:00:00Z",
+        age_days=84,
+        pool_state="Hygiene",
+        verification_status="stale_evidence",
+        evidence=(
+            EvidenceEntry(
+                evidence_id="symbol-absent",
+                kind="staleness",
+                summary="cited symbol audit_count absent from current tree",
+                observed_status="stale_evidence",
+            ),
+            EvidenceEntry(
+                evidence_id="path-churn",
+                kind="churn",
+                summary="cited file src/theforge/cli/triage.py changed 3 time(s) since filing",
+            ),
+        ),
+    )
+    defaults = {
+        "generated_at": "2026-08-23T00:00:00Z",
+        "current_milestone": "v0.12.0",
+        "named_milestones": ("v0.13.0",),
+        "findings": (finding,),
+        "milestone_inventory_error": None,
+    }
+    defaults.update(kwargs)
+    return BacklogTriageReport(**defaults)
+
+
 class TestParser:
-    def test_triage_is_registered_with_a_required_report(self) -> None:
+    def test_triage_accepts_bare_report_generation(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["triage"])
+        assert args.command == "triage"
+        assert args.report is None
+
+    def test_triage_accepts_report_mode(self) -> None:
         parser = build_parser()
         args = parser.parse_args(["triage", "--report", "backlog.json"])
         assert args.command == "triage"
         assert args.report == "backlog.json"
-
-    def test_report_flag_is_required(self) -> None:
-        with pytest.raises(SystemExit):
-            build_parser().parse_args(["triage"])
 
     def test_current_milestone_override_is_accepted(self) -> None:
         args = build_parser().parse_args(
@@ -134,8 +186,91 @@ class TestParser:
         )
         assert args.current_milestone == "v0.13.0"
 
+    def test_output_flag_is_accepted_for_report_generation(self) -> None:
+        args = build_parser().parse_args(["triage", "--output", ".forge/triage/out.yaml"])
+        assert args.output == ".forge/triage/out.yaml"
+
 
 class TestCommand:
+    def test_report_mode_prints_the_generated_backlog_and_artifact_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path, _report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        report = _backlog_report()
+        seen: dict[str, object] = {}
+
+        monkeypatch.setattr(
+            cli_triage,
+            "collect_backlog_report",
+            lambda project_root, current_milestone=None: (
+                seen.update({"project_root": project_root, "current_milestone": current_milestone})
+                or report
+            ),
+        )
+
+        artifact_path = tmp_path / ".forge" / "triage" / "report.yaml"
+        monkeypatch.setattr(
+            cli_triage,
+            "write_backlog_report",
+            lambda project_root, built_report, output_path=None: artifact_path,
+        )
+
+        code = cli_triage.cmd_triage(_args(config=str(config_path)))
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "FINDING BACKLOG — 1 open" in out
+        assert "STALE-EVIDENCE: cited symbol audit_count absent from current tree" in out
+        assert "structured report: .forge/triage/report.yaml" in out
+        assert seen["project_root"] == tmp_path
+        assert seen["current_milestone"] == "v0.12.0"
+
+    def test_report_mode_uses_output_override(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        config_path, _report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            cli_triage,
+            "collect_backlog_report",
+            lambda *a, **k: _backlog_report(),
+        )
+        seen: dict[str, object] = {}
+
+        def _write(
+            project_root: Path,
+            report: BacklogTriageReport,
+            output_path: Path | None = None,
+        ) -> Path:
+            seen["output_path"] = output_path
+            return tmp_path / "custom.yaml"
+
+        monkeypatch.setattr(cli_triage, "write_backlog_report", _write)
+        assert (
+            cli_triage.cmd_triage(
+                _args(config=str(config_path), output=str(tmp_path / "custom.yaml"))
+            )
+            == 0
+        )
+        assert seen["output_path"] == (tmp_path / "custom.yaml").resolve()
+
+    def test_report_mode_surfaces_collection_errors(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path, _report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            cli_triage,
+            "collect_backlog_report",
+            lambda *a, **k: (_ for _ in ()).throw(
+                cli_triage.TriageBacklogReportError("gh api failed")
+            ),
+        )
+
+        code = cli_triage.cmd_triage(_args(config=str(config_path)))
+        assert code == 1
+        assert "gh api failed" in capsys.readouterr().err
+
     def test_proposals_and_spend_are_printed(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
@@ -183,7 +318,7 @@ class TestCommand:
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
         monkeypatch.setattr(cli_triage, "_find_config", lambda *a, **k: None)
-        code = cli_triage.cmd_triage(_args(report=str(tmp_path / "b.json")))
+        code = cli_triage.cmd_triage(_args())
         assert code == 1
         assert "forge.yaml not found" in capsys.readouterr().err
 

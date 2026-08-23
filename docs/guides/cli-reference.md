@@ -870,17 +870,113 @@ Optional flags record provenance: `--from-sprint`, `--issue`, `--run-id`.
 
 ## `forge triage`
 
-Propose a disposition for every finding in a backlog report. A fresh-context
-agent reads one evidence packet per finding — the finding body, the report's
-deterministic staleness evidence, and whatever disposition history the audit
-substrate already holds for that finding — and proposes exactly one value from
-a fixed taxonomy.
+`forge triage` now has two read-only modes:
+
+- With no `--report`, it generates the deterministic backlog report for every
+  open finding-labeled issue.
+- With `--report <path>`, it consumes an existing backlog report artifact and
+  runs the advisory proposal stage against it.
 
 ```bash
+forge triage
+forge triage --output .forge/triage/report.yaml
 forge triage --report .forge/backlog-report.json
 forge triage --report backlog.json --current-milestone v0.12.0
 forge triage --report backlog.json --no-audit   # print without recording the run
 ```
+
+### Deterministic backlog report mode
+
+Bare `forge triage` inventories the backlog as the union of open issues carrying
+`forge-finding`, `review-finding`, or `needs-triage`. For each finding it
+reports:
+
+- age (days since the GitHub issue was filed),
+- current pool state (`needs-triage`, milestone title, or `unpooled`),
+- mechanically gathered evidence only:
+  - whether a cited repo path still exists,
+  - whether a cited symbol is still present,
+  - how many times the cited file changed since the finding was filed.
+
+No tracker writes occur on any path, and no model is invoked. Findings whose
+citations cannot be checked are reported as `UNVERIFIED` with the reason; they
+are never omitted and never upgraded into stale claims.
+
+Sample output:
+
+```text
+FINDING BACKLOG — 15 open (14 hygiene-pool, 0 needs-triage, 1 unpooled)
+
+#1312  bug,p2     Hygiene      age 84d    STALE-EVIDENCE: cited symbol
+       _validate_auto_api_fallback_schema absent from current tree
+#1124  bug,p2     Hygiene      age 102d   ACTIVE: cited file
+       src/theforge/cli/triage.py changed 11 time(s) since filing on 2026-05-13
+#659   bug,p2     unpooled     age 197d   UNVERIFIED: body cites no
+       checkable artifact (prose-only or unparseable citation)
+
+structured report: .forge/triage/report-20260823T000000Z.yaml
+```
+
+The structured artifact is YAML by default and is what downstream triage stages
+consume. The producer adds inventory metadata, but the consumer boundary is the
+same `findings` / `evidence` contract already parsed by `theforge.triage_report`.
+
+Artifact shape:
+
+```yaml
+generated_at: 2026-08-23T00:00:00Z
+current_milestone: v0.12.0        # optional; still the fix_now target
+named_milestones: [v0.13.0]       # optional; later fix_later targets
+summary:
+  total_open: 15
+  by_state:
+    Hygiene: 14
+    needs-triage: 0
+    unpooled: 1
+  by_verification_status:
+    active: 8
+    stale_evidence: 5
+    unverified: 2
+findings:
+  - finding_id: "#1312"           # stable identity for this issue-backed finding
+    issue_ref: "#1312"
+    issue_number: 1312
+    title: "audit count is off by one"
+    body: "..."
+    labels: [bug, p2, forge-finding]
+    display_labels: bug,p2
+    opened_at: 2026-05-31T00:00:00Z
+    age_days: 84
+    pool_state: Hygiene
+    verification_status: stale_evidence
+    evidence:
+      - id: symbol:_validate_auto_api_fallback_schema:absent
+        kind: staleness
+        summary: cited symbol _validate_auto_api_fallback_schema absent from current tree
+        checkable: true
+        detail: searched for _validate_auto_api_fallback_schema at HEAD
+        observed_status: stale_evidence
+```
+
+Evidence entry ids are deterministic and may be range-scoped. File evidence uses
+`path:<repo-relative-path>:<suffix>` or
+`path-line:<repo-relative-path>:<line[-end]>:<suffix>`, and symbol evidence
+uses `symbol:<name>:<suffix>`. The generator emits more than `staleness` rows:
+`artifact_presence`, `churn`, and `unverified` appear in the same `evidence`
+list and are accepted by the downstream consumer. Common examples include
+`path:src/demo.py:churn`, `path-line:src/demo.py:1-3:absent`, and
+`path:config.yaml:unverified`.
+
+If the backlog is empty, the command prints an explicit zero-backlog success and
+still writes the structured artifact.
+
+### Advisory proposal mode
+
+`forge triage --report <path>` keeps the existing proposal stage: a
+fresh-context agent reads one evidence packet per finding — the finding body,
+the report's deterministic staleness evidence, and whatever disposition history
+the audit substrate already holds for that finding — and proposes exactly one
+value from a fixed taxonomy.
 
 The taxonomy and its required payload:
 
