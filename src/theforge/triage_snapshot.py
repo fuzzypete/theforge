@@ -32,7 +32,8 @@ def _normalized_labels(raw: object) -> list[str]:
         raw = [raw]
     if not isinstance(raw, (list, tuple)):
         return []
-    return [str(label).strip() for label in raw if str(label).strip()]
+    normalized = {str(label).strip() for label in raw if str(label).strip()}
+    return sorted(normalized, key=str.lower)
 
 
 def _normalized_evidence(raw: object) -> list[dict[str, object]]:
@@ -54,7 +55,7 @@ def _normalized_evidence(raw: object) -> list[dict[str, object]]:
                 "detail": _normalized_text(item.get("detail")),
             }
         )
-    return normalized
+    return sorted(normalized, key=lambda item: (str(item["id"]), str(item["kind"])))
 
 
 def canonicalize_finding_snapshot(snapshot: Mapping[str, object] | None) -> dict[str, object]:

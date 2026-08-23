@@ -489,21 +489,6 @@ def await_inherited_agents(
         if remaining <= 0:
             return False
         if not waited and log is not None:
-            # A process group can flip from "live" to "settled zombie" between
-            # the initial resolution and the first operator-facing wait log.
-            # Probe once more before claiming we are waiting, so an inherited
-            # agent that is already effectively finished logs only the resume.
-            followup = resolve_liveness(
-                [slug],
-                project_root=project_root,
-                path_pattern=path_pattern,
-                owner_pid=owner_pid,
-                is_group_alive=is_group_alive,
-                include_executions=False,
-            )
-            if slug not in followup.deferred_slugs:
-                continue
-            resolution = followup
             if slug in resolution.live_slugs:
                 groups = resolve_inherited_agents(
                     [slug],
