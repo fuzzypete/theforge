@@ -1,0 +1,121 @@
+schema_version: 2
+run_id: 48f6a524dfe4
+authoritative_run_record: .forge/audits/runs/48f6a524dfe4.json
+generated_at: '2026-08-23T01:46:24.687616+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01177125
+story:
+  slug: issue-2229
+  name: 'forge triage: adversarial second review of punt proposals'
+  github_issue: 2229
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/coordinator/audit_read_model.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/triage_proposal_flow.py
+- src/theforge/task/triage_prompts.py
+- src/theforge/triage_proposal.py
+- tests/test_cli_triage.py
+- tests/test_triage_proposal.py
+- tests/test_triage_proposal_flow.py
+what_changed:
+  description: This run added a punt-only adversarial second-review stage to triage
+    proposals, requiring each punt proposal to receive an independent concur/challenge
+    verdict with cited evidence before operator presentation, while leaving non-punt
+    proposals unchanged and making zero-punt runs render as an explicit no-op.
+  approach: The change was implemented by extending the proposal flow, prompt layer,
+    proposal/audit models, and CLI rendering together so review routing, verdict validation,
+    safe fallback handling, persistence, and operator-visible output all moved in
+    lockstep.
+  files_modified: *id002
+what_was_learned:
+- claim: When a workflow introduces a second agent leg, verification must preserve
+    cost-provenance checks separately for each leg; reusing an existing missing-cost
+    test for the new leg can silently drop coverage for the original proposer path.
+  evidence:
+  - type: review_finding
+    finding_id: 0be2848ed80e3499
+    description: Review found that the only test covering an unmeasured proposer attempt
+      had been repurposed to script an unmeasured reviewer result after cost summation
+      was refactored, demonstrating that multi-leg cost handling needs leg-specific
+      verification rather than a single shared scenario.
+  - type: file
+    path: tests/test_triage_proposal_flow.py
+    description: This is the test file named in the finding; the issue arose specifically
+      because provenance assertions in flow-level tests were shifted from proposer
+      coverage to reviewer coverage, showing where future runs should keep distinct
+      checks.
+- claim: If fallback-generated coordinator text is stored or rendered under the same
+    'evidence' field used for verbatim packet citations, consumers will misread authored
+    fallback rationale as source-backed evidence; fallback reason data needs a distinct
+    representation.
+  evidence:
+  - type: review_finding
+    finding_id: 857f86fd2fa5d6eb
+    description: Review identified that persisted audit events serialized coordinator-authored
+      fallback basis text under the normal evidence key, showing that downstream readers
+      of the audit record could infer source citation where none existed.
+  - type: review_finding
+    finding_id: eb3c466b13746ac2
+    description: A separate review finding caught the same conflation in rendered
+      output, where the fallback basis sentence appeared on the review evidence line
+      normally reserved for mechanically verified packet quotes, confirming the representation
+      problem across both persistence and display surfaces.
+  - type: file
+    path: src/theforge/triage_proposal.py
+    description: Both findings point to proposal rendering/serialization behavior
+      in this file, showing that the ambiguity originated in shared proposal presentation
+      logic rather than in the reviewer prompt itself.
+- claim: Operator-facing documentation for staged pipelines must be updated to reflect
+    added stages, per-item annotations, and total-cost semantics at the same time
+    as the implementation, or the docs will describe a different workflow than the
+    one operators actually see.
+  evidence:
+  - type: review_finding
+    finding_id: 79163134b8c9a08d
+    description: Review found that CLI guidance and sample output still described
+      a single-agent stage and omitted the new review line items and reviewer cost,
+      demonstrating that stage additions change not just internals but the meaning
+      of displayed totals and output structure.
+  - type: file
+    path: docs/guides/cli-reference.md
+    description: The finding landed in the CLI reference specifically because operator-facing
+      examples had to reflect review-stage presence, per-punt verdicts, and spend
+      accounting together, showing the documentation surface most sensitive to staged-flow
+      changes.
+learned_patterns:
+- per-leg-cost-provenance
+- separate-fallback-from-citation
+- stage-aware-cli-doc-sync
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review pressure concentrated on boundary surfaces around the new reviewer leg:
+    cost accounting provenance, operator-visible rendering/docs, and audit semantics
+    for deterministic fallback cases.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 8.23735185
+  dominant_difficulty: Adding a safe adversarial review leg required keeping flow
+    logic, audit persistence, rendering, and documentation semantically aligned so
+    fallback and review metadata meant the same thing everywhere.
