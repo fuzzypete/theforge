@@ -336,6 +336,31 @@ class TestBuildBacklogReport:
         assert any(entry.evidence_id == "path:src/demo.py:churn" for entry in finding.evidence)
         assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
 
+    def test_descending_line_range_still_collects_path_evidence(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def demo():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(22, "Evidence: `src/demo.py#L9-L2`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            "could not mechanically verify cited path token src/demo.py#L9-L2" in entry.summary
+            for entry in finding.evidence
+        )
+        assert any(entry.evidence_id == "path:src/demo.py:present" for entry in finding.evidence)
+        assert any(entry.evidence_id == "path:src/demo.py:churn" for entry in finding.evidence)
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
     def test_extensionless_module_path_resolves_against_known_source_extensions(
         self, tmp_path: Path
     ) -> None:
