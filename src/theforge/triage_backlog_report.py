@@ -34,7 +34,7 @@ _GH_TIMEOUT_SECONDS = 30
 _GIT_TIMEOUT_SECONDS = 30
 _SEARCH_TIMEOUT_SECONDS = 30
 _PATH_SUFFIXES = (".py", ".md", ".sh", ".yaml", ".yml", ".json", ".toml", ".ini", ".txt")
-_GH_LINE_ANCHOR_RE = re.compile(r"^L(?P<line>\d+)(?:-L\d+)?$")
+_GH_LINE_ANCHOR_RE = re.compile(r"^L(?P<line>\d+)(?:-L(?P<end_line>\d+))?$")
 
 _GH_ISSUE_JQ = (
     ".[] | select(.pull_request == null) | "
@@ -179,6 +179,7 @@ class PathCitation:
 
     path: str
     line: int | None = None
+    end_line: int | None = None
 
 
 @dataclass(frozen=True)
@@ -287,11 +288,20 @@ def _is_path_like(token: str) -> bool:
     return candidate.endswith(_PATH_SUFFIXES)
 
 
-def _github_line_anchor(fragment: str) -> int | None:
+def _github_line_anchor(fragment: str) -> tuple[int, int | None] | None:
     match = _GH_LINE_ANCHOR_RE.fullmatch(fragment)
     if match is None:
         return None
-    return int(match.group("line"))
+    line = int(match.group("line"))
+    raw_end = match.group("end_line")
+    if raw_end is None:
+        return line, None
+    end_line = int(raw_end)
+    if end_line < line:
+        raise ValueError(f"unsupported path anchor #{fragment}")
+    if end_line == line:
+        return line, None
+    return line, end_line
 
 
 def _parse_path_token(token: str) -> PathCitation | None:
@@ -299,25 +309,35 @@ def _parse_path_token(token: str) -> PathCitation | None:
     if not _is_path_like(text):
         return None
     line: int | None = None
+    end_line: int | None = None
     if "#" in text:
         candidate_path, fragment = text.split("#", 1)
         if not candidate_path:
             return None
-        anchored_line = _github_line_anchor(fragment)
-        if anchored_line is None:
+        anchored_location = _github_line_anchor(fragment)
+        if anchored_location is None:
             raise ValueError(f"unsupported path anchor #{fragment}")
         text = candidate_path
-        line = anchored_line
+        line, end_line = anchored_location
     if ":" in text:
         candidate_path, candidate_line = text.rsplit(":", 1)
         if candidate_line.isdigit():
-            if line is not None and line != int(candidate_line):
+            candidate_line_number = int(candidate_line)
+            if line is not None and (line != candidate_line_number or end_line is not None):
                 raise ValueError("path citation mixes multiple line references")
             text = candidate_path
-            line = int(candidate_line)
+            line = candidate_line_number
     if not text or text.startswith(("http://", "https://")):
         return None
-    return PathCitation(path=text, line=line)
+    return PathCitation(path=text, line=line, end_line=end_line)
+
+
+def _line_label(relpath: str, citation: PathCitation) -> str:
+    if citation.line is None:
+        return relpath
+    if citation.end_line is None:
+        return f"{relpath}:{citation.line}"
+    return f"{relpath}:{citation.line}-{citation.end_line}"
 
 
 def _is_symbol_like(token: str) -> bool:
@@ -336,7 +356,7 @@ def parse_citations(
     """Extract conservative, mechanically checkable citations from a finding body."""
     text = str(body or "")
     paths: list[PathCitation] = []
-    seen_paths: set[tuple[str, int | None]] = set()
+    seen_paths: set[tuple[str, int | None, int | None]] = set()
     invalid_paths: list[InvalidPathCitation] = []
     seen_invalid_paths: set[tuple[str, str]] = set()
 
@@ -353,7 +373,7 @@ def parse_citations(
             return
         if citation is None:
             return
-        key = (citation.path, citation.line)
+        key = (citation.path, citation.line, citation.end_line)
         if key not in seen_paths:
             seen_paths.add(key)
             paths.append(citation)
@@ -486,12 +506,13 @@ def _path_presence_evidence(
     relpath = _normalize_repo_path(project_root, citation.path)
     absolute = project_root / relpath
     checked: list[EvidenceEntry] = []
-    line_label = f"{relpath}:{citation.line}" if citation.line is not None else relpath
+    line_label = _line_label(relpath, citation)
 
     if absolute.exists():
         if citation.line is not None:
             line_count = _file_line_count(absolute)
-            if citation.line > line_count:
+            range_end = citation.end_line or citation.line
+            if range_end > line_count:
                 checked.append(
                     EvidenceEntry(
                         evidence_id=f"path-line:{line_label}:absent",
@@ -713,6 +734,17 @@ def _age_days(created_at: str, *, now: datetime) -> int | None:
     return (now.date() - opened.date()).days
 
 
+def _dedupe_evidence(entries: list[EvidenceEntry]) -> tuple[EvidenceEntry, ...]:
+    deduped: list[EvidenceEntry] = []
+    seen_ids: set[str] = set()
+    for entry in entries:
+        if entry.evidence_id in seen_ids:
+            continue
+        seen_ids.add(entry.evidence_id)
+        deduped.append(entry)
+    return tuple(deduped)
+
+
 def build_backlog_report(
     issues: list[BacklogIssue],
     *,
@@ -814,7 +846,7 @@ def build_backlog_report(
             evidence.extend(checked)
             failures.extend(failed)
 
-        ordered_evidence = tuple(
+        ordered_evidence = _dedupe_evidence(
             sorted(
                 [*failures, *evidence],
                 key=lambda entry: (

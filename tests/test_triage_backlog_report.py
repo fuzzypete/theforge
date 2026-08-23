@@ -207,6 +207,51 @@ class TestBuildBacklogReport:
             entry.evidence_id == "path-line:src/demo.py:9:absent" for entry in finding.evidence
         )
 
+    def test_marks_stale_when_github_line_range_extends_beyond_end_of_file(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def demo():\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(24, "Evidence: `src/demo.py#L1-L3`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_STALE
+        assert any(
+            entry.evidence_id == "path-line:src/demo.py:1-3:absent" for entry in finding.evidence
+        )
+
+    def test_keeps_distinct_github_line_citations_that_share_a_start_line(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("one\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(27, "Evidence: `src/demo.py#L1` and `src/demo.py#L1-L3`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        evidence_ids = {entry.evidence_id for entry in finding.evidence}
+        assert "path-line:src/demo.py:1:present" in evidence_ids
+        assert "path-line:src/demo.py:1-3:absent" in evidence_ids
+
     def test_marks_stale_when_cited_symbol_is_absent(self, tmp_path: Path) -> None:
         report = build_backlog_report(
             [_issue(14, "cited symbol `_validate_auto_api_fallback_schema` is gone")],
@@ -361,6 +406,54 @@ class TestBuildBacklogReport:
         assert [entry.evidence_id for entry in loaded.findings[0].evidence].count(
             "path:src/demo.py:churn"
         ) == 1
+
+    def test_generated_artifact_round_trips_when_same_missing_path_is_cited_multiple_times(
+        self, tmp_path: Path
+    ) -> None:
+        report = build_backlog_report(
+            [
+                _issue(
+                    25,
+                    "Evidence: `src/missing.py:12`, `src/missing.py:40`, and `src/missing.py`",
+                )
+            ],
+            project_root=tmp_path,
+            current_milestone="v0.12.0",
+            named_milestones=("v0.13.0",),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 1,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+        path = write_backlog_report(tmp_path, report)
+        loaded = load_backlog_report(path)
+
+        evidence_ids = [entry.evidence_id for entry in loaded.findings[0].evidence]
+        assert evidence_ids.count("path:src/missing.py:absent") == 1
+        assert len(evidence_ids) == len(set(evidence_ids))
+
+    def test_round_trip_dedupes_repeated_unattributable_filename_citations(
+        self, tmp_path: Path
+    ) -> None:
+        report = build_backlog_report(
+            [
+                _issue(
+                    26,
+                    "Evidence: `config.yaml:12`, `config.yaml#L9`, and `config.yaml`",
+                )
+            ],
+            project_root=tmp_path,
+            current_milestone="v0.12.0",
+            named_milestones=("v0.13.0",),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 1,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+        path = write_backlog_report(tmp_path, report)
+        loaded = load_backlog_report(path)
+
+        evidence_ids = [entry.evidence_id for entry in loaded.findings[0].evidence]
+        assert evidence_ids.count("path:config.yaml:unverified") == 1
+        assert len(evidence_ids) == len(set(evidence_ids))
 
 
 class TestRendering:
