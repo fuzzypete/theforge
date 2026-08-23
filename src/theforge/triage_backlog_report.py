@@ -526,6 +526,22 @@ def _symbol_hits(
     return deduped
 
 
+def _symbol_search_detail(
+    project_root: Path,
+    symbol: str,
+    candidate_paths: tuple[str, ...],
+) -> str:
+    if not candidate_paths:
+        return f"searched for {symbol} at HEAD"
+
+    resolved_paths = tuple(path for path in candidate_paths if (project_root / path).exists())
+    unresolved_paths = tuple(path for path in candidate_paths if path not in resolved_paths)
+    detail = f"searched for {symbol} at HEAD within {', '.join(resolved_paths)}"
+    if unresolved_paths:
+        detail = f"{detail}; skipped unresolvable cited paths: {', '.join(unresolved_paths)}"
+    return detail
+
+
 def _resolve_extensionless_path(project_root: Path, relpath: str) -> str | None:
     """Resolve a dotted-free path citation against known source extensions.
 
@@ -722,7 +738,7 @@ def _symbol_evidence(
                 evidence_id=f"symbol:{citation.symbol}:absent",
                 kind="staleness",
                 summary=f"cited symbol {citation.symbol} absent from current tree",
-                detail=f"searched for {citation.symbol} at HEAD",
+                detail=_symbol_search_detail(project_root, citation.symbol, candidate_paths),
                 observed_status=STATUS_STALE,
                 artifact=citation.symbol,
             )
@@ -754,7 +770,7 @@ def _symbol_evidence(
             evidence_id=f"symbol:{citation.symbol}:present",
             kind="artifact_presence",
             summary=f"cited symbol {citation.symbol} present at {target_path}:{first_line}",
-            detail=f"searched for {citation.symbol} at HEAD",
+            detail=_symbol_search_detail(project_root, citation.symbol, candidate_paths),
             artifact=f"{target_path}:{first_line}",
         )
     )

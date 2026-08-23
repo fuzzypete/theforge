@@ -293,6 +293,32 @@ class TestBuildBacklogReport:
         assert "symbol:ExampleSymbol:churn" in evidence_ids
         assert "symbol:ExampleSymbol:lookup-unverified" not in evidence_ids
 
+    def test_symbol_absence_reports_narrowed_search_scope(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def DifferentSymbol():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(30, "Evidence: `src/demo.py`, `src/missing.py`, and `ExampleSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+        )
+
+        finding = report.findings[0]
+        absent = next(
+            entry
+            for entry in finding.evidence
+            if entry.evidence_id == "symbol:ExampleSymbol:absent"
+        )
+        assert finding.verification_status == STATUS_STALE
+        assert absent.detail == (
+            "searched for ExampleSymbol at HEAD within src/demo.py; "
+            "skipped unresolvable cited paths: src/missing.py"
+        )
+
     def test_symbol_search_stays_unverified_when_all_candidate_paths_are_unresolvable(
         self, tmp_path: Path
     ) -> None:
