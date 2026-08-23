@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 
 _HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$", re.MULTILINE)
@@ -224,7 +225,10 @@ def _normalize_heading_text(text: str) -> str:
 
 
 def find_authoritative_heading(
-    body: str, pattern: str, canonical_texts: tuple[str, ...] = ()
+    body: str,
+    pattern: str,
+    canonical_texts: tuple[str, ...] = (),
+    score_fn: Callable[[str], int] | None = None,
 ) -> re.Match[str] | None:
     """Return the heading that authoritatively represents a named section.
 
@@ -233,11 +237,17 @@ def find_authoritative_heading(
     or a genuine landed artifact. Unlike :func:`find_heading` (first match in
     document order), this prefers a *canonical* heading — one whose text,
     normalized, exactly equals one of ``canonical_texts`` — over a heading
-    that only contains the word as part of a longer title. When more than one
-    canonical heading exists, the one with the most section content wins:
-    document position must not decide authority, because reordering sections
-    (or a step appending below an earlier placeholder) would otherwise flip
-    which one is read. Ties fall to the later heading.
+    that only contains the word as part of a longer title.
+
+    When more than one canonical heading exists, ``score_fn`` (given the
+    matched section's text) ranks them; the highest-scoring section wins.
+    Document position must not decide authority on its own — a stale
+    placeholder can be reordered, appended around, or simply be longer than
+    a genuine artifact, so raw position or length are not authority by
+    themselves. Callers that care about a domain-specific notion of
+    "complete" (e.g. a diagnosis with a confirmed cause) should pass a
+    ``score_fn`` that measures that. Defaults to section content length when
+    omitted. Ties fall to the later heading.
 
     Falls back to first-match-in-document-order (the same behavior as
     :func:`find_heading`) when ``canonical_texts`` is empty or no heading
@@ -250,35 +260,42 @@ def find_authoritative_heading(
     if canonical_texts:
         canonical = [m for m in matches if _normalize_heading_text(m.group(2)) in canonical_texts]
         if canonical:
+            scorer = score_fn if score_fn is not None else len
             best = canonical[0]
-            best_len = -1
+            best_score = -1
             for m in canonical:
                 start, end = _span_from_heading_match(body, m)
-                length = end - start
-                if length >= best_len:
+                score = scorer(body[start:end])
+                if score >= best_score:
                     best = m
-                    best_len = length
+                    best_score = score
             return best
     return matches[0]
 
 
 def authoritative_section_span(
-    body: str, pattern: str, canonical_texts: tuple[str, ...] = ()
+    body: str,
+    pattern: str,
+    canonical_texts: tuple[str, ...] = (),
+    score_fn: Callable[[str], int] | None = None,
 ) -> tuple[int, int] | None:
-    m = find_authoritative_heading(body, pattern, canonical_texts)
+    m = find_authoritative_heading(body, pattern, canonical_texts, score_fn)
     if not m:
         return None
     return _span_from_heading_match(body, m)
 
 
 def extract_authoritative_section(
-    body: str, pattern: str, canonical_texts: tuple[str, ...] = ()
+    body: str,
+    pattern: str,
+    canonical_texts: tuple[str, ...] = (),
+    score_fn: Callable[[str], int] | None = None,
 ) -> str | None:
     """Like :func:`extract_section`, but selects the authoritative heading.
 
     See :func:`find_authoritative_heading` for the selection rule.
     """
-    span = authoritative_section_span(body, pattern, canonical_texts)
+    span = authoritative_section_span(body, pattern, canonical_texts, score_fn)
     if span is None:
         return None
     return body[span[0] : span[1]]

@@ -83,6 +83,42 @@ def test_restructure_bug_adds_only_missing_component_in_place():
     assert diagnosis_completeness(new) == (True, [])
 
 
+def test_restructure_bug_fills_gaps_in_real_section_not_lookalike_heading():
+    """A lookalike prose heading above the real, incomplete Diagnosis section
+    must not receive the gap-filling bullets — they belong in the section
+    the gate actually reads, or the gate never converges (#2263 review
+    cycle 1)."""
+    body = (
+        "## Observed behavior\n\nfoo\n\n"
+        "## Expected behavior\n\nbar\n\n"
+        "## Further evidence — generated diagnosis text becomes "
+        "scope-classification input on rerun\n\n"
+        "some unrelated prose about the diagnose flow itself\n\n"
+        "## Diagnosis\n\n"
+        "- **Observed symptom:** the applied body no longer passes the gate.\n"
+        "- **Confirmed cause:** the renderer probed for an H3 heading.\n"
+        "- **Affected code path:** `intake.shape_render._restructure_bug`.\n"
+        "- **Fix-success criterion:** the body is returned unchanged.\n"
+    )
+    complete, missing = diagnosis_completeness(body)
+    assert not complete
+    assert missing == ["evidence"]
+
+    new = restructure_body(_bug_proposal(DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE), body)
+
+    # The prose heading and its narrative are untouched — no bullets leaked
+    # into it, and it must not have been duplicated or removed.
+    assert (
+        "## Further evidence — generated diagnosis text becomes "
+        "scope-classification input on rerun" in new
+    )
+    assert "some unrelated prose about the diagnose flow itself" in new
+    assert new.count("## Further evidence") == 1
+    # The missing component landed in the real Diagnosis section, converging
+    # the body to gate-passing.
+    assert diagnosis_completeness(new) == (True, [])
+
+
 def test_restructure_bug_appends_diagnosis_when_section_absent():
     body = "## Observed behavior\n\nthing broke\n\n## Expected behavior\n\nit should not\n"
     new = restructure_body(_bug_proposal(), body)

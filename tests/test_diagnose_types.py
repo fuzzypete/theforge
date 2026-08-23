@@ -1032,3 +1032,21 @@ class TestUpsertDiagnosisSection:
         assert "Landed artifact" not in new
         assert "no diagnosis yet" not in new
         assert "Reconciled content" in new
+
+    def test_preserves_operator_authored_root_cause_section(self):
+        """Landing a ## Diagnosis artifact must not delete a distinct,
+        operator-authored 'Root cause' section — that heading is a different
+        section than the one being landed, not a duplicate of it (#2263
+        review cycle 1)."""
+        body = (
+            "## Observed\n\nsecrets go missing\n\n"
+            "## Root cause\n\n"
+            "The operator's own investigation narrative: worktree creation "
+            "races the .env copy step under high load.\n\n"
+            "## Expected\n\nsecrets propagate\n"
+        )
+        new = upsert_diagnosis_section(body, "## Diagnosis\n\nLanded artifact content\n")
+        assert "## Root cause" in new
+        assert "races the .env copy step" in new
+        assert "## Diagnosis" in new
+        assert "Landed artifact content" in new

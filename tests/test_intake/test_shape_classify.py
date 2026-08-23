@@ -72,6 +72,23 @@ def test_landed_diagnosis_outranks_ordinary_prose_heading_above_it():
     assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
 
 
+def test_landed_diagnosis_outranks_stale_placeholder_below_it():
+    """The reverse order of the hdp#259 repro: the real artifact appears
+    first and a stale placeholder follows. Ordering must not flip which one
+    is authoritative (#2263)."""
+    body = (
+        "## Observed\nfoo\n\n## Expected\nbar\n\n"
+        "## Diagnosis\n\n"
+        "**Baseline:** `abc123`\n\n"
+        "**Confirmed cause:** regression in module X.\n\n"
+        "**Affected code path:** src/module_x.py\n\n"
+        "## Diagnosis\n\nStatus: no diagnosis yet. Next step: run `forge diagnose`.\n"
+    )
+    proposal = classify("bug: regression", body, ["bug"])
+    assert proposal.classification is Classification.BUG
+    assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
+
+
 def test_classifies_enhancement_by_ac_section():
     proposal = classify(
         title="add forge shape command",

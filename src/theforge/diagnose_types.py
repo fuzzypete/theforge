@@ -842,20 +842,15 @@ def render_already_resolved_markdown(
 # Local, minimal heading scan for the canonical-heading check below. This
 # module is pure-data / stdlib-only by contract, so it does not import
 # shape_check.parsing's heading machinery even though the concept (a
-# "canonical" Diagnosis/Root cause heading, any level, exact text) is shared
-# with theforge.shape_check.heuristics.DIAGNOSIS_CANONICAL_HEADING_TEXTS and
+# "canonical" heading, any level, exact text) is shared with
+# theforge.shape_check.heuristics.DIAGNOSIS_CANONICAL_HEADING_TEXTS and
 # theforge.intake.shape_classify's equivalent — keep the two in sync by hand.
 _HEADING_LINE_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
 _FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
-_CANONICAL_DIAGNOSIS_HEADING_TEXTS = ("diagnosis", "root cause")
 
 
 def _normalize_heading_text(text: str) -> str:
     return re.sub(r"[\s:.\-—]+$", "", text.strip()).strip().lower()
-
-
-def _is_canonical_diagnosis_heading(text: str) -> bool:
-    return _normalize_heading_text(text) in _CANONICAL_DIAGNOSIS_HEADING_TEXTS
 
 
 def _iter_heading_lines(lines: list[str]) -> list[tuple[int, int, str]]:
@@ -883,28 +878,48 @@ def _iter_heading_lines(lines: list[str]) -> list[tuple[int, int, str]]:
     return headings
 
 
+def _leading_heading_text(section_markdown: str) -> str | None:
+    """Return the normalized text of ``section_markdown``'s own opening heading."""
+    for line in section_markdown.splitlines():
+        if not line.strip():
+            continue
+        hm = _HEADING_LINE_RE.match(line)
+        return _normalize_heading_text(hm.group(2)) if hm else None
+    return None
+
+
 def upsert_diagnosis_section(body: str, section_markdown: str) -> str:
     """Insert or reconcile a ``## Diagnosis`` section in an issue body.
 
-    Locates every canonical Diagnosis/Root cause heading already present —
-    at any level, exact heading text — which may include an earlier step's
-    placeholder, a prior diagnose run's artifact, or a duplicate left by
-    either, and replaces all of them with a single instance of
-    ``section_markdown`` at the position of the first one. A body must never
-    end up carrying two sections a reader could mistake for "the" diagnosis;
-    landing an artifact is where that gets reconciled, not appended beside
-    it (#2263). Ordinary headings that merely mention "diagnosis" in a
-    longer title are left untouched. If no canonical heading exists, appends
-    the section to the end of the body, separated by a blank line.
+    Locates every heading already present whose text exactly matches
+    ``section_markdown``'s own heading (e.g. "Diagnosis"), at any level —
+    which may include an earlier step's placeholder, a prior diagnose run's
+    artifact, or a duplicate left by either — and replaces all of them with
+    a single instance of ``section_markdown`` at the position of the first
+    one. A body must never end up carrying two sections a reader could
+    mistake for "the" diagnosis; landing an artifact is where that gets
+    reconciled, not appended beside it (#2263).
+
+    Only headings matching the landed section's own name are touched.
+    Ordinary prose headings that merely mention the word, and *other*
+    named sections a body may carry — e.g. an operator-authored "Root
+    cause" narrative distinct from the section actually being landed — are
+    left untouched; this function absorbs duplicates of what it writes, not
+    unrelated content that happens to share a heading vocabulary. If no
+    matching heading exists, appends the section to the end of the body,
+    separated by a blank line.
     """
     section = section_markdown.rstrip() + "\n"
     if not body.strip():
         return section
 
+    target_text = _leading_heading_text(section_markdown)
     lines = body.splitlines()
     headings = _iter_heading_lines(lines)
     canonical = [
-        (idx, level) for idx, level, text in headings if _is_canonical_diagnosis_heading(text)
+        (idx, level)
+        for idx, level, text in headings
+        if target_text is not None and _normalize_heading_text(text) == target_text
     ]
 
     if not canonical:

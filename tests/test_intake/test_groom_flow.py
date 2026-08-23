@@ -123,6 +123,36 @@ Some unrelated narrative about the diagnose flow itself.
 - Fix-success criterion: .env present after worktree creation
 """
 
+# A complete, confirmed-cause artifact followed by a *longer* stale
+# placeholder — content length must not outrank artifact completeness, and
+# neither should document position (#2263 review cycle 1, openai finding).
+_ARTIFACT_BEFORE_LONGER_STALE_PLACEHOLDER_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+## Diagnosis
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Ruled out: agent role mismatch
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+
+## Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`. This placeholder
+stub has been padded with a great deal of extra explanatory prose so that,
+measured purely by character count, it is considerably longer than the
+complete diagnosis artifact that actually precedes it in the document —
+which is exactly the scenario a length-only tie-break gets wrong.
+"""
+
 _SHADOWED_BY_PLACEHOLDER_CAUSE_UNKNOWN_BUG_BODY = """\
 ## What happened
 
@@ -203,6 +233,14 @@ def test_shadowed_inconclusive_diagnosis_is_cause_unknown_not_no_diagnosis():
     at all, even when shadowed by an earlier placeholder heading."""
     state = classify_bug_diagnosis(_SHADOWED_BY_PLACEHOLDER_CAUSE_UNKNOWN_BUG_BODY, ["bug"])
     assert state is BugDiagnosisState.CAUSE_UNKNOWN
+
+
+def test_complete_artifact_outranks_longer_stale_placeholder_after_it():
+    """Authority must come from artifact completeness, not raw section
+    length or document position: a longer, later placeholder must not
+    outrank an earlier, complete, confirmed-cause artifact (#2263)."""
+    state = classify_bug_diagnosis(_ARTIFACT_BEFORE_LONGER_STALE_PLACEHOLDER_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
 
 
 # ── Three-state branching ─────────────────────────────────────────────────

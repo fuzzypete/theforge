@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from enum import Enum
 
 from theforge.intake.clarification import ClarificationQuestion, for_situation
+from theforge.shape_check.heuristics import diagnosis_completeness_score
 from theforge.shape_check.parsing import (
     extract_ac_section,
     extract_authoritative_section,
@@ -102,7 +103,10 @@ def _label_set(labels: list[str]) -> set[str]:
 
 def _detect_diagnosis_state(body: str) -> DiagnosisState:
     section = extract_authoritative_section(
-        body, r"diagnosis|root cause", _DIAGNOSIS_CANONICAL_HEADING_TEXTS
+        body,
+        r"diagnosis|root cause",
+        _DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
     )
     if section is None:
         return DiagnosisState.NO_DIAGNOSIS

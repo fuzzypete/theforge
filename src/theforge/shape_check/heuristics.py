@@ -292,7 +292,10 @@ def _bug_report_section_headings(body: str) -> list[str]:
         if heading is not None and heading not in headings:
             headings.append(heading)
     diagnosis_match = find_authoritative_heading(
-        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
     )
     diagnosis = diagnosis_match.group(2).strip() if diagnosis_match is not None else None
     if diagnosis is not None and diagnosis not in headings:
@@ -432,6 +435,27 @@ def _is_non_assertion_cause(value: str) -> bool:
     return any(pattern.match(value) for pattern in _NON_ASSERTION_CAUSE_PATTERNS)
 
 
+def diagnosis_completeness_score(section: str) -> int:
+    """Rank a candidate Diagnosis section by how much of the required shape
+    it actually satisfies, so a complete, confirmed-cause artifact outranks
+    a placeholder or a stale earlier draft regardless of which is longer or
+    which the document happens to place first (#2263).
+
+    Score is the count of required components present, plus a large bonus
+    when the confirmed-cause field carries a specific claim rather than
+    non-assertion vocabulary (``unknown``, ``TBD``, an empty slot, ...) —
+    an asserted cause always outranks any token-count tie, matching the
+    same "asserted beats non-asserted beats missing" ordering
+    :func:`cause_assertion_state` reports.
+    """
+    section_lower = section.lower()
+    score = sum(1 for tok in REQUIRED_DIAGNOSIS_TOKENS if tok in section_lower)
+    cause_value = _extract_confirmed_cause_value(section)
+    if cause_value and not _is_non_assertion_cause(cause_value):
+        score += len(REQUIRED_DIAGNOSIS_TOKENS) + 1
+    return score
+
+
 def cause_assertion_state(body: str) -> str:
     """Classify the confirmed-cause field of the Diagnosis section.
 
@@ -450,7 +474,10 @@ def cause_assertion_state(body: str) -> str:
     record states no cause was found, and must never read as one (#2060).
     """
     section = extract_authoritative_section(
-        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
     )
     if section is None:
         return "missing"
@@ -477,7 +504,10 @@ def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
     responsibility here is verifying the operator filled the slot at all.
     """
     section = extract_authoritative_section(
-        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
     )
     if section is None:
         return False, ["missing Diagnosis section"]
@@ -515,7 +545,10 @@ def _diagnosis_unreadable_region_hint(body: str, missing: list[str]) -> str:
                     break
                 continue
             section = extract_authoritative_section(
-                region_body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+                region_body,
+                DIAGNOSIS_HEADING_PATTERN,
+                DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+                diagnosis_completeness_score,
             )
             if section is None:
                 continue
@@ -687,7 +720,10 @@ def _diagnosis_cause_unknown(body: str) -> bool:
     label with nothing under it is reporting no cause, not a cause (#2060).
     """
     section = extract_authoritative_section(
-        body, DIAGNOSIS_HEADING_PATTERN, DIAGNOSIS_CANONICAL_HEADING_TEXTS
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
     )
     if section is None:
         return False
