@@ -1,0 +1,82 @@
+schema_version: 2
+run_id: a88ca3989904
+authoritative_run_record: .forge/audits/runs/a88ca3989904.json
+generated_at: '2026-08-23T07:38:00.940242+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00780875
+story:
+  slug: issue-2705
+  name: A triage pass in which every proposer invocation failed is recorded as having
+    proposed and reviewed its findings, so ratification is offered on judgments nobody
+    made
+  github_issue: 2705
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/coordinator/triage_headless_flow.py
+- tests/test_triage_headless.py
+what_changed:
+  description: Headless triage reporting was adjusted so degraded proposer outcomes
+    are represented in the run summary and pending artifact instead of being presented
+    as if findings had been proposed and reviewed normally.
+  approach: The change threads proposer-outcome state through headless triage result
+    construction and validates the resulting distinctions with targeted triage-headless
+    scenarios for degraded and non-degraded passes.
+  files_modified: *id002
+what_was_learned:
+- claim: In headless triage, summary and pending-state generation must derive operator-facing
+    status from whether proposer review actually occurred, not from the count or shape
+    of emitted dispositions, because fallback `needs_verification` outputs can be
+    indistinguishable from legitimate reviewed outcomes.
+  evidence:
+  - type: review_finding
+    finding_id: 7e11d972bb8a2925
+    description: The review finding identified that when proposer invocations fail,
+      the artifact still says findings were proposed and reviewed even though most
+      dispositions came from fallback, directly showing that output volume and uniform
+      disposition shape are insufficient to classify run health.
+  - type: file
+    path: src/theforge/coordinator/triage_headless_flow.py
+    description: This file is where headless triage assembles the terminal summary
+      and pending record, so its involvement demonstrates that the run-status distinction
+      has to be carried at the coordinator layer that knows whether proposer calls
+      succeeded.
+  - type: review_cycle
+    cycle: '1'
+    description: 'Cycle 1 approval states that all-agent-failure fallback runs are
+      now visibly degraded while no-checkable-evidence-only runs remain normal, demonstrating
+      the key behavioral rule: degraded reporting must track review execution state
+      rather than merely seeing uniform verification dispositions.'
+learned_patterns:
+- degraded-outcome-state
+- status-derived-from-execution-not-output
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - 'Review surfaced that partial proposer failure was the critical case: operator-facing
+    text must not describe fallback-generated dispositions as reviewed simply because
+    a pass emitted outputs.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 3.5501147499999997
+  dominant_difficulty: Preserving the boundary between genuinely reviewed all-verification
+    outcomes and fallback-generated degraded outcomes in the same reporting surfaces.
