@@ -1,0 +1,182 @@
+schema_version: 2
+run_id: 7f9ded8b4c31
+authoritative_run_record: .forge/audits/runs/7f9ded8b4c31.json
+generated_at: '2026-08-23T03:09:56.257805+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.01448125
+story:
+  slug: issue-2230
+  name: 'forge triage: operator ratification applies dispositions; punt closes require
+    reason codes'
+  github_issue: 2230
+story_shape:
+  work_type: feature
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- backend
+- api
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/cli/triage.py
+- src/theforge/coordinator/audit_read_model.py
+- src/theforge/coordinator/audit_storage.py
+- src/theforge/coordinator/audit_substrate.py
+- src/theforge/coordinator/triage_proposal_flow.py
+- src/theforge/coordinator/triage_ratification_flow.py
+- src/theforge/triage_backlog_report.py
+- src/theforge/triage_proposal.py
+- src/theforge/triage_ratification.py
+- src/theforge/triage_report.py
+- src/theforge/triage_snapshot.py
+- tests/test_cli_triage.py
+- tests/test_triage_proposal.py
+- tests/test_triage_proposal_flow.py
+- tests/test_triage_ratification.py
+- tests/test_triage_ratification_flow.py
+- tests/test_triage_report.py
+- tests/test_triage_snapshot.py
+what_changed:
+  description: This run added the operator ratification and application stage for
+    `forge triage`, so reviewed dispositions are explicitly accepted or overridden
+    before any backlog action is applied and recorded. It also enforced reason-coded,
+    evidence-citing punt closes and added resumable/stale-aware application behavior
+    around those decisions.
+  approach: The change was built as a new ratification flow tied into the CLI, audit
+    substrate, proposal/report/snapshot models, and documentation, with application
+    logic driven from stored proposal-time state and guarded by idempotency and stale-state
+    checks.
+  files_modified: *id002
+what_was_learned:
+- claim: In resumable application flows, idempotency recognition must run before generic
+    stale-state checks or successful partial work will be misclassified on rerun instead
+    of being recognized as already applied.
+  evidence:
+  - type: review_finding
+    finding_id: 7da6757cf8922128
+    description: Review found that a rerun after a successful punt close and marker-comment
+      post was classified as stale rather than already applied, showing that stale
+      detection ahead of idempotency breaks resume semantics.
+  - type: review_finding
+    finding_id: 82bdc877c5a533b8
+    description: 'Review traced the misclassification to control-flow order: the live
+      staleness check treated any closed issue as stale before the already-closed
+      punt marker branch could execute, demonstrating the need to short-circuit on
+      idempotent success first.'
+  - type: review_cycle
+    cycle: '3'
+    description: Approval notes explicitly state the fix moved the punt idempotency
+      branch ahead of the generic stale check, confirming that reordering these checks
+      was the mechanism that resolved the resume bug.
+- claim: When proposal-time and live-state digests are compared for stale detection,
+    both sides must be canonicalized through the same serialization path; otherwise
+    semantically identical issue state can appear stale.
+  evidence:
+  - type: review_finding
+    finding_id: 60d0d6c651daa704
+    description: Review found stale mismatches caused solely by different normalization
+      of the issue body between the stored report artifact path and the live snapshot
+      path, demonstrating that digest comparators are only reliable when fed the same
+      canonical form.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 notes that the stale check now compares both sides through
+      a shared canonicalizer with a real write/load round-trip test, showing the specific
+      remedy was unifying the producer paths rather than adjusting comparison thresholds.
+- claim: Operator overrides need the same validation gates as agent proposals, especially
+    for required evidence fields, because interactive prompts can otherwise bypass
+    invariants that proposal generation already enforced.
+  evidence:
+  - type: review_finding
+    finding_id: 1b86729086242ab6
+    description: Review found that an operator could override a no-citation proposal
+      to a punt, accept a blank evidence prompt, and still close the issue, showing
+      that the override path had escaped the evidence requirement enforced for proposals.
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 marked the blank-evidence punt close as a blocking acceptance-gap,
+      demonstrating that validation must be applied uniformly at ratification time,
+      not assumed from proposal-time structure.
+- claim: Per-finding ratification batches must degrade malformed or legacy records
+    into skip/stale outcomes instead of raising fatal errors, or one bad finding can
+    abort a batch after earlier items have already been applied.
+  evidence:
+  - type: review_finding
+    finding_id: 69d335acfc265cbe
+    description: Review found that proposal events predating stored snapshots caused
+      a hard error for missing packets even though the documented behavior was to
+      surface them as stale, showing legacy audit shapes must be handled as per-item
+      non-fatal cases.
+  - type: review_finding
+    finding_id: 9505f3eeeacc9c7c
+    description: Review found that a finding lacking both a usable snapshot issue
+      number and a hash-number reference raised out of the per-finding helper and
+      aborted the whole ratification run mid-batch, demonstrating the operational
+      cost of letting malformed records escape batch-local handling.
+learned_patterns:
+- idempotency-before-staleness
+- shared-snapshot-canonicalization
+- override-path-invariant-parity
+- per-finding-legacy-degradation
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: b9451075a4970f48
+    severity: P1
+    file: src/theforge/coordinator/triage_ratification_flow.py
+    description: When a ratified fix finding's live milestone already matched the
+      target, the application path recorded it as applied before running stale detection,
+      so a label or evidence change between proposal and ratification was not surfaced
+      as stale.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 1b86729086242ab6
+    severity: P1
+    file: src/theforge/coordinator/triage_ratification_flow.py
+    description: When an operator overrode a no-citation proposal to punt and accepted
+      the blank evidence prompt, the flow could post a closing comment with no evidence
+      rows and close the issue.
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 60d0d6c651daa704
+    severity: P1
+    file: src/theforge/coordinator/triage_ratification_flow.py
+    description: 'When ratifying a proposal run generated from a real backlog report,
+      the stale check compares a digest of the stored proposal-time snapshot against
+      a digest of the live snapshot, and the two are produced by different code paths
+      that normalise the issue body differently (the report artifact is parsed with
+      a strip on the body, while the live collector keeps the raw GitHub body), so
+      any finding whose issue body has leading or trailing whitespace - the common
+      case for tracker issues - is reported as '
+    cycles_seen: 1
+    disposition: fixed
+  - finding_id: 7da6757cf8922128
+    severity: P1
+    file: src/theforge/coordinator/triage_ratification_flow.py
+    description: When a rerun sees a ratified punt whose prior attempt already posted
+      the marker comment and closed the issue, the application path records the finding
+      as stale instead of recognizing the already-applied close.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced edge cases where resume, stale detection,
+    and validation order interacted incorrectly in the per-finding application path.
+complexity_signal:
+  actual_iterations: 6
+  review_cycles: 4
+  plan_regenerations: false
+  cost_usd: 21.1949057
+  dominant_difficulty: Making ratified backlog application both resumable and stale-safe
+    across proposal-time snapshots, live issue state, and operator overrides.
