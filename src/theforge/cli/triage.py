@@ -104,7 +104,7 @@ def _cmd_triage_proposals(args: argparse.Namespace, config: object, *, report: o
         record=not args.no_audit,
     )
     print(render_run_summary(summary))
-    return 0
+    return 1 if summary.run_level_failure else 0
 
 
 def _cmd_triage_headless(
@@ -143,8 +143,11 @@ def _cmd_triage_headless(
         print(f"[forge] triage: {exc}", file=sys.stderr)
         return 1
 
-    if outcome.status == HEADLESS_SUPERSEDED:
-        print(f"[forge] triage: {outcome.message}", file=sys.stderr)
+    if outcome.status == HEADLESS_SUPERSEDED or not outcome.ok:
+        for line in outcome.lines:
+            print(line, file=sys.stderr)
+        if not outcome.lines:
+            print(f"[forge] triage: {outcome.message}", file=sys.stderr)
         return 1
     for line in outcome.lines:
         print(line)

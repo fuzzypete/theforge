@@ -288,6 +288,33 @@ class TestHeadlessFlow:
         assert outcome.findings_count == 0
         assert _pending.find_triage_pending("run123", tmp_path) is not None
 
+    def test_run_level_dispatch_failure_returns_failed_outcome_and_writes_no_pending(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        failure = (
+            "triage aborted agent dispatch before any proposer ran: the selected Claude "
+            "profile could not authenticate with the same proposer environment triage "
+            "would pass to the CLI (shell environment overlaid by project .forge/.env "
+            "secrets). claude credential store at /tmp/stale/.credentials.json holds no "
+            "access or refresh token"
+        )
+        _stub_flow(monkeypatch, _summary(total_cost_usd=0.0, run_level_failure=failure))
+        monkeypatch.setattr(
+            headless,
+            "_recorded_events",
+            lambda root, run_id: pytest.fail("headless triage must not read events on auth gate"),
+        )
+
+        outcome = headless.run_headless_triage(
+            _FakeConfig(tmp_path), project_root=tmp_path, report=_StubReport()
+        )
+
+        assert outcome.status == headless.HEADLESS_FAILED
+        assert outcome.message == failure
+        assert outcome.error == failure
+        assert outcome.lines == (f"triage: {failure}",)
+        assert _pending.find_triage_pending("run123", tmp_path) is None
+
     def test_report_collection_failure_raises_a_headless_error(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
