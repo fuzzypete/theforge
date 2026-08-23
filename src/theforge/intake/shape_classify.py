@@ -17,8 +17,14 @@ from dataclasses import dataclass
 from enum import Enum
 
 from theforge.intake.clarification import ClarificationQuestion, for_situation
+from theforge.shape_check.heuristics import (
+    DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+    DIAGNOSIS_HEADING_PATTERN,
+    diagnosis_completeness_score,
+)
 from theforge.shape_check.parsing import (
     extract_ac_section,
+    extract_authoritative_section,
     extract_section,
     has_bug_body_headings,
     has_heading,
@@ -95,7 +101,12 @@ def _label_set(labels: list[str]) -> set[str]:
 
 
 def _detect_diagnosis_state(body: str) -> DiagnosisState:
-    section = extract_section(body, r"diagnosis|root cause")
+    section = extract_authoritative_section(
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
+    )
     if section is None:
         return DiagnosisState.NO_DIAGNOSIS
     lowered = section.lower()

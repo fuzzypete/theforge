@@ -12,6 +12,7 @@ from dataclasses import dataclass
 
 from theforge.shape_check.diagnosis_spec import (
     BUG_SHAPE_REFERENCE_PATH,
+    REQUIRED_DIAGNOSIS_COMPONENTS,
     component_for_token,
     describe_missing,
     required_diagnosis_tokens,
@@ -24,10 +25,12 @@ from theforge.shape_check.parsing import (
     FenceTracker,
     blockquote_blocks,
     extract_ac_section,
+    extract_authoritative_section,
     extract_bullets,
     extract_section,
     extract_top_level_bullet_blocks,
     fenced_code_blocks,
+    find_authoritative_heading,
     has_bug_body_headings,
     has_heading,
     iter_headings,
@@ -174,7 +177,19 @@ _OBSERVABLE_VERBS = (
     "reject",
 )
 
-DIAGNOSIS_HEADING_PATTERN = r"diagnosis"
+# "root cause" is included alongside "diagnosis" so the gate agrees with
+# theforge.intake.shape_classify's diagnosis-state detection about what
+# counts as a diagnosis-shaped heading — a body whose analysis lives under
+# "## Root cause" must not be treated as diagnosed by the classifier while
+# the gate simultaneously reports the Diagnosis section missing (#2263).
+DIAGNOSIS_HEADING_PATTERN = r"diagnosis|root cause"
+
+# Headings whose text, normalized, exactly equals one of these are the
+# canonical diagnosis section — as opposed to a heading that merely mentions
+# the word in a longer, unrelated title. Used to pick the authoritative
+# Diagnosis section when a body carries more than one heading matching
+# DIAGNOSIS_HEADING_PATTERN (#2263).
+DIAGNOSIS_CANONICAL_HEADING_TEXTS = ("diagnosis", "root cause")
 
 
 @dataclass(frozen=True)
@@ -282,7 +297,13 @@ def _bug_report_section_headings(body: str) -> list[str]:
         heading = _heading_text_for_pattern(body, pattern)
         if heading is not None and heading not in headings:
             headings.append(heading)
-    diagnosis = _heading_text_for_pattern(body, DIAGNOSIS_HEADING_PATTERN)
+    diagnosis_match = find_authoritative_heading(
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
+    )
+    diagnosis = diagnosis_match.group(2).strip() if diagnosis_match is not None else None
     if diagnosis is not None and diagnosis not in headings:
         headings.append(diagnosis)
     return headings
@@ -304,6 +325,15 @@ def _format_heading_list(headings: list[str]) -> str:
 # module-level name for backward-compatible imports; the spec is the source of
 # truth (#1629).
 REQUIRED_DIAGNOSIS_TOKENS: tuple[str, ...] = required_diagnosis_tokens()
+
+# The exact `<fill in>` slot marker `forge shape`'s own scaffold
+# (intake.shape_render._diagnosis_bullets) writes as *every* component's
+# value in a freshly-appended Diagnosis section. Matched against a single
+# extracted field value (whole-value match), not searched for anywhere in a
+# section — a genuine diagnosis is free to quote this literal string as part
+# of its prose (e.g. evidence describing the bug this marker itself causes)
+# without being mistaken for scaffolding (#2263).
+_FILL_IN_MARKER_RE = re.compile(r"^\s*<\s*fill\s+in\s*>\s*$", re.IGNORECASE)
 
 # Non-assertion vocabulary admissible as the value of the "confirmed cause" field.
 # A bug whose Diagnosis section has every other component but states the cause is
@@ -340,6 +370,9 @@ _NON_ASSERTION_CAUSE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"^\s*_*\(?\s*(?:empty|none(?:\s+recorded)?|not\s+recorded|n/?a)\s*\)?_*\s*$",
         re.IGNORECASE,
     ),
+    # Unfilled shape scaffolding is never a cause claim, however
+    # label-complete it reads.
+    _FILL_IN_MARKER_RE,
 )
 
 # Status labels operators can apply to a bug to communicate fix-readiness intent.
@@ -367,21 +400,21 @@ def _value_below_label(lines: list[str]) -> str:
     return ""
 
 
-def _extract_confirmed_cause_value(section: str) -> str | None:
-    """Return the prose value following the 'confirmed cause' label, if present.
+def _extract_label_value(section: str, label_pattern: str) -> str | None:
+    """Return the prose value following a bolded/heading field label, if present.
 
-    Operators write the field in several common shapes::
+    Operators write a field in several common shapes::
 
-        - **Confirmed cause.** the cause is X
-        - **Confirmed cause:** unknown
-        - Confirmed cause: not yet identified
-        - Confirmed cause — pending investigation
+        - **<Label>.** the value is X
+        - **<Label>:** unknown
+        - <Label>: not yet identified
+        - <Label> — pending investigation
 
     First-party producers — notably ``forge diagnose`` via
     :func:`theforge.diagnose_types.render_artifact_markdown` — write the same
     field as a heading with the value on a following line::
 
-        ### Confirmed cause
+        ### <Label>
 
         unknown
 
@@ -390,8 +423,9 @@ def _extract_confirmed_cause_value(section: str) -> str | None:
     cause derive as implementation-ready (#2060).
 
     Returns the trimmed value, ``""`` when the label carries no value, or
-    ``None`` when no labelled occurrence exists. The match is case-insensitive
-    on the label only.
+    ``None`` when no labelled occurrence exists. ``label_pattern`` is matched
+    case-insensitively as a regex (already ``\\s+``-joined for multi-word
+    labels by callers).
     """
     lines = section.splitlines()
     for idx, line in enumerate(lines):
@@ -400,7 +434,7 @@ def _extract_confirmed_cause_value(section: str) -> str | None:
         cleaned = re.sub(r"^\s*#+\s*", "", line)
         cleaned = re.sub(r"^\s*(?:[-*+]\s+)?", "", cleaned)
         cleaned = re.sub(r"^\*+\s*", "", cleaned)
-        m = re.match(r"confirmed\s+cause\b", cleaned, re.IGNORECASE)
+        m = re.match(label_pattern + r"\b", cleaned, re.IGNORECASE)
         if m is None:
             continue
         rest = cleaned[m.end() :]
@@ -414,10 +448,71 @@ def _extract_confirmed_cause_value(section: str) -> str | None:
     return None
 
 
+def _extract_confirmed_cause_value(section: str) -> str | None:
+    """Return the value of the 'confirmed cause' field. See :func:`_extract_label_value`."""
+    return _extract_label_value(section, r"confirmed\s+cause")
+
+
 def _is_non_assertion_cause(value: str) -> bool:
     if not value:
         return False
     return any(pattern.match(value) for pattern in _NON_ASSERTION_CAUSE_PATTERNS)
+
+
+def _is_unfilled_scaffold_section(section: str) -> bool:
+    """True when every required component that appears in ``section`` carries
+    no real value — either the label is missing outright or its value is
+    exactly `forge shape`'s `<fill in>` marker — and at least one component
+    explicitly carries that marker.
+
+    Requiring positive evidence of the marker (not just an absence of bolded
+    labels) means an ordinary section that simply doesn't use the bolded-bullet
+    convention is never mistaken for scaffolding, and a genuine diagnosis that
+    happens to quote the marker string as prose in one field is not penalized
+    as long as some other field carries real content (#2263).
+    """
+    saw_marker = False
+    for component in REQUIRED_DIAGNOSIS_COMPONENTS:
+        label_pattern = r"\s+".join(re.escape(word) for word in component.label.split())
+        value = _extract_label_value(section, label_pattern)
+        if value is None:
+            continue
+        if _FILL_IN_MARKER_RE.match(value.strip()):
+            saw_marker = True
+            continue
+        return False
+    return saw_marker
+
+
+def diagnosis_completeness_score(section: str) -> int:
+    """Rank a candidate Diagnosis section by how much of the required shape
+    it actually satisfies, so a complete, confirmed-cause artifact outranks
+    a placeholder or a stale earlier draft regardless of which is longer or
+    which the document happens to place first (#2263).
+
+    Score is the count of required components present, plus a large bonus
+    when the confirmed-cause field carries a specific claim rather than
+    non-assertion vocabulary (``unknown``, ``TBD``, an empty slot, ...) —
+    an asserted cause always outranks any token-count tie, matching the
+    same "asserted beats non-asserted beats missing" ordering
+    :func:`cause_assertion_state` reports.
+
+    A section whose components are *all* unfilled `<fill in>` scaffold slots
+    is heavily penalized regardless of how many required labels it lists:
+    listing every label is exactly what an unfilled `forge shape` scaffold
+    does by construction, so label count alone cannot tell it apart from a
+    genuine artifact. Any section with real content in at least one field —
+    even an inconclusive, cause-unknown diagnosis, even one that quotes the
+    marker string itself as prose — must outrank pure scaffolding (#2263).
+    """
+    section_lower = section.lower()
+    score = sum(1 for tok in REQUIRED_DIAGNOSIS_TOKENS if tok in section_lower)
+    cause_value = _extract_confirmed_cause_value(section)
+    if cause_value and not _is_non_assertion_cause(cause_value):
+        score += len(REQUIRED_DIAGNOSIS_TOKENS) + 1
+    if _is_unfilled_scaffold_section(section):
+        score -= len(REQUIRED_DIAGNOSIS_TOKENS) + 1
+    return score
 
 
 def cause_assertion_state(body: str) -> str:
@@ -437,7 +532,12 @@ def cause_assertion_state(body: str) -> str:
     A field written but left empty is a non-assertion, not an assertion: the
     record states no cause was found, and must never read as one (#2060).
     """
-    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    section = extract_authoritative_section(
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
+    )
     if section is None:
         return "missing"
     value = _extract_confirmed_cause_value(section)
@@ -462,7 +562,12 @@ def diagnosis_completeness(body: str) -> tuple[bool, list[str]]:
     states is the job of :func:`cause_assertion_state` — the gate's only
     responsibility here is verifying the operator filled the slot at all.
     """
-    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    section = extract_authoritative_section(
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
+    )
     if section is None:
         return False, ["missing Diagnosis section"]
     section_lower = section.lower()
@@ -498,7 +603,12 @@ def _diagnosis_unreadable_region_hint(body: str, missing: list[str]) -> str:
                     region_matches.append((region_name, ()))
                     break
                 continue
-            section = extract_section(region_body, DIAGNOSIS_HEADING_PATTERN)
+            section = extract_authoritative_section(
+                region_body,
+                DIAGNOSIS_HEADING_PATTERN,
+                DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+                diagnosis_completeness_score,
+            )
             if section is None:
                 continue
             section_lower = section.lower()
@@ -667,14 +777,28 @@ def _diagnosis_cause_unknown(body: str) -> bool:
     A confirmed-cause field written but left without a value counts as open:
     the vocabulary above cannot see an absence, and a producer that emits the
     label with nothing under it is reporting no cause, not a cause (#2060).
+    `forge shape`'s own unfilled `<fill in>` scaffold marker counts as open
+    too, for the same reason — a slot nobody filled is not a cause claim
+    (#2263). This function intentionally recognizes a narrower vocabulary
+    than :func:`cause_assertion_state`'s full non-assertion list (e.g. it
+    does not flag "pending investigation"): that broader set is admissible
+    as RUNNABLE with an advisory reason elsewhere, and is not this
+    function's distinct ``diagnosis_cause_unknown`` ShapeVerdict.
     """
-    section = extract_section(body, DIAGNOSIS_HEADING_PATTERN)
+    section = extract_authoritative_section(
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
+    )
     if section is None:
         return False
     if _UNRESOLVED_CAUSE_RE.search(section):
         return True
     value = _extract_confirmed_cause_value(section)
-    return value is not None and not value
+    if value is None:
+        return False
+    return not value or bool(_FILL_IN_MARKER_RE.match(value.strip()))
 
 
 def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) -> Reason | None:

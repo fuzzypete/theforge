@@ -21,6 +21,7 @@ from theforge.shape_check.heuristics import (
     check_bug_missing_diagnosis,
     derive_fix_ready,
     diagnosis_completeness,
+    diagnosis_completeness_score,
 )
 from theforge.sprint.manifest import _build_task_from_story
 from theforge.sprint.shape_gate import apply_shape_gate
@@ -188,6 +189,8 @@ class TestCauseAssertionState:
             "???",
             "cause is unknown",
             "cause remains unknown",
+            "<fill in>",
+            "<FILL IN>",
         ],
     )
     def test_non_assertion_values_recognized(self, value: str) -> None:
@@ -208,6 +211,41 @@ class TestCauseAssertionState:
         # Operators may add tailing context after the non-assertion phrase.
         body = _investigation_ready_body("unknown — first cycle's job is to find it")
         assert cause_assertion_state(body) == "non_asserted"
+
+
+class TestDiagnosisCompletenessScore:
+    """diagnosis_completeness_score ranks candidate Diagnosis sections when a
+    body carries more than one — an unfilled `forge shape` scaffold must
+    never outscore a genuine artifact, however many required labels it
+    lists (#2263 review cycle 2)."""
+
+    _UNFILLED_SCAFFOLD = (
+        "Status: no diagnosis yet. Next step: run `forge diagnose`.\n\n"
+        "- **Observed symptom:** <fill in>\n"
+        "- **Evidence:** <fill in>\n"
+        "- **Confirmed cause:** <fill in>\n"
+        "- **Affected code path:** <fill in>\n"
+        "- **Fix-success criterion:** <fill in>\n"
+    )
+
+    def test_unfilled_scaffold_scores_below_a_cause_unknown_artifact(self) -> None:
+        cause_unknown_artifact = (
+            "- **Observed symptom:** intermittent worktree writes\n"
+            "- **Evidence:** git log shows phantom commits\n"
+            "- **Confirmed cause:** not yet identified\n"
+            "- **Affected code path:** TBD\n"
+            "- **Fix-success criterion:** no review-phase worktree writes\n"
+        )
+        assert diagnosis_completeness_score(
+            self._UNFILLED_SCAFFOLD
+        ) < diagnosis_completeness_score(cause_unknown_artifact)
+
+    def test_unfilled_scaffold_scores_below_empty_section(self) -> None:
+        # An unfilled scaffold is worse than nothing: an empty candidate at
+        # least does not masquerade as label-complete.
+        scaffold_score = diagnosis_completeness_score(self._UNFILLED_SCAFFOLD)
+        empty_score = diagnosis_completeness_score("")
+        assert scaffold_score < empty_score
 
 
 class TestInvestigationReadyDerivation:

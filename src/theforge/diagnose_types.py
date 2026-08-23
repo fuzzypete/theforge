@@ -839,32 +839,106 @@ def render_already_resolved_markdown(
     return "\n".join(lines)
 
 
-def upsert_diagnosis_section(body: str, section_markdown: str) -> str:
-    """Insert or replace a ``## Diagnosis`` section in an issue body.
+# Local, minimal heading scan for the reconciliation below. This module is
+# pure-data / stdlib-only by contract, so it does not import
+# shape_check.parsing's heading machinery. The heading text a landing call
+# reconciles is not a fixed list to keep in sync — it is read directly off
+# section_markdown's own leading heading (see _leading_heading_text), so
+# only headings matching what is actually being landed are ever touched.
+_HEADING_LINE_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.+?)\s*#*\s*$")
+_FENCE_LINE_RE = re.compile(r"^\s*(`{3,}|~{3,})(.*)$")
 
-    If a ``## Diagnosis`` heading exists, replace from that heading up to (but
-    not including) the next ``## `` heading or end-of-body.  If absent, append
-    the section to the end of the body, separated by a blank line.
+
+def _normalize_heading_text(text: str) -> str:
+    return re.sub(r"[\s:.\-—]+$", "", text.strip()).strip().lower()
+
+
+def _iter_heading_lines(lines: list[str]) -> list[tuple[int, int, str]]:
+    """Return ``(line_index, level, text)`` for headings outside fenced blocks."""
+    headings: list[tuple[int, int, str]] = []
+    fence_char: str | None = None
+    fence_len = 0
+    for i, line in enumerate(lines):
+        fm = _FENCE_LINE_RE.match(line)
+        if fm:
+            marker = fm.group(1)
+            if fence_char is None:
+                fence_char = marker[0]
+                fence_len = len(marker)
+                continue
+            if marker[0] == fence_char and len(marker) >= fence_len and not fm.group(2).strip():
+                fence_char = None
+                fence_len = 0
+                continue
+        if fence_char is not None:
+            continue
+        hm = _HEADING_LINE_RE.match(line)
+        if hm:
+            headings.append((i, len(hm.group(1)), hm.group(2).strip()))
+    return headings
+
+
+def _leading_heading_text(section_markdown: str) -> str | None:
+    """Return the normalized text of ``section_markdown``'s own opening heading."""
+    for line in section_markdown.splitlines():
+        if not line.strip():
+            continue
+        hm = _HEADING_LINE_RE.match(line)
+        return _normalize_heading_text(hm.group(2)) if hm else None
+    return None
+
+
+def upsert_diagnosis_section(body: str, section_markdown: str) -> str:
+    """Insert or reconcile a ``## Diagnosis`` section in an issue body.
+
+    Locates every heading already present whose text exactly matches
+    ``section_markdown``'s own heading (e.g. "Diagnosis"), at any level —
+    which may include an earlier step's placeholder, a prior diagnose run's
+    artifact, or a duplicate left by either — and replaces all of them with
+    a single instance of ``section_markdown`` at the position of the first
+    one. A body must never end up carrying two sections a reader could
+    mistake for "the" diagnosis; landing an artifact is where that gets
+    reconciled, not appended beside it (#2263).
+
+    Only headings matching the landed section's own name are touched.
+    Ordinary prose headings that merely mention the word, and *other*
+    named sections a body may carry — e.g. an operator-authored "Root
+    cause" narrative distinct from the section actually being landed — are
+    left untouched; this function absorbs duplicates of what it writes, not
+    unrelated content that happens to share a heading vocabulary. If no
+    matching heading exists, appends the section to the end of the body,
+    separated by a blank line.
     """
     section = section_markdown.rstrip() + "\n"
     if not body.strip():
         return section
+
+    target_text = _leading_heading_text(section_markdown)
     lines = body.splitlines()
-    start: int | None = None
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.lower() == "## diagnosis":
-            start = i
-            break
-    if start is None:
+    headings = _iter_heading_lines(lines)
+    canonical = [
+        (idx, level)
+        for idx, level, text in headings
+        if target_text is not None and _normalize_heading_text(text) == target_text
+    ]
+
+    if not canonical:
         sep = "" if body.endswith("\n") else "\n"
         return body + sep + "\n" + section
-    end = len(lines)
-    for j in range(start + 1, len(lines)):
-        if lines[j].startswith("## "):
-            end = j
-            break
-    new_lines = lines[:start] + [section.rstrip()] + lines[end:]
+
+    def _section_end(start_idx: int, level: int) -> int:
+        for idx, lvl, _text in headings:
+            if idx > start_idx and lvl <= level:
+                return idx
+        return len(lines)
+
+    spans = [(idx, _section_end(idx, level)) for idx, level in canonical]
+    new_lines = lines[: spans[0][0]] + [section.rstrip()]
+    prev_end = spans[0][1]
+    for start, end in spans[1:]:
+        new_lines.extend(lines[prev_end:start])
+        prev_end = end
+    new_lines.extend(lines[prev_end:])
     return "\n".join(new_lines).rstrip() + "\n"
 
 

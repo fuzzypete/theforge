@@ -64,6 +64,64 @@ COMPLETE_DIAGNOSIS_BODY = textwrap.dedent(
     """
 )
 
+# A complete, confirmed-cause diagnosis shadowed by an earlier heading that
+# merely mentions the word "diagnosis" — reproduces fuzzypete/theforge#2673,
+# where a genuinely landed artifact was still refused as needs_diagnosis
+# because the gate read the empty prose section above it (#2263).
+SHADOWED_COMPLETE_DIAGNOSIS_BODY = textwrap.dedent(
+    """\
+    ## What happened
+    Resume false-skips zero-delta APPROVE stories.
+
+    ## What was expected
+    Resume identifies them as already merged.
+
+    ## Further evidence — generated diagnosis text becomes scope-classification input on rerun
+
+    Some unrelated narrative about the diagnose flow itself.
+
+    ## Diagnosis
+
+    - **Observed symptom.** Sprint resume false-skips zero-delta APPROVE stories.
+    - **Evidence.** Run id `1ff6b0bb7992`, story #1102.
+    - **Confirmed cause.** `_is_already_merged` requires at least one commit ahead.
+    - **Affected code path.** sprint.runner._is_already_merged.
+    - **Fix-success criterion.** Resume identifies zero-delta APPROVE as merged.
+    """
+)
+
+# A genuine, inconclusive diagnosis whose evidence quotes the shape
+# scaffold's literal `<fill in>` marker as prose, competing with a second,
+# stale Diagnosis-headed section that carries only loose prose and no
+# bolded component labels. The real section must still be read: it must
+# land on diagnosis_cause_unknown (skipped, admissible), not needs_diagnosis
+# with "components missing" (#2263 review cycle 3).
+INCONCLUSIVE_DIAGNOSIS_QUOTING_MARKER_BODY = textwrap.dedent(
+    """\
+    ## What happened
+    The shape scaffold's placeholder marker leaks into rendered issue bodies.
+
+    ## What was expected
+    Rendered bodies never contain literal scaffold markers.
+
+    ## Diagnosis
+
+    - **Observed symptom.** rendered Diagnosis sections sometimes contain the
+      literal text `<fill in>` where a real value was expected.
+    - **Evidence.** issue #2263's rendered body shows `<fill in>` verbatim
+      under the Confirmed cause bullet, quoted here as evidence of the leak.
+    - **Confirmed cause.** not yet identified
+    - **Affected code path.** intake/shape_render.py.
+    - **Fix-success criterion.** rendered bodies never contain the literal
+      scaffold marker text.
+
+    ## Diagnosis
+
+    Some loose prose left over from an earlier draft of this issue, with no
+    bolded component labels at all.
+    """
+)
+
 
 def _fetch_for(body: str, labels: list[str]):
     def fetch(_number, _root):
@@ -114,6 +172,39 @@ def test_complete_diagnosis_lands_on_runnable(tmp_path: Path) -> None:
     assert runnable["number"] == 3
     assert runnable["shape_verdict"] == ShapeVerdict.RUNNABLE.value
     assert VERDICT_DESCRIPTIONS[ShapeVerdict.RUNNABLE].strip() != ""
+
+
+def test_shadowed_complete_diagnosis_still_lands_on_runnable(tmp_path: Path) -> None:
+    """A landed diagnosis must outrank an earlier lookalike heading (#2263)."""
+    issues = [{"number": 4, "title": "Bug"}]
+    result = apply_shape_gate(
+        issues, tmp_path, fetch_detail=_fetch_for(SHADOWED_COMPLETE_DIAGNOSIS_BODY, ["bug"])
+    )
+    assert result.skipped == []
+    assert len(result.runnable) == 1
+    runnable = result.runnable[0]
+    assert runnable["number"] == 4
+    assert runnable["shape_verdict"] == ShapeVerdict.RUNNABLE.value
+
+
+def test_inconclusive_diagnosis_quoting_marker_lands_on_cause_unknown(tmp_path: Path) -> None:
+    """A genuine, inconclusive diagnosis that quotes the shape scaffold's
+    `<fill in>` marker as prose — not as a field's actual value — must still
+    be read over a stale, unlabeled lookalike section, and land on
+    diagnosis_cause_unknown rather than needs_diagnosis (#2263 review
+    cycle 3)."""
+    issues = [{"number": 5, "title": "Bug"}]
+    result = apply_shape_gate(
+        issues,
+        tmp_path,
+        fetch_detail=_fetch_for(INCONCLUSIVE_DIAGNOSIS_QUOTING_MARKER_BODY, ["bug"]),
+    )
+    assert result.runnable == []
+    assert len(result.skipped) == 1
+    entry = result.skipped[0]
+    assert entry.verdict == ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value
+    assert "diagnosis_cause_unknown" in entry.reason_codes
+    assert "needs_diagnosis" not in entry.reason_codes
 
 
 def test_skipped_issue_state_fields_prefers_typed_verdict() -> None:

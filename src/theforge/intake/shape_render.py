@@ -23,13 +23,16 @@ from theforge.shape_check.diagnosis_spec import (
     REQUIRED_DIAGNOSIS_COMPONENTS,
 )
 from theforge.shape_check.heuristics import (
+    DIAGNOSIS_CANONICAL_HEADING_TEXTS,
     DIAGNOSIS_HEADING_PATTERN,
     diagnosis_completeness,
+    diagnosis_completeness_score,
 )
 from theforge.shape_check.parsing import (
     ACCEPTANCE_CRITERIA_HEADING_PATTERN,
+    authoritative_section_span,
+    find_authoritative_heading,
     has_heading,
-    section_span,
 )
 from theforge.shape_check.types import ShapeVerdict
 
@@ -73,9 +76,18 @@ def _restructure_bug(proposal: ShapeProposal, current_body: str) -> str:
 
     # The gate is the authority on what a complete Diagnosis section is, so ask
     # it directly instead of probing for a heading string of our own choosing.
+    # The heading it locates must be the same one the gate itself reads — a raw
+    # first-match probe here would fill gaps into an earlier lookalike heading
+    # while the real Diagnosis section stays untouched and incomplete (#2263).
     complete, missing = diagnosis_completeness(body)
     if not complete:
-        if has_heading(body, DIAGNOSIS_HEADING_PATTERN):
+        authoritative = find_authoritative_heading(
+            body,
+            DIAGNOSIS_HEADING_PATTERN,
+            DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+            diagnosis_completeness_score,
+        )
+        if authoritative is not None:
             # Section exists but is incomplete: add only the missing components,
             # in place, leaving every original heading at its original level.
             body = _fill_diagnosis_gaps(body, missing)
@@ -119,7 +131,12 @@ def _diagnosis_section(proposal: ShapeProposal) -> str:
 
 def _fill_diagnosis_gaps(body: str, missing_tokens: list[str]) -> str:
     """Append the missing component bullets to the end of the Diagnosis section."""
-    span = section_span(body, DIAGNOSIS_HEADING_PATTERN)
+    span = authoritative_section_span(
+        body,
+        DIAGNOSIS_HEADING_PATTERN,
+        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+        diagnosis_completeness_score,
+    )
     bullets = _diagnosis_bullets(missing_tokens)
     if span is None or not bullets:
         return body

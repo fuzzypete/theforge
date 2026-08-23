@@ -37,6 +37,74 @@ def test_bug_detects_diagnosis_confirmed_cause():
     assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
 
 
+def test_landed_diagnosis_outranks_stale_placeholder_stub_above_it():
+    """A `forge shape` placeholder left in place must not shadow a later,
+    genuinely landed `forge diagnose` artifact (#2263, hdp#259)."""
+    body = (
+        "## Observed\nfoo\n\n## Expected\nbar\n\n"
+        "### Diagnosis\n\nStatus: no diagnosis yet. Next step: run `forge diagnose`.\n\n"
+        "## Diagnosis\n\n"
+        "**Baseline:** `abc123`\n\n"
+        "**Confirmed cause:** regression in module X.\n\n"
+        "**Affected code path:** src/module_x.py\n"
+    )
+    proposal = classify("bug: regression", body, ["bug"])
+    assert proposal.classification is Classification.BUG
+    assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
+
+
+def test_landed_diagnosis_outranks_ordinary_prose_heading_above_it():
+    """An operator-written heading that merely contains the word 'diagnosis'
+    must not shadow a later, genuinely landed artifact (#2263,
+    fuzzypete/theforge#2673)."""
+    body = (
+        "## Observed\nfoo\n\n## Expected\nbar\n\n"
+        "## Further evidence — generated diagnosis text becomes "
+        "scope-classification input on rerun\n\n"
+        "some unrelated prose about the diagnose flow itself\n\n"
+        "## Diagnosis\n\n"
+        "**Baseline:** `abc123`\n\n"
+        "**Confirmed cause:** regression in module X.\n\n"
+        "**Affected code path:** src/module_x.py\n"
+    )
+    proposal = classify("bug: regression", body, ["bug"])
+    assert proposal.classification is Classification.BUG
+    assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
+
+
+def test_landed_diagnosis_outranks_stale_placeholder_below_it():
+    """The reverse order of the hdp#259 repro: the real artifact appears
+    first and a stale placeholder follows. Ordering must not flip which one
+    is authoritative (#2263)."""
+    body = (
+        "## Observed\nfoo\n\n## Expected\nbar\n\n"
+        "## Diagnosis\n\n"
+        "**Baseline:** `abc123`\n\n"
+        "**Confirmed cause:** regression in module X.\n\n"
+        "**Affected code path:** src/module_x.py\n\n"
+        "## Diagnosis\n\nStatus: no diagnosis yet. Next step: run `forge diagnose`.\n"
+    )
+    proposal = classify("bug: regression", body, ["bug"])
+    assert proposal.classification is Classification.BUG
+    assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
+
+
+def test_root_cause_heading_alone_detects_confirmed_cause():
+    """The classifier must agree with the shape gate's own DIAGNOSIS_HEADING_PATTERN
+    about what counts as a diagnosis-shaped heading: a body whose analysis
+    lives entirely under "## Root cause" is diagnosed, not undiagnosed
+    (#2263 review cycle 2)."""
+    body = (
+        "## Observed\nfoo\n\n## Expected\nbar\n\n"
+        "## Root cause\n\n"
+        "**Confirmed cause:** regression in module X.\n\n"
+        "**Affected code path:** src/module_x.py\n"
+    )
+    proposal = classify("bug: regression", body, ["bug"])
+    assert proposal.classification is Classification.BUG
+    assert proposal.diagnosis_state is DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE
+
+
 def test_classifies_enhancement_by_ac_section():
     proposal = classify(
         title="add forge shape command",

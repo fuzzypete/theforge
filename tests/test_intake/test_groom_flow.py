@@ -72,6 +72,196 @@ Tests sometimes fail flakily on CI.
 Tests pass deterministically.
 """
 
+# A shape-authored placeholder stub left in place above a landed artifact
+# (#2263, hdp#259). The stub is a non-canonical-level (### not ##) heading
+# that merely contains the word "diagnosis" in "no diagnosis yet".
+_SHADOWED_BY_PLACEHOLDER_CONFIRMED_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+### Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`.
+
+## Diagnosis
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Ruled out: agent role mismatch
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+"""
+
+# An ordinary operator-written prose heading that merely mentions the word
+# "diagnosis" above a landed artifact (#2263, fuzzypete/theforge#2673).
+_SHADOWED_BY_PROSE_HEADING_CONFIRMED_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+## Further evidence — generated diagnosis text becomes scope-classification input on rerun
+
+Some unrelated narrative about the diagnose flow itself.
+
+## Diagnosis
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Ruled out: agent role mismatch
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+"""
+
+# A complete, confirmed-cause artifact followed by a *longer* stale
+# placeholder — content length must not outrank artifact completeness, and
+# neither should document position (#2263 review cycle 1, openai finding).
+_ARTIFACT_BEFORE_LONGER_STALE_PLACEHOLDER_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+## Diagnosis
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Ruled out: agent role mismatch
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+
+## Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`. This placeholder
+stub has been padded with a great deal of extra explanatory prose so that,
+measured purely by character count, it is considerably longer than the
+complete diagnosis artifact that actually precedes it in the document —
+which is exactly the scenario a length-only tie-break gets wrong.
+"""
+
+_SHADOWED_BY_PLACEHOLDER_CAUSE_UNKNOWN_BUG_BODY = """\
+## What happened
+
+Reviewer agents sometimes write to the worktree.
+
+## What was expected
+
+Reviewers are read-only.
+
+### Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`.
+
+## Diagnosis
+
+- Observed symptom: intermittent worktree writes from review phase
+- Evidence: git log shows phantom commits
+- Ruled out: permission misconfig
+- Confirmed cause: not yet identified
+- Affected code path: TBD
+- Fix-success criterion: no review-phase worktree writes
+"""
+
+# A genuine, complete cause-unknown diagnosis followed by an entirely
+# unfilled `forge shape` scaffold — every required label present, every
+# value the literal `<fill in>` slot marker. Label-count alone cannot tell
+# these apart; the scaffold must never outrank the real (if inconclusive)
+# diagnosis that precedes it (#2263 review cycle 2).
+_CAUSE_UNKNOWN_FOLLOWED_BY_UNFILLED_SCAFFOLD_BUG_BODY = """\
+## What happened
+
+Reviewer agents sometimes write to the worktree.
+
+## What was expected
+
+Reviewers are read-only.
+
+## Diagnosis
+
+- **Observed symptom:** intermittent worktree writes from review phase
+- **Evidence:** git log shows phantom commits
+- **Confirmed cause:** not yet identified
+- **Affected code path:** TBD
+- **Fix-success criterion:** no review-phase worktree writes
+
+## Diagnosis
+
+Status: no diagnosis yet. Next step: run `forge diagnose`.
+
+- **Observed symptom:** <fill in>
+- **Evidence:** <fill in>
+- **Confirmed cause:** <fill in>
+- **Affected code path:** <fill in>
+- **Fix-success criterion:** <fill in>
+"""
+
+# A bug whose diagnosis narrative lives entirely under a "Root cause"
+# heading rather than "Diagnosis" — the classifier and the gate must agree
+# it is diagnosed (#2263 review cycle 2).
+_ROOT_CAUSE_ONLY_HEADING_CONFIRMED_BUG_BODY = """\
+## What happened
+
+Forge worktrees drop secrets.
+
+## What was expected
+
+Secrets propagate.
+
+## Root cause
+
+- Observed symptom: missing .env on dev branch
+- Evidence: file absent in worktree
+- Confirmed cause: worktree-creation step skips .env copy at line 42
+- Affected code path: theforge/coordinator/worktree.py
+- Fix-success criterion: .env present after worktree creation
+"""
+
+# A genuine, inconclusive diagnosis whose *evidence* quotes the literal
+# `<fill in>` marker as prose (describing a bug in the marker itself),
+# competing with a second, stale Diagnosis-headed section that is only loose
+# prose. The real section must win: it carries real content in every field
+# except confirmed-cause, and quoting the marker string is not the same as
+# a field's value *being* the marker (#2263 review cycle 3).
+_INCONCLUSIVE_DIAGNOSIS_QUOTING_MARKER_BUG_BODY = """\
+## What happened
+
+The shape scaffold's placeholder marker leaks into rendered issue bodies.
+
+## What was expected
+
+Rendered bodies never contain literal scaffold markers.
+
+## Diagnosis
+
+- **Observed symptom:** rendered Diagnosis sections sometimes contain the
+  literal text `<fill in>` where a real value was expected.
+- **Evidence:** issue #2263's rendered body shows `<fill in>` verbatim under
+  the Confirmed cause bullet, quoted here as evidence of the leak itself.
+- **Confirmed cause:** not yet identified
+- **Affected code path:** intake/shape_render.py
+- **Fix-success criterion:** rendered bodies never contain the literal
+  scaffold marker text.
+
+## Diagnosis
+
+Some loose prose left over from an earlier draft of this issue, with no
+bolded component labels at all.
+"""
+
 
 # ── Issue-loading seam ────────────────────────────────────────────────────
 
@@ -108,6 +298,61 @@ def test_classify_no_diagnosis():
 def test_classify_non_bug_returns_not_a_bug():
     state = classify_bug_diagnosis("body", ["enhancement"])
     assert state is BugDiagnosisState.NOT_A_BUG
+
+
+def test_landed_diagnosis_outranks_stale_placeholder_stub_above_it():
+    """A shape-authored placeholder stub left above a landed artifact must not
+    shadow it (#2263, hdp#259)."""
+    state = classify_bug_diagnosis(_SHADOWED_BY_PLACEHOLDER_CONFIRMED_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_landed_diagnosis_outranks_ordinary_prose_heading_above_it():
+    """An operator-written heading that merely mentions "diagnosis" must not
+    shadow a landed artifact below it (#2263, fuzzypete/theforge#2673)."""
+    state = classify_bug_diagnosis(_SHADOWED_BY_PROSE_HEADING_CONFIRMED_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_shadowed_inconclusive_diagnosis_is_cause_unknown_not_no_diagnosis():
+    """A genuinely inconclusive diagnosis is distinguishable from no diagnosis
+    at all, even when shadowed by an earlier placeholder heading."""
+    state = classify_bug_diagnosis(_SHADOWED_BY_PLACEHOLDER_CAUSE_UNKNOWN_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CAUSE_UNKNOWN
+
+
+def test_complete_artifact_outranks_longer_stale_placeholder_after_it():
+    """Authority must come from artifact completeness, not raw section
+    length or document position: a longer, later placeholder must not
+    outrank an earlier, complete, confirmed-cause artifact (#2263)."""
+    state = classify_bug_diagnosis(_ARTIFACT_BEFORE_LONGER_STALE_PLACEHOLDER_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_cause_unknown_artifact_outranks_unfilled_scaffold_after_it():
+    """An unfilled `forge shape` scaffold lists every required label, so
+    label count alone cannot distinguish it from a genuine artifact — it
+    must never outrank a real, if inconclusive, diagnosis that precedes it,
+    and must never itself read as an asserted cause (#2263 review cycle 2)."""
+    state = classify_bug_diagnosis(_CAUSE_UNKNOWN_FOLLOWED_BY_UNFILLED_SCAFFOLD_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CAUSE_UNKNOWN
+
+
+def test_root_cause_heading_alone_is_recognized_as_diagnosed():
+    """The classifier and the gate must agree: a bug whose diagnosis lives
+    under "## Root cause" (not "## Diagnosis") is diagnosed, not
+    undiagnosed (#2263 review cycle 2)."""
+    state = classify_bug_diagnosis(_ROOT_CAUSE_ONLY_HEADING_CONFIRMED_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CONFIRMED_CAUSE
+
+
+def test_inconclusive_diagnosis_quoting_marker_outranks_stale_loose_prose():
+    """A genuine diagnosis that quotes the shape scaffold's `<fill in>`
+    marker as prose (not as a field's actual value) must still outrank a
+    stale, unlabeled lookalike section — and must classify as CAUSE_UNKNOWN,
+    not NO_DIAGNOSIS (#2263 review cycle 3)."""
+    state = classify_bug_diagnosis(_INCONCLUSIVE_DIAGNOSIS_QUOTING_MARKER_BUG_BODY, ["bug"])
+    assert state is BugDiagnosisState.CAUSE_UNKNOWN
 
 
 # ── Three-state branching ─────────────────────────────────────────────────
