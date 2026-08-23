@@ -672,6 +672,39 @@ def _validate_payload(
     return errors
 
 
+def validate_disposition_payload(
+    packet: FindingPacket,
+    *,
+    disposition: str,
+    target_milestone: str | None = None,
+    punt_reason_code: str | None = None,
+) -> tuple[str, ...]:
+    """Validate a ratified disposition payload against the fixed taxonomy."""
+    normalized = str(disposition or "").strip().lower()
+    available = packet.available_dispositions()
+    if normalized not in DISPOSITION_TAXONOMY:
+        return (f"disposition must be one of {list(DISPOSITION_TAXONOMY)}, got {normalized!r}",)
+    if normalized not in available:
+        return (
+            f"disposition {normalized!r} is not available for this finding — "
+            f"available: {list(available)}",
+        )
+    return tuple(
+        _validate_payload(
+            packet,
+            normalized,
+            _truncate(target_milestone or ""),
+            str(punt_reason_code or "").strip(),
+        )
+    )
+
+
+def stable_triage_digest(payload: object) -> str:
+    """Return a short stable digest for triage payloads stored in the audit trail."""
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
 def _validate_grounding(
     packet: FindingPacket, entries: list[dict], *, subject: str = "proposal"
 ) -> tuple[list[EvidenceCitation], list[str]]:
@@ -876,7 +909,8 @@ def render_run_summary(summary: ProposalRunSummary) -> str:
     """Render a whole proposal run: one block per finding, then total spend."""
     if not summary.results:
         return (
-            "TRIAGE PROPOSALS — backlog report contains no findings.\n"
+            f"TRIAGE PROPOSALS — run {summary.triage_run_id or '(unrecorded)'}; "
+            "backlog report contains no findings.\n"
             "REVIEW STAGE: no-op (0 punt proposals required review).\n"
             "Nothing was proposed and no agent was invoked; total spend $0.0000."
         )
@@ -890,7 +924,12 @@ def render_run_summary(summary: ProposalRunSummary) -> str:
             f"{review_stage.challenged_punt_count}."
         )
     )
-    lines = [f"TRIAGE PROPOSALS — {summary.findings_count} finding(s)", review_line, ""]
+    lines = [
+        f"TRIAGE PROPOSALS — run {summary.triage_run_id or '(unrecorded)'}; "
+        f"{summary.findings_count} finding(s)",
+        review_line,
+        "",
+    ]
     for result in summary.results:
         lines.append(render_result(result))
         lines.append("")

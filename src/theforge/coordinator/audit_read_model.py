@@ -1343,6 +1343,52 @@ def iter_triage_proposal_events(
             continue
 
 
+def load_triage_proposal_run(conn: AuditConnection, triage_run_id: str) -> dict | None:
+    """Return one recorded triage proposal run summary, or ``None`` when absent."""
+    row = conn.execute(
+        "SELECT raw_json FROM triage_proposal_runs "
+        "WHERE triage_run_id = ? ORDER BY emitted_at DESC, run_row_id DESC LIMIT 1",
+        (triage_run_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def iter_triage_application_records(
+    conn: AuditConnection,
+    *,
+    triage_run_id: str | None = None,
+    status: str | None = None,
+) -> Iterable[dict]:
+    """Yield ratified/application rows (parsed from raw_json), oldest first."""
+    sql = "SELECT raw_json FROM triage_application_records"
+    clauses: list[str] = []
+    params: list[object] = []
+    if triage_run_id is not None:
+        clauses.append("triage_run_id = ?")
+        params.append(triage_run_id)
+    if status is not None:
+        clauses.append("status = ?")
+        params.append(status)
+    if clauses:
+        sql += " WHERE " + " AND ".join(clauses)
+    sql += " ORDER BY emitted_at ASC, finding_id ASC"
+    for row in conn.execute(sql, tuple(params)):
+        raw = row[0] if not isinstance(row, sqlite3.Row) else row["raw_json"]
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(data, dict):
+            yield data
+
+
 def triage_disposition_history(conn: AuditConnection, finding_id: str) -> list[dict]:
     """Return the disposition rows recorded for ``finding_id``, oldest first.
 

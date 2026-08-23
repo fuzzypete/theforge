@@ -1,4 +1,4 @@
-"""``forge triage`` — deterministic backlog reporting and advisory proposals."""
+"""``forge triage`` — backlog reporting, advisory proposals, and ratification."""
 
 from __future__ import annotations
 
@@ -18,6 +18,7 @@ from theforge.triage_backlog_report import (
     write_backlog_report,
 )
 from theforge.triage_proposal import render_run_summary
+from theforge.triage_ratification import render_ratification_summary
 from theforge.triage_report import BacklogReportError, load_backlog_report
 
 
@@ -92,11 +93,43 @@ def _cmd_triage_proposals(args: argparse.Namespace, config: object) -> int:
     return 0
 
 
+def _cmd_triage_ratify(args: argparse.Namespace, config: object) -> int:
+    from theforge.coordinator.triage_ratification_flow import (  # noqa: PLC0415
+        TriageRatificationError,
+        ratify_triage_run,
+    )
+
+    try:
+        summary = ratify_triage_run(args.ratify, config, project_root=config.project_root)
+    except TriageRatificationError as exc:
+        print(f"[forge] triage: {exc}", file=sys.stderr)
+        return 1
+    print(render_ratification_summary(summary))
+    return 0
+
+
 def cmd_triage(args: argparse.Namespace) -> int:
     """Dispatch ``forge triage`` in report or proposal mode."""
     code, config = _load_config_for_triage(args)
     if code != 0 or config is None:
         return code
+    if args.ratify:
+        incompatible: list[str] = []
+        if args.report:
+            incompatible.append("--report")
+        if args.output:
+            incompatible.append("--output")
+        if args.current_milestone:
+            incompatible.append("--current-milestone")
+        if args.no_audit:
+            incompatible.append("--no-audit")
+        if incompatible:
+            print(
+                "[forge] triage: --ratify cannot be combined with " + ", ".join(incompatible),
+                file=sys.stderr,
+            )
+            return 1
+        return _cmd_triage_ratify(args, config)
     if args.report:
         return _cmd_triage_proposals(args, config)
     return _cmd_triage_report(args, config)
@@ -106,11 +139,16 @@ def register_parser(subparsers: object) -> None:
     """Register the ``triage`` subcommand parser."""
     p = subparsers.add_parser(
         "triage",
-        help="Generate a deterministic finding-backlog report, or propose from --report",
+        help="Generate a backlog report, propose from --report, or ratify with --ratify",
     )
-    p.add_argument(
+    mode = p.add_mutually_exclusive_group()
+    mode.add_argument(
         "--report",
         help="Path to a backlog report artifact to consume (JSON or YAML)",
+    )
+    mode.add_argument(
+        "--ratify",
+        help="Recorded triage_run_id to ratify and apply interactively",
     )
     p.add_argument(
         "--output",

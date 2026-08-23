@@ -141,6 +141,28 @@ class BacklogFindingRecord:
             "evidence": [entry.to_dict() for entry in self.evidence],
         }
 
+    def snapshot_dict(self) -> dict[str, object]:
+        """Return the stable finding/evidence state used for stale ratification."""
+        return {
+            "issue_ref": self.issue_ref,
+            "issue_number": self.issue_number,
+            "title": self.title,
+            "body": self.body,
+            "labels": list(self.labels),
+            "pool_state": self.pool_state,
+            "verification_status": self.verification_status,
+            "evidence": [
+                {
+                    "id": entry.evidence_id,
+                    "kind": entry.kind,
+                    "summary": entry.summary,
+                    "checkable": entry.checkable,
+                    "detail": entry.detail,
+                }
+                for entry in self.evidence
+            ],
+        }
+
 
 @dataclass(frozen=True)
 class BacklogTriageReport:

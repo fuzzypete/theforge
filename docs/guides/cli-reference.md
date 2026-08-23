@@ -870,12 +870,15 @@ Optional flags record provenance: `--from-sprint`, `--issue`, `--run-id`.
 
 ## `forge triage`
 
-`forge triage` now has two read-only modes:
+`forge triage` now has three modes:
 
 - With no `--report`, it generates the deterministic backlog report for every
   open finding-labeled issue.
 - With `--report <path>`, it consumes an existing backlog report artifact and
   runs the advisory proposal stage against it.
+- With `--ratify <triage-run-id>`, it loads one recorded proposal run from the
+  audit substrate, prompts the operator finding-by-finding, and applies only
+  the ratified dispositions.
 
 ```bash
 forge triage
@@ -883,6 +886,7 @@ forge triage --output .forge/triage/report.yaml
 forge triage --report .forge/backlog-report.json
 forge triage --report backlog.json --current-milestone v0.12.0
 forge triage --report backlog.json --no-audit   # print without recording the run
+forge triage --ratify 4601fd03e0c7
 ```
 
 ### Deterministic backlog report mode
@@ -990,7 +994,7 @@ The taxonomy and its required payload:
 Sample output for a punt proposal that passes adversarial review:
 
 ```
-TRIAGE PROPOSALS — 1 finding(s)
+TRIAGE PROPOSALS — run 4601fd03e0c7; 1 finding(s)
 REVIEW STAGE: reviewed 1 punt proposal(s), challenged 0.
 
 #1312  PROPOSE punt (reason: verified-stale)
@@ -1041,14 +1045,72 @@ Properties worth knowing before you rely on it:
   spend, and both legs are printed and written to the audit substrate
   (`triage_proposal_events` / `triage_proposal_runs`). The run summary also
   records whether the review stage reviewed punts or was an explicit no-op when
-  no punt proposals required review. An empty backlog invokes no agent and
-  records an explicit $0.00 run.
+  no punt proposals required review. The summary prints the `triage_run_id` the
+  operator later ratifies. An empty backlog invokes no agent and records an
+  explicit $0.00 run.
 - **`fix_now` needs a milestone.** Without `--current-milestone` or a
   `current_milestone` in the report, `fix_now` is not offered to the agent and is
   rejected by the validator — an unnameable target is not a checkable proposal.
+- **`--no-audit` means no later ratification.** A proposal run printed with
+  `--no-audit` leaves no `triage_run_id` rows in the substrate, so
+  `forge triage --ratify <id>` refuses it explicitly instead of pretending the
+  run had no findings.
 
 If `--report` names a file that does not exist or does not match the report
 contract, the command fails with an operator-legible error and invokes nothing.
+
+### Ratification and application mode
+
+`forge triage --ratify <triage-run-id>` is the operator boundary. It reads the
+recorded proposals and punt reviews for exactly that `triage_run_id`, renders
+the reviewed context back to the operator, then prompts per finding for
+`accept`, `override`, or `skip`.
+
+Properties worth knowing:
+
+- **Nothing is applied without ratification.** Accept applies exactly the stored
+  proposal; override applies the operator's alternative instead. In both cases
+  the operator decision, the applied disposition payload, and the cited
+  evidence refs are written to `triage_application_records` before any tracker
+  mutation is attempted.
+- **Punts require a fixed reason code and an evidence comment.** A punt may be
+  applied only with one of `verified-stale`, `superseded`,
+  `not-reproducible`, `duplicate`, or `out-of-scope-by-policy`. The flow posts
+  a closing comment carrying a stable idempotency marker, the reason code, the
+  cited evidence refs/quotes, and the operator note, then closes the issue. A
+  missing or unrecognized code is refused and the finding stays open.
+- **Fix dispositions apply the confirmed target.** `fix_now` and `fix_later`
+  use the milestone or `Hygiene` target the operator confirmed at ratification,
+  even when it differs from the proposal. `needs_verification` records the
+  decision but performs no tracker mutation.
+- **Stale findings fail closed.** If the live issue/report state no longer
+  matches the stored finding snapshot — closed meanwhile, labels/pool changed,
+  or the deterministic evidence changed under new commits — the finding is
+  marked `stale` and skipped rather than applied blindly. Proposal runs that
+  predate stored snapshots are treated as stale for the same reason.
+- **Application is resumable and idempotent.** The per-finding application row
+  is updated in place, so rerunning `--ratify` completes any remaining
+  `ratified`/`failed` rows without re-prompting or duplicating work already
+  visible on the issue. Existing milestone assignments, existing close comments
+  carrying the marker, and already-closed marked punts are treated as already
+  applied.
+
+Sample output:
+
+```text
+TRIAGE RATIFICATION — run 4601fd03e0c7; 3 finding(s)
+Applied: 2, stale: 1, skipped: 0, failed: 0
+
+#1312  APPLIED (accept punt/verified-stale)
+       Posted closing comment and closed the issue.
+
+#943  APPLIED (override fix_later -> Hygiene)
+       Set milestone to Hygiene.
+
+#659  STALE (accept needs_verification)
+       Skipped instead of applying.
+       stale: live finding state diverged from the reviewed snapshot
+```
 
 ---
 

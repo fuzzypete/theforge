@@ -57,7 +57,59 @@ class BacklogFinding:
     finding_id: str
     issue_ref: str
     body: str
+    issue_number: int | None = None
+    title: str = ""
+    labels: tuple[str, ...] = ()
+    display_labels: str = ""
+    opened_at: str = ""
+    age_days: int | None = None
+    pool_state: str = ""
+    verification_status: str = ""
     evidence: tuple[PacketEvidence, ...] = ()
+
+    def to_dict(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "finding_id": self.finding_id,
+            "issue_ref": self.issue_ref,
+            "body": self.body,
+            "evidence": [item.to_dict() for item in self.evidence],
+        }
+        if self.issue_number is not None:
+            payload["issue_number"] = self.issue_number
+        if self.title:
+            payload["title"] = self.title
+        if self.labels:
+            payload["labels"] = list(self.labels)
+        if self.display_labels:
+            payload["display_labels"] = self.display_labels
+        if self.opened_at:
+            payload["opened_at"] = self.opened_at
+        if self.age_days is not None:
+            payload["age_days"] = self.age_days
+        if self.pool_state:
+            payload["pool_state"] = self.pool_state
+        if self.verification_status:
+            payload["verification_status"] = self.verification_status
+        return payload
+
+    def snapshot_dict(self) -> dict[str, object]:
+        """Return the stable state used for stale-ratification detection."""
+        payload: dict[str, object] = {
+            "issue_ref": self.issue_ref,
+            "body": self.body,
+            "evidence": [item.to_dict() for item in self.evidence],
+        }
+        if self.issue_number is not None:
+            payload["issue_number"] = self.issue_number
+        if self.title:
+            payload["title"] = self.title
+        if self.labels:
+            payload["labels"] = list(self.labels)
+        if self.pool_state:
+            payload["pool_state"] = self.pool_state
+        if self.verification_status:
+            payload["verification_status"] = self.verification_status
+        return payload
 
 
 @dataclass(frozen=True)
@@ -144,10 +196,45 @@ def _parse_finding(raw: object, index: int) -> BacklogFinding:
             f"needs a stable identity to record against"
         )
     body = str(raw.get("body") or raw.get("text") or "").strip()
+    raw_issue_number = raw.get("issue_number")
+    issue_number: int | None
+    if raw_issue_number in (None, ""):
+        issue_number = None
+    else:
+        try:
+            issue_number = int(raw_issue_number)
+        except (TypeError, ValueError) as exc:
+            raise BacklogReportError(
+                f"findings[{index}] issue_number must be an integer when present"
+            ) from exc
+    raw_labels = raw.get("labels") or []
+    if isinstance(raw_labels, str):
+        raw_labels = [raw_labels]
+    if not isinstance(raw_labels, list):
+        raise BacklogReportError(f"findings[{index}] labels must be a list when present")
+    raw_age_days = raw.get("age_days")
+    age_days: int | None
+    if raw_age_days in (None, ""):
+        age_days = None
+    else:
+        try:
+            age_days = int(raw_age_days)
+        except (TypeError, ValueError) as exc:
+            raise BacklogReportError(
+                f"findings[{index}] age_days must be an integer when present"
+            ) from exc
     return BacklogFinding(
         finding_id=finding_id,
         issue_ref=issue_ref or finding_id,
         body=body,
+        issue_number=issue_number,
+        title=str(raw.get("title") or "").strip(),
+        labels=tuple(str(label).strip() for label in raw_labels if str(label).strip()),
+        display_labels=str(raw.get("display_labels") or "").strip(),
+        opened_at=str(raw.get("opened_at") or "").strip(),
+        age_days=age_days,
+        pool_state=str(raw.get("pool_state") or "").strip(),
+        verification_status=str(raw.get("verification_status") or "").strip(),
         evidence=_parse_evidence(raw.get("evidence"), finding_id),
     )
 

@@ -63,6 +63,7 @@ def _write_project(tmp_path: Path, report: dict) -> tuple[Path, Path]:
 def _args(**kwargs: object) -> argparse.Namespace:
     defaults = {
         "report": None,
+        "ratify": None,
         "output": None,
         "config": None,
         "current_milestone": None,
@@ -179,6 +180,12 @@ class TestParser:
         args = parser.parse_args(["triage", "--report", "backlog.json"])
         assert args.command == "triage"
         assert args.report == "backlog.json"
+
+    def test_triage_accepts_ratify_mode(self) -> None:
+        parser = build_parser()
+        args = parser.parse_args(["triage", "--ratify", "run123"])
+        assert args.command == "triage"
+        assert args.ratify == "run123"
 
     def test_current_milestone_override_is_accepted(self) -> None:
         args = build_parser().parse_args(
@@ -427,3 +434,56 @@ class TestCommand:
         monkeypatch.setattr(subprocess, "check_output", _forbidden)
 
         assert cli_triage.cmd_triage(_args(report=str(report_path), config=str(config_path))) == 0
+
+    def test_ratify_dispatches_to_the_ratification_flow(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        from theforge.triage_ratification import RatificationFindingOutcome, RatificationSummary
+
+        config_path, _report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+
+        def _ratify(run_id: str, config: object, **kwargs: object) -> RatificationSummary:
+            assert run_id == "run123"
+            assert kwargs["project_root"] == tmp_path
+            return RatificationSummary(
+                triage_run_id=run_id,
+                findings=(
+                    RatificationFindingOutcome(
+                        finding_id="1312:audit-count",
+                        issue_ref="#1312",
+                        decision="accept",
+                        status="applied",
+                        disposition="needs_verification",
+                        summary="Recorded operator decision only; no tracker mutation.",
+                    ),
+                ),
+            )
+
+        import theforge.coordinator.triage_ratification_flow as ratify_flow
+
+        monkeypatch.setattr(ratify_flow, "ratify_triage_run", _ratify)
+
+        code = cli_triage.cmd_triage(
+            _args(ratify="run123", config=str(config_path), no_audit=False)
+        )
+        out = capsys.readouterr().out
+        assert code == 0
+        assert "TRIAGE RATIFICATION — run run123" in out
+        assert "#1312  APPLIED (accept needs_verification)" in out
+
+    def test_ratify_rejects_incompatible_flags(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        code = cli_triage.cmd_triage(
+            _args(
+                ratify="run123",
+                report=str(report_path),
+                config=str(config_path),
+                no_audit=False,
+            )
+        )
+        assert code == 1
+        assert "--ratify cannot be combined with --report" in capsys.readouterr().err
