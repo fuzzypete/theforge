@@ -250,18 +250,37 @@ def _proposal_reporting_summary(events: list[dict[str, Any]]) -> dict[str, int |
     }
 
 
+def _fallback_detail(reporting: dict[str, int | bool]) -> str:
+    parts: list[str] = []
+    agent_failures = int(reporting["agent_failure_fallback_count"])
+    no_evidence = int(reporting["no_checkable_evidence_count"])
+    other_fallbacks = int(reporting["other_fallback_count"])
+    if agent_failures:
+        parts.append(f"{agent_failures} proposer failure fallback(s)")
+    if no_evidence:
+        parts.append(f"{no_evidence} no-checkable-evidence fallback(s)")
+    if other_fallbacks:
+        parts.append(f"{other_fallbacks} other fallback(s)")
+    return ", ".join(parts)
+
+
 def _pending_reason(
     triage_run_id: str, findings_count: int, reporting: dict[str, int | bool]
 ) -> str:
     if bool(reporting["all_findings_unreviewed"]):
-        agent_failures = int(reporting["agent_failure_fallback_count"])
-        no_evidence = int(reporting["no_checkable_evidence_count"])
-        detail = f"{agent_failures} proposer failure fallback(s)"
-        if no_evidence:
-            detail += f", {no_evidence} no-checkable-evidence fallback(s)"
+        detail = _fallback_detail(reporting)
         return (
             f"headless triage run {triage_run_id}: {findings_count} finding(s) resolved only by "
             f"fallback without accepted proposer review ({detail}), awaiting operator decision"
+        )
+    if int(reporting["agent_failure_fallback_count"]) > 0:
+        accepted_count = int(reporting["accepted_count"])
+        fallback_count = int(reporting["fallback_count"])
+        detail = _fallback_detail(reporting)
+        return (
+            f"headless triage run {triage_run_id}: {findings_count} finding(s) produced "
+            f"{accepted_count} accepted proposal(s) and {fallback_count} fallback disposition(s) "
+            f"({detail}), awaiting operator ratification"
         )
     return (
         f"headless triage run {triage_run_id}: {findings_count} finding(s) proposed and "
@@ -273,14 +292,18 @@ def _proposal_pass_line(
     findings_count: int, reporting: dict[str, int | bool], punt_text: str
 ) -> str:
     if bool(reporting["all_findings_unreviewed"]):
-        agent_failures = int(reporting["agent_failure_fallback_count"])
-        no_evidence = int(reporting["no_checkable_evidence_count"])
-        detail = f"{agent_failures} proposer failure fallback(s)"
-        if no_evidence:
-            detail += f", {no_evidence} no-checkable-evidence fallback(s)"
+        detail = _fallback_detail(reporting)
         return (
             f"triage: proposal pass degraded to {findings_count} fallback disposition(s)"
             f" without accepted proposer review ({detail}){punt_text}"
+        )
+    if int(reporting["agent_failure_fallback_count"]) > 0:
+        accepted_count = int(reporting["accepted_count"])
+        fallback_count = int(reporting["fallback_count"])
+        detail = _fallback_detail(reporting)
+        return (
+            f"triage: proposal pass proposed {accepted_count} disposition(s) and degraded to "
+            f"{fallback_count} fallback disposition(s) ({detail}){punt_text}"
         )
     return f"triage: proposal pass proposed {findings_count} disposition(s){punt_text}"
 
