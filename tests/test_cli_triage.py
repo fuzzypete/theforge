@@ -626,6 +626,32 @@ class TestHeadlessCommand:
         assert "disk full" in err
         assert _pending.find_triage_pending("run123", tmp_path) is None
 
+    def test_pre_dispatch_auth_failure_exits_nonzero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        import theforge.coordinator.triage_headless_flow as headless_flow
+
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        monkeypatch.setattr(
+            headless_flow,
+            "run_headless_triage",
+            lambda *a, **k: headless_flow.HeadlessTriageOutcome(
+                status=headless_flow.HEADLESS_FAILED,
+                message="triage aborted agent dispatch before any proposer ran",
+                error="triage aborted agent dispatch before any proposer ran",
+                lines=("triage: triage aborted agent dispatch before any proposer ran",),
+            ),
+        )
+
+        code = cli_triage.cmd_triage(
+            _args(report=str(report_path), config=str(config_path), no_audit=False)
+        )
+        captured = capsys.readouterr()
+        assert code == 1
+        assert captured.out == ""
+        assert "triage aborted agent dispatch before any proposer ran" in captured.err
+
     def test_ratify_is_refused_without_a_terminal(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:
