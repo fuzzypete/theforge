@@ -39,6 +39,7 @@ from pathlib import Path
 import yaml
 
 from theforge.triage_proposal import PacketEvidence
+from theforge.triage_snapshot import canonicalize_finding_snapshot
 
 
 class BacklogReportError(ValueError):
@@ -94,22 +95,7 @@ class BacklogFinding:
 
     def snapshot_dict(self) -> dict[str, object]:
         """Return the stable state used for stale-ratification detection."""
-        payload: dict[str, object] = {
-            "issue_ref": self.issue_ref,
-            "body": self.body,
-            "evidence": [item.to_dict() for item in self.evidence],
-        }
-        if self.issue_number is not None:
-            payload["issue_number"] = self.issue_number
-        if self.title:
-            payload["title"] = self.title
-        if self.labels:
-            payload["labels"] = list(self.labels)
-        if self.pool_state:
-            payload["pool_state"] = self.pool_state
-        if self.verification_status:
-            payload["verification_status"] = self.verification_status
-        return payload
+        return canonicalize_finding_snapshot(self.to_dict())
 
 
 @dataclass(frozen=True)

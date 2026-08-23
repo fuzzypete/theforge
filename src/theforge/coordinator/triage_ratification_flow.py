@@ -18,7 +18,6 @@ from theforge.triage_proposal import (
     PUNT_REASON_CODES,
     FindingPacket,
     PacketEvidence,
-    stable_triage_digest,
     validate_disposition_payload,
 )
 from theforge.triage_ratification import (
@@ -35,6 +34,7 @@ from theforge.triage_ratification import (
     RatificationSummary,
     render_reviewed_proposal,
 )
+from theforge.triage_snapshot import canonicalize_finding_snapshot
 
 _GH_TIMEOUT_SECONDS = 30
 
@@ -177,6 +177,65 @@ def _valid_evidence_refs(packet: FindingPacket, refs: tuple[str, ...]) -> tuple[
     return tuple(ref for ref in refs if ref in valid)
 
 
+def _proposal_citations(event: Mapping[str, object]) -> tuple[Mapping[str, object], ...]:
+    return _proposed_payload(event)["citations"]  # type: ignore[return-value]
+
+
+def _renderable_quotes(
+    event: Mapping[str, object],
+    *,
+    packet: FindingPacket,
+    evidence_refs: tuple[str, ...],
+) -> list[tuple[str, str]]:
+    return [
+        (ref, quote.strip())
+        for ref, quote in _comment_quotes(
+            packet,
+            evidence_refs=evidence_refs,
+            proposal_citations=_proposal_citations(event),
+        )
+        if quote.strip()
+    ]
+
+
+def _choice_errors(
+    event: Mapping[str, object],
+    *,
+    packet: FindingPacket,
+    choice: OperatorChoice,
+) -> tuple[str, ...]:
+    errors = list(
+        validate_disposition_payload(
+            packet,
+            disposition=choice.disposition or "",
+            target_milestone=choice.target_milestone,
+            punt_reason_code=choice.punt_reason_code,
+        )
+    )
+    if choice.disposition == "punt" and not _renderable_quotes(
+        event,
+        packet=packet,
+        evidence_refs=choice.evidence_refs,
+    ):
+        errors.append(
+            "punt requires at least one cited evidence ref whose packet text can be rendered "
+            "into the closing comment"
+        )
+    return tuple(errors)
+
+
+def _legacy_stale_reason(event: Mapping[str, object]) -> str:
+    has_packet = isinstance(event.get("packet"), Mapping)
+    has_snapshot = isinstance(event.get("finding_snapshot"), Mapping)
+    if has_packet and has_snapshot:
+        return ""
+    if not has_packet and not has_snapshot:
+        return "proposal run predates stored finding packets and snapshots; fail closed"
+    if not has_packet:
+        return "proposal run predates stored finding packets; fail closed"
+    return "proposal run predates stored finding snapshots; fail closed"
+
+
 def _prompt_choice(
     event: Mapping[str, object],
     *,
@@ -195,7 +254,7 @@ def _prompt_choice(
         action = input_fn("Decision [accept/override/skip]: ").strip().lower()
         if action == DECISION_ACCEPT:
             note = input_fn("Operator note (optional): ").strip()
-            return OperatorChoice(
+            choice = OperatorChoice(
                 decision=DECISION_ACCEPT,
                 disposition=str(proposal["disposition"]),
                 target_milestone=proposal["target_milestone"],  # type: ignore[arg-type]
@@ -203,6 +262,12 @@ def _prompt_choice(
                 evidence_refs=_valid_evidence_refs(packet, default_refs),
                 operator_note=note,
             )
+            errors = _choice_errors(event, packet=packet, choice=choice)
+            if errors:
+                for error in errors:
+                    emit(error)
+                continue
+            return choice
         if action == DECISION_SKIP:
             note = input_fn("Skip note (optional): ").strip()
             return OperatorChoice(
@@ -245,17 +310,7 @@ def _prompt_choice(
             emit("Override cites unknown evidence refs; use ids from the stored packet.")
             continue
         note = input_fn("Operator note (optional): ").strip()
-        errors = validate_disposition_payload(
-            packet,
-            disposition=disposition,
-            target_milestone=target_milestone,
-            punt_reason_code=punt_reason_code,
-        )
-        if errors:
-            for error in errors:
-                emit(error)
-            continue
-        return OperatorChoice(
+        choice = OperatorChoice(
             decision=DECISION_OVERRIDE,
             disposition=disposition,
             target_milestone=target_milestone,
@@ -263,6 +318,12 @@ def _prompt_choice(
             evidence_refs=evidence_refs,
             operator_note=note,
         )
+        errors = _choice_errors(event, packet=packet, choice=choice)
+        if errors:
+            for error in errors:
+                emit(error)
+            continue
+        return choice
 
 
 def _gh_issue_view(number: int, project_root: Path) -> dict:
@@ -382,16 +443,17 @@ def _stale_reason(
     live_findings: Mapping[tuple[str, str], object],
     live_issue: Mapping[str, object],
 ) -> str:
-    snapshot = event.get("finding_snapshot")
-    if not isinstance(snapshot, Mapping):
-        return "proposal run predates stored finding snapshots; fail closed"
+    legacy = _legacy_stale_reason(event)
+    if legacy:
+        return legacy
+    snapshot = canonicalize_finding_snapshot(event.get("finding_snapshot"))
     current = _current_snapshot(event, live_findings)
     if str(live_issue.get("state") or "").upper() == "CLOSED":
         return "issue closed after proposal review"
     if current is None:
         return "issue no longer appears in the finding backlog (labels or pool changed)"
-    current_snapshot = current.snapshot_dict()
-    if stable_triage_digest(snapshot) != stable_triage_digest(current_snapshot):
+    current_snapshot = canonicalize_finding_snapshot(current.snapshot_dict())
+    if snapshot != current_snapshot:
         return "live finding state diverged from the reviewed snapshot"
     return ""
 
@@ -500,6 +562,29 @@ def _apply_choice(
         for comment in comments
         if isinstance(comment, Mapping)
     )
+    stale = _stale_reason(event, live_findings=live_findings, live_issue=live_issue)
+    if stale:
+        _upsert_application(
+            project_root,
+            event=event,
+            choice=choice,
+            status=STATUS_STALE,
+            stale_reason=stale,
+            external_effect_summary="No mutation applied.",
+            applied_at=audit_storage._now_iso(),
+            emitted_at=str(row.get("emitted_at") or "").strip() or None,
+        )
+        return RatificationFindingOutcome(
+            finding_id=str(event.get("finding_id") or ""),
+            issue_ref=issue_ref,
+            decision=choice.decision,
+            status=STATUS_STALE,
+            disposition=choice.disposition,
+            target_milestone=choice.target_milestone,
+            punt_reason_code=choice.punt_reason_code,
+            summary="Skipped instead of applying.",
+            stale_reason=stale,
+        )
     if choice.disposition in {"fix_now", "fix_later"} and choice.target_milestone:
         if str(current_milestone or "").strip().lower() == choice.target_milestone.lower():
             summary = f"Milestone already {choice.target_milestone}; no edit needed."
@@ -548,30 +633,6 @@ def _apply_choice(
             summary=summary,
         )
 
-    stale = _stale_reason(event, live_findings=live_findings, live_issue=live_issue)
-    if stale:
-        _upsert_application(
-            project_root,
-            event=event,
-            choice=choice,
-            status=STATUS_STALE,
-            stale_reason=stale,
-            external_effect_summary="No mutation applied.",
-            applied_at=audit_storage._now_iso(),
-            emitted_at=str(row.get("emitted_at") or "").strip() or None,
-        )
-        return RatificationFindingOutcome(
-            finding_id=str(event.get("finding_id") or ""),
-            issue_ref=issue_ref,
-            decision=choice.decision,
-            status=STATUS_STALE,
-            disposition=choice.disposition,
-            target_milestone=choice.target_milestone,
-            punt_reason_code=choice.punt_reason_code,
-            summary="Skipped instead of applying.",
-            stale_reason=stale,
-        )
-
     disposition = choice.disposition or ""
     try:
         if disposition == "needs_verification":
@@ -591,11 +652,16 @@ def _apply_choice(
                 raise TriageRatificationError(
                     f"punt requires a recognized reason code: {list(PUNT_REASON_CODES)}"
                 )
-            quotes = _comment_quotes(
-                packet,
+            quotes = _renderable_quotes(
+                event,
+                packet=packet,
                 evidence_refs=choice.evidence_refs,
-                proposal_citations=_proposed_payload(event)["citations"],  # type: ignore[arg-type]
             )
+            if not quotes:
+                raise TriageRatificationError(
+                    "punt requires at least one cited evidence ref whose packet text can be "
+                    "rendered into the closing comment"
+                )
             if not has_comment:
                 _gh_issue_comment(
                     issue_number,
@@ -702,6 +768,19 @@ def ratify_triage_run(
         finding_id = str(event.get("finding_id") or "")
         existing = prior_rows.get(finding_id)
         if existing is not None:
+            continue
+        legacy = _legacy_stale_reason(event)
+        if legacy:
+            stored = _upsert_application(
+                root,
+                event=event,
+                choice=OperatorChoice(decision=DECISION_SKIP),
+                status=STATUS_STALE,
+                stale_reason=legacy,
+                external_effect_summary="No mutation applied.",
+                applied_at=audit_storage._now_iso(),
+            )
+            prior_rows[finding_id] = stored
             continue
         choice = _prompt_choice(event, input_fn=input_fn, emit=emit)
         if choice.decision == DECISION_SKIP:

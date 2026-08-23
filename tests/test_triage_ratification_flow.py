@@ -25,8 +25,9 @@ from theforge.triage_backlog_report import (
     BacklogFindingRecord,
     BacklogTriageReport,
     EvidenceEntry,
+    write_backlog_report,
 )
-from theforge.triage_report import parse_backlog_report
+from theforge.triage_report import load_backlog_report, parse_backlog_report
 
 _VALID_PUNT = (
     "<triage_proposal>\n"
@@ -123,16 +124,21 @@ def _proposal_report(*, findings: int = 1) -> object:
     )
 
 
-def _live_report(*, changed: bool = False, findings: int = 1) -> BacklogTriageReport:
+def _live_report(
+    *,
+    changed: bool = False,
+    findings: int = 1,
+    body: str = "audit count is off by one",
+) -> BacklogTriageReport:
     records = []
     for i in range(findings):
         records.append(
             BacklogFindingRecord(
-                finding_id=f"#131{i}",
+                finding_id=f"131{i}:audit-count",
                 issue_ref=f"#131{i}",
                 issue_number=1310 + i,
                 title="audit count is off by one",
-                body="audit count is off by one",
+                body=body,
                 labels=("bug", "forge-finding") if not changed else ("bug", "p2"),
                 display_labels="bug" if not changed else "bug,p2",
                 opened_at="2026-05-31T00:00:00Z",
@@ -171,6 +177,30 @@ def _seed_run(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, findings: int 
     )
     summary = proposal_flow.run_triage_proposals(
         _proposal_report(findings=findings),
+        _config(tmp_path),
+        record=True,
+    )
+    return summary.triage_run_id
+
+
+def _seed_run_from_generated_report(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    report: BacklogTriageReport,
+) -> str:
+    runner = _StubRunner(findings=len(report.findings))
+    monkeypatch.setattr(proposal_flow, "run_agent", runner)
+    monkeypatch.setattr(proposal_flow, "log_agent_result", lambda *a, **k: None)
+    monkeypatch.setattr(
+        proposal_flow, "_select_advisor_profile", lambda config: DEFAULT_PREFLIGHT_PROFILE
+    )
+    artifact = write_backlog_report(
+        tmp_path,
+        report,
+        output_path=tmp_path / ".forge" / "triage" / "backlog.yaml",
+    )
+    summary = proposal_flow.run_triage_proposals(
+        load_backlog_report(artifact),
         _config(tmp_path),
         record=True,
     )
@@ -250,6 +280,56 @@ class TestRatificationFlow:
         assert rows[0]["operator_decision"] == "accept"
         assert rows[0]["applied_disposition"] == "punt"
 
+    def test_round_tripped_generated_report_does_not_trip_stale_detection(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        live_report = _live_report(body="  audit count is off by one  ")
+        run_id = _seed_run_from_generated_report(tmp_path, monkeypatch, live_report)
+        closed: list[int] = []
+
+        monkeypatch.setattr(
+            ratify_flow,
+            "collect_backlog_report",
+            lambda *a, **k: live_report,
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "fetch_open_milestones",
+            lambda *_: ("v0.13.0", HYGIENE_POOL),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_view",
+            lambda number, root: {
+                "number": number,
+                "state": "OPEN",
+                "milestone": None,
+                "comments": [],
+            },
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_comment",
+            lambda number, body, root: None,
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_close",
+            lambda number, root: closed.append(number),
+        )
+
+        summary = ratify_flow.ratify_triage_run(
+            run_id,
+            _config(tmp_path),
+            project_root=tmp_path,
+            input_fn=_inputs("accept", "round trip"),
+            emit=lambda _line: None,
+        )
+
+        assert summary.findings[0].status == "applied"
+        assert summary.findings[0].stale_reason == ""
+        assert closed == [1310]
+
     def test_override_can_apply_hygiene_target(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -325,6 +405,60 @@ class TestRatificationFlow:
         rows = _application_rows(tmp_path)
         assert rows[0]["status"] == "skipped"
 
+    def test_punt_override_without_renderable_evidence_is_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_id = _seed_run(tmp_path, monkeypatch)
+        conn = audit_storage.create_or_open(tmp_path)
+        try:
+            row = conn.execute("SELECT raw_json FROM triage_proposal_events").fetchone()
+            payload = json.loads(row[0])
+            proposal = dict(payload["proposal"])
+            proposal["evidence_refs"] = []
+            proposal["citations"] = []
+            payload["proposal"] = proposal
+            payload["evidence_refs"] = []
+            conn.execute(
+                "UPDATE triage_proposal_events SET raw_json = ?",
+                (json.dumps(payload),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        monkeypatch.setattr(
+            ratify_flow,
+            "collect_backlog_report",
+            lambda *a, **k: _live_report(),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "fetch_open_milestones",
+            lambda *_: ("v0.13.0", HYGIENE_POOL),
+        )
+
+        emitted: list[str] = []
+        summary = ratify_flow.ratify_triage_run(
+            run_id,
+            _config(tmp_path),
+            project_root=tmp_path,
+            input_fn=_inputs(
+                "override",
+                "punt",
+                "verified-stale",
+                "",
+                "blank evidence",
+                "skip",
+                "",
+            ),
+            emit=emitted.append,
+        )
+
+        assert summary.findings[0].status == "skipped"
+        assert any("punt requires at least one cited evidence ref" in line for line in emitted)
+        rows = _application_rows(tmp_path)
+        assert rows[0]["status"] == "skipped"
+
     def test_changed_live_state_is_marked_stale_and_skipped(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
@@ -367,6 +501,52 @@ class TestRatificationFlow:
 
         assert summary.findings[0].status == "stale"
         assert closed == []
+        rows = _application_rows(tmp_path)
+        assert rows[0]["status"] == "stale"
+        assert "diverged from the reviewed snapshot" in rows[0]["stale_reason"]
+
+    def test_fix_target_already_present_still_checks_for_stale_live_state(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_id = _seed_run(tmp_path, monkeypatch)
+        edits: list[tuple[int, str]] = []
+
+        monkeypatch.setattr(
+            ratify_flow,
+            "collect_backlog_report",
+            lambda *a, **k: _live_report(changed=True),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "fetch_open_milestones",
+            lambda *_: ("v0.13.0", HYGIENE_POOL),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_view",
+            lambda number, root: {
+                "number": number,
+                "state": "OPEN",
+                "milestone": {"title": HYGIENE_POOL},
+                "comments": [],
+            },
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "_gh_issue_edit_milestone",
+            lambda number, milestone, root: edits.append((number, milestone)),
+        )
+
+        summary = ratify_flow.ratify_triage_run(
+            run_id,
+            _config(tmp_path),
+            project_root=tmp_path,
+            input_fn=_inputs("override", "fix_later", HYGIENE_POOL, "", "already moved"),
+            emit=lambda _line: None,
+        )
+
+        assert summary.findings[0].status == "stale"
+        assert edits == []
         rows = _application_rows(tmp_path)
         assert rows[0]["status"] == "stale"
         assert "diverged from the reviewed snapshot" in rows[0]["stale_reason"]
@@ -420,6 +600,49 @@ class TestRatificationFlow:
 
         assert summary.findings[0].status == "stale"
         assert "predates stored finding snapshots" in summary.findings[0].stale_reason
+
+    def test_missing_packet_and_snapshot_are_treated_as_stale_without_prompt(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        run_id = _seed_run(tmp_path, monkeypatch)
+        conn = audit_storage.create_or_open(tmp_path)
+        try:
+            row = conn.execute("SELECT raw_json FROM triage_proposal_events").fetchone()
+            payload = json.loads(row[0])
+            payload.pop("packet", None)
+            payload.pop("finding_snapshot", None)
+            payload.pop("finding_snapshot_digest", None)
+            conn.execute(
+                "UPDATE triage_proposal_events SET raw_json = ?",
+                (json.dumps(payload),),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        monkeypatch.setattr(
+            ratify_flow,
+            "collect_backlog_report",
+            lambda *a, **k: _live_report(),
+        )
+        monkeypatch.setattr(
+            ratify_flow,
+            "fetch_open_milestones",
+            lambda *_: ("v0.13.0", HYGIENE_POOL),
+        )
+
+        summary = ratify_flow.ratify_triage_run(
+            run_id,
+            _config(tmp_path),
+            project_root=tmp_path,
+            input_fn=lambda _prompt="": (_ for _ in ()).throw(
+                AssertionError("legacy proposal rows should not be re-prompted")
+            ),
+            emit=lambda _line: None,
+        )
+
+        assert summary.findings[0].status == "stale"
+        assert "predates stored finding packets and snapshots" in summary.findings[0].stale_reason
 
     def test_resume_reuses_the_comment_marker_and_finishes_remaining_work(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
