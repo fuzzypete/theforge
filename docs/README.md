@@ -34,8 +34,6 @@ then [vision.md](vision.md) for the philosophy and reading order.
   ([refusal-capability](vision/refusal-capability.md),
   [compound-engineering](vision/compound-engineering.md)) plus three
   historical design captures that carry their own status banners.
-- [flake-register.md](flake-register.md) — living burndown ledger of gate
-  flakes.
 - [routing-symmetry-followups.md](routing-symmetry-followups.md) — living
   catalogue of open routing asymmetries (#1389).
 - [plans/knowledge-capture.md](plans/knowledge-capture.md) — living plan
