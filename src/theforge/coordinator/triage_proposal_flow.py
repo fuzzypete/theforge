@@ -23,14 +23,15 @@ Nothing here writes to a tracker, and that is enforced by what the proposer is
 *given*, not by what the prompt asks of it. Every invocation goes through
 :func:`seal_proposer_profile` and :func:`proposer_secrets`, so the agent runs
 with a read-only tool surface that has no shell, in a read-only sandbox, in an
-empty scratch directory rather than the project checkout, holding only provider
-API keys. There is no ``gh`` invocation, no GitHub API call, and no issue
-mutation on any path — the stage is advisory, and a later slice owns
-application.
+empty scratch directory rather than the project checkout, holding only
+inference credentials (provider API keys or Claude CLI auth tokens). There is
+no ``gh`` invocation, no GitHub API call, and no issue mutation on any path —
+the stage is advisory, and a later slice owns application.
 """
 
 from __future__ import annotations
 
+import os
 import tempfile
 import uuid
 from dataclasses import replace
@@ -40,6 +41,7 @@ from typing import TYPE_CHECKING
 from theforge.agent_types import COST_PROVIDER_REPORTED, COST_UNKNOWN
 from theforge.assignment import NoCapableCandidateError
 from theforge.config import TRIAGE_PROPOSER_TOOLS
+from theforge.config.auth import CLAUDE_CLI_ENV_TOKENS, check_claude_credentials
 from theforge.config.defaults import PROVIDER_API_KEY_MAP
 from theforge.config.model_identity import PHASE_ADVISOR
 from theforge.task.triage_prompts import (
@@ -103,6 +105,7 @@ FALLBACK_INVALID_OUTPUT = "agent output failed validation on every attempt"
 FALLBACK_AGENT_UNAVAILABLE = "the proposer agent could not be invoked"
 FALLBACK_REVIEW_INVALID_OUTPUT = "reviewer output failed validation on every attempt"
 FALLBACK_REVIEWER_UNAVAILABLE = "the reviewer agent could not be invoked"
+TRIAGE_CREDENTIAL_SOURCE = "shell environment overlaid by project .forge/.env secrets"
 
 
 def _ensure_runners() -> None:
@@ -252,18 +255,45 @@ def proposer_secrets(secrets: "Mapping[str, str] | None") -> dict[str, str]:
     holds one that cannot mutate a tracker?" Only the second survives an
     operator putting a new forge-of-record credential in ``.forge/.env``.
 
-    A key qualifies if it is a provider API key by name. Everything else —
-    tracker tokens, webhook URLs, deploy credentials — is dropped, so an
-    advisory stage cannot authenticate as the operator against anything.
+    A key qualifies if it is a provider API key by name, or one of the Claude
+    CLI's inference-token env vars. Everything else — tracker tokens, webhook
+    URLs, deploy credentials — is dropped, so an advisory stage cannot
+    authenticate as the operator against anything.
     """
     if not secrets:
         return {}
     known = {value.upper() for value in PROVIDER_API_KEY_MAP.values()}
+    known.update(token.upper() for token in CLAUDE_CLI_ENV_TOKENS)
     return {
         key: value
         for key, value in secrets.items()
         if key.upper() in known or key.upper().endswith("_API_KEY")
     }
+
+
+def _triage_auth_failure(reason: str) -> str:
+    """Render the one run-level Claude auth failure triage should report.
+
+    Triage checks the exact environment it would dispatch with, so the operator
+    message needs to name that resolution path explicitly rather than reading as
+    though the OAuth store were the only credential source that mattered.
+    """
+    return (
+        "triage aborted agent dispatch before any proposer ran: the selected "
+        "Claude profile could not authenticate with the same proposer "
+        f"environment triage would pass to the CLI ({TRIAGE_CREDENTIAL_SOURCE}). "
+        f"{reason}"
+    )
+
+
+def _check_triage_dispatch_readiness(profile: object, *, secrets: dict[str, str]) -> str:
+    """Return the run-level auth failure, or ``\"\"`` when dispatch is ready."""
+    if getattr(profile, "cli", None) != "claude":
+        return ""
+    ready, reason = check_claude_credentials({**os.environ, **secrets})
+    if ready:
+        return ""
+    return _triage_auth_failure(reason)
 
 
 def _propose_for_packet(
@@ -615,8 +645,22 @@ def run_triage_proposals(
     proposer_profile: object | None = None
     reviewer_profile: object | None = None
     profile_error = ""
+    run_level_failure = ""
     results: list[FindingProposalResult] = []
     secrets = proposer_secrets(config.secrets)
+    checkable_packets = [packet for packet in packets if packet.has_checkable_evidence()]
+
+    if checkable_packets:
+        try:
+            base_profile = _select_advisor_profile(config)
+            proposer_profile = seal_proposer_profile(base_profile)
+            reviewer_profile = seal_reviewer_profile(base_profile)
+            run_level_failure = _check_triage_dispatch_readiness(proposer_profile, secrets=secrets)
+            if run_level_failure:
+                _log(f"  ⚠ {run_level_failure}")
+        except (NoCapableCandidateError, ValueError) as exc:
+            profile_error = str(exc)
+            _log(f"  ⚠ triage proposer unavailable: {exc}")
 
     # The proposer runs in an empty scratch directory, never the project
     # checkout. Its packet is the record and the prompt forbids investigation;
@@ -625,25 +669,30 @@ def run_triage_proposals(
     # removed when the run ends.
     with tempfile.TemporaryDirectory(prefix="forge-triage-") as scratch:
         working_dir = Path(scratch)
+        if proposer_profile is not None and not run_level_failure:
+            _ensure_runners()
         for packet in packets:
             if not packet.has_checkable_evidence():
                 results.append(_no_evidence_result(packet))
                 continue
-            if proposer_profile is None and not profile_error:
-                _ensure_runners()
-                try:
-                    base_profile = _select_advisor_profile(config)
-                    proposer_profile = seal_proposer_profile(base_profile)
-                    reviewer_profile = seal_reviewer_profile(base_profile)
-                except (NoCapableCandidateError, ValueError) as exc:
-                    profile_error = str(exc)
-                    _log(f"  ⚠ triage proposer unavailable: {exc}")
             if proposer_profile is None:
                 results.append(
                     _fallback_result(
                         packet,
                         attempts=0,
                         errors=[profile_error],
+                        reason=FALLBACK_AGENT_UNAVAILABLE,
+                        cost_usd=0.0,
+                        provenance=COST_PROVIDER_REPORTED,
+                    )
+                )
+                continue
+            if run_level_failure:
+                results.append(
+                    _fallback_result(
+                        packet,
+                        attempts=0,
+                        errors=[],
                         reason=FALLBACK_AGENT_UNAVAILABLE,
                         cost_usd=0.0,
                         provenance=COST_PROVIDER_REPORTED,
@@ -688,6 +737,7 @@ def run_triage_proposals(
         triage_run_id=triage_run_id,
         report_path=report.source_path,
         review_stage=_review_stage(results),
+        run_level_failure=run_level_failure,
     )
     if record:
         summary = replace(

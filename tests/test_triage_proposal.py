@@ -606,3 +606,20 @@ class TestRendering:
         assert "no issue was modified" in text
         assert "REVIEW STAGE: no-op" in text
         assert summary.findings_count == 1
+
+    def test_run_summary_renders_a_run_level_failure_once(self) -> None:
+        proposal = needs_verification_proposal(_packet(), basis="thin")
+        summary = ProposalRunSummary(
+            results=(_result(proposal), _result(proposal)),
+            total_cost_usd=0.0,
+            cost_provenance="provider_reported",
+            triage_run_id="run123",
+            review_stage=PuntReviewStage(),
+            run_level_failure=(
+                "triage aborted agent dispatch before any proposer ran: "
+                "claude credential store at /tmp/stale/.credentials.json holds no access token"
+            ),
+        )
+        text = render_run_summary(summary)
+        assert text.count("RUN-LEVEL FAILURE:") == 1
+        assert text.count("/tmp/stale/.credentials.json") == 1

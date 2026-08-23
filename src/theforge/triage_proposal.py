@@ -452,6 +452,7 @@ class ProposalRunSummary:
     report_path: str = ""
     audit_error: str = ""
     review_stage: PuntReviewStage = field(default_factory=PuntReviewStage)
+    run_level_failure: str = ""
 
     @property
     def findings_count(self) -> int:
@@ -467,6 +468,7 @@ class ProposalRunSummary:
             "cost_provenance": self.cost_provenance,
             "audit_error": self.audit_error,
             "review_stage": self.review_stage.to_dict(),
+            "run_level_failure": self.run_level_failure,
         }
 
 
@@ -928,8 +930,10 @@ def render_run_summary(summary: ProposalRunSummary) -> str:
         f"TRIAGE PROPOSALS — run {summary.triage_run_id or '(unrecorded)'}; "
         f"{summary.findings_count} finding(s)",
         review_line,
-        "",
     ]
+    if summary.run_level_failure:
+        lines.append(f"RUN-LEVEL FAILURE: {summary.run_level_failure}")
+    lines.append("")
     for result in summary.results:
         lines.append(render_result(result))
         lines.append("")
