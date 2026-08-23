@@ -325,6 +325,29 @@ class TestCommand:
         assert "TOTAL SPEND: $0.0123" in out
         assert "no issue was modified" in out
 
+    def test_interactive_pre_dispatch_auth_failure_exits_nonzero(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
+    ) -> None:
+        config_path, report_path = _write_project(tmp_path, _REPORT)
+        _stub_config(monkeypatch, tmp_path)
+        _stub_flow(
+            monkeypatch,
+            _summary(
+                total_cost_usd=0.0,
+                run_level_failure=(
+                    "triage aborted agent dispatch before any proposer ran: "
+                    "claude credential store at /tmp/stale/.credentials.json holds no access token"
+                ),
+            ),
+        )
+
+        code = cli_triage.cmd_triage(_args(report=str(report_path), config=str(config_path)))
+        captured = capsys.readouterr()
+        assert code == 1
+        assert captured.err == ""
+        assert captured.out.count("RUN-LEVEL FAILURE:") == 1
+        assert "claude credential store" in captured.out
+
     def test_empty_backlog_prints_an_explicit_zero(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture
     ) -> None:

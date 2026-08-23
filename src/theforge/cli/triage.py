@@ -104,7 +104,7 @@ def _cmd_triage_proposals(args: argparse.Namespace, config: object, *, report: o
         record=not args.no_audit,
     )
     print(render_run_summary(summary))
-    return 0
+    return 1 if summary.run_level_failure else 0
 
 
 def _cmd_triage_headless(
