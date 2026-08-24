@@ -297,6 +297,19 @@ class TestCmdDiagnose:
         assert rc == 0
         assert flow.call_args.kwargs["timeout_seconds"] == 120.0
 
+    def test_plain_cli_run_leaves_output_override_unset(self, tmp_path):
+        cfg_path = tmp_path / "forge.yaml"
+        cfg_path.write_text("x")
+        with (
+            patch("theforge.cli.diagnose._find_config", return_value=cfg_path),
+            patch("theforge.cli.diagnose.load_config", return_value=self._patched_config()),
+            patch("theforge.cli.diagnose.run_diagnose_flow", return_value=_result(1)) as flow,
+        ):
+            rc = cmd_diagnose(self._args(issue=["1"]))
+
+        assert rc == 0
+        assert flow.call_args.kwargs["output_destination"] is None
+
     def test_omitted_timeout_passes_none_to_flow(self, tmp_path):
         cfg_path = tmp_path / "forge.yaml"
         cfg_path.write_text("x")
