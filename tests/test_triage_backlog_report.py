@@ -209,6 +209,30 @@ class TestBuildBacklogReport:
             entry.evidence_id == "path-line:src/demo.py:9:absent" for entry in finding.evidence
         )
 
+    def test_marks_active_when_colon_line_range_targets_existing_lines(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(30, "Evidence: `src/demo.py:2-3`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_ACTIVE
+        assert any(
+            entry.evidence_id == "path-line:src/demo.py:2-3:present" for entry in finding.evidence
+        )
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
     def test_marks_stale_when_github_line_range_extends_beyond_end_of_file(
         self, tmp_path: Path
     ) -> None:
@@ -469,6 +493,29 @@ class TestBuildBacklogReport:
             for entry in finding.evidence
         )
 
+    def test_unsupported_colon_fragment_is_unverified_not_stale(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(25, "Evidence: `src/demo.py:L469-L480`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            entry.evidence_id == "path:src/demo.py:L469-L480:unverified"
+            for entry in finding.evidence
+        )
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
     def test_marks_unverified_when_bare_filename_does_not_resolve(self, tmp_path: Path) -> None:
         report = build_backlog_report(
             [_issue(22, "Operators were editing a stray config.yaml during the incident.")],
@@ -615,6 +662,34 @@ class TestRendering:
 
 
 class TestSymbolHits:
+    def test_keeps_hits_when_rg_searches_a_single_candidate_path(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("iterations = 1\n", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def _proc(*args, **kwargs) -> MagicMock:
+            cmd = args[0]
+            calls.append(cmd)
+            return MagicMock(returncode=0, stdout="src/demo.py:1:iterations = 1\n", stderr="")
+
+        with patch("subprocess.run", side_effect=_proc):
+            result = _symbol_hits(tmp_path, "iterations", ("src/demo.py",))
+
+        assert result.hits == (("src/demo.py", 1),)
+        assert result.searched_scopes == ("src/demo.py",)
+        assert result.unresolved_candidates == ()
+        assert calls == [
+            [
+                "rg",
+                "--with-filename",
+                "--line-number",
+                "--fixed-strings",
+                "iterations",
+                "src/demo.py",
+            ]
+        ]
+
     def test_skips_missing_candidate_paths_without_aborting_other_scopes(
         self, tmp_path: Path
     ) -> None:
@@ -640,4 +715,13 @@ class TestSymbolHits:
         assert result.hits == (("src/demo.py", 7),)
         assert result.searched_scopes == ("src/demo.py",)
         assert result.unresolved_candidates == ("feat/issue-610",)
-        assert calls == [["rg", "--line-number", "--fixed-strings", "DemoSymbol", "src/demo.py"]]
+        assert calls == [
+            [
+                "rg",
+                "--with-filename",
+                "--line-number",
+                "--fixed-strings",
+                "DemoSymbol",
+                "src/demo.py",
+            ]
+        ]
