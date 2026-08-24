@@ -319,6 +319,23 @@ def _github_line_anchor(fragment: str) -> tuple[int, int | None] | None:
     return line, end_line
 
 
+def _colon_line_anchor(fragment: str) -> tuple[int, int | None] | None:
+    if fragment.isdigit():
+        return int(fragment), None
+    if "-" not in fragment:
+        return None
+    raw_line, raw_end = fragment.split("-", 1)
+    if not raw_line.isdigit() or not raw_end.isdigit():
+        return None
+    line = int(raw_line)
+    end_line = int(raw_end)
+    if end_line < line:
+        raise ValueError(f"unsupported path anchor :{fragment}")
+    if end_line == line:
+        return line, None
+    return line, end_line
+
+
 def _parse_path_token(token: str) -> PathCitation | None:
     text = token.strip().strip(".,;()[]")
     if not _is_path_like(text):
@@ -336,12 +353,16 @@ def _parse_path_token(token: str) -> PathCitation | None:
         line, end_line = anchored_location
     if ":" in text:
         candidate_path, candidate_line = text.rsplit(":", 1)
-        if candidate_line.isdigit():
-            candidate_line_number = int(candidate_line)
-            if line is not None and (line != candidate_line_number or end_line is not None):
+        anchored_location = _colon_line_anchor(candidate_line)
+        if anchored_location is not None:
+            candidate_line_number, candidate_end_line = anchored_location
+            if line is not None and (
+                line != candidate_line_number or end_line != candidate_end_line
+            ):
                 raise ValueError("path citation mixes multiple line references")
             text = candidate_path
             line = candidate_line_number
+            end_line = candidate_end_line
     if not text or text.startswith(("http://", "https://")):
         return None
     return PathCitation(path=text, line=line, end_line=end_line)
@@ -363,7 +384,11 @@ def _path_only_fallback_for_invalid_anchor(token: str) -> PathCitation | None:
     base_path = candidate_path
     if ":" in base_path:
         stripped_path, candidate_line = base_path.rsplit(":", 1)
-        if candidate_line.isdigit():
+        try:
+            colon_anchor = _colon_line_anchor(candidate_line)
+        except ValueError:
+            colon_anchor = None
+        if colon_anchor is not None:
             base_path = stripped_path
     return _parse_path_token(base_path)
 
@@ -493,7 +518,7 @@ def _run_symbol_search(
     symbol: str,
     scope: str,
 ) -> subprocess.CompletedProcess[str]:
-    cmd = ["rg", "--line-number", "--fixed-strings", symbol, scope]
+    cmd = ["rg", "--with-filename", "--line-number", "--fixed-strings", symbol, scope]
     try:
         return subprocess.run(
             cmd,
