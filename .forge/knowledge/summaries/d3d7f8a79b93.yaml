@@ -1,0 +1,96 @@
+schema_version: 2
+run_id: d3d7f8a79b93
+authoritative_run_record: .forge/audits/runs/d3d7f8a79b93.json
+generated_at: '2026-08-23T15:09:39.249962+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00967125
+story:
+  slug: issue-2711
+  name: One unresolvable citation token aborts the whole symbol search for a finding,
+    so evidence that would have resolved is discarded with it
+  github_issue: 2711
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/triage_backlog_report.py
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: The run changed symbol-search handling so a single unresolvable cited
+    candidate no longer aborts the entire lookup, preserving evidence from resolvable
+    candidates while keeping fully unexecutable searches distinct as unverified. It
+    also refined the evidence text to describe narrowed search scope.
+  approach: The change narrowed mixed candidate sets to executable inputs before running
+    the search, then carried the executed scope through into evidence reporting so
+    partial execution and total execution failure remain distinguishable.
+  files_modified: *id002
+what_was_learned:
+- claim: When evidence generation narrows a check to executable inputs, the reported
+    evidence must describe the actual executed subset rather than the original broader
+    citation set, or future readers cannot tell what absence results mean.
+  evidence:
+  - type: review_finding
+    finding_id: 66b2ce41c832993f
+    description: This review finding reported that absence evidence still read as
+      if the whole cited symbol space had been checked even after narrowing to resolvable
+      paths, demonstrating that partial execution needs explicit scope reporting to
+      keep evidence interpretable.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review cycle approved only after narrowed-scope detail
+      was added, showing that preserving successful partial searches was not sufficient
+      by itself; the evidence also had to state the reduced scope.
+  - type: diff
+    ref: a210dcf89ba975620bfeea04ab6966354a0d7948
+    description: This follow-up diff addressed the review concern by refining symbol-evidence
+      scope detail, evidencing that executed-scope reporting was treated as part of
+      the correctness of the fix rather than incidental wording.
+- claim: If execution scope is computed during a search, later evidence rendering
+    should reuse that recorded scope instead of re-deriving it independently, because
+    duplicated resolution logic can let the reported scope drift from the scope actually
+    searched.
+  evidence:
+  - type: review_finding
+    finding_id: 4243a6b61afbab4f
+    description: This review finding identified that evidence scope was being recomputed
+      by fresh path-existence checks rather than read back from the search inputs
+      that actually ran, demonstrating the risk of divergence between execution and
+      reporting.
+  - type: diff
+    ref: a210dcf89ba975620bfeea04ab6966354a0d7948
+    description: The follow-up diff resolved the issue surfaced in review, showing
+      that the run treated execution metadata as something to preserve and reuse for
+      reporting rather than something safe to reconstruct later.
+learned_patterns:
+- executed-scope-reporting
+- single-source-search-scope
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly focused on whether symbol evidence accurately described the
+    subset of candidate paths actually searched, not just whether the search stopped
+    failing.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 2.9432668
+  dominant_difficulty: Keeping partial-failure recovery and evidence semantics aligned
+    so narrowed execution neither looks like a full search nor gets recomputed inconsistently
+    later.

@@ -1,0 +1,59 @@
+schema_version: 2
+run_id: 04e97267b674
+authoritative_run_record: .forge/audits/runs/04e97267b674.json
+generated_at: '2026-08-23T14:50:43.620802+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00502625
+story:
+  slug: issue-2692
+  name: '[P2] issue-2227: When a finding cites an existing file with a descending'
+  github_issue: 2692
+story_shape:
+  work_type: bug
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/triage_backlog_report.py
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: 'The citation parser''s invalid-anchor fallback was adjusted so malformed
+    GitHub line anchors that raise during parsing degrade the same way as other unusable
+    fragments: they still emit the invalid citation row while also preserving a path-only
+    citation for file-level evidence gathering. Targeted parser tests were added for
+    descending line ranges and other invalid anchor forms to lock in the shared fallback
+    behavior.'
+  approach: The change normalized the parser branch that handles invalid fragments
+    by treating anchor-parse exceptions as another unusable-fragment case instead
+    of a stop condition, then verified the behavior at the parse_citations level with
+    focused regression cases.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- uniform-invalid-fragment-fallback
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review completed in one cycle with approval after a targeted parser fallback fix
+    and runtime-level regression coverage.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 0.8690407
+  dominant_difficulty: Aligning closely related malformed-fragment parse branches
+    so evidence collection depends on the checkable path portion rather than on which
+    rejection path the fragment takes.
