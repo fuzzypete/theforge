@@ -45,6 +45,8 @@ from theforge.sprint.launch_guard import (
     acquire_launch_story_locks,
 )
 from theforge.sprint.live_stories import (
+    InheritedAgentGroup,
+    LivenessResolution,
     await_inherited_agents,
     reclaim_inherited_agents,
     resolve_live_story_slugs,
@@ -260,10 +262,55 @@ def test_await_inherited_agents_treats_an_unreaped_zombie_as_finished(
 
         assert quiesced is True
         assert time.monotonic() - started < 1.0
-        assert logs == ["IN-FLIGHT issue-1945: inherited agent finished; resuming the story"]
+        assert logs == []
         assert not sidecar.exists()
     finally:
         proc.wait(timeout=5)
+
+
+def test_await_inherited_agents_logs_resume_only_after_announcing_the_wait(
+    tmp_path: Path,
+) -> None:
+    """A completion log should not appear unless the wait was actually announced."""
+    sidecar = tmp_path / "agent-sidecar.json"
+    sidecar.write_text("{}", encoding="utf-8")
+    group = InheritedAgentGroup(slug="issue-1945", pgid=4242, sidecar=sidecar)
+    resolutions = iter(
+        [
+            LivenessResolution(live_slugs=frozenset({"issue-1945"})),
+            LivenessResolution(live_slugs=frozenset({"issue-1945"})),
+            LivenessResolution(),
+        ]
+    )
+    calls = iter([True, True, False])
+    logs: list[str] = []
+
+    with (
+        patch(
+            "theforge.sprint.live_stories.resolve_liveness",
+            side_effect=lambda *args, **kwargs: next(resolutions),
+        ),
+        patch(
+            "theforge.sprint.live_stories.resolve_inherited_agents",
+            side_effect=lambda *args, **kwargs: [group] if next(calls) else [],
+        ),
+    ):
+        quiesced = await_inherited_agents(
+            "issue-1945",
+            project_root=tmp_path,
+            path_pattern=".forge/worktrees/{slug}",
+            timeout=0.1,
+            poll_interval=0.01,
+            log=logs.append,
+        )
+
+    assert quiesced is True
+    assert logs == [
+        "IN-FLIGHT issue-1945: waiting up to 0s for the agent process group(s) 4242 inherited "
+        "across the re-exec to finish before resuming",
+        "IN-FLIGHT issue-1945: inherited agent finished; resuming the story",
+    ]
+    assert not sidecar.exists()
 
 
 def test_await_inherited_agents_reports_overrun_without_killing(tmp_path: Path) -> None:

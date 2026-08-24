@@ -1,0 +1,124 @@
+schema_version: 2
+run_id: 0253aff77c45
+authoritative_run_record: .forge/audits/runs/0253aff77c45.json
+generated_at: '2026-08-24T23:11:42.883229+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.012053749999999998
+story:
+  slug: issue-2711
+  name: One unresolvable citation token aborts the whole symbol search for a finding,
+    so evidence that would have resolved is discarded with it
+  github_issue: 2711
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- parsing
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/process_group.py
+- src/theforge/sprint/live_stories.py
+- src/theforge/triage_backlog_report.py
+- tests/test_process_group.py
+- tests/test_sprint_reexec_continuation.py
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: The run changed triage citation handling so symbol lookup no longer
+    collapses when one slash-shaped token cannot be resolved, preserving evidence
+    from candidates that can still be searched. It also made two follow-on adjustments
+    outside the main bugfix during review.
+  approach: The implementation narrowed symbol-search inputs to usable scopes and
+    kept tool-failure cases distinct from true no-result cases, with verification
+    exercised at both report level and mocked lookup boundaries while review-driven
+    fixes addressed separate process-group and live-story polling behaviors.
+  files_modified: *id002
+what_was_learned:
+- claim: When free-prose extraction feeds a mechanical checker, future runs should
+    preserve partial execution across mixed-quality candidates instead of treating
+    one invalid token as grounds to abort the whole check.
+  evidence:
+  - type: review_cycle
+    cycle: '1'
+    description: Review approved the change specifically because symbol lookup now
+      narrows to resolvable candidate scopes instead of aborting, showing that preserving
+      successful sub-checks was the behavior that mattered for this bug class.
+  - type: review_cycle
+    cycle: '2'
+    description: The second review cycle highlighted that the fix preserves evidence
+      from resolvable scopes while recording skipped candidates separately, demonstrating
+      the reusable principle that mixed valid/invalid inputs should degrade to partial
+      results rather than total loss.
+  - type: file
+    path: src/theforge/triage_backlog_report.py
+    description: This is the report logic where citation-derived symbol lookup was
+      handled, so changes here are the direct evidence that the run addressed execution
+      strategy for heterogeneous extracted inputs rather than only changing presentation.
+- claim: Polling or retry loops that gain waiting behavior need per-platform or per-situation
+    gating, because an unconditional delay in a failure path becomes user-visible
+    cost even when the underlying condition can never resolve.
+  evidence:
+  - type: review_finding
+    finding_id: cad28ba1b9e551c3
+    description: Review identified that a newly introduced sleep charged a fixed delay
+      on every retry even where enumeration could never succeed, showing the general
+      risk of unconditional waits in retry loops.
+  - type: review_cycle
+    cycle: '2'
+    description: The later approval notes that the prior P2 was resolved by making
+      the retry delay platform-gated and documented, confirming the lesson that waits
+      in retry logic should be conditional rather than universal.
+  - type: file
+    path: src/theforge/process_group.py
+    description: This file contains the retry path discussed in review, tying the
+      lesson to process-group membership polling rather than to an abstract style
+      preference.
+- claim: State-transition logging in poll-based flows should emit the start-of-wait
+    signal on the first wait state, not only on later polls, or fast-resolving waits
+    can produce completion logs with no matching record that waiting began.
+  evidence:
+  - type: review_finding
+    finding_id: 843d07870d3636b2
+    description: Review caught that delaying the 'waiting' announcement until the
+      second poll allowed a resolve-on-second-poll case to log resumption without
+      any prior wait-start line, exposing a general observability failure mode in
+      polling flows.
+  - type: review_cycle
+    cycle: '2'
+    description: The second approval says the prior P2 about inherited-agent waiting
+      was resolved, indicating that the review loop treated first-transition visibility
+      as necessary for coherent event logs.
+  - type: file
+    path: src/theforge/sprint/live_stories.py
+    description: This file is the live polling flow where the missing initial wait
+      log was reviewed, grounding the lesson in poll-driven state transitions.
+learned_patterns:
+- partial-check-preservation
+- gated-retry-delay
+- first-transition-logging
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review repeatedly focused on whether fallback and polling behavior preserved observability
+    and useful partial results instead of introducing silent loss or unconditional
+    waiting.
+complexity_signal:
+  actual_iterations: 3
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 5.05661925
+  dominant_difficulty: The main difficulty was preserving the semantic distinction
+    between unusable inputs, tool-execution failures, and genuine no-result outcomes
+    while still returning as much valid evidence as possible.

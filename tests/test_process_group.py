@@ -423,6 +423,22 @@ class TestGroupMembers:
             5678: "sysctl:1.000002",
         }
 
+    def test_unsupported_platform_skips_retry_delay_when_enumeration_is_unavailable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        sleeps: list[float] = []
+
+        monkeypatch.setattr(process_group.sys, "platform", "win32")
+        monkeypatch.setattr(
+            process_group,
+            "group_members_checked",
+            lambda _pgid: ({}, False),
+        )
+        monkeypatch.setattr(process_group.time, "sleep", sleeps.append)
+
+        assert process_group.group_members(4321) == {}
+        assert sleeps == []
+
     def test_lists_every_live_process_in_the_group(self, tmp_path: Path) -> None:
         pidfile = tmp_path / "gc.pid"
         script = (

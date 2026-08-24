@@ -461,6 +461,7 @@ def await_inherited_agents(
     """
     deadline = time.monotonic() + max(0.0, float(timeout))
     waited = False
+    wait_log_emitted = False
     while True:
         resolution = resolve_liveness(
             [slug],
@@ -479,7 +480,7 @@ def await_inherited_agents(
                 only_live=False,
                 is_group_alive=is_group_alive,
             )
-            if (waited or settled) and log is not None:
+            if wait_log_emitted and log is not None:
                 log(f"IN-FLIGHT {slug}: inherited agent finished; resuming the story")
             _discard_records(settled)
             return True
@@ -488,7 +489,7 @@ def await_inherited_agents(
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        if not waited and log is not None:
+        if waited and not wait_log_emitted and log is not None:
             if slug in resolution.live_slugs:
                 groups = resolve_inherited_agents(
                     [slug],
@@ -515,6 +516,7 @@ def await_inherited_agents(
                     "agent liveness is temporarily unobservable; retaining its sidecar "
                     "until it is confirmed finished or the wait times out"
                 )
+            wait_log_emitted = True
         waited = True
         time.sleep(min(max(0.01, poll_interval), remaining))
 
