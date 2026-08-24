@@ -1361,10 +1361,14 @@ class DiagnoseConfig:
 
     ``output_destination`` controls where the diagnosis artifact lands:
       - ``body_section`` — upsert a ``## Diagnosis`` section in the issue body
-                           (default: the sprint shape gate reads the issue body
-                           for the diagnosis artifact, so this is the destination
-                           that leaves the issue fix-ready after diagnose)
+                           (default behavior for bug-format issues: the sprint
+                           shape gate reads the issue body for the diagnosis
+                           artifact, so this is the destination that leaves a
+                           bug fix-ready after diagnose)
       - ``comment``      — post the artifact as a new GitHub issue comment
+                           (default behavior for non-bug issues when the
+                           configured/default destination is ``body_section``,
+                           so diagnose does not introduce plan-in-body blockers)
       - ``pr_to_body``   — write the artifact to ``.forge/diagnoses/issue-N.md``
                            so the operator can open a body-edit PR manually
     """
