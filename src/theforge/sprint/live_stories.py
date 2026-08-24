@@ -480,7 +480,7 @@ def await_inherited_agents(
                 only_live=False,
                 is_group_alive=is_group_alive,
             )
-            if (waited or settled) and log is not None:
+            if wait_log_emitted and log is not None:
                 log(f"IN-FLIGHT {slug}: inherited agent finished; resuming the story")
             _discard_records(settled)
             return True

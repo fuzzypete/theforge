@@ -933,10 +933,13 @@ def group_members(pgid: int) -> dict[int, str]:
     # A single unreadable pass is not evidence the group is empty; on Darwin the
     # kernel can momentarily refuse ``KERN_PROC_PGRP`` under table churn. The
     # checked API still reports that uncertainty to safety-critical callers, but
-    # this convenience helper retries a few times so transient read failures do
-    # not masquerade as missing members in observational paths and tests.
+    # this convenience helper retries a few times, with a short settling delay,
+    # so transient read failures do not masquerade as missing members in
+    # observational paths and tests. When the platform has no enumeration
+    # interface at all there is nothing to settle, so skip the delay entirely.
     for _ in range(2):
-        time.sleep(0.01)
+        if sys.platform.startswith("linux") or sys.platform == "darwin":
+            time.sleep(0.01)
         members, enumerated = group_members_checked(pgid)
         if members or enumerated:
             return members
