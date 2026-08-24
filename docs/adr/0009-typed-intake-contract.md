@@ -93,14 +93,38 @@ input.
 structural validity, and it may not be implemented by adding heuristics to the structural
 gate. Its findings identify the model, prompt, and version that produced them.
 `STRUCTURALLY_VALID` is a factual claim about grammar; `REVIEWED_READY` means a recorded
-semantic review was passed, not that the document is mechanically proven sound. Review
-findings are operator-ratifiable rather than silently authoritative.
+semantic review was passed, not that the document is mechanically proven sound.
+
+Raw semantic-review findings never change admission. Where policy requires semantic review
+before implementation, admission consumes a recorded, operator-ratified review state — never
+model output directly. Without this the stage becomes a second admission gate whose verdicts
+are probabilistic and unappealable, which is the failure this ADR exists to prevent, rebuilt
+one layer up.
 
 **7. Every producer renders and pre-validates.** Any component that writes an issue body —
 `shape`, `groom`, `diagnose`, `report`, the post-run hook — renders through the
 specification and validates the result before mutating anything. A producer that cannot
 produce a conforming body fails loudly rather than filing an object that is dead on
 arrival. Producer conformance is covered by tests, not by convention.
+
+**8. Parsing, rendering and round-tripping are part of the contract.** A specification that
+governs only emission leaves the larger surface — the existing corpus, and every body an
+operator writes by hand — outside it. The contract therefore covers the whole cycle:
+
+- Canonical and legacy Markdown both parse into a typed `IssueDocument`; recognition of a
+  legacy spelling on input never makes it canonical on output.
+- Renderers emit only the canonical form.
+- `render(parse(canonical_body))` is idempotent — a conforming document survives a
+  round trip unchanged.
+- Prose the specification does not model is preserved, not discarded. An operator's
+  reasoning, worked examples and asides are the reason issues are readable, and a
+  normalizer that drops what it cannot classify destroys the input it was meant to serve.
+- A conforming document is not rewritten because a producer touched it. Producers normalize
+  what does not conform and leave what does alone.
+
+This is where the failure mode has already been observed: #2053, where `forge shape --apply`
+rewrote a gate-passing bug body into one the gate refused. A renderer that does not
+round-trip is a destructive edit with a schema attached.
 
 ## Consequences
 
