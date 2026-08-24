@@ -58,10 +58,11 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
         emit_startup_auth_warnings=False,
     )
 
-    destination = args.output_destination or config.diagnose.output_destination
-    if destination not in DIAGNOSE_OUTPUT_DESTINATIONS:
+    requested_destination = args.output_destination
+    effective_destination = requested_destination or config.diagnose.output_destination
+    if effective_destination not in DIAGNOSE_OUTPUT_DESTINATIONS:
         print(
-            f"--output: {destination!r} is not a valid destination. "
+            f"--output: {effective_destination!r} is not a valid destination. "
             f"Valid: {sorted(DIAGNOSE_OUTPUT_DESTINATIONS)}",
             file=sys.stderr,
         )
@@ -118,7 +119,7 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
             config=config,
             project_root=config.project_root,
             interactive=interactive,
-            output_destination=destination,
+            output_destination=requested_destination,
             dry_run=args.dry_run,
             timeout_seconds=timeout_override,
         )
