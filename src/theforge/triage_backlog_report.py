@@ -203,6 +203,15 @@ class InvalidPathCitation:
     detail: str
 
 
+@dataclass(frozen=True)
+class SymbolLookupResult:
+    """Symbol search hits plus any candidate scopes skipped as unresolvable."""
+
+    hits: tuple[tuple[str, int], ...]
+    searched_scopes: tuple[str, ...] = ()
+    unresolved_candidates: tuple[str, ...] = ()
+
+
 def _parse_iso8601(timestamp: str) -> datetime:
     text = str(timestamp or "").strip()
     if not text:
@@ -479,15 +488,14 @@ def _git_churn_count(project_root: Path, relpath: str, created_at: str) -> int:
     return sum(1 for line in proc.stdout.splitlines() if line.strip())
 
 
-def _symbol_hits(
+def _run_symbol_search(
     project_root: Path,
     symbol: str,
-    candidate_paths: tuple[str, ...] = (),
-) -> list[tuple[str, int]]:
-    cmd = ["rg", "--line-number", "--fixed-strings", symbol]
-    cmd.extend(candidate_paths or ["."])
+    scope: str,
+) -> subprocess.CompletedProcess[str]:
+    cmd = ["rg", "--line-number", "--fixed-strings", symbol, scope]
     try:
-        proc = subprocess.run(
+        return subprocess.run(
             cmd,
             capture_output=True,
             text=True,
@@ -496,30 +504,55 @@ def _symbol_hits(
             check=False,
         )
     except FileNotFoundError:
-        proc = subprocess.run(
-            ["git", "grep", "-n", "-F", symbol, "--", *(candidate_paths or ["."])],
+        return subprocess.run(
+            ["git", "grep", "-n", "-F", symbol, "--", scope],
             capture_output=True,
             text=True,
             cwd=str(project_root),
             timeout=_SEARCH_TIMEOUT_SECONDS,
             check=False,
         )
-    if proc.returncode not in {0, 1}:
-        err = proc.stderr.strip() or proc.stdout.strip() or "symbol search failed"
-        raise RuntimeError(err)
+
+
+def _symbol_hits(
+    project_root: Path,
+    symbol: str,
+    candidate_paths: tuple[str, ...] = (),
+) -> SymbolLookupResult:
+    scopes = candidate_paths or (".",)
+    searchable_scopes: list[str] = []
+    unresolved_candidates: list[str] = []
+    if candidate_paths:
+        for scope in scopes:
+            if (project_root / scope).exists():
+                searchable_scopes.append(scope)
+            else:
+                unresolved_candidates.append(scope)
+    else:
+        searchable_scopes.append(".")
+
     hits: list[tuple[str, int]] = []
-    for line in proc.stdout.splitlines():
-        parts = line.split(":", 2)
-        if len(parts) < 2 or not parts[1].isdigit():
-            continue
-        hits.append((parts[0], int(parts[1])))
+    for scope in searchable_scopes:
+        proc = _run_symbol_search(project_root, symbol, scope)
+        if proc.returncode not in {0, 1}:
+            err = proc.stderr.strip() or proc.stdout.strip() or "symbol search failed"
+            raise RuntimeError(err)
+        for line in proc.stdout.splitlines():
+            parts = line.split(":", 2)
+            if len(parts) < 2 or not parts[1].isdigit():
+                continue
+            hits.append((parts[0], int(parts[1])))
     deduped: list[tuple[str, int]] = []
     seen: set[tuple[str, int]] = set()
     for hit in hits:
         if hit not in seen:
             seen.add(hit)
             deduped.append(hit)
-    return deduped
+    return SymbolLookupResult(
+        hits=tuple(deduped),
+        searched_scopes=tuple(searchable_scopes),
+        unresolved_candidates=tuple(unresolved_candidates),
+    )
 
 
 def _resolve_extensionless_path(project_root: Path, relpath: str) -> str | None:
@@ -692,12 +725,15 @@ def _symbol_evidence(
     project_root: Path,
     candidate_paths: tuple[str, ...],
     churn_counter: Callable[[Path, str, str], int],
-    symbol_lookup: Callable[[Path, str, tuple[str, ...]], list[tuple[str, int]]],
+    symbol_lookup: Callable[
+        [Path, str, tuple[str, ...]],
+        list[tuple[str, int]] | SymbolLookupResult,
+    ],
 ) -> tuple[list[EvidenceEntry], list[EvidenceEntry]]:
     checked: list[EvidenceEntry] = []
     failed: list[EvidenceEntry] = []
     try:
-        hits = symbol_lookup(project_root, citation.symbol, candidate_paths)
+        lookup_result = symbol_lookup(project_root, citation.symbol, candidate_paths)
     except Exception as exc:  # noqa: BLE001 - becomes explicit unverified evidence
         failed.append(
             EvidenceEntry(
@@ -712,20 +748,47 @@ def _symbol_evidence(
         )
         return checked, failed
 
-    if not hits:
+    if isinstance(lookup_result, SymbolLookupResult):
+        result = lookup_result
+    else:
+        result = SymbolLookupResult(
+            hits=tuple(lookup_result),
+            searched_scopes=candidate_paths or (".",),
+        )
+
+    if result.unresolved_candidates:
+        failed.append(
+            EvidenceEntry(
+                evidence_id=f"symbol:{citation.symbol}:candidate-paths-unverified",
+                kind="unverified",
+                summary=(
+                    f"skipped {len(result.unresolved_candidates)} unresolvable candidate "
+                    f"path(s) while searching for cited symbol {citation.symbol}"
+                ),
+                detail=", ".join(result.unresolved_candidates),
+                checkable=False,
+                observed_status=STATUS_UNVERIFIED,
+                artifact=citation.symbol,
+            )
+        )
+
+    if not result.hits and not result.searched_scopes:
+        return checked, failed
+
+    if not result.hits:
         checked.append(
             EvidenceEntry(
                 evidence_id=f"symbol:{citation.symbol}:absent",
                 kind="staleness",
                 summary=f"cited symbol {citation.symbol} absent from current tree",
-                detail=f"searched for {citation.symbol} at HEAD",
+                detail=f"searched for {citation.symbol} in {', '.join(result.searched_scopes)}",
                 observed_status=STATUS_STALE,
                 artifact=citation.symbol,
             )
         )
         return checked, failed
 
-    unique_paths = sorted({path for path, _line in hits}, key=str.lower)
+    unique_paths = sorted({path for path, _line in result.hits}, key=str.lower)
     if len(unique_paths) != 1:
         failed.append(
             EvidenceEntry(
@@ -744,7 +807,7 @@ def _symbol_evidence(
         return checked, failed
 
     target_path = unique_paths[0]
-    first_line = next(line for path, line in hits if path == target_path)
+    first_line = next(line for path, line in result.hits if path == target_path)
     checked.append(
         EvidenceEntry(
             evidence_id=f"symbol:{citation.symbol}:present",
@@ -819,7 +882,11 @@ def build_backlog_report(
     named_milestones: tuple[str, ...],
     now: datetime | None = None,
     churn_counter: Callable[[Path, str, str], int] | None = None,
-    symbol_lookup: Callable[[Path, str, tuple[str, ...]], list[tuple[str, int]]] | None = None,
+    symbol_lookup: Callable[
+        [Path, str, tuple[str, ...]],
+        list[tuple[str, int]] | SymbolLookupResult,
+    ]
+    | None = None,
     milestone_inventory_error: str | None = None,
 ) -> BacklogTriageReport:
     """Build the deterministic report for an already-fetched backlog issue set."""
