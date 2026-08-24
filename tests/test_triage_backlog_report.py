@@ -14,7 +14,9 @@ from theforge.triage_backlog_report import (
     STATUS_STALE,
     STATUS_UNVERIFIED,
     BacklogIssue,
+    SymbolLookupResult,
     TriageBacklogReportError,
+    _symbol_hits,
     build_backlog_report,
     fetch_backlog_issues,
     render_backlog_report,
@@ -268,6 +270,70 @@ class TestBuildBacklogReport:
         assert any(
             "cited symbol _validate_auto_api_fallback_schema absent" in e.summary
             for e in finding.evidence
+        )
+
+    def test_keeps_symbol_hits_when_some_candidate_paths_do_not_resolve(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def DemoSymbol():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(28, "Evidence: `src/demo.py`, `feat/issue-610`, and `DemoSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 2,
+            symbol_lookup=lambda _root, _symbol, _paths: SymbolLookupResult(
+                hits=(("src/demo.py", 1),),
+                searched_scopes=("src/demo.py",),
+                unresolved_candidates=("feat/issue-610",),
+            ),
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(entry.evidence_id == "symbol:DemoSymbol:present" for entry in finding.evidence)
+        assert any(
+            entry.evidence_id == "symbol:DemoSymbol:candidate-paths-unverified"
+            for entry in finding.evidence
+        )
+        assert not any(
+            entry.evidence_id == "symbol:DemoSymbol:lookup-unverified"
+            for entry in finding.evidence
+        )
+
+    def test_reports_symbol_absent_across_resolvable_candidates_even_when_some_are_skipped(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def helper():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(29, "Evidence: `src/demo.py`, `feat/issue-610`, and `MissingSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: SymbolLookupResult(
+                hits=(),
+                searched_scopes=("src/demo.py",),
+                unresolved_candidates=("feat/issue-610",),
+            ),
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            entry.evidence_id == "symbol:MissingSymbol:absent" for entry in finding.evidence
+        )
+        assert any(
+            entry.evidence_id == "symbol:MissingSymbol:candidate-paths-unverified"
+            for entry in finding.evidence
         )
 
     def test_marks_unverified_when_no_checkable_citation_can_be_parsed(
@@ -546,3 +612,32 @@ class TestRendering:
         assert "FINDING BACKLOG — 0 open" in rendered
         assert "No open finding-labeled issues matched the backlog query." in rendered
         assert "structured report: .forge/triage/report.yaml" in rendered
+
+
+class TestSymbolHits:
+    def test_skips_missing_candidate_paths_without_aborting_other_scopes(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def DemoSymbol():\n    return 1\n", encoding="utf-8")
+        calls: list[list[str]] = []
+
+        def _proc(*args, **kwargs) -> MagicMock:
+            cmd = args[0]
+            calls.append(cmd)
+            if cmd[-1] == "src/demo.py":
+                return MagicMock(returncode=0, stdout="src/demo.py:7:DemoSymbol\n", stderr="")
+            raise AssertionError(f"unexpected search scope: {cmd[-1]}")
+
+        with patch("subprocess.run", side_effect=_proc):
+            result = _symbol_hits(
+                tmp_path,
+                "DemoSymbol",
+                ("src/demo.py", "feat/issue-610"),
+            )
+
+        assert result.hits == (("src/demo.py", 7),)
+        assert result.searched_scopes == ("src/demo.py",)
+        assert result.unresolved_candidates == ("feat/issue-610",)
+        assert calls == [["rg", "--line-number", "--fixed-strings", "DemoSymbol", "src/demo.py"]]

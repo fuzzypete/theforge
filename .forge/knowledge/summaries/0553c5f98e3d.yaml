@@ -1,0 +1,102 @@
+schema_version: 2
+run_id: 0553c5f98e3d
+authoritative_run_record: .forge/audits/runs/0553c5f98e3d.json
+generated_at: '2026-08-24T22:59:24.495108+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00890125
+story:
+  slug: issue-2136
+  name: forge diagnose appends a Diagnosis section to non-bug issues, so its own output
+    trips the shape gate's plan-in-body blocker
+  github_issue: 2136
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 4
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- cli
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/cli/diagnose.py
+- src/theforge/config/types.py
+- src/theforge/coordinator/diagnose_flow.py
+- tests/test_cli_diagnose_parallel.py
+- tests/test_diagnose_flow.py
+what_changed:
+  description: The run changed diagnose output routing so non-bug issues no longer
+    get a body-appended Diagnosis section by default, avoiding shape-gate self-blocking
+    while keeping diagnosis content available. It also corrected the CLI path so configured
+    defaults are not misread as explicit body-section overrides on non-bug issues.
+  approach: The change made destination selection format-aware in the diagnosis flow/config
+    path, then aligned the CLI handoff with that resolver so only true user overrides
+    bypass the format-aware defaulting behavior, with regression checks covering direct
+    flow and CLI execution.
+  files_modified: *id002
+what_was_learned:
+- claim: When a flow distinguishes between implicit defaults and explicit user overrides,
+    CLI plumbing must preserve that distinction end-to-end; passing a resolved default
+    as a non-null argument can silently disable context-sensitive behavior.
+  evidence:
+  - type: review_finding
+    finding_id: 201e601e8ab3be6a
+    description: 'The review finding identifies the exact failure mode: the CLI supplied
+      the configured default as a non-null output_destination, and the downstream
+      resolver therefore treated it as an explicit override, bypassing the non-bug-aware
+      default selection.'
+  - type: review_cycle
+    cycle: '1'
+    description: Cycle 1 requested changes specifically because the flow-level logic
+      was correct but the real CLI execution path still converted the default into
+      an override, showing that context-sensitive defaults must be verified through
+      the entrypoint, not only in internal helpers.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved only after the CLI override regression was fixed
+      and non-bug default output landed as a comment, confirming that preserving implicit-versus-explicit
+      semantics across layers was the decisive issue.
+  - type: file
+    path: src/theforge/cli/diagnose.py
+    description: This file is where the CLI-to-flow argument handoff lives; its involvement,
+      together with the review finding, shows the bug arose at the boundary where
+      command-line inputs were translated into diagnosis options.
+  - type: file
+    path: src/theforge/coordinator/diagnose_flow.py
+    description: This file contains the destination resolution behavior that was intended
+      to be format-aware, demonstrating that the incorrect result came from how inputs
+      reached the resolver rather than from the resolver concept itself.
+learned_patterns:
+- implicit-vs-explicit-option-semantics
+review_insights:
+  recurring_findings: []
+  resolved_findings:
+  - finding_id: 201e601e8ab3be6a
+    severity: P1
+    file: src/theforge/coordinator/diagnose_flow.py
+    description: A plain forge diagnose CLI run on a non-bug issue still resolves
+      to body_section because the CLI passes the configured default as a non-null
+      output_destination and the resolver treats that value as an explicit override.
+    cycles_seen: 1
+    disposition: fixed
+  observations:
+  - The review loop repeatedly surfaced that the intended format-aware default worked
+    in the flow but was nullified by the CLI passing a default value as if it were
+    an explicit override.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 1.958337
+  dominant_difficulty: Preserving context-sensitive default behavior across configuration,
+    flow resolution, and CLI entrypoint layers without letting one layer collapse
+    defaults into overrides.

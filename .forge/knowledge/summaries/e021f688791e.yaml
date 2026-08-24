@@ -1,0 +1,60 @@
+schema_version: 2
+run_id: e021f688791e
+authoritative_run_record: .forge/audits/runs/e021f688791e.json
+generated_at: '2026-08-24T23:05:46.985015+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.005268749999999999
+story:
+  slug: issue-2713
+  name: Post-run findings carry no bug type, so intake adds feature-only refusals
+    to intentionally untriaged findings
+  github_issue: 2713
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- cli
+- config
+domains_provenance: *id001
+changed_files: &id002
+- .forge/hooks/post_run.sh
+- src/theforge/cli/hooks.py
+- tests/test_cli_setup.py
+what_changed:
+  description: The run updated the post-run issue filing path and the generated hook
+    template so auto-filed review findings are created with a bug type label. It also
+    adjusted the related setup test expectations for the scaffolded hook content.
+  approach: 'The change was applied at the issue-creation boundary rather than in
+    shape-check heuristics: the live hook and the CLI hook scaffold were aligned to
+    declare bug type explicitly when filing findings, and verification checked both
+    the active hook path and generated template output.'
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- type-at-creation
+- hook-template-parity
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review focused on keeping the live post-run hook and the init-hooks scaffold in
+    sync so both issue-filing paths declare the same bug type.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.55878145
+  dominant_difficulty: "The main difficulty was that the defect spanned two parallel\
+    \ hook paths\u2014the active script and the generated template\u2014which both\
+    \ needed the same type declaration behavior."

@@ -1249,6 +1249,7 @@ class TestCmdInitHooks:
         calls = gh_log.read_text(encoding="utf-8")
         assert "label create needs-triage" in calls
         assert "issue create" in calls
+        assert "--label bug" in calls
         assert "--label needs-triage" in calls
 
     def test_repo_configured_hook_renders_shape_gate_clean_body(self, tmp_path):
@@ -1434,6 +1435,7 @@ class TestCmdInitHooks:
         cmd_init_hooks(args)
         sh_path = tmp_path / ".forge" / "hooks" / "post_run.sh"
         content = sh_path.read_text(encoding="utf-8")
+        assert '--label "bug"' in content
         assert '--label "forge-finding"' in content
         assert '--label "needs-triage"' in content
 

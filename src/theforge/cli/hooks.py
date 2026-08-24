@@ -85,6 +85,7 @@ ${suggestion}
     gh issue create \\
       --title "$title" \\
       --body "$body" \\
+      --label "bug" \\
       --label "forge-finding" \\
       --label "needs-triage" \\
       --label "$(echo "$sev" | tr 'A-Z' 'a-z')" || true
