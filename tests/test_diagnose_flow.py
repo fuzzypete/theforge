@@ -1382,12 +1382,18 @@ class TestDiagnoseFlow:
         # Sanity: the configured default is the body-section destination so a
         # plain `forge diagnose` run lands where the shape gate looks.
         assert config.diagnose.output_destination == "body_section"
-        original_body = "Bug report: sprint drops the third story.\n"
+        original_body = (
+            "## What happened\n"
+            "The sprint drops the third story.\n\n"
+            "## What was expected\n"
+            "The sprint should run every selected story.\n"
+        )
         mock_fetch.return_value = {
             "number": 42,
             "title": "broken sprint",
             "body": original_body,
             "state": "OPEN",
+            "labels": [{"name": "bug"}],
         }
         mock_agent.return_value = _fake_agent_result(
             _agent_yaml_output(hypothesis_statuses=("confirmed",))
@@ -1410,6 +1416,82 @@ class TestDiagnoseFlow:
         # assertion fails, diagnose and sprint disagree on what fix-ready means.
         is_complete, missing = diagnosis_completeness(new_body)
         assert is_complete, f"diagnose output does not satisfy shape gate; missing: {missing}"
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_default_destination_uses_comment_for_non_bug_issue(
+        self, mock_agent, mock_fetch, mock_edit, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 43,
+            "title": "add export",
+            "body": (
+                "## Acceptance criteria\n"
+                "- Export the report as CSV.\n\n"
+                "## Example\n"
+                "`forge report --format csv` writes a CSV file.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "enhancement"}],
+        }
+        mock_post.return_value = "https://github.com/test/repo/issues/43#issuecomment-1"
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(hypothesis_statuses=("confirmed",))
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=43,
+            config=config,
+            project_root=tmp_path,
+        )
+
+        assert result.success
+        assert result.state.landing_destination == "comment"
+        assert mock_post.called
+        assert not mock_edit.called
+
+    @patch("theforge.coordinator.diagnose_flow._gh_post_comment")
+    @patch("theforge.coordinator.diagnose_flow._gh_edit_body")
+    @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
+    @patch("theforge.coordinator.diagnose_flow.run_agent")
+    def test_explicit_body_section_override_still_writes_non_bug_issue_body(
+        self, mock_agent, mock_fetch, mock_edit, mock_post, tmp_path
+    ):
+        config = self._setup_config(tmp_path)
+        mock_fetch.return_value = {
+            "number": 44,
+            "title": "add export",
+            "body": (
+                "## Acceptance criteria\n"
+                "- Export the report as CSV.\n\n"
+                "## Example\n"
+                "`forge report --format csv` writes a CSV file.\n"
+            ),
+            "state": "OPEN",
+            "labels": [{"name": "enhancement"}],
+        }
+        mock_agent.return_value = _fake_agent_result(
+            _agent_yaml_output(hypothesis_statuses=("confirmed",))
+        )
+
+        from theforge.coordinator.diagnose_flow import run_diagnose_flow
+
+        result = run_diagnose_flow(
+            issue_number=44,
+            config=config,
+            project_root=tmp_path,
+            output_destination="body_section",
+        )
+
+        assert result.success
+        assert result.state.landing_destination == "body_section"
+        assert mock_edit.called
+        assert not mock_post.called
 
     @patch("theforge.coordinator.diagnose_flow._gh_fetch_issue")
     @patch("theforge.coordinator.diagnose_flow.run_agent")
