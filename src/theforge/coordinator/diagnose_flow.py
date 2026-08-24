@@ -54,6 +54,7 @@ from theforge.diagnose_types import (
     render_artifact_markdown,
     upsert_diagnosis_section,
 )
+from theforge.shape_check.heuristics import is_bug_format_issue
 from theforge.task.diagnose_prompts import (
     DiagnoseParseOutcome,
     build_diagnose_prompt,
@@ -1003,6 +1004,29 @@ def _emit_dry_run(text: str) -> None:
     print("\n".join(prefix + line for line in text.splitlines()))
 
 
+def _resolve_output_destination(
+    *,
+    configured_destination: str,
+    override_destination: str | None,
+    issue_body: str,
+    issue_labels: list[str],
+) -> str:
+    """Resolve the landing destination for this issue shape.
+
+    Explicit CLI/config overrides win as-is. The shipped default remains
+    body-section landing for bug-format issues because the shape gate reads the
+    Diagnosis artifact from the body; non-bug issues default to comments so
+    diagnose does not manufacture plan-in-body blockers on enhancement stories.
+    """
+    if override_destination is not None:
+        return override_destination
+    if configured_destination != "body_section":
+        return configured_destination
+    if is_bug_format_issue(issue_body, issue_labels):
+        return "body_section"
+    return "comment"
+
+
 def _land_artifact(
     state: DiagnoseState,
     artifact: DiagnosisArtifact,
@@ -1344,10 +1368,10 @@ def _run_diagnose_flow_body(
     """
     emit_phase(DiagnosePhase.INIT)
 
-    destination = output_destination or config.diagnose.output_destination
-    if destination not in DIAGNOSE_OUTPUT_DESTINATIONS:
+    configured_destination = output_destination or config.diagnose.output_destination
+    if configured_destination not in DIAGNOSE_OUTPUT_DESTINATIONS:
         state.error = (
-            f"Unknown output_destination {destination!r}; "
+            f"Unknown output_destination {configured_destination!r}; "
             f"valid: {sorted(DIAGNOSE_OUTPUT_DESTINATIONS)}"
         )
         emit_phase(DiagnosePhase.FAILED)
@@ -1366,6 +1390,17 @@ def _run_diagnose_flow_body(
 
     state.issue_title = str(issue.get("title", ""))
     state.issue_body = str(issue.get("body", ""))
+    issue_labels = [
+        str(lbl.get("name", "")).strip()
+        for lbl in (issue.get("labels") or [])
+        if isinstance(lbl, dict)
+    ]
+    destination = _resolve_output_destination(
+        configured_destination=configured_destination,
+        override_destination=output_destination,
+        issue_body=state.issue_body,
+        issue_labels=issue_labels,
+    )
 
     # Operator-action issues describe a human deliverable, not a dev-runnable
     # defect. Diagnosis is a dev-cycle preparatory flow, so running it against an
@@ -1377,11 +1412,7 @@ def _run_diagnose_flow_body(
     # chain, so a module-level import risks a circular import during flow load.
     from theforge.sprint.shape_gate import OPERATOR_ACTION_LABEL
 
-    label_names = {
-        str(lbl.get("name", "")).strip().lower()
-        for lbl in (issue.get("labels") or [])
-        if isinstance(lbl, dict)
-    }
+    label_names = {name.lower() for name in issue_labels}
     if OPERATOR_ACTION_LABEL.lower() in label_names:
         state.error = (
             f"Refusing to diagnose: issue #{issue_number} is labeled "
