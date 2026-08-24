@@ -493,6 +493,29 @@ class TestBuildBacklogReport:
             for entry in finding.evidence
         )
 
+    def test_unsupported_colon_fragment_is_unverified_not_stale(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("one\ntwo\nthree\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(25, "Evidence: `src/demo.py:L469-L480`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            entry.evidence_id == "path:src/demo.py:L469-L480:unverified"
+            for entry in finding.evidence
+        )
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
     def test_marks_unverified_when_bare_filename_does_not_resolve(self, tmp_path: Path) -> None:
         report = build_backlog_report(
             [_issue(22, "Operators were editing a stray config.yaml during the incident.")],
