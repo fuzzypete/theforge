@@ -936,6 +936,7 @@ def group_members(pgid: int) -> dict[int, str]:
     # this convenience helper retries a few times so transient read failures do
     # not masquerade as missing members in observational paths and tests.
     for _ in range(2):
+        time.sleep(0.01)
         members, enumerated = group_members_checked(pgid)
         if members or enumerated:
             return members
