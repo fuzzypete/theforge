@@ -1,0 +1,73 @@
+schema_version: 2
+run_id: af3637bd9ebe
+authoritative_run_record: .forge/audits/runs/af3637bd9ebe.json
+generated_at: '2026-08-25T05:47:12.474100+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00671375
+story:
+  slug: issue-2691
+  name: A body whose citations were all rejected as external is reported as citing
+    nothing checkable, so the reason sends the reader hunting for a citation that
+    is present
+  github_issue: 2691
+story_shape:
+  work_type: bug
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- parsing
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- src/theforge/triage_backlog_report.py
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: The backlog citation parser/reporting path was updated so bodies containing
+    recognized-but-uncheckable external URL citations are no longer reported with
+    the same generic prose-only reason used when no citation is present. Tests were
+    updated to distinguish the external-reference case from genuinely citation-free
+    prose.
+  approach: The change preserved the existing citation parsing flow but carried enough
+    state through the fallback path to tell apart absent citations from discarded
+    external candidates, then verified that distinction in backlog-report tests.
+  files_modified: *id002
+what_was_learned:
+- claim: For citation-reporting bugs in this area, inspect src/theforge/triage_backlog_report.py
+    rather than src/theforge/triage_report.py; the issue text can point at the stale
+    module after the citation logic has moved.
+  evidence:
+  - type: file
+    path: src/theforge/triage_backlog_report.py
+    description: This file contains the active backlog citation parsing/reporting
+      logic discussed in the diagnosis, so changes here are what affect how citation-free
+      versus discarded-citation bodies are classified.
+  - type: diff
+    ref: 08e4559240f6546902ac763d2ee5c3d5bc454392
+    description: The implementation changes landed in the backlog-report module rather
+      than triage_report.py, demonstrating that future investigations of this behavior
+      should start from the moved logic, not the story's stale path.
+learned_patterns:
+- stale-issue-path
+- discarded-citation-vs-no-citation
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - The single review cycle approved the first pass without surfacing additional issues.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 1.3146586
+  dominant_difficulty: The main difficulty was locating the live citation-classification
+    path after the logic had moved, because the reported file path was stale.
