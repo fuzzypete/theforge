@@ -341,8 +341,14 @@ def test_protected_base_parallel_merge_pr_poc(
         ],
     )
 
-    a_done = threading.Event()
-    c_dispatched = threading.Event()
+    # The story's scenario, sequenced rather than raced: story A finishes only
+    # once story B is running, and story B stays running until story C has been
+    # admitted. So C is admitted with A's canonical artifacts already written
+    # and a sibling still in flight — the exact condition the acceptance
+    # criterion names — and it is admitted there every run, not when the
+    # scheduler happens to interleave that way.
+    b_entered = threading.Event()
+    c_entered = threading.Event()
     observed_dirt: dict[str, str | None] = {}
     in_flight: set[str] = set()
     active_at_c: list[set[str]] = []
@@ -355,16 +361,15 @@ def test_protected_base_parallel_merge_pr_poc(
         # purpose: merge-pr does not enforce it, and the question the story asks
         # is about the checkout's state, not about whether forge looks.
         observed_dirt[slug] = landing_precondition_error(config, lands_in_project_root=True)
-        if slug == "story-b":
-            # Stay in flight until the scheduler has admitted the third story,
-            # so the admission genuinely happens with a sibling still running.
-            c_dispatched.wait(timeout=30)
-        if slug == "story-c":
-            active_at_c.append(set(in_flight))
-            c_dispatched.set()
-        _write_run_artifacts(protected_project, slug)
         if slug == "story-a":
-            a_done.set()
+            b_entered.wait(timeout=30)
+        elif slug == "story-b":
+            b_entered.set()
+            c_entered.wait(timeout=30)
+        elif slug == "story-c":
+            active_at_c.append(set(in_flight))
+            c_entered.set()
+        _write_run_artifacts(protected_project, slug)
         in_flight.discard(slug)
         return _result(slug, heads[slug], heads[slug])
 
@@ -524,6 +529,63 @@ def test_protected_base_parallel_merge_pr_poc(
     assert not (evidence / "run-story-c.landed.json").exists()
     attempts = sorted(p.name for p in evidence.glob("run-story-c.attempt-*.json"))
     assert attempts, "the failed landing left no attempt record"
+
+
+def test_every_admission_is_preceded_by_a_drain_of_sibling_memory(
+    protected_project: Path, fake_gh: Path, tmp_path: Path
+) -> None:
+    """The mid-pass window, closed and asserted as a position rather than a race.
+
+    The pass-level publish runs once per scheduling pass, so a sibling finishing
+    *during* a pass leaves its record in the shared checkout for the next story
+    admitted from the same ``ready`` snapshot. This drives that window directly:
+    the traced drain writes a sibling's artifacts immediately before delegating
+    to the real one, which is the worst case the window can produce, and the
+    story admitted next must still enter a clean checkout.
+    """
+    config = _config(protected_project, "merge-pr")
+    manifest = _manifest(protected_project, ["story-a", "story-b"], max_parallel=1)
+    _protect_base(tmp_path)
+    _set_prs(fake_gh, [])
+
+    from theforge.sprint import runner as _runner
+
+    real_drain = _runner.drain_project_memory_before_dispatch
+    events: list[str] = []
+    observed_dirt: dict[str, str | None] = {}
+    sibling = ["run-sibling-1", "run-sibling-2"]
+
+    def traced_drain(state):
+        # A sibling finishing in the window this drain exists to close.
+        if sibling:
+            _write_run_artifacts(protected_project, sibling.pop(0))
+        events.append("drain")
+        return real_drain(state)
+
+    def fake_run_task(_config, task, *args, **kwargs):
+        events.append(f"dispatch:{task.slug}")
+        observed_dirt[task.slug] = landing_precondition_error(config, lands_in_project_root=True)
+        _write_run_artifacts(protected_project, task.slug)
+        return _result(task.slug, "a" * 40, "a" * 40)
+
+    with (
+        patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+        patch("theforge.sprint.runner.drain_project_memory_before_dispatch", traced_drain),
+        patch(
+            "theforge.coordinator.completion.land_story",
+            side_effect=lambda *a, **k: ({"action": "merge-pr", "merged": False}, "failed"),
+        ),
+    ):
+        run_sprint_ctx(config, manifest)
+
+    dispatches = [i for i, event in enumerate(events) if event.startswith("dispatch:")]
+    assert dispatches, "no story was dispatched"
+    for index in dispatches:
+        assert events[index - 1] == "drain", (
+            f"{events[index]} was admitted without a preceding drain: {events}"
+        )
+    refused = {slug: err for slug, err in observed_dirt.items() if err}
+    assert refused == {}, f"stories admitted into a dirty checkout: {refused}"
 
 
 def test_a_reachable_refusal_is_prevented_by_the_publication_seam(

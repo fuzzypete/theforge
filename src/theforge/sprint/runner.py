@@ -86,6 +86,7 @@ from .audit import (
     write_live_story_audit,
 )
 from .audit_publish import (
+    drain_project_memory_before_dispatch,
     project_root_dirt_is_story_run_artifacts_only,
     publish_pending_story_run_audits,
     publish_story_run_artifacts_for_config,
@@ -6916,6 +6917,14 @@ def run_sprint(context: SprintRunContext) -> SprintResult:
                 if _budget_decision is not None:
                     _sprint_state.budget.skip_story(task.slug, _budget_decision)
                     continue
+
+                # A sibling can finish *during* this pass, after the publish
+                # above and before this story is admitted, leaving its record in
+                # the shared checkout for the newcomer to be refused by (#2598).
+                # The pass-level publish cannot close that window; a drain
+                # immediately before admission can, and costs a status probe.
+                if not _publish_needs_quiescence:
+                    drain_project_memory_before_dispatch(_sprint_state)
 
                 # Eager merge for sequential mode; disabled in parallel mode
                 effective_am = (

@@ -120,6 +120,79 @@ def _write_memory(root: Path, run_id: str, *, landing: bool = False) -> None:
         )
 
 
+# ── Nothing transient is ever visible in the tracked trees ───────────────
+#
+# The memory trees are re-included by forge's generated .gitignore precisely so
+# they are tracked. A write-in-progress file inside one of them is therefore
+# indistinguishable from project memory: it dirties the shared checkout for as
+# long as the write takes — enough to refuse a sibling story — and the transport
+# would carry it into the corpus. Both writers put their temporary file outside
+# the tree for that reason (#2598).
+
+
+def test_the_run_record_writer_leaves_no_temporary_file_in_the_tracked_tree(
+    protected_repo: Path,
+) -> None:
+    from theforge.sprint.audit import _replace_canonical_run_file
+
+    runs = protected_repo / ".forge" / "audits" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+
+    _replace_canonical_run_file(runs / "run-a.json", {"run_id": "run-a"})
+
+    assert [p.name for p in runs.iterdir()] == ["run-a.json"]
+    assert _git(protected_repo, "status", "--porcelain", "-uall") == (
+        "?? .forge/audits/runs/run-a.json"
+    )
+
+
+def test_the_evidence_writer_leaves_no_temporary_file_in_the_tracked_tree(
+    protected_repo: Path,
+) -> None:
+    from theforge.coordinator.landing_evidence import (
+        build_landing_assertion,
+        landing_evidence_dir,
+        write_landing_assertion,
+    )
+
+    write_landing_assertion(
+        protected_repo,
+        build_landing_assertion(
+            run_id="run-a",
+            slug="issue-1",
+            landing_mode="merge-pr",
+            target_branch=BASE,
+            reviewed_commit="aaaa111",
+            gated_commit="aaaa111",
+            carrier_kind="pull_request",
+            carrier_ref="#1",
+            landed_commit="bbbb222",
+            observer="test",
+        ),
+    )
+
+    evidence = landing_evidence_dir(protected_repo)
+    assert [p.name for p in evidence.iterdir()] == ["run-a.landed.json"]
+    assert _git(protected_repo, "status", "--porcelain", "-uall") == (
+        "?? .forge/audits/landing/run-a.landed.json"
+    )
+
+
+def test_a_stray_temporary_file_is_never_treated_as_publishable_memory(
+    protected_repo: Path,
+) -> None:
+    """Belt and braces for repositories whose writers pre-date the fix."""
+    runs = protected_repo / ".forge" / "audits" / "runs"
+    runs.mkdir(parents=True, exist_ok=True)
+    (runs / "run-a.tmp").write_text("half-written", encoding="utf-8")
+    _write_memory(protected_repo, "run-b")
+
+    assert pending_memory_paths(protected_repo) == [
+        ".forge/audits/runs/run-b.json",
+        ".forge/knowledge/summaries/run-b.yaml",
+    ]
+
+
 # ── The policy this exists for ───────────────────────────────────────────
 
 

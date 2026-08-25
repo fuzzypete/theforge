@@ -676,6 +676,46 @@ def publish_story_run_audits(
         raise
 
 
+def drain_project_memory_before_dispatch(state: Any) -> list[str]:
+    """Clear a finished sibling's project memory out of the shared checkout.
+
+    Called immediately before a story is admitted. The pass-level publish
+    (:func:`publish_pending_story_run_audits`) runs once per scheduling pass,
+    which leaves a window: a sibling can finish *during* a pass, between that
+    publish and the dispatch of the next story in the same ``ready`` snapshot.
+    The story then enters with the sibling's record in the shared checkout, and
+    under a project-root landing workflow that is a refusal — of approved work,
+    for a reason that has nothing to do with the story.
+
+    Draining rather than publishing is what makes this affordable at this
+    frequency: it is three ``git status`` probes and a file move, with no branch,
+    commit or push. The staged content is published by the next pass-level
+    publish or by the terminal sweep.
+
+    Only for runs that do *not* land in the project root, which is the same
+    condition that lets those runs publish without waiting for a quiet pass.
+    A run that lands locally publishes by committing the working-tree copies, so
+    draining them out from under that commit would hide the memory it is about
+    to publish.
+
+    Returns the paths drained, so a caller can say what it moved. Never raises:
+    a story must not fail to dispatch because bookkeeping could not run.
+    """
+    from .memory_publication import stage_pending_project_memory  # noqa: PLC0415
+
+    try:
+        staged = stage_pending_project_memory(state.context.config.project_root)
+    except Exception as exc:  # noqa: BLE001 — never blocks a dispatch
+        _log(f"Warning: could not drain pending project memory before dispatch: {exc}")
+        return []
+    if staged.errors:
+        _log(
+            "⚠ SPRINT  some project memory could not be drained before dispatch: "
+            + "; ".join(staged.errors)
+        )
+    return staged.paths
+
+
 def publish_pending_story_run_audits(
     state: Any,  # SprintExecutionState — see the module docstring on why not typed
     *,

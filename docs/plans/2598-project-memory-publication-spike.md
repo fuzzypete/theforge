@@ -120,6 +120,31 @@ is now keyed to `config_lands_in_project_root`: a run with no local landings pub
 every pass, which is what keeps a finished story's artifacts from standing across its
 sibling's entry under `--parallel`.
 
+**A pass-level publish is not sufficient on its own.** It runs once per scheduling pass, so
+a sibling that finishes *during* a pass leaves its record in the shared checkout for the
+next story admitted from the same `ready` snapshot — a window the pass-level publish cannot
+close, and one this spike's own proof of concept hit intermittently before it was closed.
+So each admission is preceded by a *drain* (`drain_project_memory_before_dispatch`): the
+staging half alone, with no branch, commit or push, which is what makes it affordable at
+per-story frequency. Publication stays at the pass level. This is only done for runs that do
+not land in the project root — the same condition that lets them publish without waiting for
+a quiet pass — because a run that lands locally publishes by committing the working-tree
+copies, and draining them would hide the memory it is about to publish.
+
+### Nothing transient may live in a tracked tree
+
+Both canonical writers wrote their atomic-replace temporary file *inside* the tree they were
+writing to: `.forge/audits/runs/<run>.tmp`, and the same shape for landing evidence. Those
+trees are re-included by the generated `.gitignore` precisely so they are tracked, which
+made a write-in-progress file indistinguishable from project memory. It dirtied the shared
+checkout for as long as the write took — enough to refuse a sibling story's landing — and
+the transport would have carried it into the corpus as a half-written record.
+
+Both now write to `.forge/audits/.tmp/`, denied by the same `.forge/**` rule and re-included
+by nothing, on the same filesystem so the replace stays atomic. The transport additionally
+refuses to treat any `.tmp` path as publishable memory, for repositories carrying strays
+from writers that pre-date this.
+
 ### The memory branch
 
 One long-lived branch, `forge/project-memory`, updated in place, with one pull request into
@@ -302,7 +327,8 @@ constructor, not at the call sites.
 | `sprint/memory_publication.py` (new) | Staging and the memory-branch/PR transport. Does not import the runner (ADR-0008) |
 | `sprint/landing_observation.py` (new) | When an assertion may be built; the in-sprint and post-exit observers |
 | `sprint/audit_publish.py` | Transport selection, the policy-refusal fallback, the third tracked memory tree |
-| `sprint/runner.py` | Evidence emission at `_attempt_integration` and the queued-PR wrap-up; reconciliation at sprint startup; mid-sprint publish no longer requires quiescence for runs that do not land locally |
+| `sprint/runner.py` | Evidence emission at `_attempt_integration` and the queued-PR wrap-up; reconciliation at sprint startup; mid-sprint publish no longer requires quiescence for runs that do not land locally; a drain immediately before each admission |
+| `sprint/audit.py`, `coordinator/landing_evidence.py` | Atomic-replace temporary files moved out of the tracked memory trees into `.forge/audits/.tmp/` |
 | `coordinator/audit_storage.py` | The evidence tree joins `AUDIT_PATH_REGISTRY`, so the diagnose briefing renders it |
 | `cli/init_commands.py`, repo `.gitignore` / `.gitattributes` | `.forge/audits/landing/` re-included as project memory and marked generated |
 
@@ -316,6 +342,11 @@ Two seams were touched *because of* this work rather than by it:
 * The mid-sprint publish's quiescence requirement was attributed to publishing; it belongs
   to project-root landing. Re-keying it is what lets a parallel `merge-pr` sprint publish
   between a completed story and its successor's entry.
+* Both canonical writers put their atomic-replace temporary file inside the tracked tree
+  they were writing to, making a write in progress indistinguishable from project memory:
+  transient dirt in the shared checkout, and a publishable half-written artifact. Found by
+  this spike's own proof of concept, which saw `?? .forge/audits/runs/<run>.tmp` at a
+  story's admission.
 
 **Not changed:** `CURRENT_RECORD_SCHEMA_VERSION` and `SUBSTRATE_SCHEMA_VERSION`. The run
 record's serialized shape is untouched — evidence is a *new artifact beside it*, not a new
@@ -334,6 +365,8 @@ An indexed projection of evidence into the substrate would need both, and is a f
 | Staging leaves the checkout clean, including artifacts a refused commit left in the index | `tests/test_memory_publication.py` |
 | A failed publish retains staged memory rather than losing it | `tests/test_memory_publication.py` |
 | Memory reaches the remote with the base branch untouched; a fresh clone carries the corpus | `tests/test_memory_publication.py` |
+| Neither writer leaves a temporary file in a tracked tree; a stray one is never publishable | `tests/test_memory_publication.py` |
+| Every story admission is preceded by a drain, and a sibling finishing in that window does not dirty the newcomer's checkout | `tests/test_protected_base_publication_poc.py::test_every_admission_is_preceded_by_a_drain_of_sibling_memory` |
 | Sprints accumulate onto one memory branch; the branch restarts from base once merged | `tests/test_memory_publication.py` |
 | The direct transport still commits, pushes, reconciles and raises exactly as before | `tests/test_sprint_audit_publish.py`, `tests/test_sprint_parallel.py::TestSprintRunAuditCommit` |
 | A story's artifacts still do not refuse its successor under the sequential seam | `tests/test_sprint_run_artifact_publish_timing.py` (unchanged) |
@@ -348,8 +381,11 @@ during the sprint, story B is queued and merges after the sprint exits, story C'
 fails. It establishes:
 
 * **No story was refused.** Story C was admitted while story B was still in flight, with
-  story A's and story B's artifacts already produced, and the landing precondition
-  evaluated at its entry was clean.
+  story A's artifacts already produced and integrated, and the landing precondition
+  evaluated at its entry was clean. The scenario is *sequenced* rather than raced — story A
+  finishes only once story B is running, and story B stays running until story C has been
+  admitted — so the condition the acceptance criterion names is reached on every run rather
+  than when the scheduler happens to interleave that way.
 * **The protected branch received no direct commit.** Its first-parent history across the
   run is exactly `["Merge PR for story-a"]`.
 * **A fresh clone** of the memory branch holds one run record for each of the three

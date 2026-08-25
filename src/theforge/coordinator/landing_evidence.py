@@ -325,9 +325,19 @@ def _write_json(path: Path, payload: Mapping) -> Path:
 
     Parallel sprints publish from more than one worker, and the publication
     transport reads this tree while stories are still writing into it.
+
+    The temporary file goes *outside* the evidence tree, in the same scratch
+    directory the canonical run-record writer uses. The evidence tree is tracked
+    project memory; a write-in-progress file inside it would be transient dirt
+    in the shared checkout and a publishable artifact, which is exactly what it
+    must never be. ``.forge/audits/.tmp`` is denied by ``.forge/**`` and
+    re-included by nothing, and it is on the same filesystem, so the replace
+    stays atomic.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
+    tmp_dir = path.parent.parent / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp = tmp_dir / (path.name + ".tmp")
     tmp.write_text(json.dumps(dict(payload), indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
     return path

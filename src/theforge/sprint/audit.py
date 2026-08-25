@@ -301,8 +301,22 @@ def _upsert_into_substrate(project_root: Path, record: dict) -> None:
 
 
 def _replace_canonical_run_file(run_file: Path, record: dict) -> None:
-    """Atomically replace a canonical per-run JSON file."""
-    tmp_path = run_file.with_suffix(".tmp")
+    """Atomically replace a canonical per-run JSON file.
+
+    The temporary file is written *outside* the canonical runs tree (#2598).
+    That tree is re-included by forge's generated ``.gitignore`` precisely so it
+    is tracked, which made a write-in-progress ``<run>.tmp`` sitting next to the
+    record indistinguishable from project memory: it dirtied the shared checkout
+    for as long as the write took — enough to refuse a sibling story's landing
+    — and the publication transport would have carried it into the corpus.
+    ``.forge/audits/.tmp`` is denied by the same ``.forge/**`` rule and
+    re-included by nothing, so nothing transient is ever visible to git.
+
+    Same filesystem as the destination, so ``replace`` is still atomic.
+    """
+    tmp_dir = run_file.parent.parent / ".tmp"
+    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_path = tmp_dir / f"{run_file.stem}.json.tmp"
     with open(tmp_path, "w", encoding="utf-8") as f:
         json.dump(record, f, default=str, indent=2)
     tmp_path.replace(run_file)

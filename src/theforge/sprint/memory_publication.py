@@ -168,6 +168,10 @@ def pending_memory_paths(project_root: Path) -> list[str]:
         if not ok:
             continue
         for path in porcelain_paths(out):
+            if path.endswith(".tmp"):
+                # A write in progress, or a stray one left by a repository whose
+                # writers pre-date #2598. Never memory, never publishable.
+                continue
             if path == memory_dir or path.startswith(f"{memory_dir}/"):
                 pending.append(path)
     return sorted(set(pending))
