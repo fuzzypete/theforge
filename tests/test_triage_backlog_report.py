@@ -496,6 +496,46 @@ class TestBuildBacklogReport:
         assert any(entry.evidence_id == "path:src/demo.py:churn" for entry in finding.evidence)
         assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
 
+    def test_unsupported_non_line_anchor_on_absent_path_is_stale(self, tmp_path: Path) -> None:
+        report = build_backlog_report(
+            [_issue(25, "Evidence: `src/missing.py#main`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_STALE
+        assert any(entry.evidence_id == "path:src/missing.py:absent" for entry in finding.evidence)
+        assert any("absent from current tree" in entry.summary for entry in finding.evidence)
+
+    def test_unsupported_non_line_anchor_on_bare_filename_is_unverified(
+        self, tmp_path: Path
+    ) -> None:
+        report = build_backlog_report(
+            [_issue(26, "Evidence: `config.yaml#main`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert any(
+            entry.evidence_id == "path:config.yaml:unverified" for entry in finding.evidence
+        )
+        assert any(
+            "could not attribute cited filename config.yaml" in entry.summary
+            for entry in finding.evidence
+        )
+        assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
     def test_extensionless_module_path_resolves_against_known_source_extensions(
         self, tmp_path: Path
     ) -> None:
