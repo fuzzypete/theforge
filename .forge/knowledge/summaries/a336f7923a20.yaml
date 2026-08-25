@@ -1,0 +1,57 @@
+schema_version: 2
+run_id: a336f7923a20
+authoritative_run_record: .forge/audits/runs/a336f7923a20.json
+generated_at: '2026-08-25T05:57:13.170823+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.00494375
+story:
+  slug: issue-2693
+  name: Only one fragment shape exercises the path-fragment fallback, so the branches
+    routing around it are unpinned
+  github_issue: 2693
+story_shape:
+  work_type: bug
+  complexity: small
+  complexity_score: 3
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- testing
+- parsing
+domains_provenance: *id001
+changed_files: &id002
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: 'The run extended the triage backlog report tests with the two remaining
+    non-line-fragment fallback shapes that were still unpinned: a fragment on a path
+    absent from the tree and a fragment on a bare filename. It left the already-existing
+    descending-line-range fallback case unchanged.'
+  approach: The change was made by adding focused regression tests in the existing
+    test module, targeting distinct input classes that reach the same anchor-parsing
+    fallback but diverge later in path-evidence classification.
+  files_modified: *id002
+what_was_learned: []
+learned_patterns:
+- fallback-shape-matrix
+- path-evidence-branching
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review confirmed the missing cases were the absent-path and bare-filename fragment
+    forms, while the descending-line-range fallback had already been covered.
+complexity_signal:
+  actual_iterations: 1
+  review_cycles: 1
+  plan_regenerations: null
+  cost_usd: 0.941603
+  dominant_difficulty: Distinguishing genuinely missing fallback input classes from
+    a sibling case that had already been covered elsewhere.
