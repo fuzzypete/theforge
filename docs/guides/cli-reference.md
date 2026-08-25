@@ -923,7 +923,7 @@ FINDING BACKLOG — 15 open (14 hygiene-pool, 0 needs-triage, 1 unpooled)
 
 #1312  bug,p2     Hygiene      age 84d    STALE-EVIDENCE: cited symbol
        _validate_auto_api_fallback_schema absent from current tree
-#1124  bug,p2     Hygiene      age 102d   PARTIALLY-VERIFIED: cited file
+#1124  bug,p2     Hygiene      age 102d   PARTIALLY-VERIFIED: cited path
        src/theforge/cli/triage.py present in current tree
        could not attribute cited filename audit.yaml
 #659   bug,p2     unpooled     age 197d   UNVERIFIED: body cites no
