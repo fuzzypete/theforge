@@ -516,7 +516,11 @@ def test_publish_entry_point_publishes_for_the_state_it_is_given(
     _write_summary(clone, "run-h")
     state = _make_state(clone, base_branch=BASE)
 
-    publish_story_run_audits(state, lands_locally=False)
+    # ``lands_locally`` selects the transport since #2598: a run that advances
+    # the base branch from this checkout publishes its memory the same way. A
+    # run that reaches the base branch only through pull requests publishes
+    # through the memory branch instead (tests/test_memory_publication.py).
+    publish_story_run_audits(state, lands_locally=True)
 
     tree = _tree_names(origin)
     assert "run-h.json" in tree
@@ -551,7 +555,7 @@ def test_publish_entry_point_reports_the_failure_and_re_raises(
     state = _make_state(clone, base_branch=BASE)
 
     with pytest.raises(StoryRunAuditPublishError) as excinfo:
-        publish_story_run_audits(state, lands_locally=False)
+        publish_story_run_audits(state, lands_locally=True)
 
     assert excinfo.value.state == AUDIT_PUBLISH_BRANCH_MISMATCH
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_BRANCH_MISMATCH
@@ -620,12 +624,12 @@ def test_a_mid_sprint_publish_failure_is_deferred_rather_than_raised(
     _write_audit(clone, "run-m.json")
     state = _make_state(clone, base_branch=BASE)
 
-    assert publish_pending_story_run_audits(state, lands_locally=False) is False
+    assert publish_pending_story_run_audits(state, lands_locally=True) is False
     assert _read_state(clone)["state"] == AUDIT_PUBLISH_BRANCH_MISMATCH
 
     # The terminal sweep over the same unchanged condition still ends the run.
     with pytest.raises(StoryRunAuditPublishError):
-        publish_story_run_audits(state, lands_locally=False)
+        publish_story_run_audits(state, lands_locally=True)
 
 
 def test_the_module_does_not_import_the_sprint_runner() -> None:

@@ -34,11 +34,21 @@ from ..coordinator import workspace as coordinator_workspace
 from ..log_util import _log_line
 from .audit import _write_sprint_audit, _write_sprint_summary
 from .manifest import SprintResult
-
-_STORY_RUN_ARTIFACT_DIRS = (
-    ".forge/audits/runs",
-    ".forge/knowledge/summaries",
+from .memory_publication import (
+    MEMORY_PUBLISH_CLEAN,
+    MEMORY_PUBLISH_NO_REMOTE,
+    MEMORY_PUBLISH_PUBLISHED,
+    MEMORY_PUBLISH_PUSHED_NO_PR,
+    MEMORY_PUBLISH_STAGED_ONLY,
+    PROJECT_MEMORY_DIRS,
+    porcelain_paths,
+    stage_and_publish_project_memory,
 )
+
+# The tracked project-memory trees this module publishes. Owned by
+# ``memory_publication`` so the transport and the dirt attribution below can
+# never disagree about what "a story-run artifact" is (#2598).
+_STORY_RUN_ARTIFACT_DIRS = PROJECT_MEMORY_DIRS
 _STORY_RUN_AUDIT_COMMIT_MESSAGE = "chore(audit): record sprint run audits"
 
 # Where the outcome of the publish step is recorded. Lives under .forge/ (which
@@ -83,22 +93,22 @@ def _story_run_artifact_label(artifact_dir: str) -> str:
         return "story run audits"
     if artifact_dir == ".forge/knowledge/summaries":
         return "knowledge summaries"
+    if artifact_dir == ".forge/audits/landing":
+        return "landing evidence"
     return f"story run artifacts under {artifact_dir}"
 
 
 def _porcelain_paths(dirty_status: str) -> list[str]:
-    """Paths named by a ``git status --porcelain`` block, one per entry."""
-    paths: list[str] = []
-    for line in dirty_status.splitlines():
-        if not line.strip():
-            continue
-        entry = line[3:] if len(line) > 3 else ""
-        if " -> " in entry:  # rename: the destination is what is on disk now
-            entry = entry.split(" -> ", 1)[1]
-        entry = entry.strip().strip('"').rstrip("/")
-        if entry:
-            paths.append(entry)
-    return paths
+    """Paths named by a ``git status --porcelain`` block, one per entry.
+
+    Delegates to the transport's parser, which does not slice a fixed status
+    column: the status text reaching this function has already been stripped by
+    ``_run_shell``, so a fixed slice ate the first character of the first path
+    whenever that path's status was worktree-only (``" M "``). Attribution then
+    failed to recognise forge's own artifact and the landing refused instead of
+    republishing (#2598).
+    """
+    return porcelain_paths(dirty_status)
 
 
 def story_run_artifact_dirt_only(dirty_status: str) -> bool:
@@ -426,6 +436,75 @@ def _commit_story_run_audits(project_root: Path, base_branch: str, *, publish: b
     _log(f"Pushed canonical story run audit records to origin/{base_branch}.")
 
 
+TRANSPORT_DIRECT = "direct"
+TRANSPORT_MEMORY_BRANCH = "memory-branch"
+
+# Publish end states that mean the base branch refused what forge asked of it,
+# rather than that the operation could not be attempted. These are the states a
+# branch-protection policy produces, and the ones the memory-branch transport
+# can actually rescue: retrying the same direct commit next sprint attempts the
+# operation the policy refuses (#2598).
+_REFUSED_BY_POLICY = frozenset({AUDIT_PUBLISH_COMMIT_FAILED, AUDIT_PUBLISH_PUSH_REFUSED})
+
+
+def memory_transport(*, lands_locally: bool) -> str:
+    """Which transport publishes a run's project memory.
+
+    The question is not which ``on_approve`` mode is configured but whether this
+    run advances the base branch from the project-root checkout at all. A run
+    that does — ``on_approve: merge``, or ``--auto-merge`` in sequential mode —
+    is already committing there, so a memory commit alongside its merges is
+    consistent with what it does anyway and keeps the corpus on the base branch
+    with no review latency. A run that does not reaches the base branch only
+    through pull requests, and a direct memory commit would be the *one* thing
+    forge does to that branch without one.
+
+    The choice is not final in either direction: a direct commit the base branch
+    refuses falls back to the memory branch, which is what makes the reported
+    ``merge``-mode failure recoverable without granting forge direct-commit
+    rights on a protected branch.
+    """
+    return TRANSPORT_DIRECT if lands_locally else TRANSPORT_MEMORY_BRANCH
+
+
+def _publish_via_memory_branch(config: ForgeConfig, *, push: bool, reason: str) -> str:
+    """Stage the checkout clean and publish from the memory branch.
+
+    Never raises; returns the end state so a caller that reached here as a
+    *fallback* can decide whether the original failure has actually been
+    rescued. Every end state leaves the project root clean and the artifacts
+    either published or retained in staging, so there is no outcome that both
+    loses records and contaminates a later story's checkout — the two failure
+    modes the raising direct path exists to shout about.
+    """
+    state, pr_url = stage_and_publish_project_memory(
+        config.project_root,
+        config.workspace.base_branch,
+        push=push,
+    )
+    detail = f"{reason}; pr={pr_url}" if pr_url else reason
+    _record_audit_publish_state(
+        config.project_root,
+        config.workspace.base_branch,
+        f"memory_branch_{state}",
+        detail=detail,
+    )
+    if state in {MEMORY_PUBLISH_PUBLISHED, MEMORY_PUBLISH_CLEAN, MEMORY_PUBLISH_PUSHED_NO_PR}:
+        return state
+    if state == MEMORY_PUBLISH_NO_REMOTE:
+        _log(
+            "⚠ SPRINT  project memory is staged locally and this checkout has no origin; "
+            "it will publish on the first run with a remote."
+        )
+        return state
+    if state == MEMORY_PUBLISH_STAGED_ONLY:
+        _log(
+            "⚠ SPRINT  project memory could not be published this run; it is retained under "
+            f"{'/'.join(('.forge', 'memory-staging'))} and the next publish carries it forward."
+        )
+    return state
+
+
 def publish_story_run_artifacts_for_config(
     config: ForgeConfig,
     *,
@@ -440,11 +519,38 @@ def publish_story_run_artifacts_for_config(
     """
     from ..coordinator.workspace import _base_branch_tracks_origin  # noqa: PLC0415
 
-    _commit_story_run_audits(
-        config.project_root,
-        config.workspace.base_branch,
-        publish=_base_branch_tracks_origin(config, lands_locally=lands_locally),
-    )
+    push = _base_branch_tracks_origin(config, lands_locally=lands_locally)
+    if memory_transport(lands_locally=lands_locally) == TRANSPORT_MEMORY_BRANCH:
+        _publish_via_memory_branch(
+            config, push=True, reason="this run reaches the base branch through pull requests"
+        )
+        return
+
+    try:
+        _commit_story_run_audits(
+            config.project_root,
+            config.workspace.base_branch,
+            publish=push,
+        )
+    except StoryRunAuditPublishError as exc:
+        if getattr(exc, "state", None) not in _REFUSED_BY_POLICY:
+            raise
+        _log(
+            "⚠ SPRINT  the base branch refused a direct project-memory commit "
+            f"({exc}); republishing through the memory branch instead."
+        )
+        rescued = _publish_via_memory_branch(
+            config,
+            push=push,
+            reason=f"direct publish refused ({exc.state})",
+        )
+        if rescued not in {MEMORY_PUBLISH_PUBLISHED, MEMORY_PUBLISH_PUSHED_NO_PR}:
+            # The fallback did not get the corpus off this machine, so the
+            # original failure stands. Downgrading it on the strength of an
+            # alternative that also did nothing would report a publication that
+            # did not happen — and the direct path raises precisely so a sprint
+            # cannot exit reporting success over unpublished base-branch state.
+            raise
 
 
 def write_terminal_sprint_audits(
