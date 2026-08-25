@@ -911,8 +911,10 @@ reports:
   - how many times the cited file changed since the finding was filed.
 
 No tracker writes occur on any path, and no model is invoked. Findings whose
-citations cannot be checked are reported as `UNVERIFIED` with the reason; they
-are never omitted and never upgraded into stale claims.
+citations partly resolve are reported as `PARTIALLY-VERIFIED`; findings whose
+citations cannot be checked at all remain `UNVERIFIED` with the reason. Entries
+that could not be checked are never omitted and never upgraded into stale
+claims.
 
 Sample output:
 
@@ -921,8 +923,9 @@ FINDING BACKLOG — 15 open (14 hygiene-pool, 0 needs-triage, 1 unpooled)
 
 #1312  bug,p2     Hygiene      age 84d    STALE-EVIDENCE: cited symbol
        _validate_auto_api_fallback_schema absent from current tree
-#1124  bug,p2     Hygiene      age 102d   ACTIVE: cited file
-       src/theforge/cli/triage.py changed 11 time(s) since filing on 2026-05-13
+#1124  bug,p2     Hygiene      age 102d   PARTIALLY-VERIFIED: cited path
+       src/theforge/cli/triage.py present in current tree
+       could not attribute cited filename audit.yaml
 #659   bug,p2     unpooled     age 197d   UNVERIFIED: body cites no
        checkable artifact (prose-only or unparseable citation)
 
@@ -946,7 +949,8 @@ summary:
     needs-triage: 0
     unpooled: 1
   by_verification_status:
-    active: 8
+    active: 7
+    partially_verified: 1
     stale_evidence: 5
     unverified: 2
 findings:

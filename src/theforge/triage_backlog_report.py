@@ -30,6 +30,7 @@ UNPOOLED_STATE = "unpooled"
 
 STATUS_STALE = "stale_evidence"
 STATUS_ACTIVE = "active"
+STATUS_PARTIAL = "partially_verified"
 STATUS_UNVERIFIED = "unverified"
 
 _GH_TIMEOUT_SECONDS = 30
@@ -873,10 +874,15 @@ def _symbol_evidence(
 
 
 def _verification_status(entries: tuple[EvidenceEntry, ...]) -> str:
-    if any(not entry.checkable for entry in entries):
+    """Roll up finding verification with stale checkable evidence taking precedence."""
+    has_checkable = any(entry.checkable for entry in entries)
+    has_uncheckable = any(not entry.checkable for entry in entries)
+    if not has_checkable and has_uncheckable:
         return STATUS_UNVERIFIED
     if any(entry.observed_status == STATUS_STALE for entry in entries):
         return STATUS_STALE
+    if has_checkable and has_uncheckable:
+        return STATUS_PARTIAL
     return STATUS_ACTIVE
 
 
@@ -1111,6 +1117,9 @@ def _headline_evidence(
         preferred = [entry for entry in entries if not entry.checkable]
     elif finding.verification_status == STATUS_STALE:
         preferred = [entry for entry in entries if entry.observed_status == STATUS_STALE]
+    elif finding.verification_status == STATUS_PARTIAL:
+        preferred = [entry for entry in entries if entry.checkable and entry.kind != "churn"]
+        preferred = preferred or [entry for entry in entries if entry.checkable]
     else:
         preferred = [entry for entry in entries if entry.kind == "churn"] or entries
     first = preferred[0]
