@@ -414,13 +414,26 @@ def _is_symbol_like(token: str) -> bool:
 
 def parse_citations(
     body: str,
-) -> tuple[tuple[PathCitation, ...], tuple[SymbolCitation, ...], tuple[InvalidPathCitation, ...]]:
-    """Extract conservative, mechanically checkable citations from a finding body."""
+) -> tuple[
+    tuple[PathCitation, ...],
+    tuple[SymbolCitation, ...],
+    tuple[InvalidPathCitation, ...],
+    tuple[str, ...],
+]:
+    """Extract conservative, mechanically checkable citations from a finding body.
+
+    The fourth return value lists external (http/https) URL candidates that were
+    recognized as references but rejected as out-of-repo, so callers can tell
+    "nothing looked like a reference" apart from "something did, but it was
+    external and unresolvable."
+    """
     text = str(body or "")
     paths: list[PathCitation] = []
     seen_paths: set[tuple[str, int | None, int | None]] = set()
     invalid_paths: list[InvalidPathCitation] = []
     seen_invalid_paths: set[tuple[str, str]] = set()
+    external_paths: list[str] = []
+    seen_external_paths: set[str] = set()
 
     def _record_path_citation(citation: PathCitation) -> None:
         key = (citation.path, citation.line, citation.end_line)
@@ -430,6 +443,12 @@ def parse_citations(
 
     def _record_path_token(raw_token: str) -> None:
         trimmed = raw_token.strip().strip(".,;()[]")
+        if trimmed.startswith(("http://", "https://")):
+            candidate = trimmed.split("#", 1)[0]
+            if candidate and candidate not in seen_external_paths:
+                seen_external_paths.add(candidate)
+                external_paths.append(candidate)
+            return
         try:
             citation = _parse_path_token(raw_token)
         except ValueError as exc:
@@ -478,7 +497,7 @@ def parse_citations(
                 seen_symbols.add(token)
                 symbols.append(SymbolCitation(symbol=token))
 
-    return tuple(paths), tuple(symbols), tuple(invalid_paths)
+    return tuple(paths), tuple(symbols), tuple(invalid_paths), tuple(external_paths)
 
 
 def _normalize_repo_path(project_root: Path, raw_path: str) -> str:
@@ -927,25 +946,41 @@ def build_backlog_report(
 
     findings: list[BacklogFindingRecord] = []
     for issue in sorted(issues, key=lambda item: item.number):
-        paths, symbols, invalid_paths = parse_citations(issue.body)
+        paths, symbols, invalid_paths, external_paths = parse_citations(issue.body)
         evidence: list[EvidenceEntry] = []
         failures: list[EvidenceEntry] = []
 
         if not paths and not symbols and not invalid_paths:
-            failures.append(
-                EvidenceEntry(
-                    evidence_id="citation:none",
-                    kind="unverified",
-                    summary=(
-                        "body cites no checkable artifact (prose-only or unparseable citation)"
-                    ),
-                    detail=(
-                        "no repo path or symbol-like citation could be parsed from the issue body"
-                    ),
-                    checkable=False,
-                    observed_status=STATUS_UNVERIFIED,
+            if external_paths:
+                failures.append(
+                    EvidenceEntry(
+                        evidence_id="citation:external",
+                        kind="unverified",
+                        summary=("body cites only external URL(s), not a checkable repo artifact"),
+                        detail=(
+                            "recognized reference(s) were rejected as external and could not "
+                            "be resolved against the repo: " + ", ".join(external_paths)
+                        ),
+                        checkable=False,
+                        observed_status=STATUS_UNVERIFIED,
+                    )
                 )
-            )
+            else:
+                failures.append(
+                    EvidenceEntry(
+                        evidence_id="citation:none",
+                        kind="unverified",
+                        summary=(
+                            "body cites no checkable artifact (prose-only or unparseable citation)"
+                        ),
+                        detail=(
+                            "no repo path or symbol-like citation could be parsed "
+                            "from the issue body"
+                        ),
+                        checkable=False,
+                        observed_status=STATUS_UNVERIFIED,
+                    )
+                )
 
         for invalid in invalid_paths:
             failures.append(
