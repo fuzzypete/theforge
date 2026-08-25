@@ -1,0 +1,111 @@
+schema_version: 2
+run_id: 260bf501fc0e
+authoritative_run_record: .forge/audits/runs/260bf501fc0e.json
+generated_at: '2026-08-25T03:37:04.510264+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0102575
+story:
+  slug: issue-2739
+  name: The post-run hook writes a branch name into the finding body its own citation
+    parser then fails to resolve
+  github_issue: 2739
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 7
+  contract_change: false
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- parsing
+- backend
+domains_provenance: *id001
+changed_files: &id002
+- .forge/hooks/post-run-gh-issues.sh
+- src/theforge/cli/hooks.py
+- tests/test_cli_setup.py
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: The run adjusted hook-emitted finding provenance so branch metadata
+    is no longer emitted in the same path-like form that the backlog citation scanner
+    interprets as a file citation. It updated both the scaffolded CLI hook path and
+    the checked-in GitHub issue hook, alongside tests around hook setup and citation
+    parsing behavior.
+  approach: 'The change treated the problem at the producer boundary: hook-generated
+    prose was reshaped so provenance remains present without presenting slash-delimited
+    branch tokens as citation-like content, and verification was done with targeted
+    tests covering both hook generation and backlog parsing.'
+  files_modified: *id002
+what_was_learned:
+- claim: When multiple post-run hook entry points can file findings, provenance-format
+    fixes must be applied and verified per hook instance rather than assuming one
+    template change covers the active path.
+  evidence:
+  - type: review_finding
+    finding_id: 8949d67f5aed2eec
+    description: This review finding reports that after the scaffolded hook template
+      was fixed, the repository's configured post_run hook still emitted the raw slash-delimited
+      branch footer, showing that one hook path can remain broken even when another
+      was updated.
+  - type: review_finding
+    finding_id: c72890c852cd2a4b
+    description: This finding identified a second checked-in issue-filing hook that
+      independently wrote branch provenance in the same citation-like shape, demonstrating
+      that the behavior existed in more than one hook implementation.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 again surfaced the still-wired configured hook as unresolved
+      after earlier fixes elsewhere, showing that future runs need explicit per-instance
+      verification of all active hook scripts.
+- claim: For producer-consumer text interactions inside theforge, the durable fix
+    point is the producer that knows token semantics at write time, not downstream
+    parser heuristics.
+  evidence:
+  - type: file
+    path: src/theforge/cli/hooks.py
+    description: This file is the source of the hook-emitted footer content, so it
+      is where branch metadata can be labeled or reshaped before being written as
+      ambiguous prose that downstream parsing cannot reliably disambiguate.
+  - type: file
+    path: tests/test_triage_backlog_report.py
+    description: The presence of parser-focused regression checks here shows the failure
+      manifested downstream, but verification remained about preventing misclassification
+      rather than teaching the parser to infer branch-vs-path intent.
+  - type: diff
+    ref: e692c73c8276c1bc2f69ca5af98ecce051cfec06
+    description: This final diff is part of the fix set that closed the review loop
+      by addressing remaining producer-side hook output issues, illustrating that
+      correcting emitted content resolved repeated parser-facing review failures.
+learned_patterns:
+- producer-not-parser
+- per-hook-verification
+review_insights:
+  recurring_findings:
+  - finding_id: 8949d67f5aed2eec
+    severity: P1
+    file: .forge/hooks/post_run.sh
+    description: When this repository's configured post_run hook files a finding,
+      it still appends the slash-delimited branch in a backtick-quoted footer, so
+      the backlog citation scan continues to receive branch tokens shaped like file
+      paths.
+    cycles_seen: 2
+    disposition: diff_ungrounded
+  resolved_findings: []
+  observations:
+  - 'Review repeatedly found the same omission in different hook scripts: one provenance-format
+    fix did not automatically cover the wired and legacy issue-filing paths.'
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: null
+  cost_usd: 3.3262430000000003
+  dominant_difficulty: The same malformed provenance originated from multiple hook
+    implementations, so the hard part was finding and aligning every active producer
+    path rather than changing the parser.

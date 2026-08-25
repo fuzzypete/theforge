@@ -33,6 +33,7 @@ payload=$(cat)
 verdict=$(echo "$payload" | jq -r '.verdict')
 slug=$(echo "$payload" | jq -r '.slug')
 branch=$(echo "$payload" | jq -r '.branch')
+branch_display="${branch//\\// -> }"
 summary=$(echo "$payload" | jq -r '.summary')
 findings_count=$(echo "$payload" | jq '.findings | length')
 
@@ -77,10 +78,12 @@ ${suggestion}
 *Non-binding guidance from the reviewer; the dev agent is free to pick a different fix.*"
     fi
 
+    footer="*Filed by theforge post_run hook · story \\`${slug}\\`"
+    footer="${footer} · branch \\`${branch_display}\\` · ${verdict}.*"
     body="${body}
 
 ---
-*Filed by theforge post_run hook · \\`${slug}\\` · \\`${branch}\\` · ${verdict}.*"
+${footer}"
 
     gh issue create \\
       --title "$title" \\

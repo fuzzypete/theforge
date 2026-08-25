@@ -1073,6 +1073,18 @@ class TestCmdInitHooks:
         assert "What happened" not in content
         assert "Behavior conforming to" not in content
 
+    def test_post_run_sh_formats_branch_provenance_without_raw_path_shape(
+        self, tmp_path, monkeypatch
+    ):
+        """The provenance footer must not emit the raw slash-delimited branch token."""
+        monkeypatch.chdir(tmp_path)
+        cmd_init_hooks(self._make_args())
+        content = (tmp_path / ".forge" / "hooks" / "post_run.sh").read_text(encoding="utf-8")
+        assert 'branch_display="${branch//\\// -> }"' in content
+        assert "story \\`${slug}\\`" in content
+        assert "branch \\`${branch_display}\\`" in content
+        assert "\\`${branch}\\`" not in content
+
     def test_creates_readme(self, tmp_path, monkeypatch):
         """forge init-hooks creates .forge/hooks/README.md."""
         monkeypatch.chdir(tmp_path)
@@ -1251,6 +1263,18 @@ class TestCmdInitHooks:
         assert "issue create" in calls
         assert "--label bug" in calls
         assert "--label needs-triage" in calls
+
+    def test_legacy_post_run_issue_hook_does_not_embed_raw_branch_token(self):
+        """The legacy checked-in issue hook must not emit a slash-shaped branch citation."""
+        repo_root = Path(__file__).resolve().parents[1]
+        legacy_hook = repo_root / ".forge" / "hooks" / "post-run-gh-issues.sh"
+        if not legacy_hook.exists():
+            pytest.skip(".forge/hooks/post-run-gh-issues.sh missing")
+        content = legacy_hook.read_text(encoding="utf-8")
+
+        assert 'branch_display="${branch//\\// -> }"' in content
+        assert "**Story:** \\`${slug}\\` (\\`${branch}\\`)" not in content
+        assert "**Story:** \\`${slug}\\` (branch \\`${branch_display}\\`)" in content
 
     def test_repo_configured_hook_renders_shape_gate_clean_body(self, tmp_path):
         """End-to-end: live hook + structured finding payload produces a body with
