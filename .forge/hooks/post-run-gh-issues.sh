@@ -6,6 +6,7 @@ payload=$(cat)
 verdict=$(echo "$payload" | jq -r '.verdict')
 slug=$(echo "$payload" | jq -r '.slug')
 branch=$(echo "$payload" | jq -r '.branch')
+branch_display="${branch//\// -> }"
 summary=$(echo "$payload" | jq -r '.summary')
 findings_count=$(echo "$payload" | jq '.findings | length')
 
@@ -19,7 +20,7 @@ echo "$payload" | jq -c '.findings[]' | while read -r finding; do
 
   gh issue create \
     --title "[${sev}] ${slug}: ${desc}" \
-    --body "**Story:** \`${slug}\` (\`${branch}\`)
+    --body "**Story:** \`${slug}\` (branch \`${branch_display}\`)
 **Verdict:** ${verdict} — ${summary}
 **Location:** \`${file}\`${line:+ line ${line}}
 

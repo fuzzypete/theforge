@@ -20,6 +20,7 @@ from theforge.triage_backlog_report import (
     _symbol_hits,
     build_backlog_report,
     fetch_backlog_issues,
+    parse_citations,
     render_backlog_report,
     write_backlog_report,
 )
@@ -127,6 +128,24 @@ class TestFetchBacklogIssues:
 
 
 class TestBuildBacklogReport:
+    def test_parse_citations_skips_branch_provenance_footer_token(self) -> None:
+        body = """**Observed:** Something broke.
+
+**Expected:** Something else should happen.
+
+**Evidence:** `src/demo.py`
+
+---
+*Filed by theforge post_run hook · story `issue-2229` · branch `feat -> issue-2229` · APPROVE.*"""
+
+        paths, _symbols, invalid_paths = parse_citations(body)
+
+        assert ("src/demo.py", None, None) in {
+            (citation.path, citation.line, citation.end_line) for citation in paths
+        }
+        assert all(citation.path != "feat/issue-2229" for citation in paths)
+        assert all(citation.raw != "feat/issue-2229" for citation in invalid_paths)
+
     def test_marks_active_when_cited_file_exists_and_churn_is_counted(
         self, tmp_path: Path
     ) -> None:
