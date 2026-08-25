@@ -11,6 +11,7 @@ import yaml
 
 from theforge.triage_backlog_report import (
     STATUS_ACTIVE,
+    STATUS_PARTIAL,
     STATUS_STALE,
     STATUS_UNVERIFIED,
     BacklogIssue,
@@ -318,7 +319,7 @@ class TestBuildBacklogReport:
         )
 
         finding = report.findings[0]
-        assert finding.verification_status == STATUS_UNVERIFIED
+        assert finding.verification_status == STATUS_PARTIAL
         assert any(entry.evidence_id == "symbol:DemoSymbol:present" for entry in finding.evidence)
         assert any(
             entry.evidence_id == "symbol:DemoSymbol:candidate-paths-unverified"
@@ -351,7 +352,7 @@ class TestBuildBacklogReport:
         )
 
         finding = report.findings[0]
-        assert finding.verification_status == STATUS_UNVERIFIED
+        assert finding.verification_status == STATUS_STALE
         assert any(
             entry.evidence_id == "symbol:MissingSymbol:absent" for entry in finding.evidence
         )
@@ -396,7 +397,7 @@ class TestBuildBacklogReport:
         )
 
         finding = report.findings[0]
-        assert finding.verification_status == STATUS_UNVERIFIED
+        assert finding.verification_status == STATUS_PARTIAL
         assert any("could not count churn" in entry.summary for entry in finding.evidence)
 
     def test_unsupported_non_line_anchor_still_collects_path_evidence(
@@ -417,7 +418,7 @@ class TestBuildBacklogReport:
         )
 
         finding = report.findings[0]
-        assert finding.verification_status == STATUS_UNVERIFIED
+        assert finding.verification_status == STATUS_PARTIAL
         assert any(
             "could not mechanically verify cited path token src/demo.py#main" in entry.summary
             for entry in finding.evidence
@@ -442,7 +443,7 @@ class TestBuildBacklogReport:
         )
 
         finding = report.findings[0]
-        assert finding.verification_status == STATUS_UNVERIFIED
+        assert finding.verification_status == STATUS_PARTIAL
         assert any(
             "could not mechanically verify cited path token src/demo.py#L9-L2" in entry.summary
             for entry in finding.evidence
@@ -534,6 +535,56 @@ class TestBuildBacklogReport:
             for entry in finding.evidence
         )
         assert all(entry.observed_status != STATUS_STALE for entry in finding.evidence)
+
+    def test_marks_partially_verified_when_mixed_checkable_and_uncheckable_evidence_exist(
+        self, tmp_path: Path
+    ) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def DemoSymbol():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(31, "Evidence: `src/demo.py`, `config.yaml`, and `DemoSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 1,
+            symbol_lookup=lambda _root, _symbol, _paths: SymbolLookupResult(
+                hits=(("src/demo.py", 1),),
+                searched_scopes=("src/demo.py",),
+                unresolved_candidates=(),
+            ),
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_PARTIAL
+        assert any(entry.checkable for entry in finding.evidence)
+        assert any(not entry.checkable for entry in finding.evidence)
+
+    def test_stale_checkable_evidence_outranks_partial_status(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def helper():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(32, "Evidence: `src/missing.py`, `config.yaml`, and `helper`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: SymbolLookupResult(
+                hits=(("src/demo.py", 1),),
+                searched_scopes=("src/demo.py",),
+                unresolved_candidates=(),
+            ),
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_STALE
+        assert any(entry.observed_status == STATUS_STALE for entry in finding.evidence)
+        assert any(not entry.checkable for entry in finding.evidence)
 
     def test_generated_artifact_round_trips_into_the_existing_consumer(
         self, tmp_path: Path
@@ -659,6 +710,53 @@ class TestRendering:
         assert "FINDING BACKLOG — 0 open" in rendered
         assert "No open finding-labeled issues matched the backlog query." in rendered
         assert "structured report: .forge/triage/report.yaml" in rendered
+
+    def test_partially_verified_render_prefers_checkable_headline(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def DemoSymbol():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(33, "Evidence: `src/demo.py`, `config.yaml`, and `DemoSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 2,
+            symbol_lookup=lambda _root, _symbol, _paths: SymbolLookupResult(
+                hits=(("src/demo.py", 1),),
+                searched_scopes=("src/demo.py",),
+                unresolved_candidates=(),
+            ),
+        )
+        path = tmp_path / ".forge" / "triage" / "report.yaml"
+        path.parent.mkdir(parents=True)
+        path.write_text(yaml.safe_dump(report.to_dict(), sort_keys=False), encoding="utf-8")
+
+        rendered = render_backlog_report(report, path, tmp_path)
+        assert "PARTIALLY-VERIFIED: cited path src/demo.py present in current tree" in rendered
+        assert "could not attribute cited filename config.yaml" in rendered
+
+    def test_summary_counts_include_partially_verified_findings(self, tmp_path: Path) -> None:
+        target = tmp_path / "src" / "demo.py"
+        target.parent.mkdir(parents=True)
+        target.write_text("def DemoSymbol():\n    return 1\n", encoding="utf-8")
+
+        report = build_backlog_report(
+            [_issue(34, "Evidence: `src/demo.py`, `config.yaml`, and `DemoSymbol`")],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 2,
+            symbol_lookup=lambda _root, _symbol, _paths: SymbolLookupResult(
+                hits=(("src/demo.py", 1),),
+                searched_scopes=("src/demo.py",),
+                unresolved_candidates=(),
+            ),
+        )
+
+        assert report.to_dict()["summary"]["by_verification_status"] == {"partially_verified": 1}
 
 
 class TestSymbolHits:
