@@ -138,7 +138,7 @@ class TestBuildBacklogReport:
 ---
 *Filed by theforge post_run hook · story `issue-2229` · branch `feat -> issue-2229` · APPROVE.*"""
 
-        paths, _symbols, invalid_paths = parse_citations(body)
+        paths, _symbols, invalid_paths, _external_paths = parse_citations(body)
 
         assert ("src/demo.py", None, None) in {
             (citation.path, citation.line, citation.end_line) for citation in paths
@@ -397,6 +397,31 @@ class TestBuildBacklogReport:
         assert finding.verification_status == STATUS_UNVERIFIED
         assert finding.evidence[0].checkable is False
         assert "no checkable artifact" in finding.evidence[0].summary
+
+    def test_marks_unverified_with_external_reason_when_only_citation_is_a_url(
+        self, tmp_path: Path
+    ) -> None:
+        report = build_backlog_report(
+            [
+                _issue(
+                    17,
+                    "See https://github.com/fuzzypete/theforge/blob/main/README.md for details.",
+                )
+            ],
+            project_root=tmp_path,
+            current_milestone=None,
+            named_milestones=(),
+            now=datetime(2026, 8, 23, tzinfo=UTC),
+            churn_counter=lambda _root, _path, _created_at: 0,
+            symbol_lookup=lambda _root, _symbol, _paths: [],
+        )
+
+        finding = report.findings[0]
+        assert finding.verification_status == STATUS_UNVERIFIED
+        assert finding.evidence[0].evidence_id == "citation:external"
+        assert finding.evidence[0].checkable is False
+        assert "external" in finding.evidence[0].summary
+        assert "github.com/fuzzypete/theforge" in finding.evidence[0].detail
 
     def test_marks_unverified_when_churn_cannot_be_counted(self, tmp_path: Path) -> None:
         target = tmp_path / "src" / "demo.py"
