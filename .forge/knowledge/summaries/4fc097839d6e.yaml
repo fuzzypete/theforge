@@ -1,0 +1,82 @@
+schema_version: 2
+run_id: 4fc097839d6e
+authoritative_run_record: .forge/audits/runs/4fc097839d6e.json
+generated_at: '2026-08-25T03:17:06.200958+00:00'
+generation:
+  model: gpt-5.4
+  transport: api
+  cost_usd: 0.0075275
+story:
+  slug: issue-2738
+  name: A finding whose citations partly resolved is reported unverified, so evidence
+    that was gathered is discarded as a verdict
+  github_issue: 2738
+story_shape:
+  work_type: bug
+  complexity: medium
+  complexity_score: 5
+  contract_change: true
+  provenance: &id001
+    founded: true
+    degraded: false
+    degraded_reason: null
+    failure_action: null
+    risk_signals: []
+    complexity_source: preflight
+domains:
+- backend
+- data-processing
+domains_provenance: *id001
+changed_files: &id002
+- docs/guides/cli-reference.md
+- src/theforge/triage_backlog_report.py
+- tests/test_triage_backlog_report.py
+what_changed:
+  description: The backlog report's verification rollup was changed so findings with
+    a mix of resolved and unresolved citation checks are reported as partially verified
+    instead of collapsing to unverified. The CLI reference sample was also corrected
+    to match the report generator's actual path-presence wording.
+  approach: The run adjusted the verdict aggregation in the backlog reporting path
+    to preserve successful evidence while still surfacing unresolved inputs, then
+    validated the mixed-evidence cases with targeted report tests and aligned the
+    documentation example with the emitted headline text.
+  files_modified: *id002
+what_was_learned:
+- claim: When report output is documented with literal sample headlines, documentation
+    updates need the same string-level verification as code changes, because review
+    will catch mismatches even when the behavioral fix itself is correct.
+  evidence:
+  - type: review_finding
+    finding_id: 7470951d473ff587
+    description: The only review finding was not about the verification logic but
+      about a sample output string that named a file headline differently from the
+      generator's real path-presence wording, showing that exact emitted text must
+      be checked when updating docs for reporting changes.
+  - type: review_cycle
+    cycle: '2'
+    description: Cycle 2 approved after correcting only the documentation sample wording,
+      demonstrating that the remaining risk after the functional fix was string-level
+      drift between docs and generated report output.
+  - type: file
+    path: docs/guides/cli-reference.md
+    description: This file was the sole source of the review correction, which shows
+      the lesson applies specifically to maintaining example output in documentation
+      alongside report-format changes.
+learned_patterns:
+- partial-evidence-rollup
+- doc-sample-string-drift
+review_insights:
+  recurring_findings: []
+  resolved_findings: []
+  observations:
+  - Review accepted the mixed-evidence verdict handling quickly; the only recurring
+    issue was exact wording drift between documented sample output and the generator's
+    emitted headline.
+complexity_signal:
+  actual_iterations: 2
+  review_cycles: 2
+  plan_regenerations: false
+  cost_usd: 4.505750099999999
+  dominant_difficulty: Encoding partial verification in the report rollup without
+    losing unresolved evidence while still distinguishing it from wholly unverified
+    findings.
