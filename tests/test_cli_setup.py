@@ -1073,6 +1073,18 @@ class TestCmdInitHooks:
         assert "What happened" not in content
         assert "Behavior conforming to" not in content
 
+    def test_post_run_sh_formats_branch_provenance_without_raw_path_shape(
+        self, tmp_path, monkeypatch
+    ):
+        """The provenance footer must not emit the raw slash-delimited branch token."""
+        monkeypatch.chdir(tmp_path)
+        cmd_init_hooks(self._make_args())
+        content = (tmp_path / ".forge" / "hooks" / "post_run.sh").read_text(encoding="utf-8")
+        assert 'branch_display="${branch//\\// -> }"' in content
+        assert "story \\`${slug}\\`" in content
+        assert "branch \\`${branch_display}\\`" in content
+        assert "\\`${branch}\\`" not in content
+
     def test_creates_readme(self, tmp_path, monkeypatch):
         """forge init-hooks creates .forge/hooks/README.md."""
         monkeypatch.chdir(tmp_path)
