@@ -5,6 +5,7 @@ plus all public command functions for direct import.
 """
 
 from theforge.cli.audit import cmd_audit
+from theforge.cli.author import cmd_author
 from theforge.cli.daemon import cmd_daemon
 from theforge.cli.hooks import cmd_init_hooks
 from theforge.cli.ideate import cmd_ideate
@@ -40,6 +41,7 @@ __all__ = [
     "main",
     "build_parser",
     "cmd_audit",
+    "cmd_author",
     "cmd_check_providers",
     "cmd_daemon",
     "cmd_decide",
