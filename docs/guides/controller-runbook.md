@@ -329,6 +329,39 @@ the run ended before it ever reached the publish step.
   [policy assertion provenance](policy-provenance.md). Unmarked policy prose is
   advisory and cannot block chartered work.
 
+## 8. Deciding what to work on
+
+Which command answers which operator question. The last row is the important one:
+**no tool decides priority.** That is a standing condition, not a missing feature —
+see [ADR-0010](../adr/0010-triage-disposition-shelved.md).
+
+| Question | Command | Limitation |
+|---|---|---|
+| What is open in the milestone? | `gh issue list --milestone vX.Y.Z --state open` | No Forge equivalent; use `gh` |
+| What is ready to sprint? | `forge status --ready --milestone vX.Y.Z` | Shows only issues already `ready` |
+| Is this finding still active, and where is the real seam? | `forge diagnose --dry-run --issue A,B --parallel N` | Spends (~$0.5/finding). Until #2760 lands, read the narrative — do not trust `already_resolved` |
+| Persist that diagnosis into the issue | same, without `--dry-run` | Mutates issue bodies |
+| Make an issue structurally runnable | `forge shape`, `forge groom`, `forge diagnose` | Readiness only, never priority |
+| Verify a sprint before spending | `forge sprint --dry-run --issues … --budget …` | Requires the work already selected |
+| **fix now / fix later / other milestone / close?** | **none — operator decision** | `forge diagnose` supplies evidence for the call; it does not make it |
+
+`forge triage` does **not** answer the last row. Its disposition proposals are shelved
+(ADR-0010): a full pass returned 29 `needs_verification` out of 30 findings because the
+proposer's evidence is artifact presence and churn, which cannot establish whether a
+behavioral claim still holds. Interactive report generation, `--ratify` and `--discard`
+still work; the proposal and headless paths are shelved. Do not re-run triage on a
+backlog expecting dispositions.
+
+To groom a batch of findings, diagnose them and read the results:
+
+```bash
+forge diagnose --verbose --dry-run --parallel 2 --issue 2660,2678
+```
+
+Closed issues are refused, by design.
+
+---
+
 ---
 
 ## Where knowledge goes
