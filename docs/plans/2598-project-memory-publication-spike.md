@@ -52,10 +52,21 @@ a *consequence* of a landing rather than a claim written about one.
 
 `landing_status` is **not** removed. It remains the sprint scheduler's in-process answer to
 "may I release this story's dependents yet", which is a live scheduling question. What
-changes is that the durable answer no longer comes from it. Downstream flattened readers
-(`cli/audits.py`, `cli/sprint_digest.py`, `coordinator/issue_cost.py`) keep working
-unchanged because the field keeps being populated; they are progressively re-pointed at the
-evidence read model rather than migrated in one step (see [Follow-ons](#follow-ons)).
+changes is that the durable answer no longer comes from it, and that the *record* never
+carries the negative half of it: a canonical run record's `landing_status` is `landed` or
+"a landing was owed" (`pending_integration`), never `failed`. That is enforced on creation
+as well as on replacement — a story whose landing fails on its first attempt has no earlier
+record to preserve, and guarding only rewrites would let exactly that story's record be
+created carrying the claim.
+
+Downstream flattened readers keep working for the positive case, which is the one they
+mostly ask about: `coordinator/issue_cost.py` still labels landed runs, and `cli/audits.py`
+still prints a landing column. What they lose is the negative detail —
+`cli/sprint_digest.py` reads merge evidence from the record's `landing` dict, and for a
+failed landing that dict is now empty rather than describing the failure. The failure is in
+the attempt artifact instead, and re-pointing those readers is [follow-on 4](#follow-ons);
+until then a failed landing reads as unresolved there, which is the honest degradation of
+the two.
 
 ### Constraints, checked
 
@@ -232,6 +243,19 @@ accept, in order:
 2. Git topology, when the reviewed commit is provably reachable from the target branch: the
    first merge along the ancestry path, or the base tip for a fast-forward.
 
+**A merged PR is evidence about this run only if it carried this run's work.** Branch names
+are reused: `forge/issue-42` may carry a pull request that merged months ago, and a lookup
+keyed on the branch alone returns it happily — producing an assertion that names *this*
+run's reviewed commit beside *that* PR's merge commit, a landing fabricated out of two real
+facts. So the PR must demonstrate containment: its head is an attested commit, or an
+attested commit is in the list of commits it contains. The commit list is what makes this
+survive a squash, which rewrites the head. With nothing attested to check against, the
+lookup fails closed and the observation records `unknown` — a PR that cannot be tied to
+this run is not evidence about this run.
+
+Recency is not a tiebreak for correctness here, only among PRs that already passed
+containment. A stale PR that merged *later* than the real one would otherwise win.
+
 A PR reported merged whose merge commit cannot be named produces no assertion — the
 observation records `unknown` and stops. `RECONCILABLE_OUTCOMES` (`queued`, `unknown`,
 `timeout`) is the set a later pass will look at again; `refused`, `failed` and `closed` are
@@ -268,8 +292,8 @@ otherwise; the fallback makes `direct` degrade to `memory-branch` against a prot
 | Landed via gate-green rollback (#2028) | same | Assertion, `landed_commit` from the rollback record — the commit that actually reached the branch, not the checkpoint |
 | Already-merged short-circuit | same | Assertion only if the merged carrier can be named; otherwise attempt `unknown`. The guard discards the worktree's commits, so a claim here would name work that did not land |
 | Zero-delta (nothing ahead of base) | same | Attempt `failed`. Nothing landed |
-| Landing refused (dirty root, unmet dependency, missing review) | same | Attempt `refused` / `failed` |
-| Landing failed (merge conflict, hook rejection) | same | Attempt `failed` |
+| Landing refused (dirty root, unmet dependency, missing review) | same; record keeps `pending_integration` | Attempt `refused` / `failed` |
+| Landing failed (merge conflict, hook rejection) | same; record keeps `pending_integration` | Attempt `failed` |
 | Escalated / failed before any landing was attempted | same | **No evidence at all.** No landing was owed, so `landing_state` is `unresolved` and reconciliation never looks. Manufacturing an attempt would invent an obligation |
 
 ### Asynchronous landing (`on_approve: merge-pr`)
@@ -281,10 +305,10 @@ observed later.
 | --- | --- | --- | --- |
 | PR merged during the landing step | `merge-pr` reported merged | — | Assertion by `sprint.integration`, `carrier_kind: pull_request`, `carrier_ref` the PR number, `landed_commit` from `mergeCommit.oid` |
 | Auto-merge queued, resolves before sprint exit | queued, then polled MERGED | — | Attempt `queued`, then assertion by `sprint.queued-pr` |
-| Auto-merge queued, still open at exit | attempt `queued`, then attempt `timeout` when forge stops waiting | PR merges later | Assertion by `forge.reconcile` on the next sprint. The run record is **not** rewritten |
+| Auto-merge queued, still open at exit | attempt `queued`, then attempt `timeout` when forge stops waiting; record keeps `pending_integration` | PR merges later | Assertion by `forge.reconcile` on the next sprint. The run record is **not** rewritten |
 | Auto-merge queued, PR closed unmerged | attempt `queued` | PR closed | Attempt `closed`. Terminal; no assertion, ever |
-| Required checks decided red | attempt `failed` | — | Attempt `failed`. Terminal |
-| PR merged but the merge commit cannot be named | — | — | Attempt `unknown`. Reconcilable: a later pass with a working `gh` can still assert |
+| Required checks decided red | attempt `failed`; record keeps `pending_integration` | — | Attempt `failed`. Terminal |
+| PR merged but the merge commit cannot be named, or the only merged PR on the branch did not carry this run's commits | — | — | Attempt `unknown`. Reconcilable: a later pass that can name and verify the carrier may still assert |
 | Landing failed before a PR existed | attempt `failed` | — | Attempt `failed` |
 | Escalated / failed before any landing | no evidence | — | `unresolved` |
 
@@ -329,6 +353,7 @@ constructor, not at the call sites.
 | `sprint/audit_publish.py` | Transport selection, the policy-refusal fallback, the third tracked memory tree |
 | `sprint/runner.py` | Evidence emission at `_attempt_integration` and the queued-PR wrap-up; reconciliation at sprint startup; mid-sprint publish no longer requires quiescence for runs that do not land locally; a drain immediately before each admission |
 | `sprint/audit.py`, `coordinator/landing_evidence.py` | Atomic-replace temporary files moved out of the tracked memory trees into `.forge/audits/.tmp/` |
+| `sprint/audit.py` | A canonical run record never carries a resolved-negative landing claim, on creation or replacement; the "already written" check reads through to the staging area, because the transport drains the canonical tree to publish it |
 | `coordinator/audit_storage.py` | The evidence tree joins `AUDIT_PATH_REGISTRY`, so the diagnose briefing renders it |
 | `cli/init_commands.py`, repo `.gitignore` / `.gitattributes` | `.forge/audits/landing/` re-included as project memory and marked generated |
 
@@ -366,6 +391,8 @@ An indexed projection of evidence into the substrate would need both, and is a f
 | A failed publish retains staged memory rather than losing it | `tests/test_memory_publication.py` |
 | Memory reaches the remote with the base branch untouched; a fresh clone carries the corpus | `tests/test_memory_publication.py` |
 | Neither writer leaves a temporary file in a tracked tree; a stray one is never publishable | `tests/test_memory_publication.py` |
+| A stale merged PR on a reused branch is refused as the carrier; a squashed PR is still recognised by its commit list; an unverifiable lookup fails closed | `tests/test_landing_observation.py` |
+| A failed or timed-out landing does not put a negative claim in the run record, on rewrite or on first write; a successful one may still advance it | `tests/test_landing_observation.py` |
 | Every story admission is preceded by a drain, and a sibling finishing in that window does not dirty the newcomer's checkout | `tests/test_protected_base_publication_poc.py::test_every_admission_is_preceded_by_a_drain_of_sibling_memory` |
 | Sprints accumulate onto one memory branch; the branch restarts from base once merged | `tests/test_memory_publication.py` |
 | The direct transport still commits, pushes, reconciles and raises exactly as before | `tests/test_sprint_audit_publish.py`, `tests/test_sprint_parallel.py::TestSprintRunAuditCommit` |
@@ -388,6 +415,13 @@ fails. It establishes:
   than when the scheduler happens to interleave that way.
 * **The protected branch received no direct commit.** Its first-parent history across the
   run is exactly `["Merge PR for story-a"]`.
+* **No outcome without a verified landing touched its record.** Story B's landing timed out
+  and story C's failed outright; both records still read `pending_integration`, asserted as
+  that value rather than merely as "not landed" — a record stamped `failed` would satisfy
+  "not landed" while being exactly the negative claim the model forbids.
+* **A stale pull request on a reused branch is refused.** Story A's branch also carries an
+  older merged PR whose commits are unrelated to this run. The assertion names `#1`, the PR
+  that carried the reviewed commit, not `#0`.
 * **A fresh clone** of the memory branch holds one run record for each of the three
   completed stories, and positive landing assertions for exactly story A and story B —
   each naming the run, the reviewed and gated source commit, the target branch, the pull

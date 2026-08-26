@@ -256,13 +256,15 @@ def _result(slug: str, reviewed: str, gated: str) -> CoordinatorResult:
 
 
 def _write_run_artifacts(root: Path, slug: str) -> None:
-    """What a finished story leaves in the shared checkout."""
-    runs = root / ".forge" / "audits" / "runs"
-    runs.mkdir(parents=True, exist_ok=True)
-    (runs / f"run-{slug}.json").write_text(
-        json.dumps({"run_id": f"run-{slug}", "task": {"slug": slug}}, indent=1) + "\n",
-        encoding="utf-8",
-    )
+    """The knowledge summary a finished story leaves in the shared checkout.
+
+    Deliberately *not* the run record: the sprint writes that itself, through the
+    real writer, and a stub standing in for it would be the record these tests
+    then read back — hiding whether the genuine one was rewritten by its landing
+    outcome. Summary generation is LLM-backed and does not run here, so this
+    stands in for it and is what makes the shared checkout dirty at a time the
+    test controls.
+    """
     summaries = root / ".forge" / "knowledge" / "summaries"
     summaries.mkdir(parents=True, exist_ok=True)
     (summaries / f"run-{slug}.yaml").write_text(f"run_id: run-{slug}\n", encoding="utf-8")
@@ -322,6 +324,21 @@ def test_protected_base_parallel_merge_pr_poc(
     _set_prs(
         fake_gh,
         [
+            # A *stale* pull request on story-a's branch: same branch name, an
+            # older merge, carrying commits that have nothing to do with this
+            # run. It is listed first and merged earlier, so a lookup keyed on
+            # the branch alone would have to reject it on the evidence rather
+            # than on ordering.
+            {
+                "head": "forge/story-a",
+                "state": "merged",
+                "number": 0,
+                "url": "https://example.test/pr/0",
+                "mergeCommit": {"oid": "0" * 40},
+                "mergedAt": "2026-01-01T00:00:00Z",
+                "headRefOid": "9" * 40,
+                "commits": [{"oid": "9" * 40}],
+            },
             {
                 "head": "forge/story-a",
                 "state": "merged",
@@ -329,6 +346,8 @@ def test_protected_base_parallel_merge_pr_poc(
                 "url": "https://example.test/pr/1",
                 "mergeCommit": {"oid": merge_commit_a},
                 "mergedAt": "2026-08-25T00:00:00Z",
+                "headRefOid": heads["story-a"],
+                "commits": [{"oid": heads["story-a"]}],
             },
             {
                 "head": "forge/story-b",
@@ -337,6 +356,8 @@ def test_protected_base_parallel_merge_pr_poc(
                 "url": "https://example.test/pr/2",
                 "mergeCommit": None,
                 "mergedAt": None,
+                "headRefOid": heads["story-b"],
+                "commits": [{"oid": heads["story-b"]}],
             },
         ],
     )
@@ -462,6 +483,8 @@ def test_protected_base_parallel_merge_pr_poc(
                 state="merged",
                 mergeCommit={"oid": merge_commit_b},
                 mergedAt="2026-08-26T00:00:00Z",
+                headRefOid=heads["story-b"],
+                commits=[{"oid": heads["story-b"]}],
             )
     _set_prs(fake_gh, prs)
 
@@ -496,23 +519,31 @@ def test_protected_base_parallel_merge_pr_poc(
         record = json.loads((runs / f"run-{slug}.json").read_text(encoding="utf-8"))
         assert record["run_id"] == f"run-{slug}"
         assert record["task"]["slug"] == slug
-    # story-b's landing was observed *after* the sprint exited. Its run record
-    # is exactly what the sprint published — the later observation added an
-    # artifact beside it rather than rewriting it into a landed claim.
-    story_b_record = json.loads((runs / "run-story-b.json").read_text(encoding="utf-8"))
-    assert story_b_record.get("landing_status") != "landed"
-    # story-c never landed, so its record asserts nothing about a landing.
-    story_c_record = json.loads((runs / "run-story-c.json").read_text(encoding="utf-8"))
-    assert story_c_record.get("landing_status") != "landed"
+    # Neither the queued PR forge stopped waiting for nor the landing that
+    # failed outright rewrote its record. Both are left as the run left them —
+    # the landing was owed and unresolved when the story finished, and that is
+    # still what the record says. Asserted as the value, not merely as "not
+    # landed": a record stamped `failed` would also satisfy "not landed" while
+    # being exactly the negative claim the model forbids.
+    for slug in ("story-b", "story-c"):
+        record = json.loads((runs / f"run-{slug}.json").read_text(encoding="utf-8"))
+        assert record.get("landing_status") == "pending_integration", (
+            f"{slug}'s record was rewritten by its landing outcome"
+        )
+        assert (record.get("merge") or {}).get("merged") is not True
+        assert (record.get("landing_event") or {}).get("landed") is not True
+    # story-b's landing was observed *after* the sprint exited; the later
+    # observation added an artifact beside the record rather than touching it.
+    assert (evidence / "run-story-b.landed.json").exists()
 
     # Positive evidence only where a successful landing was observed.
     assert sorted(p.name for p in evidence.glob("*.landed.json")) == [
         "run-story-a.landed.json",
         "run-story-b.landed.json",
     ]
-    for slug, merge_commit, pr_url, observer in (
-        ("story-a", merge_commit_a, "https://example.test/pr/1", "sprint.integration"),
-        ("story-b", merge_commit_b, "https://example.test/pr/2", "forge.reconcile"),
+    for slug, merge_commit, pr_url, carrier_ref, observer in (
+        ("story-a", merge_commit_a, "https://example.test/pr/1", "#1", "sprint.integration"),
+        ("story-b", merge_commit_b, "https://example.test/pr/2", "#2", "forge.reconcile"),
     ):
         assertion = json.loads((evidence / f"run-{slug}.landed.json").read_text(encoding="utf-8"))
         assert assertion["run_id"] == f"run-{slug}"
@@ -521,6 +552,9 @@ def test_protected_base_parallel_merge_pr_poc(
         assert assertion["target_branch"] == BASE
         assert assertion["landed_commit"] == merge_commit
         assert assertion["carrier_kind"] == "pull_request"
+        # The verified pull request, not the stale one that reused the branch:
+        # #1 carried this run's reviewed commit, #0 did not.
+        assert assertion["carrier_ref"] == carrier_ref
         assert assertion["pr_url"] == pr_url
         assert assertion["landing_mode"] == "merge-pr"
         assert assertion["observer"] == observer

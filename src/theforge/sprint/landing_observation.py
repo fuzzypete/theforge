@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json
 import shlex
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
@@ -108,8 +109,58 @@ def _pr_url(merge_info: dict) -> str | None:
     return None
 
 
-def _merged_pr_commit(project_root: Path, branch: str) -> tuple[str, str, str] | None:
-    """``(landed_commit, pr_ref, pr_url)`` when GitHub reports a merged PR.
+def attested_commit_set(*commits: str | None) -> set[str]:
+    """The non-empty attested commits, as a set for containment checks."""
+    return {commit for commit in commits if isinstance(commit, str) and commit.strip()}
+
+
+def _same_commit(left: str, right: str) -> bool:
+    """Whether two SHA spellings name the same commit.
+
+    Abbreviated on either side: forge records whatever ``rev-parse`` gave it,
+    and GitHub returns full oids, so a prefix comparison is what makes the two
+    comparable. Seven characters is git's own minimum abbreviation; anything
+    shorter is not an identification and is refused rather than matched loosely.
+    """
+    left, right = left.strip().lower(), right.strip().lower()
+    shortest = min(len(left), len(right))
+    if shortest < 7:
+        return False
+    return left[:shortest] == right[:shortest]
+
+
+def _pr_carries_commit(entry: Mapping, attested: set[str]) -> bool:
+    """Whether this pull request demonstrably carried one of *attested*.
+
+    Branch names are reused. ``forge/issue-42`` may have carried a pull request
+    that merged months ago, and a lookup keyed on the branch alone will happily
+    return it — producing an assertion that names *this* run's reviewed commit
+    beside *that* PR's merge commit, which is a fabricated pairing of two real
+    facts. So the PR has to demonstrate it carried the work: either its head is
+    the attested commit, or the attested commit is among the commits it
+    contains.
+
+    The commit list is what makes this survive ``merge_strategy: squash``. A
+    squash rewrites the head, so head-matching alone would reject every squashed
+    PR; the PR still lists the commits it was opened with.
+    """
+    candidates: set[str] = set()
+    head = entry.get("headRefOid")
+    if isinstance(head, str) and head:
+        candidates.add(head)
+    commits = entry.get("commits")
+    if isinstance(commits, list):
+        for commit in commits:
+            oid = commit.get("oid") if isinstance(commit, Mapping) else None
+            if isinstance(oid, str) and oid:
+                candidates.add(oid)
+    return any(_same_commit(candidate, claim) for candidate in candidates for claim in attested)
+
+
+def _merged_pr_commit(
+    project_root: Path, branch: str, attested: set[str]
+) -> tuple[str, str, str] | None:
+    """``(landed_commit, pr_ref, pr_url)`` for a merged PR that carried the work.
 
     GitHub's ``mergeCommit`` is the only source that survives
     ``merge_strategy: squash``: the reviewed commit is not an ancestor of the
@@ -117,10 +168,16 @@ def _merged_pr_commit(project_root: Path, branch: str) -> tuple[str, str, str] |
     Without a merge commit there is no assertion to make, whatever ``mergedAt``
     says — a PR reported merged whose merge commit cannot be named is exactly
     the unnameable claim this refuses to record.
+
+    ``attested`` are the reviewed and gated commits. Fails closed when it is
+    empty: a PR that cannot be tied to this run's work is not evidence about
+    this run, and the caller records ``unknown`` rather than guessing.
     """
+    if not attested:
+        return None
     ok, out = _sh(
         f"gh pr list --head {shlex.quote(branch)} --state merged --limit 5 "
-        "--json number,url,mergeCommit,mergedAt",
+        "--json number,url,mergeCommit,mergedAt,headRefOid,commits",
         project_root,
     )
     if not ok:
@@ -140,6 +197,8 @@ def _merged_pr_commit(project_root: Path, branch: str) -> tuple[str, str, str] |
         merged_at = entry.get("mergedAt")
         number = entry.get("number")
         if not (isinstance(oid, str) and oid and isinstance(merged_at, str) and merged_at):
+            continue
+        if not _pr_carries_commit(entry, attested):
             continue
         url = entry.get("url") if isinstance(entry.get("url"), str) else ""
         candidate = (merged_at, oid, f"#{number}" if number else url, url)
@@ -259,7 +318,11 @@ def observe_landing(
         # merge_info the landing step returned.
         if merge.get("merged") or landing_status == "landed":
             landed_commit, carrier_kind, carrier_ref = _resolve_landed_carrier(
-                config, slug=slug, merge_info=merge, reviewed_commit=reviewed_commit
+                config,
+                slug=slug,
+                merge_info=merge,
+                reviewed_commit=reviewed_commit,
+                gated_commit=gated_commit,
             )
             if landed_commit and reviewed_commit and gated_commit:
                 assertion = build_landing_assertion(
@@ -344,21 +407,26 @@ def _resolve_landed_carrier(
     slug: str,
     merge_info: dict,
     reviewed_commit: str | None,
+    gated_commit: str | None = None,
 ) -> tuple[str | None, str, str]:
     """Name the commit that landed and the carrier that delivered it."""
     project_root = config.project_root
     base_branch = config.workspace.base_branch
     branch = config.workspace.branch_pattern.format(slug=slug)
+    attested = attested_commit_set(reviewed_commit, gated_commit)
 
     rollback = merge_info.get("gate_green_rollback")
     if isinstance(rollback, dict) and rollback.get("landed_commit"):
         return str(rollback["landed_commit"]), "merge", base_branch
 
     if merge_info.get("action") == "merge-pr" or _pr_url(merge_info):
-        merged = _merged_pr_commit(project_root, branch)
+        merged = _merged_pr_commit(project_root, branch, attested)
         if merged is not None:
             landed, pr_ref, _url = merged
             return landed, "pull_request", pr_ref
+        # This run's *own* PR, taken from the landing step's merge_info rather
+        # than looked up by branch name, so it cannot be a stale reuse of the
+        # branch. Topology names what reached the base branch.
         url = _pr_url(merge_info)
         if url and reviewed_commit:
             landed = _merge_commit_from_topology(project_root, base_branch, reviewed_commit)
@@ -446,7 +514,7 @@ def reconcile_landing_evidence(
         carrier_ref = last.get("pr_url") or branch
         pr_url = last.get("pr_url")
 
-        merged = _merged_pr_commit(project_root, branch)
+        merged = _merged_pr_commit(project_root, branch, attested_commit_set(reviewed, gated))
         if merged is not None:
             landed_commit, carrier_ref, merged_url = merged
             pr_url = merged_url or pr_url
@@ -454,6 +522,9 @@ def reconcile_landing_evidence(
             topology = _merge_commit_from_topology(project_root, base_branch, reviewed)
             if topology:
                 landed_commit = topology
+                # ``pr_url`` here is the PR *this run's own* landing step
+                # recorded on its attempt, not one found by branch name, so
+                # naming it as the carrier cannot pick up a branch reuse.
                 carrier_kind = "merge" if not pr_url else "pull_request"
                 carrier_ref = pr_url or base_branch
 
