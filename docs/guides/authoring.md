@@ -27,6 +27,26 @@ never auto-invoked — you run it.
 Once `forge shape` has put the issue in a typed bucket, the per-use-case
 rules below apply.
 
+### Use `forge author` before filing or promoting a draft
+
+`forge author` is the interactive path for collecting the parts a typed issue
+still needs *before* you submit it. Start fresh with `forge author --type
+enhancement`, resume a local draft with `forge author --from-draft PATH`, or
+finish an existing `todo:draft` issue with `forge author --from-issue <N>`.
+Use `--output PATH` to write the current state as a local draft, and `--create`
+only when you want the command to create or update the GitHub issue after the
+shared shape gate says the body is runnable.
+
+The command does not invent its own checklist. Required parts come from the
+typed issue specification, the finished body is rendered through that shared
+specification, and the result is re-checked with the same shape gate every
+other intake surface uses. Where a part has a constrained form, the prompt
+states the property to satisfy at the moment you answer it: acceptance
+criteria are reviewer-checkable outcomes, and implementation-plan details such
+as file paths, call sequences, and design notes belong outside the issue body.
+If you decline a required part, `forge author` keeps or adds `todo:draft` and
+writes an honestly incomplete draft instead of something that reads ready.
+
 ### Groom before the sprint, not during it
 
 Making a typed issue shape-gate-clean is the job of **`forge groom <issue>`**,
@@ -93,11 +113,10 @@ that does not yet exist.
   task list.
 - **Acceptance criteria** — heading literally `## Acceptance criteria` (the
   validator also accepts `## Done criteria` or `## Checklist`). At least one
-  bullet. Each bullet should describe an observable outcome using a behavioral
-  verb such as *returns, emits, writes, logs, creates, raises, reports, blocks,
-  accepts, rejects, fails, passes, warns, exits*. Avoid embedding code, YAML,
-  or function signatures inside AC bullets — the validator flags AC sections
-  that look like implementation dumps.
+  bullet. Each bullet should describe a reviewer-checkable outcome. Avoid
+  embedding code, YAML, function signatures, file paths, or stepwise build
+  instructions inside AC bullets — the validator flags AC sections that look
+  like implementation dumps.
 - **Example** — heading `## Example` (or `## Examples`, `## Target output`,
   `## What it should look like`). Include a fenced code block, a bullet list,
   or a small table that shows what success looks like. Must be substantive:
@@ -275,8 +294,7 @@ module, renaming a field, replacing a dependency, normalizing call sites.
 - **Acceptance criteria** — observable checks that prove the refactor
   preserved behavior. Good AC bullets here are *equivalence* statements (input
   X still produces output Y) and *structural* invariants (callers no longer
-  import from the old module). Use behavioral verbs: *returns, passes,
-  emits, fails, exits, blocks*.
+  import from the old module).
 - **Example** — typically a **before / after** sketch of the structural
   change. A small two-column table or two short fenced snippets are ideal.
 
@@ -394,7 +412,7 @@ sub-issues of an epic, or share a milestone/label — not in a rollup.
 - **Title** — names the theme of the batch.
 - **Why** — one paragraph on why these belong together.
 - **Acceptance criteria** — one bullet per child change, each phrased as an
-  observable outcome with a behavioral verb. Keep the count small: more than a
+  observable outcome a reviewer can check. Keep the count small: more than a
   handful of distinct subsystems in one rollup will trip the
   too-many-clusters guard, and that is the validator telling you to split.
 - **Example** — show the externally visible result of one or two of the

@@ -7,6 +7,7 @@ import sys
 
 from theforge.cli import (
     audit,
+    author,
     batch_report,
     check_config,
     daemon,
@@ -82,6 +83,7 @@ def build_parser() -> argparse.ArgumentParser:
     check_config.register_parser(subparsers)
     forge_yaml_guard.register_parser(subparsers)
     audit.register_parser(subparsers)
+    author.register_parser(subparsers)
     audits_cmd.register_parser(subparsers)
     explain.register_parser(subparsers)
     telemetry.register_parser(subparsers)
@@ -129,6 +131,7 @@ def main() -> None:
         "check-config": check_config.cmd_check_config,
         "check-story-config": forge_yaml_guard.cmd_check_story_config,
         "audit": audit.cmd_audit,
+        "author": author.cmd_author,
         "audits": audits_cmd.cmd_audits,
         "explain": explain.cmd_explain,
         "telemetry": telemetry.cmd_telemetry,
