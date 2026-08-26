@@ -45,6 +45,7 @@ Merge / PR + audit publication                   src/theforge/coordinator/comple
   workflow: [ADR-0001](adr/0001-intake-readiness-workflow.md).
 - Bugs are typed: a symptom bug must carry a `## Diagnosis` body section
   (landed by `forge diagnose` or by hand) before it is fix-ready. See
+  [Issue shape](reference/issue-shape.md) and
   [Bug shape](reference/bug-shape.md).
 
 ### Story level: the coordinator state machine

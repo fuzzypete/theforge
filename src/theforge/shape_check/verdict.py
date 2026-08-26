@@ -9,6 +9,7 @@ not rename without updating ADR-0001 and the downstream surfaces.
 
 from __future__ import annotations
 
+from theforge.shape_check.issue_spec import lifecycle_refusals
 from theforge.shape_check.types import Reason, Severity, ShapeVerdict
 
 # Precedence order: earlier entries win over later.
@@ -27,9 +28,32 @@ _BLOCKING_PRECEDENCE: tuple[tuple[str, ShapeVerdict], ...] = (
     ("missing_example", ShapeVerdict.NEEDS_GROOMING_MISSING_EXAMPLE),
 )
 
-_EXPLICIT_LIFECYCLE_REFUSALS: tuple[tuple[str, ShapeVerdict], ...] = (
-    ("diagnosis_cause_unknown", ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),
-)
+
+def _explicit_lifecycle_refusals() -> tuple[tuple[str, ShapeVerdict], ...]:
+    """Lifecycle refusals, derived from the typed issue specification.
+
+    A state a type can occupy that does not admit implementation is a refusal
+    (ADR-0009 clause 4) — the specification says so, and this layer reads it
+    rather than keeping a second list. Refusal codes already covered by the
+    blocking precedence table above are skipped; only the states that refuse
+    *without* a blocking finding — today, a complete diagnosis with no asserted
+    cause — need an entry here.
+    """
+    blocking = {code for code, _ in _BLOCKING_PRECEDENCE}
+    refusals: list[tuple[str, ShapeVerdict]] = []
+    for code, _state_key in lifecycle_refusals():
+        if code in blocking:
+            continue
+        try:
+            refusals.append((code, ShapeVerdict(code)))
+        except ValueError:
+            # A lifecycle state whose refusal has no verdict of its own falls
+            # through to the operator-action fallback below.
+            continue
+    return tuple(refusals)
+
+
+_EXPLICIT_LIFECYCLE_REFUSALS: tuple[tuple[str, ShapeVerdict], ...] = _explicit_lifecycle_refusals()
 
 
 def derive_verdict(reasons: tuple[Reason, ...]) -> ShapeVerdict:

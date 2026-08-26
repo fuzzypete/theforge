@@ -395,9 +395,12 @@ def test_runnable_bug_surfaces_local_advisories_without_changing_verdict(
     assert "fix location" in entry.detail
 
 
-def test_advisory_only_done_state_stays_runnable_and_surfaces_as_advisory(
+def test_criteria_without_a_listed_verb_stay_runnable_with_no_advisory(
     tmp_path: Path,
 ) -> None:
+    # The closed observable-verb vocabulary is retired (ADR-0009 clause 5), so
+    # the gate has nothing to say about a criterion whose wording it once
+    # scored: the issue is runnable and carries no advisory.
     issues = [{"number": 2512, "title": "Add a flag"}]
 
     result = apply_shape_gate(
@@ -412,11 +415,9 @@ def test_advisory_only_done_state_stays_runnable_and_surfaces_as_advisory(
 
     assert [r["number"] for r in result.runnable] == [2512]
     assert result.runnable[0]["shape_verdict"] == "runnable"
-    assert result.runnable[0]["shape_advisories"] == ["no_observable_done_state"]
+    assert "shape_advisories" not in result.runnable[0]
     assert result.skipped == []
-    assert len(result.advisories) == 1
-    entry = result.advisories[0]
-    assert entry.reason_codes == ("no_observable_done_state",)
+    assert result.advisories == []
 
 
 def test_cause_unknown_refusal_does_not_promote_phrase_advice_to_skipped_codes(

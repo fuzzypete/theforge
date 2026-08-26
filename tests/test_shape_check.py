@@ -639,22 +639,35 @@ class TestNoObservableDoneState:
         )
         assert check_no_observable_done_state("T", body, []) is None
 
-    def test_no_verb(self):
+    def test_criteria_without_a_listed_verb_are_admitted(self):
+        # The closed observable-verb vocabulary is retired as an admission
+        # input (ADR-0009 clause 5): presence of criteria is structural,
+        # whether they are observable is semantic. Bullets exist, so the
+        # structural question is answered.
         body = "## Acceptance Criteria\n- Something vague.\n- Another thing.\n"
-        r = check_no_observable_done_state("T", body, [])
-        assert r is not None and r.code == "no_observable_done_state"
-        assert r.severity is Severity.ADVISORY
+        assert check_no_observable_done_state("T", body, []) is None
+
+    def test_wrapped_criterion_is_not_penalized_for_its_line_breaks(self):
+        # The retired check truncated each bullet to its first line, so a
+        # criterion whose verb landed on a continuation line read as having
+        # none. Admission never depended on line wrapping.
+        body = (
+            "## Acceptance criteria\n\n"
+            "- Rendering a typed document\n"
+            "  emits only the canonical spelling.\n"
+        )
+        assert check_no_observable_done_state("T", body, []) is None
 
     def test_with_verb(self):
         assert check_no_observable_done_state("T", WELL_FORMED_AC, []) is None
 
-    def test_advisory_only_done_state_keeps_issue_runnable(self):
+    def test_criteria_without_a_listed_verb_keep_issue_runnable(self):
         result = check("Add a flag", ADVISORY_ONLY_DONE_STATE_BODY, ["enhancement"])
         assert result.shape is Shape.RUNNABLE
         assert result.verdict is ShapeVerdict.RUNNABLE
         assert result.admits_implementation_sprint is True
-        reason = next(r for r in result.reasons if r.code == "no_observable_done_state")
-        assert reason.severity is Severity.ADVISORY
+        # No finding at all: the verb vocabulary is retired, not downgraded.
+        assert not any(r.code == "no_observable_done_state" for r in result.reasons)
 
     def test_blocking_done_state_still_refuses(self):
         result = check("Add a flag", "## What\n\nAdd a flag.\n", ["enhancement"])

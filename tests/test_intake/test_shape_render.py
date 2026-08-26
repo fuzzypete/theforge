@@ -141,9 +141,12 @@ def test_restructure_bug_fills_gaps_in_root_cause_heading_not_a_new_diagnosis():
 
     new = restructure_body(_bug_proposal(DiagnosisState.DIAGNOSIS_CONFIRMED_CAUSE), body)
 
-    assert "## Root cause" in new
-    assert "## Diagnosis" not in new
-    assert new.count("## Root cause") == 1
+    # One diagnosis section, not two — the gap bullets landed in the section
+    # already there. It is emitted in the canonical spelling, because a
+    # renderer emits only the canonical form (ADR-0009 clause 8); recognizing
+    # "## Root cause" on input is what let it be repaired in place at all.
+    assert "## Root cause" not in new
+    assert new.count("## Diagnosis") == 1
     assert diagnosis_completeness(new) == (True, [])
 
 
