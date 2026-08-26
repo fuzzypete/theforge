@@ -1,7 +1,14 @@
-"""Deterministic heuristic checks — one function per reason code.
+"""Deterministic structural checks — one function per reason code.
 
-Each check returns ``Optional[Reason]`` given already-parsed inputs.
-Stdlib only.
+Each check returns ``Optional[Reason]`` given already-parsed inputs. The
+structural rules themselves — recognized type labels, which sections a type
+requires, which it forbids, the heading spellings each is recognized by, and
+the lifecycle states it can occupy — are *not* stated here. They are read from
+the declarative specification (:mod:`theforge.shape_check.issue_spec`), so a
+rule changed there changes what this module enforces with no second edit
+(ADR-0009 clause 1).
+
+Stdlib plus that pure-data specification.
 """
 
 from __future__ import annotations
@@ -17,11 +24,22 @@ from theforge.shape_check.diagnosis_spec import (
     describe_missing,
     required_diagnosis_tokens,
 )
+from theforge.shape_check.issue_spec import (
+    ACCEPTANCE_CRITERIA_SECTION,
+    BUG_SPEC,
+    DIAGNOSIS_SECTION,
+    ENHANCEMENT_SPEC,
+    EXAMPLE_SECTION,
+    ISSUE_SHAPE_REFERENCE_PATH,
+    RECOGNIZED_TYPE_LABELS,
+    SECTIONS,
+    ContradictionTrigger,
+    IssueTypeSpec,
+    Presence,
+    spec_for_labels,
+)
 from theforge.shape_check.parsing import (
     ACCEPTANCE_CRITERIA_HEADING_PATTERN,
-    BUG_EXPECTATION_HEADING,
-    BUG_REPRODUCTION_HEADING,
-    BUG_SYMPTOM_HEADING,
     FenceTracker,
     blockquote_blocks,
     extract_ac_section,
@@ -136,93 +154,52 @@ _HEADING_RE = re.compile(r"^\s{0,3}#{1,6}\s+(?P<content>.+?)\s*$")
 _SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
 
 _BUG_LABELS: frozenset[str] = frozenset({"bug"})
-_RECOGNIZED_TYPE_LABELS: frozenset[str] = frozenset({"bug", "enhancement", "epic", "task"})
-_EXAMPLE_SECTION_PATTERNS = (
-    r"example(?:s)?",
-    r"what it should look like",
-    r"target(?: sketch| output| state)?",
-)
+
+# The recognized type vocabulary is the specification's, not this module's.
+_RECOGNIZED_TYPE_LABELS: frozenset[str] = RECOGNIZED_TYPE_LABELS
+
+_EXAMPLE_SECTION_PATTERNS = (EXAMPLE_SECTION.heading_pattern,)
 _EXAMPLE_MIN_CONTENT_CHARS = 30
 
-_OBSERVABLE_VERBS = (
-    "returns",
-    "return",
-    "emits",
-    "emit",
-    "writes",
-    "write",
-    "fails",
-    "fail",
-    "passes",
-    "pass",
-    "warns",
-    "warn",
-    "exits",
-    "exit",
-    "logs",
-    "log",
-    "creates",
-    "create",
-    "raises",
-    "raise",
-    "produces",
-    "produce",
-    "reports",
-    "report",
-    "blocks",
-    "block",
-    "accepts",
-    "accept",
-    "rejects",
-    "reject",
-)
-
-# "root cause" is included alongside "diagnosis" so the gate agrees with
+# "root cause" is recognized alongside "diagnosis" so the gate agrees with
 # theforge.intake.shape_classify's diagnosis-state detection about what
 # counts as a diagnosis-shaped heading — a body whose analysis lives under
 # "## Root cause" must not be treated as diagnosed by the classifier while
 # the gate simultaneously reports the Diagnosis section missing (#2263).
-DIAGNOSIS_HEADING_PATTERN = r"diagnosis|root cause"
+DIAGNOSIS_HEADING_PATTERN = DIAGNOSIS_SECTION.heading_pattern
 
 # Headings whose text, normalized, exactly equals one of these are the
 # canonical diagnosis section — as opposed to a heading that merely mentions
 # the word in a longer, unrelated title. Used to pick the authoritative
 # Diagnosis section when a body carries more than one heading matching
-# DIAGNOSIS_HEADING_PATTERN (#2263).
-DIAGNOSIS_CANONICAL_HEADING_TEXTS = ("diagnosis", "root cause")
+# DIAGNOSIS_HEADING_PATTERN (#2263). These are the specification's declared
+# alias spellings, which is also exactly what the renderer canonicalizes.
+DIAGNOSIS_CANONICAL_HEADING_TEXTS = DIAGNOSIS_SECTION.normalized_aliases
 
 
 @dataclass(frozen=True)
 class TypeShapeRule:
+    """A type's forbidden-section rule, as the finding message states it.
+
+    Kept as a named view over :attr:`IssueTypeSpec.contradiction` so callers
+    that already import ``TypeShapeRule`` keep working; the content is the
+    specification's.
+    """
+
     contradicted_section_slug: str
     type_rule_text: str
     remediation_hint: str
 
 
-_TYPE_SHAPE_RULES: dict[str, TypeShapeRule] = {
-    "bug": TypeShapeRule(
-        contradicted_section_slug="acceptance-criteria",
-        type_rule_text="bugs use observed/expected plus diagnosis",
-        remediation_hint="remove the feature-style checklist or relabel the issue",
-    ),
-    "enhancement": TypeShapeRule(
-        contradicted_section_slug="bug-report-shape",
-        type_rule_text=(
-            "enhancement issues use why/acceptance criteria/example, not bug-report sections"
-        ),
-        remediation_hint="relabel the issue as a bug or rewrite the body to the feature shape",
-    ),
-    "task": TypeShapeRule(
-        contradicted_section_slug="bug-report-shape",
-        type_rule_text="task issues use why/acceptance criteria/example, not bug-report sections",
-        remediation_hint="relabel the issue as a bug or rewrite the body to the task shape",
-    ),
-    "epic": TypeShapeRule(
-        contradicted_section_slug="bug-report-shape",
-        type_rule_text="epic issues are tracking entries, not bug-report sections",
-        remediation_hint="relabel the issue as a bug or file runnable child work instead",
-    ),
-}
+def _type_shape_rule(spec: IssueTypeSpec) -> TypeShapeRule | None:
+    contradiction = spec.contradiction
+    if contradiction is None:
+        return None
+    return TypeShapeRule(
+        contradicted_section_slug=contradiction.slug,
+        type_rule_text=contradiction.rule_text,
+        remediation_hint=contradiction.remediation_hint,
+    )
 
 
 def _lower_labels(labels: Iterable[str]) -> set[str]:
@@ -275,11 +252,14 @@ def _find_tracking_body_declaration(body: str) -> tuple[str, str] | None:
     return None
 
 
+def _declared_type_spec(labels: Iterable[str]) -> IssueTypeSpec | None:
+    """The single declared type specification, or ``None`` when ambiguous."""
+    return spec_for_labels(labels)
+
+
 def _declared_story_type(labels: Iterable[str]) -> str | None:
-    matches = _lower_labels(labels) & _RECOGNIZED_TYPE_LABELS
-    if len(matches) != 1:
-        return None
-    return next(iter(matches))
+    spec = _declared_type_spec(labels)
+    return spec.label if spec is not None else None
 
 
 def _heading_text_for_pattern(body: str, pattern: str) -> str | None:
@@ -291,21 +271,29 @@ def _heading_text_for_pattern(body: str, pattern: str) -> str | None:
     return None
 
 
-def _bug_report_section_headings(body: str) -> list[str]:
+def _forbidden_section_headings(body: str, section_keys: Iterable[str]) -> list[str]:
+    """Headings in ``body`` that spell one of the given forbidden sections.
+
+    The keys come from the type's specification, so a section added to a type's
+    forbidden list is reported here without a second edit. The Diagnosis
+    section resolves through the authoritative-heading rule (#2263) rather than
+    first-match, so a stale lookalike is not what gets named.
+    """
     headings: list[str] = []
-    for pattern in (BUG_SYMPTOM_HEADING, BUG_EXPECTATION_HEADING, BUG_REPRODUCTION_HEADING):
-        heading = _heading_text_for_pattern(body, pattern)
+    for key in section_keys:
+        section = SECTIONS[key]
+        if key == DIAGNOSIS_SECTION.key:
+            match = find_authoritative_heading(
+                body,
+                section.heading_pattern,
+                DIAGNOSIS_CANONICAL_HEADING_TEXTS,
+                diagnosis_completeness_score,
+            )
+            heading = match.group(2).strip() if match is not None else None
+        else:
+            heading = _heading_text_for_pattern(body, section.heading_pattern)
         if heading is not None and heading not in headings:
             headings.append(heading)
-    diagnosis_match = find_authoritative_heading(
-        body,
-        DIAGNOSIS_HEADING_PATTERN,
-        DIAGNOSIS_CANONICAL_HEADING_TEXTS,
-        diagnosis_completeness_score,
-    )
-    diagnosis = diagnosis_match.group(2).strip() if diagnosis_match is not None else None
-    if diagnosis is not None and diagnosis not in headings:
-        headings.append(diagnosis)
     return headings
 
 
@@ -726,6 +714,26 @@ def is_bug_format_issue(body: str, labels: Iterable[str]) -> bool:
     return has_bug_body_headings(body)
 
 
+def _governing_spec(body: str, labels: Iterable[str]) -> IssueTypeSpec:
+    """The specification whose rules apply to this body.
+
+    The declared type label decides it. When no single type is declared, the
+    body's own shape does: a bug-report body is governed by the bug
+    specification, anything else by the feature specification. An undeclared
+    type is itself a blocking finding (``missing_type``); this fallback only
+    keeps the *other* findings from being nonsense in the meantime.
+    """
+    spec = _declared_type_spec(labels)
+    if spec is not None:
+        return spec
+    return BUG_SPEC if is_bug_format_issue(body, labels) else ENHANCEMENT_SPEC
+
+
+def _presence_of(body: str, labels: Iterable[str], section_key: str) -> Presence:
+    """What the governing specification says about one section."""
+    return _governing_spec(body, labels).presence_of(section_key)
+
+
 def check_missing_type(title: str, body: str, labels: Iterable[str]) -> Reason | None:
     """Flag issues that lack a structured type label.
 
@@ -812,8 +820,11 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
       admissible (well-formed) but the verdict-derivation layer lifts it to
       its own verdict so the sprint gate keeps it out of implementation runs.
     - Complete Diagnosis section → no Reason; bug is implementation-runnable.
+
+    The three states are the bug specification's lifecycle states, and the
+    codes emitted here are the ``refusal_code`` those states declare.
     """
-    if not is_bug_format_issue(body, labels):
+    if _presence_of(body, labels, DIAGNOSIS_SECTION.key) is not Presence.REQUIRED:
         return None
     ok, missing = diagnosis_completeness(body)
     if ok:
@@ -874,46 +885,73 @@ def check_bug_missing_diagnosis(title: str, body: str, labels: Iterable[str]) ->
 def check_type_shape_contradiction(title: str, body: str, labels: Iterable[str]) -> Reason | None:
     """Flag bodies whose top-level sections contradict their declared type.
 
-    Mirrors the authoring guide's reserved-shape rules, not an ad-hoc private
-    list: today that means bug-typed issues may not carry a feature-style
-    acceptance-criteria section, and non-bug typed issues may not use the bug
-    report section shape.
+    Both the forbidden sections and the wording of the refusal come from the
+    declared type's specification: a bug may not carry the feature-style
+    acceptance-criteria section, and the feature-shaped types may not use the
+    bug report sections. Marking a section ``Presence.FORBIDDEN`` on a type is
+    the whole edit — this function reads that, it does not restate it.
+
+    Each forbidden rule carries its own trigger, because sections differ in how
+    much they say alone. ``## Diagnosis`` on an enhancement is a defect
+    investigation however the rest of the body reads, so it is refused on sight;
+    ``## Expected`` is ordinary English about intended behavior, so it counts
+    only when the body carries the whole bug-report shape around it.
     """
-    declared_type = _declared_story_type(labels)
-    if declared_type is None:
+    spec = _declared_type_spec(labels)
+    if spec is None:
         return None
 
-    rule = _TYPE_SHAPE_RULES.get(declared_type)
+    # The forbidden set — and when each member of it counts — is the section
+    # rules themselves. The contradiction block carries only *how the refusal
+    # reads*, never a second list of which sections are forbidden: that is the
+    # drift this specification exists to remove.
+    shape_keys = spec.forbidden_keys_with_trigger(ContradictionTrigger.BUG_BODY_SHAPE)
+    carries_bug_shape = bool(shape_keys) and has_bug_body_headings(body)
+    enforced_keys = [
+        key
+        for key in spec.section_keys_with(Presence.FORBIDDEN)
+        if key not in shape_keys or carries_bug_shape
+    ]
+    # Section order is declaration order, so a refusal names the sections the
+    # way the specification lists them.
+    offending_headings = _forbidden_section_headings(body, enforced_keys)
+    if not offending_headings:
+        return None
+
+    declared_type = spec.label
+    rule = _type_shape_rule(spec)
     if rule is None:
-        return None
-
-    if declared_type == "bug":
-        offending_heading = _heading_text_for_pattern(body, ACCEPTANCE_CRITERIA_HEADING_PATTERN)
-        if offending_heading is None:
-            return None
+        # A type that forbids sections without declaring how to say so is still
+        # enforced; it just gets the specification's own words for it.
         return Reason(
             code="type_shape_contradiction",
             severity=Severity.BLOCKING,
             detail=(
-                f"bug body carries an {rule.contradicted_section_slug} section"
-                f" ({offending_heading!r}); "
+                f"{declared_type} body carries "
+                f"{_format_heading_list(offending_headings)}, which the {declared_type} "
+                f"specification forbids (see {ISSUE_SHAPE_REFERENCE_PATH}). "
+                "Remove the section or relabel the issue."
+            ),
+        )
+
+    if len(offending_headings) == 1:
+        article = "an" if rule.contradicted_section_slug[:1].lower() in "aeiou" else "a"
+        return Reason(
+            code="type_shape_contradiction",
+            severity=Severity.BLOCKING,
+            detail=(
+                f"{declared_type} body carries {article} {rule.contradicted_section_slug} section"
+                f" ({offending_headings[0]!r}); "
                 f"{rule.type_rule_text} (see authoring guide). "
                 f"{rule.remediation_hint.capitalize()}."
             ),
         )
 
-    if not has_bug_body_headings(body):
-        return None
-
-    offending_headings = _bug_report_section_headings(body)
-    if not offending_headings:
-        return None
     return Reason(
         code="type_shape_contradiction",
         severity=Severity.BLOCKING,
         detail=(
-            f"{declared_type} body carries {rule.contradicted_section_slug} section"
-            f"{'s' if len(offending_headings) != 1 else ''} "
+            f"{declared_type} body carries {rule.contradicted_section_slug} sections "
             f"{_format_heading_list(offending_headings)}; "
             f"{rule.type_rule_text} (see authoring guide). "
             f"{rule.remediation_hint.capitalize()}."
@@ -950,7 +988,13 @@ def check_epic_or_tracking(title: str, body: str, labels: Iterable[str]) -> Reas
 def check_missing_acceptance_criteria(
     title: str, body: str, labels: Iterable[str]
 ) -> Reason | None:
-    if is_bug_format_issue(body, labels):
+    """Refuse a body whose type requires acceptance criteria and has none.
+
+    Which types require the section is the specification's call, not this
+    function's — a bug's specification forbids it, so a bug is exempt here by
+    derivation rather than by a private label check.
+    """
+    if _presence_of(body, labels, ACCEPTANCE_CRITERIA_SECTION.key) is not Presence.REQUIRED:
         return None
     placeholder_only = False
     if has_heading(body, ACCEPTANCE_CRITERIA_HEADING_PATTERN):
@@ -1001,7 +1045,12 @@ def _has_structured_example_content(section: str) -> bool:
 
 
 def check_missing_example(title: str, body: str, labels: Iterable[str]) -> Reason | None:
-    if is_bug_format_issue(body, labels):
+    """Report a missing concrete example on types whose spec asks for one.
+
+    ``Presence.ADVISORY`` in the specification is exactly this finding's
+    severity: it informs a reader and decides nothing (ADR-0009 clause 4).
+    """
+    if _presence_of(body, labels, EXAMPLE_SECTION.key) is not Presence.ADVISORY:
         return None
     section = _extract_example_section(body)
     if section is None:
@@ -1249,11 +1298,12 @@ def check_implementation_plan_in_body(
     behavior — the failure mode documented in superseded issue #1110.
 
     Bug-format issues are exempt because their Diagnosis section is required
-    to name the affected code path. Stories that legitimately describe a
-    refactor of one named module can opt out by adding a body line of the form
-    ``Implementation target: <path>``.
+    to name the affected code path — the exemption is derived from the type's
+    specification requiring that section, not asserted separately. Stories that
+    legitimately describe a refactor of one named module can opt out by adding a
+    body line of the form ``Implementation target: <path>``.
     """
-    if is_bug_format_issue(body, labels):
+    if _presence_of(body, labels, DIAGNOSIS_SECTION.key) is Presence.REQUIRED:
         return None
     if _PLAN_EXCEPTION_RE.search(body):
         return None
@@ -1302,7 +1352,21 @@ def check_implementation_plan_in_body(
 
 
 def check_no_observable_done_state(title: str, body: str, labels: Iterable[str]) -> Reason | None:
-    if is_bug_format_issue(body, labels):
+    """Refuse a body that states no done condition at all.
+
+    Structural only: the section must exist and must carry bullets. Whether a
+    criterion is *meaningfully* observable is a semantic question, and the
+    closed thirty-word verb vocabulary that used to answer it here has been
+    retired as an admission input (ADR-0009 clause 5).
+
+    It was not merely imprecise, it was unanswerable from the text: the list was
+    closed and tense-sensitive (``writes`` counted, ``written`` did not), and
+    bullets were truncated to their first line before matching, so a criterion
+    whose verb landed on a wrapped continuation line read as having none.
+    Admission depended on word choice, verb tense and line wrapping rather than
+    on whether a reviewer could check the outcome.
+    """
+    if _presence_of(body, labels, ACCEPTANCE_CRITERIA_SECTION.key) is not Presence.REQUIRED:
         return None
     ac = extract_ac_section(body)
     if not ac:
@@ -1314,21 +1378,13 @@ def check_no_observable_done_state(title: str, body: str, labels: Iterable[str])
                 "no observable way for a reviewer to verify completion."
             ),
         )
-    bullets = extract_bullets(ac)
-    if not bullets:
+    if not extract_bullets(ac):
         return Reason(
             code="no_observable_done_state",
             severity=Severity.BLOCKING,
             detail="AC section has no bullets — no observable done state.",
         )
-    verb_re = re.compile(r"\b(" + "|".join(_OBSERVABLE_VERBS) + r")\b", re.IGNORECASE)
-    if any(verb_re.search(b) for b in bullets):
-        return None
-    return Reason(
-        code="no_observable_done_state",
-        severity=Severity.ADVISORY,
-        detail="No AC bullet contains a verifiable behavioral verb (returns/emits/writes/...).",
-    )
+    return None
 
 
 # --- live-run evidence detection (#1735) ------------------------------------
@@ -1429,15 +1485,17 @@ def check_criterion_needs_live_evidence(
 
     Bug-format issues are exempt (they use observed/expected, not acceptance
     criteria, and their Diagnosis section legitimately references runs and
-    evidence). The check fires only on the conjunction of a live-run scope and a
-    recorded-outcome assertion within the *same* bullet, so a criterion that
-    merely mentions runs, budgets, agents, or artifacts does not trip it.
+    evidence) — exempt by derivation from the type's specification, which does
+    not ask a bug for acceptance criteria. The check fires only on the
+    conjunction of a live-run scope and a recorded-outcome assertion within the
+    *same* bullet, so a criterion that merely mentions runs, budgets, agents, or
+    artifacts does not trip it.
 
     When some criteria are satisfiable and others are not, the detail names the
     flagged criteria and notes the satisfiable remainder, so a partly-dispatchable
     story stays distinguishable from a wholly-undispatchable one.
     """
-    if is_bug_format_issue(body, labels):
+    if _presence_of(body, labels, ACCEPTANCE_CRITERIA_SECTION.key) is not Presence.REQUIRED:
         return None
     ac = extract_ac_section(body)
     if not ac:

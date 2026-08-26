@@ -28,7 +28,8 @@ then [vision.md](vision.md) for the philosophy and reading order.
   evidence; corrections and as-built divergences are preserved inline rather
   than rewritten.
 - **[reference/](reference/)** — mechanical contracts
-  ([bug shape](reference/bug-shape.md),
+  ([issue shape](reference/issue-shape.md),
+  [bug shape](reference/bug-shape.md),
   [preflight partial evidence](reference/preflight-partial-evidence.md)).
 - **[vision/](vision/)** — doctrine
   ([refusal-capability](vision/refusal-capability.md),

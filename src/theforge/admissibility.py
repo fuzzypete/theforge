@@ -19,6 +19,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .shape_check import ShapeResult, ShapeVerdict, check
+from .shape_check.issue_spec import (
+    OPERATOR_ACTION_CONFLICT_LABELS as _SPEC_OPERATOR_ACTION_CONFLICT_LABELS,
+)
+from .shape_check.issue_spec import (
+    OPERATOR_ACTION_LABEL as _SPEC_OPERATOR_ACTION_LABEL,
+)
 from .shape_check.parsing import extract_ac_section, extract_bullets
 from .shape_check.types import VERDICT_DESCRIPTIONS, Severity
 from .shape_check.verdict import derive_verdict
@@ -28,12 +34,13 @@ NEEDS_GROOMING_LABEL = "needs-grooming"
 # operator-action: deliberate non-dispatch type. The label declares an issue
 # whose deliverable is human action no dev agent can perform. The gate refuses
 # to dispatch these issues to dev cycles — distinct from "wrong shape" skips.
-OPERATOR_ACTION_LABEL = "operator-action"
+OPERATOR_ACTION_LABEL = _SPEC_OPERATOR_ACTION_LABEL
 OPERATOR_ACTION_CODE = "operator_action"
 OPERATOR_ACTION_LABEL_CONFLICT_CODE = "operator_action_label_conflict"
 OPERATOR_ACTION_MISSING_AC_CODE = "operator_action_missing_ac"
-# operator-action is mutually exclusive with the runnable type labels.
-OPERATOR_ACTION_CONFLICT_LABELS = frozenset({"bug", "enhancement", "epic", "task"})
+# operator-action is mutually exclusive with the runnable type labels — which
+# ones those are is the specification's call, not a second list kept here.
+OPERATOR_ACTION_CONFLICT_LABELS = _SPEC_OPERATOR_ACTION_CONFLICT_LABELS
 
 # No longer emitted by classify_admissibility (ADR-0003 clause 2: a bare
 # label refusal with no concomitant blocking finding is invalid). Kept as

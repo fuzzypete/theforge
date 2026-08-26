@@ -157,6 +157,36 @@ structural gate can establish that an object conforms to the contract, and canno
 establish that the contract it conforms to is correct. Only semantic review reaches that,
 and only probabilistically.
 
+## As built (slice 3, #2725)
+
+The specification, the typed `IssueDocument`, and the parse/render halves landed
+in `theforge.shape_check.issue_spec` and `theforge.shape_check.document`. The
+checker derives its recognized type labels, required/forbidden sections,
+section-recognition spellings and lifecycle refusals from that data, and
+`docs/reference/issue-shape.md` is generated from it and checked in CI. The
+closed observable-verb vocabulary is retired as an admission input; the
+`no_observable_done_state` code remains for the structural branches (no
+acceptance-criteria section, or one with no bullets).
+
+Two decisions of this ADR are deliberately **not** in that slice, and are
+recorded here so the deferral is intentional rather than forgotten:
+
+- **Clause 2 (four separable results).** `ShapeResult` keeps its current
+  surface — `shape`, `verdict`, `admits_implementation_sprint` — because no
+  criterion of that slice needed the richer result and migrating every
+  admission consumer alongside a new contract would have coupled two changes
+  that can fail independently. The compatibility invariant holds meanwhile:
+  admission is derived from the verdict, and the verdict from the
+  specification's structural and lifecycle outcome.
+- **Clause 7 (every producer renders through the specification).** `forge
+  shape`'s body restructure does; `diagnose`, `report`, the post-run hook, and
+  advisory filing still assemble Markdown directly. Those are the remaining
+  producer migrations.
+
+**The canonical bug-section spelling is `Observed` / `Expected`.** The corpus
+and `forge shape` already wrote them; `What happened` / `What was expected`
+remain recognized and are rewritten to the canonical form on output.
+
 ## Alternatives considered
 
 **Generate documentation from the checker.** Keeps the implementation as truth and makes
