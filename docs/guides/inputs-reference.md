@@ -791,6 +791,14 @@ retry:
                              # model is escalated to a stronger one
   max_dev_transport_retries: 1 # per-iteration retries on transient dev
                              # transport/provider failure
+  max_spec_gap_pauses: 1     # specification-gap pauses a run may open. A dev
+                             # agent that hits an underspecified acceptance
+                             # criterion emits <forge_spec_gap>; the run pauses
+                             # for an operator answer (`forge decide <run-id>
+                             # "<answer>"`) instead of guessing. Past the
+                             # allowance — or when the pause expires — the run
+                             # proceeds under the assumption the agent recorded,
+                             # and the audit says which happened. 0 disables.
   adaptive_iterations: true  # scale per-story iteration limits from preflight
                              # complexity; the max_* fields above act as the floor
   max_dev_iterations_cap: 0  # hard ceiling for adaptive growth; 0 = same as

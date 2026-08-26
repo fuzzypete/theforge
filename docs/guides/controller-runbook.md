@@ -204,6 +204,42 @@ survive preflight's re-scale and the allocation evaluation, so an allocation or
 worker ceiling resting on a phase that observed nothing reads as such on the
 story row rather than as a derived figure.
 
+### SPEC_GAP — the dev agent is asking, not guessing (issue #2122)
+
+A dev agent that reaches an acceptance criterion which does not define the case
+in front of it can now stop and ask, instead of guessing and letting the guess
+become the spec. `forge status` shows the pause as an ordinary pending decision
+with `[SPEC_GAP]`; the reason text names the criterion, the undefined case, the
+options the agent weighed, and the assumption that takes effect if you say
+nothing.
+
+Unlike every other gate, this one takes **free-form text**, not a menu:
+
+```
+forge decide <run-id> "leave unmarked; do not attach an uncorrelated session"
+```
+
+What happens either way:
+
+- **You answer.** The answer is injected verbatim into the next dev prompt as a
+  decision (not a suggestion) and recorded in the audit. The run re-enters DEV
+  directly — **no review cycle is spent on the gap**.
+- **You do not answer**, or the run has already spent its allowance
+  (`retry.max_spec_gap_pauses`, default 1). The run proceeds under the
+  assumption the agent recorded, and the audit says which of the two happened
+  (`source: no_answer` vs `source: allowance_exhausted`). No gap pause blocks a
+  run indefinitely, and none is discarded without a record.
+
+Where to look afterwards: `spec_gaps.events` and `spec_gaps.resolutions` in the
+run audit. `resolutions` also persists to
+`.forge/resume_state/<slug>.json`, so a resume — or a later fresh run of the
+same story — starts with the answer already in the dev context rather than
+re-asking. Change the story text and the stored answers no longer apply: they
+settle a criterion, and that criterion may no longer be the one in the spec.
+
+An answer here is worth roughly one question's latency. The failure it replaces
+(hdp#253) was 3 review cycles, 0/2 APPROVE, $8.80, and nothing merged.
+
 ## 2. Branch & forward-port model
 
 - Fixes land on the **base branch**. `forward-port.yml` then auto-carries every

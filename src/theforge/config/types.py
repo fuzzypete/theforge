@@ -782,6 +782,13 @@ class RetryPolicy:
     max_plan_transport_retries: int = (
         2  # per-attempt retries on transient plan draft/regen transport/provider failure
     )
+    # Finite allowance of specification-gap pauses per run (#2122). A dev agent
+    # that raises a gap past this bound proceeds under its own recorded
+    # assumption instead of pausing again. Conservative by default: the pause is
+    # cheap relative to a wasted review budget, but an unbounded one turns every
+    # underspecified criterion into an operator interrupt. 0 disables the
+    # channel entirely.
+    max_spec_gap_pauses: int = 1
     max_review_cycles: int = 2  # full dev->review loops
     max_review_parse_retries: int = 2  # reviewer retries on parse/schema error per cycle
     max_diagnose_parse_retries: int = (

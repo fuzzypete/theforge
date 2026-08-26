@@ -438,5 +438,8 @@ class TestRecordMigration:
         assert migrated["knowledge_summary"]["index_rebuild"] is None
 
     def test_migration_is_registered_for_the_current_version(self) -> None:
-        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 37
+        assert audit_storage.CURRENT_RECORD_SCHEMA_VERSION == 38
+        assert audit_storage.MIGRATION_HELPERS[37] is audit_storage._migrate_v37_to_v38
+        # The prior step stays registered: migration is a chain, and dropping a
+        # link would strand every record written before it.
         assert audit_storage.MIGRATION_HELPERS[36] is audit_storage._migrate_v36_to_v37

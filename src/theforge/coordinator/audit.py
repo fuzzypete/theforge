@@ -736,6 +736,22 @@ def generate_audit_log(config: ForgeConfig, task: TaskStory, result: Coordinator
         # a resumed run is indistinguishable from a phase that never ran, and the
         # SKIPPED verdict this replaced asserted a bypass that never happened.
         "phase_recovery": state.phase_recovery,
+        # ── Specification-gap backchannel (#2122) ─────────────────────────
+        # What the dev agent could not read off the spec, and what the run did
+        # about it. ``events`` is every gap raised (including one whose block was
+        # malformed); ``resolutions`` is how each ended — an operator answer, an
+        # expired pause, or an exhausted allowance — with the assumption the run
+        # proceeded under when no answer was given. Empty lists on the ordinary
+        # run where nothing was ambiguous. The pair is the traceability the
+        # acceptance criteria require: the answer that shaped the
+        # implementation, and the fact that a guess was recorded as a guess
+        # rather than laundered into the spec.
+        "spec_gaps": {
+            "allowance": max(0, int(getattr(config.retry, "max_spec_gap_pauses", 0))),
+            "pauses_used": state.spec_gap_pauses_used,
+            "events": list(state.spec_gap_events),
+            "resolutions": list(state.spec_gap_resolutions),
+        },
         "outcome": {
             "success": result.success,
             "final_phase": result.phase.name,

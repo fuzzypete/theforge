@@ -83,6 +83,17 @@ PHASE_BLOCKS: tuple[str, ...] = (
 #: than inventing a completed review.
 REVIEW_PROGRESS_KEY = "review_progress"
 
+#: Sibling key carrying every specification gap resolved for this story (#2122).
+#:
+#: Not a phase block: nothing reports it as a recovered phase, and its presence
+#: alone never makes a record "usable" for phase recovery.  It is nonetheless
+#: the one block written for durability rather than for the audit — an operator
+#: answered a question, and that answer must survive the process that received
+#: it, a resume, and a later fresh run of the same story.  Merged by gap
+#: identity rather than incoming-wins so a save from a state that no longer
+#: carries an earlier gap cannot erase its answer.
+SPEC_GAP_KEY = "spec_gaps"
+
 #: Sibling key carrying the complexity/routing audit — and, nested inside it,
 #: the story allocation.  Not a phase block (nothing reports it as a recovered
 #: phase) but merged and restored alongside them.
@@ -293,6 +304,58 @@ def _review_progress_block(state: "CoordinatorState") -> dict[str, Any] | None:
     }
 
 
+def _spec_gap_block(state: "CoordinatorState") -> dict[str, Any] | None:
+    """Specification gaps resolved for this story, or None when there are none.
+
+    Only *resolutions* are persisted, not the raise events: an event describes
+    what one run did (which belongs to that run's audit), while a resolution is
+    a settled answer about the story itself, which every later attempt needs.
+    """
+    resolutions = _jsonable(list(getattr(state, "spec_gap_resolutions", []) or []))
+    if not resolutions:
+        return None
+    return {"resolutions": resolutions}
+
+
+def spec_gap_resolutions(record: dict[str, Any] | None) -> list[dict[str, Any]]:
+    """Read the resolved specification gaps out of a loaded record."""
+    if not isinstance(record, dict):
+        return []
+    block = record.get(SPEC_GAP_KEY)
+    if not isinstance(block, dict):
+        return []
+    resolutions = block.get("resolutions")
+    if not isinstance(resolutions, list):
+        return []
+    return [entry for entry in resolutions if isinstance(entry, dict)]
+
+
+def _merge_spec_gap_blocks(existing: Any, incoming: Any) -> dict[str, Any]:
+    """Union two spec-gap blocks by gap identity, newest answer winning.
+
+    Incoming-wins (the rule for every other non-phase block) is wrong here: a
+    save from a phase whose state carries only this run's gaps would drop an
+    answer recorded by an earlier attempt of the same story, which is exactly the
+    loss this record exists to prevent.
+    """
+    order: list[tuple[str, str]] = []
+    by_key: dict[tuple[str, str], dict[str, Any]] = {}
+    for entry in (
+        *spec_gap_resolutions({SPEC_GAP_KEY: existing} if existing else None),
+        *spec_gap_resolutions({SPEC_GAP_KEY: incoming} if incoming else None),
+    ):
+        key = (
+            str(entry.get("criterion") or "").strip(),
+            str(entry.get("undefined_case") or "").strip(),
+        )
+        if key == ("", ""):
+            continue
+        if key not in by_key:
+            order.append(key)
+        by_key[key] = dict(entry)
+    return {"resolutions": [by_key[key] for key in order]}
+
+
 def capture_phase_blocks(state: "CoordinatorState") -> dict[str, Any]:
     """Return every phase block this state currently carries (absent ones omitted)."""
     blocks: dict[str, Any] = {}
@@ -317,6 +380,9 @@ def capture_phase_blocks(state: "CoordinatorState") -> dict[str, Any]:
     review_progress = _review_progress_block(state)
     if review_progress is not None:
         blocks[REVIEW_PROGRESS_KEY] = review_progress
+    spec_gaps = _spec_gap_block(state)
+    if spec_gaps is not None:
+        blocks[SPEC_GAP_KEY] = spec_gaps
     return blocks
 
 
@@ -440,6 +506,11 @@ def _merge_phase_blocks(
         existing_block = base.get(name)
         if not existing_block:
             merged[name] = value
+            continue
+        if name == SPEC_GAP_KEY:
+            # Union, not replace. See _merge_spec_gap_blocks: an operator answer
+            # already on the record survives a save whose state never held it.
+            merged[name] = _merge_spec_gap_blocks(existing_block, value)
             continue
         prior = block_foundation(name, existing_block, base)
         incoming = block_foundation(name, value, blocks)
@@ -579,6 +650,39 @@ def load_resume_record(project_root: Path, slug: str) -> dict[str, Any] | None:
     if record.get("version") != RECORD_VERSION:
         return None
     return record
+
+
+def load_spec_gap_resolutions(
+    project_root: Path,
+    slug: str,
+    *,
+    story_content: str | None = None,
+) -> list[dict[str, Any]]:
+    """Specification gaps already resolved for ``slug``, newest answer per gap.
+
+    Read on *every* entry into the dev loop — fresh run, resume, and
+    review-only re-entry alike — not only on the resume path (#2122).  The
+    acceptance criterion is that an operator's answer is "not rediscovered on a
+    later run *or* on a resume", and a fresh ``run_task`` builds a new
+    ``CoordinatorState`` that no phase-recovery path touches.
+
+    Deliberately independent of :func:`validate_resume_record`: that function
+    asks whether a record can stand in for *phases that ran*, and a record
+    carrying only an answered gap legitimately fails it.  What matters here is
+    narrower — that the record describes the same story text.  A record with no
+    recorded hash is accepted for the same reason it is elsewhere: rejecting it
+    would discard an answer the operator demonstrably gave.  A record whose hash
+    *disagrees* is refused, because the criterion the answer settles may no
+    longer be the criterion in the spec.
+    """
+    record = load_resume_record(project_root, slug)
+    if record is None:
+        return []
+    recorded_hash = record.get("story_content_hash")
+    if recorded_hash and story_content is not None:
+        if recorded_hash != story_content_hash(story_content):
+            return []
+    return spec_gap_resolutions(record)
 
 
 def validate_resume_record(

@@ -224,6 +224,9 @@ retry:
   max_dev_transport_retries: 1  # retry one transient dev provider failure
   max_plan_transport_retries: 2  # retry transient plan draft/regen provider failures
   max_review_cycles: 2     # full dev→review loops before escalation
+  # Specification-gap pauses a run may open before a dev agent must proceed
+  # under its own recorded assumption instead of asking again. 0 disables.
+  max_spec_gap_pauses: 1
   escalate_policy: prompt  # "prompt" | "auto_approve" | "reject"
   # What an escalate gate that EXPIRES without an operator selection does.
   # "preserve" (default) waits for an operator; "apply_advice" applies the

@@ -142,6 +142,113 @@ def render_verification_section(
     """)
 
 
+def render_spec_gap_section(*, remaining_pauses: int) -> str:
+    """Render the specification-gap backchannel (#2122).
+
+    Returns the empty string once the run's finite allowance of gap pauses is
+    spent: an agent still told it can ask, when no pause remains to honour the
+    ask, would stop and wait for an answer that will never be offered — which is
+    a worse failure than the guess this channel replaces.
+    """
+    if remaining_pauses <= 0:
+        return ""
+    return dedent(f"""\
+
+        ## Raising a Specification Gap
+
+        If you reach an acceptance criterion that does not define the case in
+        front of you, do **not** fill the gap with a guess. A guess silently
+        becomes the spec, and review discovers it cycles later. Ask instead.
+
+        Emit a `<forge_spec_gap>` block (outside any code fence) and end your
+        turn. The run pauses, an operator answers, and you are re-invoked with
+        the answer in your context.
+
+        ```
+        <forge_spec_gap>
+        criterion: "the acceptance criterion text, quoted from the spec"
+        undefined_case: "the specific case the criterion does not cover"
+        assumption: "what you would do if nobody answers"
+        options_considered:
+          - "one behaviour you could implement"
+          - "another behaviour you could implement"
+        </forge_spec_gap>
+        ```
+
+        Rules:
+        - Raise this only for a criterion that is genuinely **incomplete** — it
+          does not say what happens in some case. Not for work that is merely
+          hard, and not for a design choice the criterion leaves to you on
+          purpose.
+        - One block per turn, and nothing else in the same turn: emit the block
+          instead of a `<forge_handoff>`, not alongside it. Commit whatever work
+          you have first so it is not lost.
+        - `assumption` is required and load-bearing. If the allowance is spent
+          or the operator does not answer in time, the run proceeds under
+          exactly what you wrote there, recorded in the audit.
+        - This run has **{remaining_pauses}** gap pause(s) remaining. Spend them
+          on the questions whose wrong answer would cost the most.
+    """)
+
+
+def render_resolved_spec_gaps_section(resolved_spec_gaps: list[dict] | None) -> str:
+    """Render specification gaps already resolved for this story (#2122).
+
+    Rendered into every dev and fix prompt — including the timeout-resume route,
+    which builds its prompt directly — because a resolution that fails to reach
+    the agent is a question the operator answered and the run then re-asked.
+    """
+    if not resolved_spec_gaps:
+        return ""
+    blocks = []
+    for index, gap in enumerate(resolved_spec_gaps, start=1):
+        if not isinstance(gap, dict):
+            continue
+        source = str(gap.get("source") or "")
+        if source == "operator":
+            answer_lines = [
+                f"**Operator answer:** {str(gap.get('answer') or '').strip()}",
+                "",
+                "This is a decision, not a suggestion. Implement it exactly.",
+            ]
+        elif source == "allowance_exhausted":
+            answer_lines = [
+                "**No operator answer** — this run's gap-pause allowance was already "
+                "spent, so it was not asked.",
+                "",
+                f"**Proceed under this recorded assumption:** "
+                f"{str(gap.get('assumption') or '').strip()}",
+            ]
+        else:
+            answer_lines = [
+                "**No operator answer** — the pause expired without one.",
+                "",
+                f"**Proceed under this recorded assumption:** "
+                f"{str(gap.get('assumption') or '').strip()}",
+            ]
+        blocks.append(
+            "\n".join(
+                [
+                    f"### Gap {index}",
+                    "",
+                    f"**Criterion:** {str(gap.get('criterion') or '').strip()}",
+                    "",
+                    f"**Undefined case:** {str(gap.get('undefined_case') or '').strip()}",
+                    "",
+                    *answer_lines,
+                    "",
+                ]
+            )
+        )
+    if not blocks:
+        return ""
+    return (
+        "\n## Resolved Specification Gaps\n\n"
+        "These gaps were raised earlier on this story and are already settled. "
+        "Do not re-raise them, and do not re-derive their answers.\n\n" + "\n".join(blocks)
+    )
+
+
 def render_batch_spec_section(members: "tuple[BatchMember, ...]") -> str:
     """Render every batch member's spec, plus the per-story handoff contract.
 
@@ -281,6 +388,11 @@ def build_dev_prompt(
     test_profile: str | None = None,
     test_authority: str | None = None,
     gate_profile: str | None = None,
+    # Specification-gap backchannel (#2122). Default 0 remaining pauses keeps the
+    # section out of prompts built by callers that cannot honour a pause
+    # (`forge run --dry-run`, tests) rather than advertising an unserved channel.
+    spec_gap_pauses_remaining: int = 0,
+    resolved_spec_gaps: list[dict] | None = None,
 ) -> str:
     """Build the complete dev agent prompt.
 
@@ -495,6 +607,10 @@ def build_dev_prompt(
         max_requests=verification_max_requests,
     )
 
+    spec_gap_section = render_resolved_spec_gaps_section(resolved_spec_gaps) + (
+        render_spec_gap_section(remaining_pauses=spec_gap_pauses_remaining)
+    )
+
     if gate_skipped:
         gate_section = dedent("""\
             Gate is disabled for this spec. Skip the gate command.
@@ -584,9 +700,9 @@ def build_dev_prompt(
         > most reasonable interpretation and flag the ambiguity in `dev_notes`.
 
         {story_content}
-        {feedback_section}{preflight_section}{context_section}{policy_section}{test_section}{
-        verification_section
-    }{render_conventions_block(conventions)}
+        {feedback_section}{preflight_section}{context_section}{policy_section}{spec_gap_section}{
+        test_section
+    }{verification_section}{render_conventions_block(conventions)}
         {webfetch_section}
         ## Workflow
 
