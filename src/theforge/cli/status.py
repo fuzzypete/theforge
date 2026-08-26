@@ -678,10 +678,11 @@ def _show_triage_pending_decision(entry: dict, now: datetime.datetime) -> None:
 
 def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
     """Print the pending-decisions section."""
-    # The kind predicate is a pure function of the record, not of whichever
-    # module supplied it — ``pending_mod`` is injected only so the listing can be
-    # substituted, so the classification comes from the real substrate.
-    from theforge.pending import is_triage_pending  # noqa: PLC0415
+    # These predicates are pure functions of the record, not of whichever module
+    # supplied it — ``pending_mod`` is injected only so the listing can be
+    # substituted, so classification and decided-ness come from the real
+    # substrate.
+    from theforge.pending import decision_of, is_triage_pending  # noqa: PLC0415
 
     pending_entries = pending_mod.list_pending(project_root)
     if pending_entries:
@@ -698,7 +699,11 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
             created_at = entry.get("created_at", "")
             timeout_at_str = entry.get("timeout_at", "")
             options = entry.get("options", [])
-            decision = entry.get("decision")
+            # Through the shared predicate, so what an operator is told matches
+            # what the coordinator recorded: a YAML-native answer renders as the
+            # normalised text the gate stored, and a value the poller is still
+            # waiting on reads as waiting rather than as decided.
+            decision = decision_of(entry)
 
             time_remaining = ""
             if timeout_at_str and not decision:

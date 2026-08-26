@@ -365,8 +365,11 @@ def cleanup_stale(project_root: Path | None = None) -> int:
         if is_triage_pending(entry):
             continue
 
-        # If already decided, leave it — coordinator will clean up
-        if entry.get("decision"):
+        # If already decided, leave it — coordinator will clean up. Asked through
+        # the shared predicate so the sweeper and the poller cannot disagree
+        # about what "decided" means: a value the poller is still waiting on must
+        # not make this treat the record as resolved and keep it forever.
+        if decision_of(entry) is not None:
             continue
 
         # Remove if past timeout_at
