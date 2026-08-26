@@ -111,7 +111,7 @@ def _make_config(root: Path) -> ForgeConfig:
     )
 
 
-def _make_manifest(root: Path, slugs: list[str]) -> Path:
+def _make_manifest(root: Path, slugs: list[str], *, max_parallel: int = 1) -> Path:
     for slug in slugs:
         (root / f"{slug}.md").write_text(
             f"---\nname: {slug}\nslug: {slug}\n---\n# {slug}\nDo the thing.",
@@ -124,7 +124,7 @@ def _make_manifest(root: Path, slugs: list[str]) -> Path:
                 "name": "Landing Sprint",
                 "budget_usd": 30.0,
                 "stories": [f"{slug}.md" for slug in slugs],
-                "max_parallel": 1,
+                "max_parallel": max_parallel,
             }
         ),
         encoding="utf-8",
@@ -303,6 +303,136 @@ def test_a_rewritten_run_record_is_published_before_the_next_entry(
         _git(project_root, "show", f"{BASE}:.forge/audits/runs/run-story-a.json")
     )
     assert committed["landing_status"] == "landed"
+
+
+def _refused_result() -> CoordinatorResult:
+    """A story refused at preflight: no commit, no landing, still a run record."""
+    state = CoordinatorState()
+    state.preflight_verdict = "BLOCKED"
+    preflight = MagicMock()
+    preflight.cost_usd = 0.1
+    state.preflight_result = preflight
+    return CoordinatorResult(
+        success=False,
+        phase=Phase.PREFLIGHT,
+        state=state,
+        message="Preflight: spec is blocked.",
+    )
+
+
+def test_a_story_refused_before_integration_does_not_refuse_its_siblings(
+    project_root: Path,
+) -> None:
+    """#2755: a refusal's own record must not stand as dirt while workers run.
+
+    ``story-a`` is refused at preflight — it never reaches ``_attempt_integration``
+    and so never takes the pre-merge publish — while ``story-b`` is deliberately
+    held open across ``story-c``'s admission. Before the fix, the pass-level
+    publish was gated on a quiescent pass that ``story-b`` denied, so ``story-a``'s
+    run record stood untracked in the project root and refused ``story-c`` at
+    WORKSPACE entry with a LANDING PRECONDITION naming forge's own artifact.
+    """
+    import threading
+
+    config = _make_config(project_root)
+    manifest_path = _make_manifest(project_root, ["story-a", "story-b", "story-c"], max_parallel=2)
+
+    observed: dict[str, str | None] = {}
+    events: list[str] = []
+    events_lock = threading.Lock()
+    c_dispatched = threading.Event()
+
+    def fake_run_task(_config, task, *args, **kwargs):
+        with events_lock:
+            events.append(f"dispatch:{task.slug}")
+            observed[task.slug] = landing_precondition_error(config, lands_in_project_root=True)
+        _write_run_artifacts(project_root, f"run-{task.slug}")
+        if task.slug == "story-b":
+            # Stay active across story-c's admission: the sprint is never
+            # quiescent between story-a's refusal and story-c's entry check.
+            c_dispatched.wait(timeout=60)
+            return _result()
+        if task.slug == "story-c":
+            c_dispatched.set()
+            return _result()
+        return _refused_result()
+
+    from theforge.sprint import runner as _runner
+
+    real_publish = _runner.publish_pending_story_run_audits
+
+    def traced_publish(state, **kwargs):
+        with events_lock:
+            events.append("publish")
+        return real_publish(state, **kwargs)
+
+    try:
+        with (
+            patch("theforge.sprint.runner.run_task", side_effect=fake_run_task),
+            patch("theforge.sprint.runner.publish_pending_story_run_audits", traced_publish),
+        ):
+            run_sprint_ctx(config, manifest_path)
+    finally:
+        c_dispatched.set()
+
+    assert observed.get("story-c") is None, (
+        f"story-c was refused at WORKSPACE entry: {observed.get('story-c')}"
+    )
+    for slug, error in observed.items():
+        if error is None:
+            continue
+        assert ".forge/audits/runs" not in error, f"{slug} refused by a forge artifact: {error}"
+        assert ".forge/knowledge/summaries" not in error, (
+            f"{slug} refused by a forge artifact: {error}"
+        )
+
+    # The publish is what closes the window, and it ran between the refusal and
+    # the next story's admission rather than at some later quiescent pass.
+    assert "dispatch:story-c" in events
+    before_c = events[: events.index("dispatch:story-c")]
+    assert "publish" in before_c, f"no publish before story-c was admitted: {events}"
+
+    # The refused story's record is on the base branch, not left as dirt.
+    tree = _git(project_root, "ls-tree", "-r", "--name-only", BASE)
+    assert ".forge/audits/runs/run-story-a.json" in tree
+
+
+def test_repeated_terminal_publishes_leave_no_dirt_and_no_empty_commits(
+    project_root: Path,
+) -> None:
+    """The publish is called once per terminal outcome, and is idempotent.
+
+    Every story here is refused, so the helper runs on each of them — including
+    the last, by which point there is nothing pending. That must not produce an
+    empty commit, a failure, or leftover pending state.
+    """
+    config = _make_config(project_root)
+    manifest_path = _make_manifest(project_root, ["story-a", "story-b", "story-c"])
+
+    def fake_run_task(_config, task, *args, **kwargs):
+        _write_run_artifacts(project_root, f"run-{task.slug}")
+        if task.slug == "story-c":
+            # A terminal outcome whose artifacts a prior publish already took:
+            # rewrite nothing new, so this story's publish has nothing to do.
+            pass
+        return _refused_result()
+
+    with patch("theforge.sprint.runner.run_task", side_effect=fake_run_task):
+        run_sprint_ctx(config, manifest_path)
+
+    # No forge-authored dirt survives the run.
+    status = _git(project_root, "status", "--porcelain")
+    assert ".forge/audits/runs" not in status
+    assert ".forge/knowledge/summaries" not in status
+
+    # Every audit commit the run made carries a change; none is an empty commit.
+    shas = _git(
+        project_root, "log", "--format=%H", "--grep", "record sprint run audits", BASE
+    ).split()
+    assert shas, "the run published nothing"
+    for sha in shas:
+        changed = _git(project_root, "show", "--name-only", "--format=", sha)
+        assert changed.strip(), f"empty audit commit {sha}"
 
 
 def test_a_non_landing_workflow_is_unaffected(project_root: Path) -> None:
