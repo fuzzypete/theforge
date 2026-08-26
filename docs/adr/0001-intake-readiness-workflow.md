@@ -121,12 +121,14 @@ needs_grooming_missing_example
 needs_grooming_type_shape
 needs_grooming_scope_split
 needs_operator_action
-adr_candidate
 duplicate_or_stale
 ```
 
 Each verdict maps to a single recommended operator command and (in time) a single
-producer agent if/when auto-routing ships.
+producer agent if/when auto-routing ships. The stable string `adr_candidate`
+remains in audit history for older routing-oriented records, but it is not a
+current sprint-admission verdict; architecture-routing recommendations now stay
+separate from the readiness verdict.
 
 ### `forge shape` MVP behavior
 

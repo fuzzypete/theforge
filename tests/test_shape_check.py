@@ -41,6 +41,7 @@ from theforge.shape_check.parsing import (
     fenced_code_blocks,
     has_heading,
 )
+from theforge.shape_check.verdict import derive_verdict
 
 WELL_FORMED_AC = textwrap.dedent(
     """\
@@ -50,6 +51,30 @@ WELL_FORMED_AC = textwrap.dedent(
     ## Acceptance Criteria
     - The command returns 0 on success.
     - On failure, the tool writes a diagnostic to stderr.
+    """
+)
+
+ADVISORY_ONLY_DONE_STATE_BODY = textwrap.dedent(
+    """\
+    ## What
+    Add a CLI flag.
+
+    ## Why
+    Users need a way to bypass the gate.
+
+    ## Example
+    ```text
+    Before:
+    $ forge sprint
+    [forge] 2 issue(s) flagged by shape gate
+
+    After:
+    $ forge sprint --force
+    [forge] sprint started with every issue
+    ```
+
+    ## Acceptance Criteria
+    - The toggle is available to operators.
     """
 )
 
@@ -88,6 +113,23 @@ BUG_WITH_FEATURE_AC_BODY = textwrap.dedent(
     ## Acceptance criteria
 
     - A `make test-contract` target exists and runs in CI.
+    """
+)
+
+CAUSE_UNKNOWN_BUG_BODY = textwrap.dedent(
+    """\
+    ## Observed behavior
+    `forge status --ready` lists issues the gate refuses.
+
+    ## Expected behavior
+    The listing agrees with sprint entry.
+
+    ## Diagnosis
+    - **Observed symptom:** the queue and the gate disagree.
+    - **Evidence:** run id `abc123`.
+    - **Confirmed cause:** unknown
+    - **Affected code path:** `ready_queue.build_ready_queue`.
+    - **Fix-success criterion:** the queue and the gate cannot disagree.
     """
 )
 
@@ -601,9 +643,54 @@ class TestNoObservableDoneState:
         body = "## Acceptance Criteria\n- Something vague.\n- Another thing.\n"
         r = check_no_observable_done_state("T", body, [])
         assert r is not None and r.code == "no_observable_done_state"
+        assert r.severity is Severity.ADVISORY
 
     def test_with_verb(self):
         assert check_no_observable_done_state("T", WELL_FORMED_AC, []) is None
+
+    def test_advisory_only_done_state_keeps_issue_runnable(self):
+        result = check("Add a flag", ADVISORY_ONLY_DONE_STATE_BODY, ["enhancement"])
+        assert result.shape is Shape.RUNNABLE
+        assert result.verdict is ShapeVerdict.RUNNABLE
+        assert result.admits_implementation_sprint is True
+        reason = next(r for r in result.reasons if r.code == "no_observable_done_state")
+        assert reason.severity is Severity.ADVISORY
+
+    def test_blocking_done_state_still_refuses(self):
+        result = check("Add a flag", "## What\n\nAdd a flag.\n", ["enhancement"])
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.verdict is ShapeVerdict.NEEDS_GROOMING_MISSING_AC
+        assert result.admits_implementation_sprint is False
+
+    def test_cause_unknown_remains_an_explicit_refusal(self):
+        result = check("Counter is wrong", CAUSE_UNKNOWN_BUG_BODY, ["bug"])
+        assert result.shape is Shape.RUNNABLE
+        assert result.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
+        assert result.admits_implementation_sprint is False
+
+    def test_blocking_superseded_beats_cause_unknown_refusal(self):
+        result = check(
+            "Counter is wrong",
+            "Superseded by #99.\n\n" + CAUSE_UNKNOWN_BUG_BODY,
+            ["bug"],
+        )
+        assert result.shape is Shape.SUPERSEDED
+        assert result.verdict is ShapeVerdict.DUPLICATE_OR_STALE
+        assert any(r.code == "superseded" for r in result.reasons)
+        assert any(r.code == "diagnosis_cause_unknown" for r in result.reasons)
+
+    def test_blocking_missing_type_beats_cause_unknown_refusal(self):
+        result = check("Counter is wrong", CAUSE_UNKNOWN_BUG_BODY, [])
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.verdict is ShapeVerdict.NEEDS_TYPE
+        assert any(r.code == "missing_type" for r in result.reasons)
+        assert any(r.code == "diagnosis_cause_unknown" for r in result.reasons)
+
+    def test_unmapped_advisory_reason_stays_runnable(self):
+        verdict = derive_verdict(
+            (Reason(code="totally_new_advisory", severity=Severity.ADVISORY, detail=""),)
+        )
+        assert verdict is ShapeVerdict.RUNNABLE
 
 
 class TestExampleParsingContext:

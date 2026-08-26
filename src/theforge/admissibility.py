@@ -18,7 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .shape_check import Shape, ShapeResult, ShapeVerdict, check
+from .shape_check import ShapeResult, ShapeVerdict, check
 from .shape_check.parsing import extract_ac_section, extract_bullets
 from .shape_check.types import VERDICT_DESCRIPTIONS, Severity
 from .shape_check.verdict import derive_verdict
@@ -253,9 +253,9 @@ def classify_admissibility(
        the live check has a concomitant blocking finding to surface; a label
        with no blocking finding is never terminal on its own (ADR-0003
        clause 2) and falls through to the shape verdict below.
-    4. ``diagnosis_cause_unknown`` is admissible as a *shape* but not
-       implementation-runnable per ADR-0001, so it is refused on the verdict.
-    5. Any non-``RUNNABLE`` shape is refused with ``source='local_check'``.
+    4. Any body-derived non-``RUNNABLE`` verdict is refused with
+       ``source='local_check'``. ``diagnosis_cause_unknown`` stays a
+       lifecycle refusal even though its underlying Reason is advisory.
 
     ``trust_local_over_grooming_label`` suppresses step 3 entirely: the
     caller has authoritatively edited the body (intake remediation) and the
@@ -276,11 +276,7 @@ def classify_admissibility(
     if NEEDS_GROOMING_LABEL in labels and not trust_local_over_grooming_label:
         codes = refusal_reason_codes(local)
         if codes:
-            verdict = (
-                local.verdict
-                if local.verdict is not ShapeVerdict.RUNNABLE
-                else ShapeVerdict.NEEDS_OPERATOR_ACTION
-            )
+            verdict = local.verdict
             return Admissibility(
                 admissible=False,
                 source="label",
@@ -294,28 +290,9 @@ def classify_admissibility(
                 result=local,
             )
 
-    if local.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN:
-        codes = refusal_reason_codes(local)
-        return Admissibility(
-            admissible=False,
-            source="local_check",
-            verdict=ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN.value,
-            verdict_description=VERDICT_DESCRIPTIONS[ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN],
-            reason_codes=tuple(codes),
-            detail=refusal_detail(
-                local,
-                fallback="bug investigation-ready; confirmed cause not yet identified",
-            ),
-            result=local,
-        )
-
-    if local.shape is not Shape.RUNNABLE:
+    if not local.admits_implementation_sprint:
         codes = refusal_reason_codes(local) or [r.code for r in local.reasons]
-        verdict = (
-            local.verdict
-            if local.verdict is not ShapeVerdict.RUNNABLE
-            else ShapeVerdict.NEEDS_OPERATOR_ACTION
-        )
+        verdict = local.verdict
         return Admissibility(
             admissible=False,
             source="local_check",

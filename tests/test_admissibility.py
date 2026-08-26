@@ -44,6 +44,31 @@ Users need a way to bypass the gate.
 - the warning output reports every skipped issue's reason codes
 """
 
+_ADVISORY_DONE_STATE_BODY = """## What
+
+Add a CLI flag.
+
+## Why
+
+Users need a way to bypass the gate.
+
+## Example
+
+```text
+Before:
+$ forge sprint
+[forge] 2 issue(s) flagged by shape gate
+
+After:
+$ forge sprint --force
+[forge] sprint started with every issue
+```
+
+## Acceptance Criteria
+
+- The toggle is available to operators.
+"""
+
 # A bug filing with no `## Diagnosis` section — symptom-only, the shape the
 # gate refuses with a BLOCKING `needs_diagnosis` reason.
 _UNDIAGNOSED_BUG_BODY = """## Observed behavior
@@ -116,6 +141,10 @@ The listing agrees with the gate.
 
 the fix belongs in `ready_queue.py`
 """
+
+_SUPERSEDED_CAUSE_UNKNOWN_BUG_BODY = f"""Superseded by #99.
+
+{_CAUSE_UNKNOWN_BUG_BODY}"""
 
 _ENHANCEMENT_WITH_BUG_SHAPE_BODY = """## What happened
 
@@ -255,6 +284,21 @@ def test_admissible_bug_keeps_advisory_reasons_in_result() -> None:
     assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
 
 
+def test_advisory_only_done_state_is_admissible() -> None:
+    verdict = classify_admissibility(
+        "Add a flag",
+        _ADVISORY_DONE_STATE_BODY,
+        ["enhancement"],
+    )
+
+    assert verdict.admissible is True
+    assert verdict.verdict == ShapeVerdict.RUNNABLE.value
+    assert verdict.reason_codes == ()
+    assert verdict.result is not None
+    assert verdict.result.verdict is ShapeVerdict.RUNNABLE
+    assert any(r.code == "no_observable_done_state" for r in verdict.result.reasons)
+
+
 # ── classify_admissibility: local-check refusals ────────────────────────────
 
 
@@ -313,6 +357,36 @@ def test_cause_unknown_refusal_keeps_phrase_advice_out_of_skip_codes() -> None:
     assert "fix location" not in verdict.detail
     assert verdict.result is not None
     assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
+
+
+def test_blocking_superseded_beats_cause_unknown_in_refusal_channel() -> None:
+    verdict = classify_admissibility(
+        "Counter is wrong",
+        _SUPERSEDED_CAUSE_UNKNOWN_BUG_BODY,
+        ["bug"],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.verdict == ShapeVerdict.DUPLICATE_OR_STALE.value
+    assert verdict.reason_codes == ("superseded",)
+    assert verdict.detail == "Issue marks itself as superseded by another issue."
+    assert verdict.result is not None
+    assert any(r.code == "diagnosis_cause_unknown" for r in verdict.result.reasons)
+
+
+def test_missing_type_beats_cause_unknown_in_refusal_channel() -> None:
+    verdict = classify_admissibility(
+        "Counter is wrong",
+        _CAUSE_UNKNOWN_BUG_BODY,
+        [],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.verdict == ShapeVerdict.NEEDS_TYPE.value
+    assert verdict.reason_codes == ("missing_type",)
+    assert "type label" in verdict.detail
+    assert verdict.result is not None
+    assert any(r.code == "diagnosis_cause_unknown" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: needs-grooming label ────────────────────────────
