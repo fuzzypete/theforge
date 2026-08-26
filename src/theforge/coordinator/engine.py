@@ -392,6 +392,49 @@ def _refuse_dev_without_nonreview_funds(
     )
 
 
+def _restore_spec_gap_resolutions(
+    state: CoordinatorState,
+    config: ForgeConfig,
+    task: TaskStory,
+    story_content: str,
+) -> None:
+    """Seed this attempt with specification gaps already settled for the story.
+
+    Runs at every entry into the dev loop, not only on the resume path: a fresh
+    ``run_task`` builds a new ``CoordinatorState`` that no phase-recovery code
+    touches, so without this an operator's answer would be re-asked on the next
+    run of the same story — which the acceptance criterion forbids in the same
+    breath as it forbids re-asking on a resume (#2122).
+
+    Additive and never destructive: gaps this attempt has already recorded win
+    over the stored copy of the same gap.
+    """
+    from theforge.task.spec_gap import dedupe_resolutions  # noqa: PLC0415
+
+    from .resume_persistence import load_spec_gap_resolutions  # noqa: PLC0415
+
+    try:
+        stored = load_spec_gap_resolutions(
+            config.project_root,
+            task.slug,
+            # The story text the run executed, matching what the gate persists
+            # under — never a caller-local variant of it.
+            story_content=state.story_content or story_content,
+        )
+    except Exception:  # noqa: BLE001 - a recovery aid must never fail the run
+        return
+    if not stored:
+        return
+    merged = dedupe_resolutions([*stored, *state.spec_gap_resolutions])
+    _new = len(merged) - len(state.spec_gap_resolutions)
+    state.spec_gap_resolutions = merged
+    if _new > 0:
+        _log(
+            f"  Restored {_new} previously resolved specification gap(s) for {task.slug} "
+            "— they will be injected into the dev context rather than re-asked"
+        )
+
+
 def _coordinator_loop(
     state: CoordinatorState,
     config: ForgeConfig,
@@ -423,6 +466,7 @@ def _coordinator_loop(
     workspace_path = state.workspace_path
     branch_name = state.branch_name
     _skip_dev = skip_dev_first_iter
+    _restore_spec_gap_resolutions(state, config, task, story_content)
     # Derive per-story adaptive iteration limits from preflight complexity and
     # historical usage.  RetryPolicy.adaptive_iterations=False returns the
     # policy floor values verbatim; floor and cap always bound the outcome.
@@ -783,9 +827,16 @@ def _coordinator_loop(
             # directly rather than routing through VALIDATE — the timed-out
             # iteration may have produced no commits, and validating an
             # unchanged worktree is pointless. Mirror the MAX_ITERATIONS retry.
+            #
+            # A specification-gap resume joins them for a different reason: the
+            # gap was resolved without any code being judged, so there is
+            # nothing for VALIDATE or REVIEW to act on — and routing through
+            # them would spend on the gap exactly the review cycle this channel
+            # exists to save (#2122).
             if state.retry_reason in (
                 RetryReason.MAX_ITERATIONS_NO_SUBMIT,
                 RetryReason.TIMEOUT_RESUME,
+                RetryReason.SPEC_GAP_RESUME,
             ):
                 continue
 

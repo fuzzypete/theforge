@@ -721,6 +721,11 @@ def _show_pending_decisions(pending_mod: object, project_root: Path) -> None:
                 _print_pending_reason(reason)
             if opts_str:
                 print(f"    options: {opts_str}")
+            elif entry.get("free_form_answer"):
+                # A gate with no options takes the operator's own words. Say so,
+                # or an empty options line reads as a gate with nothing to
+                # choose — indistinguishable from a malformed record (#2122).
+                print(f'    answer:  free-form text — forge decide {run_id} "<your answer>"')
             if created_at:
                 print(f"    created: {created_at}")
             for line in _pending_reentry_lines(project_root, str(story)):
@@ -1307,5 +1312,10 @@ def register_parsers(subparsers: object) -> None:
     decide_parser.add_argument("run_id", help="Run ID of the pending decision")
     decide_parser.add_argument(
         "action",
-        help="Decision to record (e.g. approve, reject, continue, retry, skip, abort)",
+        help=(
+            "Decision to record. For a gate that lists options, one of them "
+            "(e.g. approve, reject, continue, retry, skip, abort). For a "
+            "SPEC_GAP gate, which lists none, your free-form answer to the "
+            "question in the pending reason."
+        ),
     )

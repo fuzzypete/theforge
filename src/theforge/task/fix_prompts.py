@@ -4,7 +4,11 @@ from textwrap import dedent
 from theforge.coordinator.state import CycleHistory
 
 from .conventions import render_conventions_block
-from .dev_prompts import render_verification_section
+from .dev_prompts import (
+    render_resolved_spec_gaps_section,
+    render_spec_gap_section,
+    render_verification_section,
+)
 from .story import TaskStory
 
 
@@ -156,6 +160,10 @@ def build_fix_prompt(
     test_profile: str | None = None,
     test_authority: str | None = None,
     gate_profile: str | None = None,
+    # Specification-gap backchannel (#2122). Defaults keep the section out of
+    # prompts built by callers that cannot honour a pause.
+    spec_gap_pauses_remaining: int = 0,
+    resolved_spec_gaps: list[dict] | None = None,
 ) -> str:
     """Build a minimal fix prompt for review iteration 2+.
 
@@ -292,6 +300,12 @@ def build_fix_prompt(
         response_dir=verification_response_dir,
         max_requests=verification_max_requests,
     )
+
+    # A review-fix iteration reaches criteria the first pass did not, so the gap
+    # channel stays open here too — and the answers already given must travel
+    # with it, or the fix pass re-derives a decision the operator made (#2122).
+    context_sections += render_resolved_spec_gaps_section(resolved_spec_gaps)
+    context_sections += render_spec_gap_section(remaining_pauses=spec_gap_pauses_remaining)
 
     if surviving_families:
         traj_lines: list[str] = []

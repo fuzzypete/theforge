@@ -152,7 +152,7 @@ SUBSTRATE_SCHEMA_VERSION = 12
 # stores the null straight into the nullable ``total_cost_usd`` REAL column. So
 # it does NOT bump this version. The schema guard pins both the measured and the
 # unmeasured shapes so a future accidental re-coercion is still caught.
-CURRENT_RECORD_SCHEMA_VERSION = 37
+CURRENT_RECORD_SCHEMA_VERSION = 38
 SUBSTRATE_RELPATH = (".forge", "audits", "index.sqlite")
 HISTORY_RELPATH = (".forge", "audits", "history.jsonl")
 RUNS_RELPATH = (".forge", "audits", "runs")
@@ -2096,6 +2096,21 @@ def _migrate_v36_to_v37(record: dict) -> dict:
     return record
 
 
+def _migrate_v37_to_v38(record: dict) -> dict:
+    """Advance v37 records across the ``spec_gaps`` block (#2122).
+
+    v38 carries the specification-gap backchannel: every gap a dev agent raised
+    and how each resolved. A v37 record predates the channel, so no gap could
+    have been raised on it. Backfilling empty lists would be harmless but
+    dishonest in the one way that matters here — an empty ``resolutions`` list
+    asserts "this run had the channel and nothing was ambiguous", which is not
+    what a pre-channel run observed. The reader distinguishes an absent block
+    from an empty one, so the migration is a no-op and the stored record is
+    never rewritten (ADR-0002 refusal-to-forget).
+    """
+    return record
+
+
 # Reader-side migration registry. Keys are the FROM version; each helper
 # translates a record at version N into the shape expected at version N+1.
 # ``_migrate_record`` chains these from the record's persisted version up to
@@ -2141,6 +2156,7 @@ MIGRATION_HELPERS: dict[int, Callable[[dict], dict]] = {
     34: _migrate_v34_to_v35,
     35: _migrate_v35_to_v36,
     36: _migrate_v36_to_v37,
+    37: _migrate_v37_to_v38,
 }
 
 

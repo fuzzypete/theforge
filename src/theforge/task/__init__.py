@@ -9,12 +9,15 @@ from .dev_prompts import (
     build_batch_dev_prompt,
     build_dev_prompt,
     render_batch_spec_section,
+    render_resolved_spec_gaps_section,
+    render_spec_gap_section,
     render_verification_section,
 )
 from .fix_prompts import build_fix_prompt
 from .plan_parser import PlanData, PlanStep, parse_plan_output
 from .plan_prompts import build_plan_prompt, build_plan_review_prompt, build_preflight_prompt
 from .review_prompts import build_review_prompt, build_synthesis_prompt
+from .spec_gap import SpecGapParseError, SpecGapSignal, extract_spec_gap
 from .story import (
     ALLOW_MUTATE_FORGE_YAML_KEY,
     RECOGNIZED_STORY_TYPES,
@@ -42,7 +45,12 @@ __all__ = [
     "build_dev_prompt",
     "build_fix_prompt",
     "render_batch_spec_section",
+    "render_resolved_spec_gaps_section",
+    "render_spec_gap_section",
     "render_verification_section",
+    "SpecGapParseError",
+    "SpecGapSignal",
+    "extract_spec_gap",
     "PlanData",
     "PlanStep",
     "parse_plan_output",
