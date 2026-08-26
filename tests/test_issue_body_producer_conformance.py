@@ -252,6 +252,35 @@ class TestDiagnoseRefusesBeforeEditing:
             )
         assert mock_edit.called
 
+    def test_a_declaration_it_cannot_keep_is_reported_not_absorbed(self, tmp_path):
+        """Diagnose declares runnable; an untyped issue does not become runnable.
+
+        The refusal here is not caused by anything diagnose introduced — the
+        issue was already missing a type label. That is still a body whose
+        evaluated state differs from the state diagnose declared, so it is
+        reported rather than written. A declaration a pre-existing refusal can
+        absorb would not be a declaration.
+        """
+        from theforge.coordinator import diagnose_flow
+        from theforge.diagnose_types import DiagnoseState
+
+        state = DiagnoseState(
+            issue_number=44,
+            issue_title="export drops rows",
+            issue_body="## Observed\n\nrows vanish\n\n## Expected\n\nrows survive\n",
+        )
+        with patch.object(diagnose_flow, "_gh_edit_body") as mock_edit:
+            with pytest.raises(Exception, match="forge-diagnose") as excinfo:
+                diagnose_flow._land_artifact(
+                    state, self._artifact(), "body_section", tmp_path, issue_labels=[]
+                )
+        assert not mock_edit.called
+        message = str(excinfo.value)
+        assert "declared : runnable" in message
+        assert "evaluated: needs_type" in message
+        # And it names the thing the operator has to fix, which diagnose cannot.
+        assert "missing_type" in message
+
 
 class TestReportRefusesBeforeCreating:
     """Seam-level refusal lives in ``test_cli_report.py``, where the observing-
@@ -513,7 +542,6 @@ class TestIntakeAutoFixValidatesBeforeEditing:
             producer="forge-intake-autofix",
             declared=ShapeVerdict.RUNNABLE,
             actual=ShapeVerdict.NEEDS_GROOMING_MISSING_AC,
-            strict=True,
         )
         assert not refusal.conforms
 

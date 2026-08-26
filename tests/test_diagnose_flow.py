@@ -2250,6 +2250,7 @@ class TestPremiseVerification:
             "title": "buggy_func miscounts",
             "body": "buggy_func reserves the wrong number of slots\n",
             "state": "OPEN",
+            "labels": [{"name": "bug"}],
         }
         payload = {
             "observed_symptom": "s",

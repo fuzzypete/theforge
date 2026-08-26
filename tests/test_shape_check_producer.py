@@ -39,7 +39,6 @@ class TestDeclarationMatching:
             body=RUNNABLE_TASK_BODY,
             labels=["task"],
             declared=ShapeVerdict.RUNNABLE,
-            strict=True,
         )
         assert validation.conforms
         assert validation.actual is ShapeVerdict.RUNNABLE
@@ -51,7 +50,6 @@ class TestDeclarationMatching:
             body="",
             labels=["todo:draft"],
             declared=ShapeVerdict.RUNNABLE,
-            strict=True,
         )
         assert not validation.conforms
         report = validation.report()
@@ -68,7 +66,6 @@ class TestDeclarationMatching:
             body="",
             labels=["todo:draft"],
             declared=ShapeVerdict.NEEDS_TYPE,
-            strict=True,
         )
         assert validation.conforms
 
@@ -80,7 +77,6 @@ class TestDeclarationMatching:
             labels=["task"],
             declared=(ShapeVerdict.RUNNABLE, ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),
             previous_body=RUNNABLE_TASK_BODY,
-            strict=True,
         )
         assert validation.conforms
 
@@ -117,12 +113,41 @@ class TestEditRules:
             previous_body=RUNNABLE_TASK_BODY,
         )
         assert not validation.conforms
-        assert "implementation_plan_in_body" in validation.new_refusal_codes
+        assert "implementation_plan_in_body" in validation.new_blocking_codes
         assert validation.regressed_from_runnable
         assert "implementation_plan_in_body" in validation.report()
 
-    def test_edit_that_carries_a_pre_existing_refusal_forward_conforms(self):
-        """An editor is not answerable for refusals it did not introduce."""
+    def test_a_pre_existing_refusal_cannot_absorb_a_concrete_declaration(self):
+        """The invariant this boundary exists for.
+
+        An editing producer that declares runnable on an issue carrying an
+        unrelated refusal it did not introduce is still writing a body whose
+        evaluated state differs from the one it declared. That is refused —
+        there is no "not my finding" carve-out, because a declaration a
+        pre-existing refusal can absorb is not a declaration at all.
+        """
+        untyped = "## Observed\n\nrows vanish\n\n## Expected\n\nrows survive\n"
+        validation = validate_issue_body(
+            producer="forge-diagnose",
+            title="export drops rows",
+            body=untyped + "\n## Diagnosis\n\n- **Confirmed cause:** the loader drops it.\n",
+            labels=[],  # no type label: needs_type, and nothing this edit caused
+            declared=ShapeVerdict.RUNNABLE,
+            previous_body=untyped,
+        )
+        assert validation.actual is ShapeVerdict.NEEDS_TYPE
+        assert validation.new_blocking_codes == ()
+        assert not validation.regressed_from_runnable
+        assert not validation.conforms, (
+            "declaring runnable and landing in needs_type must be refused even when "
+            "the refusal was already on the issue"
+        )
+        report = validation.report()
+        assert "declared : runnable" in report
+        assert "evaluated: needs_type" in report
+
+    def test_preserve_carries_a_pre_existing_refusal_forward(self):
+        """PRESERVE is the honest declaration when the state is not the producer's to promise."""
         already_refused = "Some prose with no acceptance criteria at all.\n"
         validation = validate_issue_body(
             producer="forge-groom",
@@ -133,7 +158,59 @@ class TestEditRules:
             previous_body=already_refused,
         )
         assert validation.conforms
-        assert validation.new_refusal_codes == ()
+        assert validation.new_blocking_codes == ()
+        assert "unchanged" in validation.declared_display
+
+    def test_preserve_allows_an_improvement_that_falls_short_of_runnable(self):
+        """Clearing a finding is an improvement even when the issue is still refused.
+
+        A triage edit that supplies a Diagnosis section moves a bug from
+        ``needs_diagnosis`` to ``diagnosis_cause_unknown``. That is progress the
+        producer is entitled to make, so refusing it would make the boundary
+        obstruct the operator rather than protect them.
+        """
+        before = "## Observed\n\nrows vanish\n\n## Expected\n\nrows survive\n"
+        after = before + (
+            "\n## Diagnosis\n\n- **Observed symptom:** rows vanish\n"
+            "- **Evidence:** the run log\n"
+            "- **Confirmed cause:** unknown\n"
+            "- **Affected code path:** unknown\n"
+            "- **Fix-success criterion:** rows survive\n"
+        )
+        validation = validate_issue_body(
+            producer="forge-todo-triage",
+            title="export drops rows",
+            body=after,
+            labels=["bug"],
+            declared=None,
+            previous_body=before,
+        )
+        assert validation.previous_verdict is ShapeVerdict.NEEDS_DIAGNOSIS
+        assert validation.actual is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
+        assert validation.new_blocking_codes == ()
+        assert validation.conforms
+
+    def test_preserve_refuses_a_new_refusal_hidden_under_a_higher_precedence_one(self):
+        """A verdict that does not move is not proof that nothing was added."""
+        untyped = "Some prose, no type label.\n"
+        degraded = untyped + (
+            "\n## Implementation plan\n\n"
+            "1. Patch `src/a.py:42`\n2. Patch `src/b.py:17`\n3. Patch `src/c.py:9`\n"
+        )
+        validation = validate_issue_body(
+            producer="forge-todo-triage",
+            title="t",
+            body=degraded,
+            labels=[],
+            declared=None,
+            previous_body=untyped,
+        )
+        # missing_type outranks the new finding, so the verdict is identical...
+        assert validation.actual is ShapeVerdict.NEEDS_TYPE
+        assert validation.previous_verdict is ShapeVerdict.NEEDS_TYPE
+        # ...but the edit still added a refusal, so PRESERVE is not satisfied.
+        assert "implementation_plan_in_body" in validation.new_blocking_codes
+        assert not validation.conforms
 
     def test_edit_may_improve_a_refused_body_to_runnable(self):
         validation = validate_issue_body(
@@ -147,7 +224,7 @@ class TestEditRules:
         assert validation.conforms
         assert validation.actual is ShapeVerdict.RUNNABLE
 
-    def test_strict_producers_do_not_get_the_no_new_refusal_escape(self):
+    def test_an_unchanged_body_does_not_satisfy_a_declaration_it_never_met(self):
         validation = validate_issue_body(
             producer="forge-intake-autofix",
             title="t",
@@ -155,7 +232,6 @@ class TestEditRules:
             labels=["task"],
             declared=ShapeVerdict.RUNNABLE,
             previous_body="Prose only.\n",
-            strict=True,
         )
         assert not validation.conforms
 
@@ -167,7 +243,6 @@ class TestCompareDeclaration:
             declared=ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN,
             actual=ShapeVerdict.NEEDS_DIAGNOSIS,
             reasons=(Reason(code="needs_diagnosis", severity=Severity.BLOCKING, detail="no dx"),),
-            strict=True,
         )
         assert not validation.conforms
         assert "needs_diagnosis" in validation.report()
@@ -194,7 +269,6 @@ class TestRequireConformingBody:
             body=RUNNABLE_TASK_BODY,
             labels=["task"],
             declared=ShapeVerdict.RUNNABLE,
-            strict=True,
         )
         assert validation.conforms
 
@@ -218,7 +292,6 @@ class TestCli:
                 "forge-advisory-finding",
                 "--declared",
                 "runnable",
-                "--strict",
                 "--title",
                 "t",
                 "--body-file",
@@ -236,7 +309,6 @@ class TestCli:
                 "post-run-hook-finding",
                 "--declared",
                 "runnable",
-                "--strict",
                 "--title",
                 "t",
                 "--body-file",
@@ -281,7 +353,6 @@ class TestCli:
                 "post-run-hook-finding",
                 "--declared",
                 "needs_operator_action",
-                "--strict",
                 "--title",
                 "[P1] slug: it drops",
                 "--body-stdin",

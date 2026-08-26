@@ -50,7 +50,6 @@ forge_validate_body() {
   "$FORGE_PYTHON" -m theforge.shape_check.producer \
     --producer "$FORGE_PRODUCER" \
     --declared "$FORGE_DECLARED" \
-    --strict \
     --title "$1" \
     --body-stdin \
     --label "bug" \

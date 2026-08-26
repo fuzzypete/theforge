@@ -94,7 +94,6 @@ def _create_todo(args: argparse.Namespace) -> int:
         body=body,
         labels=[TODO_DRAFT_LABEL],
         declared=TODO_DRAFT_VERDICT,
-        strict=True,
     )
     if not validation.conforms:
         print(validation.report(), file=sys.stderr)

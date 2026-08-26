@@ -6,26 +6,41 @@ lifecycle state it intends the result to occupy, hands the rendered body to
 agrees. A producer that cannot render a conforming body reports what it could
 not satisfy instead of filing an object the gate will refuse.
 
-Two declaration modes, because producers come in two shapes:
+A declaration is exact. There is deliberately no mode in which a producer names
+a concrete state and is then allowed to write a body evaluating to a different
+one — a declaration that a pre-existing refusal can absorb is not a declaration.
+A producer whose intended state genuinely depends on content it does not own
+must say so by declaring ``PRESERVE`` rather than by naming a state it cannot
+guarantee.
 
-``strict`` (authoring producers)
-    The producer wrote the whole body, so it owns every finding in it. The
-    evaluated verdict must *equal* the declared state. ``forge report``,
-    ``forge todo`` capture, the advisory-debt filer and the post-run finding
-    hook are authoring producers.
+Two forms a declaration can take:
 
-non-strict (editing producers)
-    The producer added a section to a body somebody else owns. It still
-    declares the state it intends, but it is not answerable for refusals that
-    were already there: the edit conforms when the evaluated verdict matches
-    the declaration, **or** when the edit introduced no new refusal code and
-    did not turn an admissible body inadmissible. ``forge shape``,
-    ``forge groom``, ``forge diagnose``, ``forge todo triage`` and sprint
-    intake remediation are editing producers.
+concrete (``ShapeVerdict``, or several)
+    "The rendered body occupies this state." The evaluated verdict must equal
+    it. This is what ``forge report``, ``forge todo`` capture, the advisory-debt
+    filer, the post-run finding hook, ``forge shape``, ``forge diagnose`` and
+    sprint intake auto-fix declare. When the body cannot be placed in the
+    declared state — including because of a refusal the producer did not
+    introduce — the producer reports rather than writes. That is the point: a
+    producer that promised runnable and cannot deliver runnable has something
+    to tell the operator.
 
-Declaring nothing (``declared=None``) is available to editing producers whose
-honest claim is only "I do not change the lifecycle state" — the no-new-refusal
-and no-regression rules still apply, and a previous body is then required.
+``PRESERVE`` (``declared=None``)
+    "This edit leaves the lifecycle state where it was, or improves it by
+    clearing a finding." A precise claim, not an absence of one: the edit may
+    not add a blocking finding the body did not already carry, and it may not
+    make an admissible body inadmissible. Stated over findings rather than over
+    the verdict on purpose — the verdict can hide an added defect underneath a
+    higher-precedence one, and it can also move for a good reason, since
+    writing an open Diagnosis section trades blocking ``needs_diagnosis`` for
+    advisory ``diagnosis_cause_unknown``. It is the honest declaration
+    for a producer that scaffolds structure into an object somebody else owns
+    without supplying the content that would resolve a finding — ``forge
+    groom``, ``forge todo triage`` and the intake reopen-context fold-in. It
+    requires a previous body, because there is nothing to preserve without one.
+
+Both forms additionally refuse a regression: an edit may not turn an admissible
+body inadmissible, whatever it declared.
 
 Stdlib-only, like the rest of :mod:`theforge.shape_check`, so a shell hook in a
 repository that has none of TheForge's runtime dependencies can validate through
@@ -51,7 +66,7 @@ from pathlib import Path
 
 from theforge.shape_check.check import check
 from theforge.shape_check.types import Reason, ShapeVerdict
-from theforge.shape_check.verdict import refusal_codes
+from theforge.shape_check.verdict import blocking_codes
 
 #: Every component allowed to create or edit an issue body, mapped to a
 #: one-line description of what it writes. Registration is deliberately
@@ -107,21 +122,24 @@ class ProducerValidation:
     """The answer to "may this producer write this body?"."""
 
     producer: str
+    #: The states declared, or empty for a ``PRESERVE`` declaration.
     declared: tuple[ShapeVerdict, ...]
     actual: ShapeVerdict
     reasons: tuple[Reason, ...]
-    #: Refusal codes present in the rendered body that the previous body did
-    #: not have. Empty when no previous body was supplied.
-    new_refusal_codes: tuple[str, ...]
+    #: Blocking findings the rendered body has that the previous body did not.
+    #: Empty when no previous body was supplied.
+    new_blocking_codes: tuple[str, ...]
     #: True when the previous body was admissible and this one is not.
     regressed_from_runnable: bool
-    strict: bool
+    #: The verdict of the body this write would replace; None on a creation.
+    previous_verdict: ShapeVerdict | None
     conforms: bool
 
     @property
     def declared_display(self) -> str:
         if not self.declared:
-            return "unchanged lifecycle state (no new refusal)"
+            previous = self.previous_verdict.value if self.previous_verdict else "unknown"
+            return f"unchanged ({previous}) or improved, adding no blocking finding"
         return " | ".join(v.value for v in self.declared)
 
     def report(self) -> str:
@@ -136,8 +154,8 @@ class ProducerValidation:
             lines.append(
                 "  regression: the body was admissible before this edit and would not be after."
             )
-        if self.new_refusal_codes:
-            lines.append(f"  introduced: {', '.join(self.new_refusal_codes)}")
+        if self.new_blocking_codes:
+            lines.append(f"  introduced: {', '.join(self.new_blocking_codes)}")
         if self.reasons:
             lines.append("  findings:")
             for reason in self.reasons:
@@ -167,7 +185,6 @@ def compare_declaration(
     reasons: Iterable[Reason] = (),
     previous_verdict: ShapeVerdict | None = None,
     previous_reasons: Iterable[Reason] | None = None,
-    strict: bool = False,
 ) -> ProducerValidation:
     """Compare an already-evaluated verdict against a producer's declaration.
 
@@ -193,30 +210,38 @@ def compare_declaration(
     new_codes: tuple[str, ...] = ()
     regressed = False
     if previous_verdict is not None:
-        before = refusal_codes(tuple(previous_reasons or ()))
-        after = refusal_codes(reasons_t)
+        before = blocking_codes(tuple(previous_reasons or ()))
+        after = blocking_codes(reasons_t)
         new_codes = tuple(sorted(after - before))
         regressed = (
             previous_verdict is ShapeVerdict.RUNNABLE and actual is not ShapeVerdict.RUNNABLE
         )
 
-    matches_declaration = actual in declared_t
-    if strict:
-        conforms = matches_declaration
+    if declared_t:
+        # A concrete declaration is matched exactly. A refusal the producer did
+        # not introduce is still a state it said the body would not be in, so
+        # it fails the declaration and the producer reports it — there is no
+        # carve-out that a pre-existing finding could absorb.
+        declaration_satisfied = actual in declared_t
     else:
-        conforms = matches_declaration or (
-            previous_verdict is not None and not new_codes and not regressed
-        )
+        # PRESERVE: unchanged, or improved by clearing. Compared over blocking
+        # findings rather than over the verdict, because the verdict answers
+        # neither question on its own — it can stay put while a defect is added
+        # underneath a higher-precedence one, and it can move for a good reason
+        # when an open Diagnosis section trades blocking needs_diagnosis for
+        # advisory diagnosis_cause_unknown. The regression rule below is what
+        # keeps an advisory-only degradation out of an admissible body.
+        declaration_satisfied = not new_codes
 
     return ProducerValidation(
         producer=producer,
         declared=declared_t,
         actual=actual,
         reasons=reasons_t,
-        new_refusal_codes=new_codes,
+        new_blocking_codes=new_codes,
         regressed_from_runnable=regressed,
-        strict=strict,
-        conforms=conforms,
+        previous_verdict=previous_verdict,
+        conforms=declaration_satisfied and not regressed,
     )
 
 
@@ -228,7 +253,6 @@ def validate_issue_body(
     labels: Iterable[str],
     declared: ShapeVerdict | Iterable[ShapeVerdict] | None,
     previous_body: str | None = None,
-    strict: bool = False,
 ) -> ProducerValidation:
     """Evaluate ``body`` through the shared gate and judge it against ``declared``.
 
@@ -252,7 +276,6 @@ def validate_issue_body(
         reasons=result.reasons,
         previous_verdict=previous_verdict,
         previous_reasons=previous_reasons,
-        strict=strict,
     )
 
 
@@ -264,7 +287,6 @@ def require_conforming_body(
     labels: Iterable[str],
     declared: ShapeVerdict | Iterable[ShapeVerdict] | None,
     previous_body: str | None = None,
-    strict: bool = False,
 ) -> ProducerValidation:
     """:func:`validate_issue_body`, raising :class:`ProducerValidationError`
     when the declaration is unsatisfied. For call sites whose mutation seam is
@@ -276,7 +298,6 @@ def require_conforming_body(
         labels=labels,
         declared=declared,
         previous_body=previous_body,
-        strict=strict,
     )
     if not validation.conforms:
         raise ProducerValidationError(validation)
@@ -313,12 +334,6 @@ def _build_parser() -> argparse.ArgumentParser:
         "--previous-body-file",
         dest="previous_body_file",
         help="Path to the body this write would replace",
-    )
-    parser.add_argument(
-        "--strict",
-        action="store_true",
-        default=False,
-        help="Require the evaluated verdict to equal the declaration exactly",
     )
     return parser
 
@@ -359,7 +374,6 @@ def main(argv: list[str] | None = None) -> int:
             labels=args.label,
             declared=declared,
             previous_body=previous_body,
-            strict=args.strict,
         )
     except ValueError as exc:
         print(str(exc), file=sys.stderr)

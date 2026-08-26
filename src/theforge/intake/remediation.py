@@ -560,7 +560,6 @@ def _remediate_one(
             labels=patched_labels,
             declared=(ShapeVerdict.RUNNABLE, ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN),
             previous_body=body,
-            strict=True,
         )
         if not edit_validation.conforms:
             artifact_path = _write_candidate_artifact(

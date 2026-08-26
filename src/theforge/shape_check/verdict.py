@@ -56,20 +56,20 @@ def _explicit_lifecycle_refusals() -> tuple[tuple[str, ShapeVerdict], ...]:
 _EXPLICIT_LIFECYCLE_REFUSALS: tuple[tuple[str, ShapeVerdict], ...] = _explicit_lifecycle_refusals()
 
 
-def refusal_codes(reasons: tuple[Reason, ...]) -> frozenset[str]:
-    """Return the codes in ``reasons`` that can refuse admission on their own.
+def blocking_codes(reasons: tuple[Reason, ...]) -> frozenset[str]:
+    """Return the blocking reason codes in ``reasons``.
 
-    A code refuses when it is blocking, or when it is an explicit lifecycle
-    refusal such as ``diagnosis_cause_unknown`` (advisory as a *finding*, but
-    admission-refusing as a *state*). Producers use this to answer the one
-    question the advisory/blocking split cannot: did *my* edit introduce a
-    refusal that was not already there?
+    Producers compare this across an edit to answer a question the verdict
+    alone cannot: did *my* edit add a defect? The verdict can hide one — a
+    finding added underneath a higher-precedence one leaves the summary word
+    unchanged — and it can also move for a good reason, since resolving
+    ``needs_diagnosis`` by writing an open Diagnosis section trades a blocking
+    finding for the advisory ``diagnosis_cause_unknown``. Counting blocking
+    findings distinguishes those two: the first grows the set, the second
+    shrinks it.
     """
-    explicit = {code for code, _ in _EXPLICIT_LIFECYCLE_REFUSALS}
     return frozenset(
-        reason.code
-        for reason in reasons
-        if reason.severity is Severity.BLOCKING or reason.code in explicit
+        reason.code for reason in reasons if reason.severity is Severity.BLOCKING
     )
 
 

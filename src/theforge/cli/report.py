@@ -168,7 +168,6 @@ def _check_declaration(
         declared=declared,
         actual=actual,
         reasons=_as_reasons(verdict),
-        strict=True,
     )
 
 

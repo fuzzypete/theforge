@@ -477,7 +477,6 @@ def _maybe_file_issue(config: ForgeConfig, entry: dict[str, Any]) -> dict[str, A
         body=body,
         labels=labels,
         declared=ShapeVerdict.RUNNABLE,
-        strict=True,
     )
     if not validation.conforms:
         print(validation.report(), file=sys.stderr)

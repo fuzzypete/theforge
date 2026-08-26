@@ -592,14 +592,16 @@ def run_groom(
 
     applied = False
     if apply_changes and proposed != body:
-        # Validate before mutating. Groom declares the state it intends the
-        # repaired body to occupy: a cause-unknown bug stays investigation-ready
-        # (groom must never move it to runnable), and every other repair claims
-        # only that it does not change the lifecycle state for the worse —
-        # groom scaffolds structure, it does not supply the content that would
-        # clear a finding. A repair that introduces a refusal the body did not
-        # carry, or that turns an admissible body inadmissible, is reported
-        # here rather than written and discovered by the next gate run.
+        # Validate before mutating. A cause-unknown bug is declared concretely
+        # — it stays investigation-ready, because groom must never move it to
+        # runnable — and that declaration is matched exactly. Every other repair
+        # declares PRESERVE, which is groom's honest claim rather than a weaker
+        # one: groom scaffolds structure into a body it does not own and does
+        # not supply the content that would clear a finding, so it promises the
+        # lifecycle state is unchanged (or cleared to runnable) and that it adds
+        # no refusal the body did not already carry. Declaring RUNNABLE here
+        # instead would be a promise groom cannot keep on an issue whose
+        # remaining findings are the operator's to resolve.
         investigation_ready = (
             bug_state is BugDiagnosisState.CAUSE_UNKNOWN
             and pre_verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
@@ -612,7 +614,6 @@ def run_groom(
                 labels=shape_labels,
                 declared=(ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN if investigation_ready else None),
                 previous_body=body,
-                strict=investigation_ready,
             )
         except ProducerValidationError as exc:
             raise GroomError(str(exc)) from exc
