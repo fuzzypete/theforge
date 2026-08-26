@@ -17,7 +17,7 @@ from theforge.intake.author_flow import (
     available_type_labels,
     run_author_flow,
 )
-from theforge.shape_check.issue_spec import spec_for_label, spec_for_labels
+from theforge.shape_check.issue_spec import IssueTypeSpec, spec_for_label, spec_for_labels
 
 
 @dataclass(frozen=True)
@@ -112,12 +112,23 @@ def _load_draft_file(path: Path) -> _LoadedDraft | None:
     return _LoadedDraft(title=title, body=body, labels=tuple(labels))
 
 
-def _resolve_selected_type(args: argparse.Namespace, loaded: _LoadedDraft) -> str:
+def _reject_non_dispatchable_type(type_spec: IssueTypeSpec) -> None:
+    print(
+        f"issue type '{type_spec.label}' is not dispatchable through forge author; "
+        "use forge todo or relabel the issue before resuming.",
+        file=sys.stderr,
+    )
+
+
+def _resolve_selected_type(args: argparse.Namespace, loaded: _LoadedDraft) -> str | None:
     explicit = getattr(args, "type_label", None)
     if explicit:
         return explicit
     inferred = spec_for_labels(loaded.labels)
     if inferred is not None:
+        if inferred.label not in available_type_labels():
+            _reject_non_dispatchable_type(inferred)
+            return None
         return inferred.label
     matches = {
         spec.label
@@ -313,6 +324,8 @@ def cmd_author(args: argparse.Namespace) -> int:
         )
 
     selected_type_label = _resolve_selected_type(args, loaded)
+    if selected_type_label is None:
+        return 1
     result = run_author_flow(
         title=loaded.title,
         selected_type_label=selected_type_label,

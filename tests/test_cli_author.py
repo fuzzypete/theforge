@@ -54,6 +54,33 @@ def test_author_parser_rejects_non_dispatchable_types() -> None:
 
 
 @patch("theforge.cli.author.subprocess.run")
+def test_author_from_issue_rejects_non_dispatchable_inferred_type(
+    mock_run, tmp_path, monkeypatch, capsys
+):
+    mock_run.return_value = _proc(
+        stdout=json.dumps(
+            {
+                "title": "Track the v0.12 release train",
+                "body": "## Acceptance criteria\n\n- Child issues are linked.\n",
+                "labels": [{"name": "epic"}],
+            }
+        )
+    )
+    args = _make_args(tmp_path, from_issue=2408)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt="": (_ for _ in ()).throw(AssertionError("prompt should not run")),
+    )
+
+    rc = cmd_author(args)
+
+    assert rc == 1
+    calls = [call.args[0] for call in mock_run.call_args_list]
+    assert calls == [["gh", "issue", "view", "2408", "--json", "title,body,labels"]]
+    assert "not dispatchable through forge author" in capsys.readouterr().err
+
+
+@patch("theforge.cli.author.subprocess.run")
 def test_author_refuses_create_and_writes_incomplete_draft(
     mock_run, tmp_path, monkeypatch, capsys
 ):

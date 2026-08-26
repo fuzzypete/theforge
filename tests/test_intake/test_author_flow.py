@@ -167,5 +167,29 @@ def test_unknown_confirmed_cause_surfaces_reason_detail_in_missing_parts() -> No
     assert "investigation-ready but not implementation-runnable" in result.missing_parts[0].detail
 
 
+def test_advisory_shape_reasons_do_not_become_missing_parts() -> None:
+    body = (
+        "## Why\n\nAuthors need the CLI to state the contract before submit.\n\n"
+        "## Acceptance criteria\n\n"
+        "- A reviewer can see the issue-body contract before any GitHub mutation.\n\n"
+        "## Design\n\n"
+        "Implement this in `src/theforge/cli/author.py` and "
+        "`src/theforge/intake/author_flow.py`.\n"
+    )
+
+    result = run_author_flow(
+        title="Surface issue-body requirements before submission",
+        selected_type_label="enhancement",
+        existing_body=body,
+        existing_labels=("enhancement",),
+        answer_source=_answer_map({}),
+    )
+
+    assert result.status is AuthoringStatus.DRAFT
+    assert any(reason.code == "missing_example" for reason in result.reasons)
+    assert any(reason.code == "implementation_plan_in_body" for reason in result.reasons)
+    assert [part.key for part in result.missing_parts] == ["implementation_plan_in_body"]
+
+
 def test_available_type_labels_exclude_non_dispatchable_types() -> None:
     assert available_type_labels() == ("bug", "enhancement", "task")

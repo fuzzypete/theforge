@@ -18,7 +18,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 
-from theforge.shape_check import Reason
+from theforge.shape_check import Reason, Severity
 from theforge.shape_check import check as shape_check
 from theforge.shape_check.diagnosis_spec import REQUIRED_DIAGNOSIS_COMPONENTS
 from theforge.shape_check.document import (
@@ -444,6 +444,8 @@ def _missing_parts_from_reasons(
                     detail=reason.detail,
                 )
             )
+            continue
+        if reason.severity is not Severity.BLOCKING:
             continue
         missing.append(
             MissingPart(
