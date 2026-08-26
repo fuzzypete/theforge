@@ -186,7 +186,7 @@ def run_author_flow(
 
 def available_type_labels() -> tuple[str, ...]:
     """Return the issue-type labels an operator may select from."""
-    return tuple(spec.label for spec in ISSUE_TYPES)
+    return tuple(spec.label for spec in ISSUE_TYPES if spec.dispatchable and spec.declares_type)
 
 
 def _collect_required_section(
@@ -243,7 +243,10 @@ def _collect_diagnosis(
         )
         response = _clean_answer(answer_source(prompt))
         if not response:
-            return document, [_missing_field(field)]
+            body = _render_diagnosis_body(prefix, section, existing_values)
+            document = _set_section(document, section.key, body, type_spec=type_spec)
+            remaining = missing_fields[missing_fields.index(field) :]
+            return document, [_missing_field(item) for item in remaining]
         existing_values[field.key] = response
 
     body = _render_diagnosis_body(prefix, section, existing_values)
@@ -422,7 +425,18 @@ def _missing_parts_from_reasons(
                 if field.label not in {part.label for part in missing}:
                     missing.append(_missing_field(field))
             continue
-        if reason.code == type_spec.lifecycle_states[0].refusal_code:
+        if reason.code == "diagnosis_cause_unknown":
+            missing.append(
+                MissingPart(
+                    key="diagnosis.confirmed_cause",
+                    label="Confirmed cause",
+                    detail=reason.detail,
+                )
+            )
+            continue
+        if reason.code in {
+            state.refusal_code for state in type_spec.lifecycle_states if state.refusal_code
+        }:
             missing.append(
                 MissingPart(
                     key=reason.code,
@@ -430,6 +444,14 @@ def _missing_parts_from_reasons(
                     detail=reason.detail,
                 )
             )
+            continue
+        missing.append(
+            MissingPart(
+                key=reason.code,
+                label=_reason_label(reason.code),
+                detail=reason.detail,
+            )
+        )
     return missing
 
 
@@ -451,9 +473,16 @@ def _clean_answer(answer: str | None) -> str:
 
 def _strip_incomplete_marker(body: str) -> str:
     body = body or ""
-    if not body.startswith(_INCOMPLETE_STATUS_PREFIX):
-        return body
-    parts = body.split("\n\n", 1)
-    if len(parts) == 1:
-        return ""
-    return parts[1].lstrip("\n")
+    while True:
+        match = re.match(
+            rf"^\s*{re.escape(_INCOMPLETE_STATUS_PREFIX)}[^\n]*(?:\n(?:[ \t]*\n)*)?",
+            body,
+        )
+        if match is None:
+            return body
+        body = body[match.end() :].lstrip("\n")
+
+
+def _reason_label(code: str) -> str:
+    words = re.split(r"[_-]+", code.strip())
+    return " ".join(word.capitalize() for word in words if word)

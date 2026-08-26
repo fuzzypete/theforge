@@ -82,7 +82,7 @@ def _load_draft_file(path: Path) -> _LoadedDraft | None:
         print(f"could not read {path}: {exc}", file=sys.stderr)
         return None
 
-    title = path.stem
+    title = ""
     labels: list[str] = []
     body = raw
     if raw.startswith("---\n"):
@@ -93,7 +93,7 @@ def _load_draft_file(path: Path) -> _LoadedDraft | None:
             for line in frontmatter.splitlines():
                 stripped = line.strip()
                 if stripped.startswith("title:"):
-                    title = stripped.partition(":")[2].strip().strip('"').strip("'") or title
+                    title = stripped.partition(":")[2].strip().strip('"').strip("'")
                 if stripped.startswith("labels:"):
                     payload = stripped.partition(":")[2].strip()
                     if payload.startswith("[") and payload.endswith("]"):
@@ -103,7 +103,7 @@ def _load_draft_file(path: Path) -> _LoadedDraft | None:
                             if token.strip()
                         ]
 
-    if title == path.stem:
+    if not title:
         for line in body.splitlines():
             stripped = line.strip()
             if stripped.startswith("# "):
@@ -122,7 +122,7 @@ def _resolve_selected_type(args: argparse.Namespace, loaded: _LoadedDraft) -> st
     matches = {
         spec.label
         for spec in (spec_for_label(label) for label in loaded.labels)
-        if spec is not None
+        if spec is not None and spec.label in available_type_labels()
     }
     if len(matches) == 1:
         return next(iter(matches))
@@ -250,38 +250,41 @@ def _edit_issue(result: AuthorResult, loaded: _LoadedDraft, cwd: Path) -> bool:
     issue_number = loaded.issue_number
     assert issue_number is not None
 
-    if not _apply_labels(issue_number, before=loaded.labels, after=result.labels, cwd=cwd):
-        return False
+    body_changed = result.title != loaded.title or result.body_for_storage() != loaded.body
 
-    if result.title == loaded.title and result.body_for_storage() == loaded.body:
-        return True
+    if body_changed:
+        with tempfile.NamedTemporaryFile(
+            "w+",
+            encoding="utf-8",
+            suffix=".md",
+            delete=False,
+        ) as tmp:
+            tmp.write(result.body_for_storage())
+            tmp.flush()
+            tmp_path = Path(tmp.name)
+        try:
+            proc = _gh(
+                [
+                    "gh",
+                    "issue",
+                    "edit",
+                    str(issue_number),
+                    "--title",
+                    result.title,
+                    "--body-file",
+                    str(tmp_path),
+                ],
+                cwd,
+            )
+        finally:
+            tmp_path.unlink(missing_ok=True)
 
-    with tempfile.NamedTemporaryFile("w+", encoding="utf-8", suffix=".md", delete=False) as tmp:
-        tmp.write(result.body_for_storage())
-        tmp.flush()
-        tmp_path = Path(tmp.name)
-    try:
-        proc = _gh(
-            [
-                "gh",
-                "issue",
-                "edit",
-                str(issue_number),
-                "--title",
-                result.title,
-                "--body-file",
-                str(tmp_path),
-            ],
-            cwd,
-        )
-    finally:
-        tmp_path.unlink(missing_ok=True)
+        if proc.returncode != 0:
+            err = proc.stderr.strip() or proc.stdout.strip() or "gh issue edit failed"
+            print(err, file=sys.stderr)
+            return False
 
-    if proc.returncode != 0:
-        err = proc.stderr.strip() or proc.stdout.strip() or "gh issue edit failed"
-        print(err, file=sys.stderr)
-        return False
-    return True
+    return _apply_labels(issue_number, before=loaded.labels, after=result.labels, cwd=cwd)
 
 
 def cmd_author(args: argparse.Namespace) -> int:
@@ -331,9 +334,12 @@ def cmd_author(args: argparse.Namespace) -> int:
         return 0 if result.runnable else 1
 
     if not result.runnable:
+        if not args.output:
+            print(result.body_for_storage())
         print(
             "forge author refused to submit: required parts are still missing or the body "
-            "is not yet runnable. Save the draft with --output and continue later.",
+            "is not yet runnable. The incomplete draft was emitted to stdout; use "
+            "--output to save it and continue later.",
             file=sys.stderr,
         )
         return 1

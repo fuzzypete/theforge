@@ -3,6 +3,7 @@ from __future__ import annotations
 from theforge.intake.author_flow import (
     AuthoringStatus,
     AuthorPrompt,
+    available_type_labels,
     run_author_flow,
 )
 
@@ -111,3 +112,60 @@ def test_partial_diagnosis_collects_only_missing_fields_and_preserves_existing_v
     assert "- **Confirmed cause:**" in result.body
     assert "- **Affected code path:**" in result.body
     assert "- **Fix-success criterion:**" in result.body
+
+
+def test_partial_diagnosis_decline_preserves_answers_and_reports_remaining_missing() -> None:
+    body = (
+        "## Diagnosis\n\n"
+        "- **Observed symptom:** resume reports merged work without a landed commit.\n"
+        "- **Evidence:** run id `abc123` shows the false positive.\n"
+    )
+
+    result = run_author_flow(
+        title="Resume falsely treats zero-delta APPROVE stories as merged",
+        selected_type_label="bug",
+        existing_body=body,
+        existing_labels=("bug", "todo:draft"),
+        answer_source=_answer_map(
+            {
+                "diagnosis.confirmed_cause": "zero ahead commits are treated as already merged.",
+                "diagnosis.affected_code_path": None,
+            }
+        ),
+    )
+
+    assert result.status is AuthoringStatus.DRAFT
+    assert "zero ahead commits are treated as already merged." in result.body
+    assert "- **Affected code path:**" in result.body
+    assert "- **Fix-success criterion:**" in result.body
+    assert [part.label for part in result.missing_parts] == [
+        "Affected code path",
+        "Fix-success criterion",
+    ]
+
+
+def test_unknown_confirmed_cause_surfaces_reason_detail_in_missing_parts() -> None:
+    body = (
+        "## Diagnosis\n\n"
+        "- **Observed symptom:** ready queue and sprint entry disagree.\n"
+        "- **Evidence:** run id `abc123` reproduces the mismatch.\n"
+        "- **Confirmed cause:** unknown\n"
+        "- **Affected code path:** `ready_queue.build_ready_queue`.\n"
+        "- **Fix-success criterion:** queue and sprint entry agree on ready issues.\n"
+    )
+
+    result = run_author_flow(
+        title="Ready queue disagrees with sprint entry",
+        selected_type_label="bug",
+        existing_body=body,
+        existing_labels=("bug", "todo:draft"),
+        answer_source=_answer_map({}),
+    )
+
+    assert result.status is AuthoringStatus.DRAFT
+    assert result.missing_parts[0].label == "Confirmed cause"
+    assert "investigation-ready but not implementation-runnable" in result.missing_parts[0].detail
+
+
+def test_available_type_labels_exclude_non_dispatchable_types() -> None:
+    assert available_type_labels() == ("bug", "enhancement", "task")
