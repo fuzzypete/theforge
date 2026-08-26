@@ -81,8 +81,9 @@ VERDICT_DESCRIPTIONS: dict[ShapeVerdict, str] = {
         "issue spans too many behavioral clusters; split into smaller issues"
     ),
     ShapeVerdict.NEEDS_OPERATOR_ACTION: (
-        "issue is refused pending operator action or another blocking condition "
-        "outside the runnable typed verdicts"
+        "issue is refused by a blocking condition that needs operator action "
+        "outside the narrower typed remediation verdicts; see refusal reason codes "
+        "for the specific condition"
     ),
     ShapeVerdict.ADR_CANDIDATE: (
         "legacy routing marker retained for audit compatibility; "

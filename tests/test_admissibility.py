@@ -142,6 +142,10 @@ The listing agrees with the gate.
 the fix belongs in `ready_queue.py`
 """
 
+_SUPERSEDED_CAUSE_UNKNOWN_BUG_BODY = f"""Superseded by #99.
+
+{_CAUSE_UNKNOWN_BUG_BODY}"""
+
 _ENHANCEMENT_WITH_BUG_SHAPE_BODY = """## What happened
 
 `forge status --ready` routes this enhancement through bug diagnosis.
@@ -353,6 +357,36 @@ def test_cause_unknown_refusal_keeps_phrase_advice_out_of_skip_codes() -> None:
     assert "fix location" not in verdict.detail
     assert verdict.result is not None
     assert any(r.code == "bug_fix_location_prescription" for r in verdict.result.reasons)
+
+
+def test_blocking_superseded_beats_cause_unknown_in_refusal_channel() -> None:
+    verdict = classify_admissibility(
+        "Counter is wrong",
+        _SUPERSEDED_CAUSE_UNKNOWN_BUG_BODY,
+        ["bug"],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.verdict == ShapeVerdict.DUPLICATE_OR_STALE.value
+    assert verdict.reason_codes == ("superseded",)
+    assert verdict.detail == "Issue marks itself as superseded by another issue."
+    assert verdict.result is not None
+    assert any(r.code == "diagnosis_cause_unknown" for r in verdict.result.reasons)
+
+
+def test_missing_type_beats_cause_unknown_in_refusal_channel() -> None:
+    verdict = classify_admissibility(
+        "Counter is wrong",
+        _CAUSE_UNKNOWN_BUG_BODY,
+        [],
+    )
+
+    assert verdict.admissible is False
+    assert verdict.verdict == ShapeVerdict.NEEDS_TYPE.value
+    assert verdict.reason_codes == ("missing_type",)
+    assert "type label" in verdict.detail
+    assert verdict.result is not None
+    assert any(r.code == "diagnosis_cause_unknown" for r in verdict.result.reasons)
 
 
 # ── classify_admissibility: needs-grooming label ────────────────────────────

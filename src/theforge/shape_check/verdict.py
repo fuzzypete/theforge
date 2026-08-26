@@ -49,14 +49,15 @@ def derive_verdict(reasons: tuple[Reason, ...]) -> ShapeVerdict:
     for reason in reasons:
         by_code.setdefault(reason.code, []).append(reason)
 
-    for code, verdict in _EXPLICIT_LIFECYCLE_REFUSALS:
-        if code in by_code:
-            return verdict
-
     blocking_codes = {reason.code for reason in reasons if reason.severity is Severity.BLOCKING}
     for code, verdict in _BLOCKING_PRECEDENCE:
         if code in blocking_codes:
             return verdict
+
+    for code, verdict in _EXPLICIT_LIFECYCLE_REFUSALS:
+        if code in by_code:
+            return verdict
+
     if blocking_codes:
         return ShapeVerdict.NEEDS_OPERATOR_ACTION
     return ShapeVerdict.RUNNABLE

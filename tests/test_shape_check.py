@@ -668,6 +668,24 @@ class TestNoObservableDoneState:
         assert result.verdict is ShapeVerdict.DIAGNOSIS_CAUSE_UNKNOWN
         assert result.admits_implementation_sprint is False
 
+    def test_blocking_superseded_beats_cause_unknown_refusal(self):
+        result = check(
+            "Counter is wrong",
+            "Superseded by #99.\n\n" + CAUSE_UNKNOWN_BUG_BODY,
+            ["bug"],
+        )
+        assert result.shape is Shape.SUPERSEDED
+        assert result.verdict is ShapeVerdict.DUPLICATE_OR_STALE
+        assert any(r.code == "superseded" for r in result.reasons)
+        assert any(r.code == "diagnosis_cause_unknown" for r in result.reasons)
+
+    def test_blocking_missing_type_beats_cause_unknown_refusal(self):
+        result = check("Counter is wrong", CAUSE_UNKNOWN_BUG_BODY, [])
+        assert result.shape is Shape.NEEDS_GROOMING
+        assert result.verdict is ShapeVerdict.NEEDS_TYPE
+        assert any(r.code == "missing_type" for r in result.reasons)
+        assert any(r.code == "diagnosis_cause_unknown" for r in result.reasons)
+
     def test_unmapped_advisory_reason_stays_runnable(self):
         verdict = derive_verdict(
             (Reason(code="totally_new_advisory", severity=Severity.ADVISORY, detail=""),)

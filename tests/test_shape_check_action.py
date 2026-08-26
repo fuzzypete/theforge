@@ -74,6 +74,13 @@ CAUSE_UNKNOWN_BUG_BODY = textwrap.dedent(
     """
 )
 
+SUPERSEDED_CAUSE_UNKNOWN_BUG_BODY = textwrap.dedent(
+    f"""\
+    Superseded by #999.
+
+    {CAUSE_UNKNOWN_BUG_BODY}"""
+)
+
 
 class FakeGitHubAPI:
     """In-memory GitHubAPI double. Records calls; models labels + comments."""
@@ -345,6 +352,24 @@ class TestRunActionEdited:
         assert any(
             "admission verdict: `diagnosis_cause_unknown`" in c["body"] for c in api.comments
         )
+
+    def test_edit_with_superseded_cause_unknown_bug_keeps_blocking_verdict(self):
+        api = FakeGitHubAPI(issue_number=36, labels=["bug", "needs-grooming"])
+        event = _event(
+            action="edited",
+            number=36,
+            title="Queue disagreement",
+            body=SUPERSEDED_CAUSE_UNKNOWN_BUG_BODY,
+            labels=["bug", "needs-grooming"],
+        )
+
+        result = run_action(event, api)
+
+        assert result.shape is Shape.SUPERSEDED
+        assert result.verdict.value == "duplicate_or_stale"
+        assert "needs-grooming" not in api.labels
+        assert any("admission verdict: `duplicate_or_stale`" in c["body"] for c in api.comments)
+        assert any("| `blocking` | `superseded` |" in c["body"] for c in api.comments)
 
 
 class TestRunActionTrackingOnly:
